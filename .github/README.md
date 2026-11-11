@@ -2,14 +2,14 @@
 
 waypoint-task-service owns the core of the product. NestJS, its own PostgreSQL database (one database and one user in the shared PostgreSQL of the VPS), events over NATS JetStream through `@waypoint/nest-messaging`, internal REST for the API gateway. Local port 3013.
 
-| | |
-| --- | --- |
-| Data | Spaces (appearance, privacy, renamed or hidden statuses), lists and sprints, tasks, subtasks, checklist, dependencies, milestones, recurrence, labels, custom fields, templates, saved views, comments, time entries, approvals, activity log, goals and key results, intake forms, trash, archives. |
-| API | All of the above. A status change accepts a source (`user`, `automation`, `git`) so the activity log can sign it "par GitHub". |
-| Emits | `space.*`, `list.*`, `task.created`, `task.updated`, `task.status-changed`, `task.assigned`, `task.trashed`, `task.restored`, `task.purged`, `comment.created`, `approval.requested`, `approval.decided`, `milestone.reached` |
-| Listens to | `organization.deleted`, `member.removed (unassigns)` |
-| External | None. |
-| Phase | First version |
+|            |                                                                                                                                                                                                                                                                                                      |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Data       | Spaces (appearance, privacy, renamed or hidden statuses), lists and sprints, tasks, subtasks, checklist, dependencies, milestones, recurrence, labels, custom fields, templates, saved views, comments, time entries, approvals, activity log, goals and key results, intake forms, trash, archives. |
+| API        | All of the above. A status change accepts a source (`user`, `automation`, `git`) so the activity log can sign it "par GitHub".                                                                                                                                                                       |
+| Emits      | `space.*`, `list.*`, `task.created`, `task.updated`, `task.status-changed`, `task.assigned`, `task.trashed`, `task.restored`, `task.purged`, `comment.created`, `approval.requested`, `approval.decided`, `milestone.reached`                                                                        |
+| Listens to | `organization.deleted`, `member.removed (unassigns)`                                                                                                                                                                                                                                                 |
+| External   | None.                                                                                                                                                                                                                                                                                                |
+| Phase      | First version                                                                                                                                                                                                                                                                                        |
 
 At start-up this service also carries documents, attachments metadata and automation rules as modules; they are extracted later into their own repositories.
 
