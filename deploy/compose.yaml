@@ -5,7 +5,7 @@
 # password) are referenced by name; they live in waypoint-ops.
 services:
   task-service:
-    image: ghcr.io/waypoint/waypoint-task-service:${TASK_SERVICE_VERSION}
+    image: ghcr.io/${GHCR_OWNER}/waypoint-task-service:${TASK_SERVICE_VERSION}
     restart: unless-stopped
     environment:
       PORT: '3013'
