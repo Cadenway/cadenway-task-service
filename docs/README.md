@@ -1,6 +1,6 @@
-# waypoint-task-service documentation
+# cadenway-task-service documentation
 
-Planned role: waypoint-task-service owns the core of the product. NestJS, its own PostgreSQL database (one database and one user in the shared PostgreSQL of the VPS), events over NATS JetStream through `@waypoint/nest-messaging`, internal REST for the API gateway. Local port 3013.
+Planned role: cadenway-task-service owns the core of the product. NestJS, its own PostgreSQL database (one database and one user in the shared PostgreSQL of the VPS), events over NATS JetStream through `@cadenway/nest-messaging`, internal REST for the API gateway. Local port 3013.
 
 ## Current status
 
