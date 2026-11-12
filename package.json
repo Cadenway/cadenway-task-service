@@ -1,7 +1,7 @@
 {
-  "name": "waypoint-task-service",
+  "name": "cadenway-task-service",
   "version": "0.0.0",
-  "description": "Waypoint task service: spaces, lists, sprints, tasks and everything around them.",
+  "description": "Cadenway task service: spaces, lists, sprints, tasks and everything around them.",
   "private": true,
   "license": "UNLICENSED",
   "type": "module",

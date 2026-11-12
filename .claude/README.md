@@ -1,6 +1,6 @@
-# waypoint-task-service: Claude Code tooling
+# cadenway-task-service: Claude Code tooling
 
-This `.claude/` folder ships the Claude Code tooling of waypoint-task-service: **16 agents**,
+This `.claude/` folder ships the Claude Code tooling of cadenway-task-service: **16 agents**,
 17 slash commands, 13 rules, 18 skills, 3 hooks, the project
 settings and launch configuration. The application launch requires the planned package scripts.
 
@@ -27,11 +27,11 @@ Start from [AGENTS.md](../AGENTS.md) (the rules every assistant follows) and [CL
 Start from this checkout and attach the peers you need, for example:
 
 ```powershell
-claude --add-dir ../waypoint-api-contracts ../waypoint-service-kit ../waypoint-ops
+claude --add-dir ../cadenway-api-contracts ../cadenway-service-kit ../cadenway-ops
 ```
 
-Their `.claude/agents/` are discovered too, so their `wp-*` roles become available. Peer checkouts
-are **read-only** from a waypoint-task-service session (the guard refuses edits there): change them in their
+Their `.claude/agents/` are discovered too, so their `cw-*` roles become available. Peer checkouts
+are **read-only** from a cadenway-task-service session (the guard refuses edits there): change them in their
 own session and pull request.
 
 ## Agents
@@ -42,44 +42,44 @@ check that writes files. No agent delegates further.
 
 | Agent | Responsibility | Model | Effort | Mode |
 | --- | --- | --- | --- | --- |
-| `wp-task-module-explorer` | Map a module: files, invariants, flows, events, dependencies. | sonnet | medium | Read-only |
-| `wp-task-module-builder` | Create a new module skeleton with its MODULE.md. | opus | high | Assigned writes |
-| `wp-task-domain-builder` | Pure domain: entities, value objects, invariants, domain events. | opus | high | Assigned writes |
-| `wp-task-usecase-builder` | Application use cases: orchestration, transactions, outbox. | sonnet | high | Assigned writes |
-| `wp-task-endpoint-builder` | Internal REST routes from the contract. | sonnet | high | Assigned writes |
-| `wp-task-event-builder` | Publish and consume events: outbox, idempotency, versions. | opus | high | Assigned writes |
-| `wp-task-persistence-builder` | Repositories, mapping, queries and indexes. | sonnet | high | Assigned writes |
-| `wp-task-migration-builder` | Expand/contract schema migrations. | sonnet | high | Assigned writes |
-| `wp-task-test-writer` | Unit, integration and contract tests. | sonnet | high | Assigned writes |
-| `wp-task-deploy-maintainer` | Dockerfile, deploy/compose.yaml, health checks, env. | sonnet | medium | Assigned writes |
-| `wp-task-architecture-reviewer` | Layering, ownership, boundaries, contracts. | opus | xhigh | Read-only |
-| `wp-task-contract-reviewer` | Code against OpenAPI and AsyncAPI. | opus | high | Read-only |
-| `wp-task-security-auditor` | Tenant isolation, authorization, input, secrets, personal data. | opus | xhigh | Read-only |
-| `wp-task-observability-reviewer` | Logs, traces, metrics, health. | sonnet | high | Read-only |
-| `wp-task-performance-reviewer` | Queries, indexes, pagination, N+1. | sonnet | high | Read-only |
-| `wp-task-github-maintainer` | Workflows, templates and community files in .github/. | sonnet | medium | Assigned writes |
+| `cw-task-module-explorer` | Map a module: files, invariants, flows, events, dependencies. | sonnet | medium | Read-only |
+| `cw-task-module-builder` | Create a new module skeleton with its MODULE.md. | opus | high | Assigned writes |
+| `cw-task-domain-builder` | Pure domain: entities, value objects, invariants, domain events. | opus | high | Assigned writes |
+| `cw-task-usecase-builder` | Application use cases: orchestration, transactions, outbox. | sonnet | high | Assigned writes |
+| `cw-task-endpoint-builder` | Internal REST routes from the contract. | sonnet | high | Assigned writes |
+| `cw-task-event-builder` | Publish and consume events: outbox, idempotency, versions. | opus | high | Assigned writes |
+| `cw-task-persistence-builder` | Repositories, mapping, queries and indexes. | sonnet | high | Assigned writes |
+| `cw-task-migration-builder` | Expand/contract schema migrations. | sonnet | high | Assigned writes |
+| `cw-task-test-writer` | Unit, integration and contract tests. | sonnet | high | Assigned writes |
+| `cw-task-deploy-maintainer` | Dockerfile, deploy/compose.yaml, health checks, env. | sonnet | medium | Assigned writes |
+| `cw-task-architecture-reviewer` | Layering, ownership, boundaries, contracts. | opus | xhigh | Read-only |
+| `cw-task-contract-reviewer` | Code against OpenAPI and AsyncAPI. | opus | high | Read-only |
+| `cw-task-security-auditor` | Tenant isolation, authorization, input, secrets, personal data. | opus | xhigh | Read-only |
+| `cw-task-observability-reviewer` | Logs, traces, metrics, health. | sonnet | high | Read-only |
+| `cw-task-performance-reviewer` | Queries, indexes, pagination, N+1. | sonnet | high | Read-only |
+| `cw-task-github-maintainer` | Workflows, templates and community files in .github/. | sonnet | medium | Assigned writes |
 
 ## Commands
 
 | Command | What it does | Runs |
 | --- | --- | --- |
-| `/wp-explore` | Map an existing module before changing it. | `wp-task-module-explorer` |
-| `/wp-module` | Create a new module skeleton with its MODULE.md. | `wp-task-module-builder` |
-| `/wp-domain` | Add or change a domain rule (pure TypeScript). | `wp-task-domain-builder` |
-| `/wp-usecase` | Add a use case (command or query). | `wp-task-usecase-builder` |
-| `/wp-endpoint` | Implement an internal route exactly as the contract defines it. | `wp-task-endpoint-builder` |
-| `/wp-event` | Publish or consume an event through the outbox. | `wp-task-event-builder` |
-| `/wp-persistence` | Implement a repository or a query. | `wp-task-persistence-builder` |
-| `/wp-migrate` | Write an expand/contract migration. | `wp-task-migration-builder` |
-| `/wp-tests` | Write unit, integration or contract tests. | `wp-task-test-writer` |
-| `/wp-deploy` | Change the Dockerfile, deploy/compose.yaml or environment variables. | `wp-task-deploy-maintainer` |
-| `/wp-arch-review` | Review layering, ownership and boundaries of the current change. | `wp-task-architecture-reviewer` |
-| `/wp-contract-review` | Compare routes and events with waypoint-api-contracts. | `wp-task-contract-reviewer` |
-| `/wp-security-review` | Audit tenant isolation, authorization and secrets. | `wp-task-security-auditor` |
-| `/wp-observability-review` | Review logs, traces, metrics and health checks. | `wp-task-observability-reviewer` |
-| `/wp-perf-review` | Review queries, indexes and pagination. | `wp-task-performance-reviewer` |
-| `/wp-github` | Change workflows, templates or community files in .github/. | `wp-task-github-maintainer` |
-| `/wp-quality` | Run the local quality gate, stopping at the first failure. | runs the commands itself |
+| `/cw-explore` | Map an existing module before changing it. | `cw-task-module-explorer` |
+| `/cw-module` | Create a new module skeleton with its MODULE.md. | `cw-task-module-builder` |
+| `/cw-domain` | Add or change a domain rule (pure TypeScript). | `cw-task-domain-builder` |
+| `/cw-usecase` | Add a use case (command or query). | `cw-task-usecase-builder` |
+| `/cw-endpoint` | Implement an internal route exactly as the contract defines it. | `cw-task-endpoint-builder` |
+| `/cw-event` | Publish or consume an event through the outbox. | `cw-task-event-builder` |
+| `/cw-persistence` | Implement a repository or a query. | `cw-task-persistence-builder` |
+| `/cw-migrate` | Write an expand/contract migration. | `cw-task-migration-builder` |
+| `/cw-tests` | Write unit, integration or contract tests. | `cw-task-test-writer` |
+| `/cw-deploy` | Change the Dockerfile, deploy/compose.yaml or environment variables. | `cw-task-deploy-maintainer` |
+| `/cw-arch-review` | Review layering, ownership and boundaries of the current change. | `cw-task-architecture-reviewer` |
+| `/cw-contract-review` | Compare routes and events with cadenway-api-contracts. | `cw-task-contract-reviewer` |
+| `/cw-security-review` | Audit tenant isolation, authorization and secrets. | `cw-task-security-auditor` |
+| `/cw-observability-review` | Review logs, traces, metrics and health checks. | `cw-task-observability-reviewer` |
+| `/cw-perf-review` | Review queries, indexes and pagination. | `cw-task-performance-reviewer` |
+| `/cw-github` | Change workflows, templates or community files in .github/. | `cw-task-github-maintainer` |
+| `/cw-quality` | Run the local quality gate, stopping at the first failure. | runs the commands itself |
 
 ## Rules
 
@@ -105,14 +105,14 @@ See [skills/](skills/) for the complete inventory, including the technology guid
 
 | Skill | Use |
 | --- | --- |
-| `wp-context` | What Waypoint is, where the mockup, the integration guide and the repository map live, the product vocabulary (spaces, lists, sprints, tasks, statuses, milestones) and the multi-repository ownership rules. |
-| `wp-task-domain` | The data, rules, events and screens waypoint-task-service owns, taken from the mockup, the integration guide and the repositories document. |
-| `wp-hexagonal-module-layout` | Where each kind of code goes in a module (domain, application, infrastructure, api), the naming of files and classes, and the dependency direction. |
-| `wp-outbox-and-events` | How to publish and consume events reliably with @waypoint/nest-messaging: outbox in the use case transaction, idempotent handlers, retries, dead letters, versioned names. |
-| `wp-contract-first` | The order in which a route or an event change travels: waypoint-api-contracts, then the producing service, then gateways and consumers, then the web app; and how to check the installed contract version. |
-| `wp-expand-contract-migrations` | How to change a database schema without breaking the running version: expand, dual-write, backfill, contract in a later release, and how to roll back. |
-| `wp-nest-testing` | How to write unit, integration and contract tests in a Waypoint NestJS service: Vitest, disposable PostgreSQL and NATS, mockup-based fixtures. |
-| `wp-module-md` | The canonical sections of a module MODULE.md and the changes that make updating it mandatory in the same change. |
+| `cw-context` | What Cadenway is, where the mockup, the integration guide and the repository map live, the product vocabulary (spaces, lists, sprints, tasks, statuses, milestones) and the multi-repository ownership rules. |
+| `cw-task-domain` | The data, rules, events and screens cadenway-task-service owns, taken from the mockup, the integration guide and the repositories document. |
+| `cw-hexagonal-module-layout` | Where each kind of code goes in a module (domain, application, infrastructure, api), the naming of files and classes, and the dependency direction. |
+| `cw-outbox-and-events` | How to publish and consume events reliably with @cadenway/nest-messaging: outbox in the use case transaction, idempotent handlers, retries, dead letters, versioned names. |
+| `cw-contract-first` | The order in which a route or an event change travels: cadenway-api-contracts, then the producing service, then gateways and consumers, then the web app; and how to check the installed contract version. |
+| `cw-expand-contract-migrations` | How to change a database schema without breaking the running version: expand, dual-write, backfill, contract in a later release, and how to roll back. |
+| `cw-nest-testing` | How to write unit, integration and contract tests in a Cadenway NestJS service: Vitest, disposable PostgreSQL and NATS, mockup-based fixtures. |
+| `cw-module-md` | The canonical sections of a module MODULE.md and the changes that make updating it mandatory in the same change. |
 
 ## Hooks
 

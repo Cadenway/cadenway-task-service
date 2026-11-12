@@ -1,4 +1,4 @@
-# waypoint-task-service: agent instructions
+# cadenway-task-service: agent instructions
 
 These instructions are mandatory for every AI assistant working in this repository, whatever the
 vendor. [CLAUDE.md](CLAUDE.md) imports them for Claude Code. Explicit user instructions take
@@ -10,8 +10,8 @@ and [Codex](.codex/README.md) for agents, skills, commands and hooks.
 ## First read
 
 - The `MODULE.md` of the module you touch, and `src/app.module.ts` for the module list.
-- `@waypoint/contracts` (installed) and `../waypoint-api-contracts`: `openapi/internal/task-service.yaml` and `asyncapi/task-service.yaml`.
-- The [repositories document](https://claude.ai/artifact/BPinmYxoF3mbK8w9BMB43N), section "waypoint-task-service", and the data model of the [integration guide](https://claude.ai/artifact/CpJHVCiFfF9j3KbHQ2S1Et).
+- `@cadenway/contracts` (installed) and `../cadenway-api-contracts`: `openapi/internal/task-service.yaml` and `asyncapi/task-service.yaml`.
+- The [repositories document](https://claude.ai/artifact/BPinmYxoF3mbK8w9BMB43N), section "cadenway-task-service", and the data model of the [integration guide](https://claude.ai/artifact/CpJHVCiFfF9j3KbHQ2S1Et).
 - The mockup screens this service serves: Every space view (list, board, calendar, Gantt, workload, sheet, intake form, activity, timesheet), the task detail and creation, Home, My tasks, Dashboards, Goals, Trash, Archives.
 - `package.json` for versions and scripts once the repository is bootstrapped. Do not restate
   versions elsewhere: a copy goes stale.
@@ -20,7 +20,7 @@ and [Codex](.codex/README.md) for agents, skills, commands and hooks.
 
 The structure and workflows below describe the bootstrap target. Check the checkout for available files and commands.
 
-waypoint-task-service owns the core of the product. NestJS, its own PostgreSQL database (one database and one user in the shared PostgreSQL of the VPS), events over NATS JetStream through `@waypoint/nest-messaging`, internal REST for the API gateway. Local port 3013.
+cadenway-task-service owns the core of the product. NestJS, its own PostgreSQL database (one database and one user in the shared PostgreSQL of the VPS), events over NATS JetStream through `@cadenway/nest-messaging`, internal REST for the API gateway. Local port 3013.
 
 |            |                                                                                                                                                                                                                                                                                                      |
 | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -45,21 +45,21 @@ At start-up this service also carries documents, attachments metadata and automa
 ## Architectural ownership
 
 - Business code lives in modules under `src/modules/<module>/`, each with `domain/`, `application/`, `infrastructure/`, `api/` and a `MODULE.md`.
-- Cross-cutting plumbing (config, logging, tracing, errors, auth guards, messaging) comes from the waypoint-service-kit packages (`@waypoint/nest-common`, `@waypoint/nest-messaging`, `@waypoint/nest-testing`), never re-implemented here.
+- Cross-cutting plumbing (config, logging, tracing, errors, auth guards, messaging) comes from the cadenway-service-kit packages (`@cadenway/nest-common`, `@cadenway/nest-messaging`, `@cadenway/nest-testing`), never re-implemented here.
 - The domain is pure; use cases own transactions; controllers and handlers translate.
 - Rendering of anything user-facing belongs to the webapp; this service returns data and stable error codes.
 
 ## Boundaries (hard rules)
 
-- No access to another service's database or internal code; cross-service needs use `@waypoint/contracts` routes or events.
-- NATS only through `@waypoint/nest-messaging`; config, logs, errors, health and auth guards through `@waypoint/nest-common`.
-- Routes and event payloads come from the installed `@waypoint/contracts`; never redefine them locally.
+- No access to another service's database or internal code; cross-service needs use `@cadenway/contracts` routes or events.
+- NATS only through `@cadenway/nest-messaging`; config, logs, errors, health and auth guards through `@cadenway/nest-common`.
+- Routes and event payloads come from the installed `@cadenway/contracts`; never redefine them locally.
 - The service is internal: no Traefik label, no public route; the API gateway is its only HTTP caller.
 - No sibling sources imported, no `file:` or `link:` dependency on a sibling.
 
 ## GitHub files (`.github/`)
 
-This repository carries everything GitHub reads from it; Waypoint has no organization `.github`
+This repository carries everything GitHub reads from it; Cadenway has no organization `.github`
 repository and nothing is inherited.
 
 - [`.github/README.md`](.github/README.md) is the repository home page; `CONTRIBUTING.md`,
@@ -93,11 +93,11 @@ run.
 
 - Trunk-based: work branches come from `main`, named `<type>/<lowercase-kebab-description>` with a
   type among `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`,
-  `revert`; put the Waypoint task id first when there is one (`feat/way-482-sso-screen`). Never an
+  `revert`; put the Cadenway task id first when there is one (`feat/cad-482-sso-screen`). Never an
   agent name as a prefix. Validate with `git check-ref-format --branch <name>`.
 - Commits and PR titles follow Conventional Commits: `type(scope): subject`, English, imperative,
   lowercase subject, no trailing period, at most 100 characters; `!` only for a breaking change.
-- Pull requests target `main` and are squash-merged after review and green CI. release-please opens the release pull request; its merge tags the version, publishes the image to GHCR, and the deploy workflow of this repository (`.github/workflows/deploy.yml`) writes the new version into waypoint-ops (staging, then production after approval).
+- Pull requests target `main` and are squash-merged after review and green CI. release-please opens the release pull request; its merge tags the version, publishes the image to GHCR, and the deploy workflow of this repository (`.github/workflows/deploy.yml`) writes the new version into cadenway-ops (staging, then production after approval).
 - Stage only the files of your task; preserve other people's changes in the working tree.
 
 ## Hard limits (never without the user's explicit request in this conversation)
@@ -106,11 +106,11 @@ run.
 - Never run a registry publish (`npm publish`, `pnpm publish`): this repository ships as a Docker image built by CI.
 - Never force-push, and never amend or rebase commits that are already pushed.
 - Never bypass the Git hooks (`--no-verify`, `core.hooksPath` overrides, `ALLOW_MAIN_PUSH=1`,
-  `WP_SKIP_PUSH_CHECKS=1`).
+  `CW_SKIP_PUSH_CHECKS=1`).
 - Never write a token, password or private key anywhere; `.npmrc` keeps `${NODE_AUTH_TOKEN}`. Do
   not read or write secret environment files; new variables are documented in `.env.example`.
 - Never edit generated trees (`dist/`, `node_modules/`, `coverage/`, generated clients) or lockfiles by hand.
-- Never modify a sibling checkout (`../waypoint-*`) from a task in this repository.
+- Never modify a sibling checkout (`../cadenway-*`) from a task in this repository.
 - Never write into another service's database, even for a "quick fix".
 - Never edit a merged migration.
 
@@ -120,11 +120,11 @@ not to find another way around it.
 ## Agent tooling
 
 - **Claude Code**: [CLAUDE.md](CLAUDE.md) and [.claude/README.md](.claude/README.md): the
-  `wp-task-*` agents, the `/wp-*` commands (`/wp-quality` runs the whole local gate),
+  `cw-task-*` agents, the `/cw-*` commands (`/cw-quality` runs the whole local gate),
   path-scoped rules and hooks.
-- **Codex**: [.codex/README.md](.codex/README.md) covers the specialists, `$wp-*` skills, rules and hooks.
-- **Builders** (assigned writes): `wp-task-module-builder`, `wp-task-domain-builder`, `wp-task-usecase-builder`, `wp-task-endpoint-builder`, `wp-task-event-builder`, `wp-task-persistence-builder`, `wp-task-migration-builder`, `wp-task-test-writer`, `wp-task-deploy-maintainer`, `wp-task-github-maintainer`.
-- **Reviewers** (read-only): `wp-task-module-explorer`, `wp-task-architecture-reviewer`, `wp-task-contract-reviewer`, `wp-task-security-auditor`, `wp-task-observability-reviewer`, `wp-task-performance-reviewer`.
+- **Codex**: [.codex/README.md](.codex/README.md) covers the specialists, `$cw-*` skills, rules and hooks.
+- **Builders** (assigned writes): `cw-task-module-builder`, `cw-task-domain-builder`, `cw-task-usecase-builder`, `cw-task-endpoint-builder`, `cw-task-event-builder`, `cw-task-persistence-builder`, `cw-task-migration-builder`, `cw-task-test-writer`, `cw-task-deploy-maintainer`, `cw-task-github-maintainer`.
+- **Reviewers** (read-only): `cw-task-module-explorer`, `cw-task-architecture-reviewer`, `cw-task-contract-reviewer`, `cw-task-security-auditor`, `cw-task-observability-reviewer`, `cw-task-performance-reviewer`.
 - Specialists are available, not mandatory. Delegate a bounded responsibility with explicit files and
   checks, assign disjoint files to parallel agents and integrate their results yourself.
 
