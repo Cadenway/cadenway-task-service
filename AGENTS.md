@@ -31,7 +31,7 @@ cadenway-task-service owns the core of the product. NestJS, its own PostgreSQL d
 | External   | None.                                                                                                                                                                                                                                                                                                |
 | Phase      | First version                                                                                                                                                                                                                                                                                        |
 
-At start-up this service also carries documents, attachments metadata and automation rules as modules; they are extracted later into their own repositories.
+Documents, attachments metadata and automation rules belong to cadenway-document-service, cadenway-storage-service and cadenway-automation-service from the start.
 
 ## Language
 
@@ -56,7 +56,7 @@ See the [Cadenway NestJS architecture reference](https://github.com/Cadenway/cad
 - No access to another service's database or internal code; cross-service needs use `@cadenway/contracts` routes or events.
 - NATS only through `@cadenway/nest-messaging`; config, logs, errors, health and auth guards through `@cadenway/nest-common`.
 - Routes and event payloads come from the installed `@cadenway/contracts`; never redefine them locally.
-- The service is internal: no Traefik label, no public route; the API gateway is its only HTTP caller.
+- The service is internal: no Traefik label, no public route. Its HTTP callers are the API gateway, the realtime gateway (access checks) and, for actions only, cadenway-automation-service and cadenway-integration-service.
 - No sibling sources imported, no `file:` or `link:` dependency on a sibling.
 
 ## GitHub files (`.github/`)
