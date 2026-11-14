@@ -35,7 +35,9 @@ The core of the product.
 
 ## Notes
 
-At start-up this service also carries documents, attachments metadata and automation rules as modules; they are extracted later into their own repositories.
+Documents, attachments metadata and automation rules belong to cadenway-document-service, cadenway-storage-service and cadenway-automation-service from the start.
+
+Decided: access grants on spaces and lists (edit, comment, view), access requests, favorites and the state of the onboarding assistant belong to this service. cadenway-automation-service and cadenway-integration-service call its API for actions only, with the source `automation` or `git` and their own internal token; the realtime gateway calls it to check access before a socket joins a list or task room. Estimates are stored in whole minutes.
 
 Everything above comes from the [repositories document](https://claude.ai/artifact/BPinmYxoF3mbK8w9BMB43N) and the
 [integration guide](https://claude.ai/artifact/CpJHVCiFfF9j3KbHQ2S1Et). If the mockup disagrees with this guide, update the guide and its source skill for both assistants.

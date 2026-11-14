@@ -11,7 +11,7 @@ cadenway-task-service owns the core of the product. NestJS, its own PostgreSQL d
 | External   | None.                                                                                                                                                                                                                                                                                                |
 | Phase      | First version                                                                                                                                                                                                                                                                                        |
 
-At start-up this service also carries documents, attachments metadata and automation rules as modules; they are extracted later into their own repositories.
+Documents, attachments metadata and automation rules belong to cadenway-document-service, cadenway-storage-service and cadenway-automation-service from the start.
 
 ## Getting started
 
