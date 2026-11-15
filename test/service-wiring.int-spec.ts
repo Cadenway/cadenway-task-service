@@ -512,6 +512,19 @@ describe('task-service wiring', () => {
     }
   });
 
+  it('keeps the application role out of the journal of the migrations', async () => {
+    const system = service().get(SystemTransactionRunner);
+
+    // A rewritten journal would make the next migration run apply migrations again.
+    await expect(
+      system.run((tx) => tx.client.query('delete from drizzle.__drizzle_migrations')),
+    ).rejects.toMatchObject({ code: '42501', message: 'permission denied for schema drizzle' });
+    const journal = await migrator.query<{ applied: number }>(
+      'select count(*)::int as applied from drizzle.__drizzle_migrations',
+    );
+    expect(journal.rows).toEqual([{ applied: 1 }]);
+  });
+
   it('runs the outbox relay from the start, and it stays healthy against an empty outbox', async () => {
     // One pass a second: three passes span two poll intervals after the first one.
     await vi.waitFor(
