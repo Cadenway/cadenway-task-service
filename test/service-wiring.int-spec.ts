@@ -246,7 +246,12 @@ describe('task-service wiring', () => {
     migrator = new pg.Pool({
       connectionString: `postgres://task_migrator:task_migrator@127.0.0.1:${postgresPort}/task`,
       max: 1,
+      // Kept open for the whole run, so the stop of PostgreSQL below always reaches it.
+      idleTimeoutMillis: 0,
     });
+    // The client is terminated (57P01) when a test stops PostgreSQL; the pool reports it as an
+    // `error` event, which would otherwise be an uncaught exception.
+    migrator.on('error', () => undefined);
 
     vi.stubEnv('PORT', '3013');
     vi.stubEnv('LOG_PRETTY', 'false');
