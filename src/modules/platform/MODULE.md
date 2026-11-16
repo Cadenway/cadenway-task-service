@@ -6,7 +6,7 @@ Gives the tables of the service kit their place in this service's own migrations
 `src/modules/*/infrastructure/persistence/drizzle/schemas/*/*.schema.ts` only. A kit table enters the migration history through a schema re-export in this module. It owns:
 
 - `outbox_events`, `processed_events` and `event_versions`, defined by
-  `@cadenway/nest-messaging/outbox`;
+  `@cadenway/nest-messaging/outbox/schema`;
 - `idempotency_keys`, defined by `@cadenway/nest-common/database`.
 
 It holds no business rule, no use case, no route and no handler, and never will: product data and
@@ -16,17 +16,18 @@ the kit, through `DatabaseModule`, `MessagingModule` and `OutboxModule` register
 
 ## Public entry points
 
-None. No module imports this one: the kit reads and writes the tables by name, through the
+None. The service composition calls `PlatformModule.forOutboxRelay()` to wire the readiness
+indicator in the dedicated process. The kit reads and writes the tables by name through the
 transaction runners.
 
 ## Owned tables
 
-| Table              | Defined by                        | Organization scoping                                                         |
-| ------------------ | --------------------------------- | ---------------------------------------------------------------------------- |
-| `outbox_events`    | `@cadenway/nest-messaging/outbox` | `organization_id`, null for an event outside any organization; policy forced |
-| `processed_events` | `@cadenway/nest-messaging/outbox` | None: consumer and event id only, no organization data, no policy            |
-| `event_versions`   | `@cadenway/nest-messaging/outbox` | `organization_id`, part of the unique key; policy forced                     |
-| `idempotency_keys` | `@cadenway/nest-common/database`  | `organization_id`, part of the unique key; policy forced                     |
+| Table              | Defined by                               | Organization scoping                                                         |
+| ------------------ | ---------------------------------------- | ---------------------------------------------------------------------------- |
+| `outbox_events`    | `@cadenway/nest-messaging/outbox/schema` | `organization_id`, null for an event outside any organization; policy forced |
+| `processed_events` | `@cadenway/nest-messaging/outbox/schema` | None: consumer and event id only, no organization data, no policy            |
+| `event_versions`   | `@cadenway/nest-messaging/outbox/schema` | `organization_id`, part of the unique key; policy forced                     |
+| `idempotency_keys` | `@cadenway/nest-common/database`         | `organization_id`, part of the unique key; policy forced                     |
 
 Created by `migrations/0000_platform_tables.sql`, owned by the migrator role `task_migrator`. The
 application role `task_app` reads and writes their rows and holds no DDL right on them.
@@ -42,14 +43,13 @@ the response of a route marked `@Idempotent()` in `idempotency_keys`; no route e
 
 ## Events emitted
 
-None. The outbox relay of `OutboxModule` publishes the rows the use cases of the business modules
-append with `OutboxWriter.append`; `@cadenway/contracts` defines no event of this service yet, so
-nothing is appended.
+None. The configured relay publishes the rows business use cases append with `OutboxWriter.append`.
+`@cadenway/contracts` defines no event of this service yet, so nothing is appended.
 
 ## Events consumed
 
 None. `processed_events` and `event_versions` record what the handlers of the business modules
-consumed, through the PostgreSQL deduplicator of `OutboxModule`; no handler exists yet.
+consumed through the PostgreSQL deduplicator. No handler exists yet.
 
 ## Invariants
 
@@ -64,9 +64,9 @@ consumed, through the PostgreSQL deduplicator of `OutboxModule`; no handler exis
 None of its own. The rows are written inside the units of work of others: an outbox row in the
 transaction of the use case that changes the data (tenant runner, or system runner for an event
 without organization), a processed id and a version in the transaction of the handler, an
-idempotency key in the transaction the interceptor opens for its route. The relay locks, publishes
-and marks pending rows in system transactions, and purges sent rows after 7 days and processed ids
-after 14.
+idempotency key in the transaction the interceptor opens for its route. The dedicated relay reserves
+and settles rows in short system transactions around publication. Both relay modes purge sent rows
+after 7 days and processed IDs after 14.
 
 ## Decisions
 

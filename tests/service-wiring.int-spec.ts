@@ -16,17 +16,19 @@ import type {
 } from '@cadenway/nest-common';
 import { SystemTransactionRunner, TenantTransactionRunner } from '@cadenway/nest-common/database';
 import { OutboxRelay } from '@cadenway/nest-messaging/outbox';
+import { LeasedOutboxRelay } from '@cadenway/nest-messaging/outbox/relay';
+import { OutboxWriter } from '@cadenway/nest-messaging/outbox/writer';
 import { Controller, Get, Injectable, Module } from '@nestjs/common';
 import type { BeforeApplicationShutdown } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import pg from 'pg';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { MockInstance } from 'vitest';
 
 import { AppModule, TaskOutboxRelayModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
 import { runtimeConfigSchema } from '../src/config/runtime-config.js';
+import { recoverOutboxLeases } from '../src/modules/platform/infrastructure/messaging/outbox/leases/outbox-lease-recovery.adapter.js';
 
 // The service as main.ts assembles it, on a disposable PostgreSQL and NATS. `@cadenway/nest-testing`
 // does not export its container fixtures yet and a service never depends on `testcontainers` itself,
@@ -211,7 +213,6 @@ describe('task-service wiring', () => {
   let app: NestExpressApplication | undefined;
   let signer: InternalTokenSigner;
   let migrator: pg.Pool;
-  let relayPasses: MockInstance<OutboxRelay['publishPending']>;
 
   /**
    * The running application.
@@ -267,10 +268,9 @@ describe('task-service wiring', () => {
       JSON.stringify({ 'api-gateway': [gateway.publicJwk] }),
     );
     // Every pass of the relay, from the first one, which starts with the application.
-    relayPasses = vi.spyOn(OutboxRelay.prototype, 'publishPending');
 
     @Module({
-      imports: [AppModule],
+      imports: [AppModule.forOutboxMode('legacy')],
       controllers: [WiringProbeController],
       providers: [ShutdownGate],
     })
@@ -302,7 +302,6 @@ describe('task-service wiring', () => {
       await app?.close();
       await migrator.end();
     } finally {
-      relayPasses.mockRestore();
       vi.unstubAllEnvs();
       compose('down', '--volumes', '--remove-orphans');
     }
@@ -572,33 +571,40 @@ describe('task-service wiring', () => {
     expect(journal.rows).toEqual([{ applied: 2 }]);
   });
 
-  it('runs the outbox relay from the start, and it stays healthy against an empty outbox', async () => {
-    // One pass a second: three passes span two poll intervals after the first one.
-    await vi.waitFor(
-      () => {
-        expect(
-          relayPasses.mock.settledResults.filter((result) => result.type !== 'incomplete').length,
-        ).toBeGreaterThanOrEqual(3);
-      },
-      { timeout: 10_000, interval: 100 },
+  it('publishes a pending event from the legacy relay on the expanded schema', async () => {
+    const system = service().get(SystemTransactionRunner);
+    const eventId = '01938f6e-0000-7000-8000-000000000011';
+    await system.run(({ client }) =>
+      client.query(
+        `insert into outbox_events (id, event_name, subject, stream, payload)
+         values ($1, 'task.wiring-probe.v1', 'evt.task.wiring-probe.v1', 'EVENTS',
+                 jsonb_build_object('id', $1::uuid, 'organizationId', null, 'occurredAt', now()))`,
+        [eventId],
+      ),
     );
-
-    const passes = relayPasses.mock.settledResults.filter((result) => result.type !== 'incomplete');
-    expect(passes).toEqual(
-      passes.map(() => ({
-        type: 'fulfilled',
-        value: { published: 0, failed: 0, interrupted: false },
-      })),
-    );
-    const response = await request(service().getHttpServer()).get('/health/ready');
-    expect(response.status).toBe(200);
+    try {
+      await vi.waitFor(
+        async () => {
+          const sent = await system.run(({ client }) =>
+            client.query('select status from outbox_events where id = $1', [eventId]),
+          );
+          expect(sent.rows).toEqual([{ status: 'sent' }]);
+        },
+        { timeout: 10_000, interval: 100 },
+      );
+      expect((await request(service().getHttpServer()).get('/health/ready')).status).toBe(200);
+    } finally {
+      await system.run(({ client }) =>
+        client.query('delete from outbox_events where id = $1', [eventId]),
+      );
+    }
   });
 
   it('serves readiness in dedicated mode without starting the inline relay', async () => {
-    vi.stubEnv('TASK_SERVICE_OUTBOX_MODE', 'dedicated');
-    try {
-      const config = loadConfig(appConfigSchema);
-      const writer: NestExpressApplication = await createApplication(AppModule, {
+    const config = loadConfig(appConfigSchema);
+    const writer: NestExpressApplication = await createApplication(
+      AppModule.forOutboxMode('dedicated'),
+      {
         service: 'task-service',
         config,
         internalToken: {
@@ -608,53 +614,131 @@ describe('task-service wiring', () => {
           },
         },
         logDestination: { write: (): void => undefined },
-      });
-      const inline = writer.get(OutboxRelay);
-      const onWriter = vi.fn(inline.publishPending.bind(inline));
-      inline.publishPending = onWriter;
-      try {
-        await writer.init();
-        const start = performance.now();
-        await vi.waitFor(
-          () => {
-            expect(performance.now() - start).toBeGreaterThan(1_100);
-          },
-          { interval: 100, timeout: 2_000 },
-        );
-        expect(onWriter).not.toHaveBeenCalled();
-        expect((await request(writer.getHttpServer()).get('/health/ready')).status).toBe(200);
-      } finally {
-        await writer.close();
-      }
+      },
+    );
+    try {
+      await writer.init();
+      expect(writer.get(OutboxWriter)).toBeInstanceOf(OutboxWriter);
+      expect(() => writer.get(OutboxRelay)).toThrow();
+      expect(() => writer.get(LeasedOutboxRelay)).toThrow();
+      expect((await request(writer.getHttpServer()).get('/health/ready')).status).toBe(200);
     } finally {
-      vi.stubEnv('TASK_SERVICE_OUTBOX_MODE', 'legacy');
+      await writer.close();
     }
   });
 
-  it('starts the standalone relay with its health endpoints and no application routes', async () => {
+  it('recovers and publishes an expired reservation from the standalone relay', async () => {
+    const system = service().get(SystemTransactionRunner);
+    const eventId = '01938f6e-0000-7000-8000-000000000001';
+    await system.run(({ client }) =>
+      client.query(
+        `insert into outbox_events
+           (id, event_name, subject, stream, payload, status, lease_token, lease_expires_at)
+         values ($1, 'task.wiring-probe.v1', 'evt.task.wiring-probe.v1', 'EVENTS',
+                 jsonb_build_object('id', $1::uuid, 'organizationId', null, 'occurredAt', now()), 'leased', uuidv7(), now() - interval '1 second')`,
+        [eventId],
+      ),
+    );
     const relay: NestExpressApplication = await createApplication(TaskOutboxRelayModule, {
       service: 'task-service-relay',
       config: loadConfig(runtimeConfigSchema),
       internalTokenVerification: 'off',
       logDestination: { write: (): void => undefined },
     });
-    const publisher = relay.get(OutboxRelay);
-    const passes = vi.fn(publisher.publishPending.bind(publisher));
-    publisher.publishPending = passes;
     try {
       await relay.init();
-      await vi.waitFor(() => {
-        expect(passes.mock.settledResults).toContainEqual({
-          type: 'fulfilled',
-          value: { published: 0, failed: 0, interrupted: false },
-        });
-      });
+      expect(relay.get(LeasedOutboxRelay)).toBeInstanceOf(LeasedOutboxRelay);
+      expect(() => relay.get(OutboxWriter)).toThrow();
+      await vi.waitFor(
+        async () => {
+          const sent = await system.run(({ client }) =>
+            client.query(
+              'select status, lease_token, lease_expires_at from outbox_events where id = $1',
+              [eventId],
+            ),
+          );
+          expect(sent.rows).toEqual([
+            { status: 'sent', lease_token: null, lease_expires_at: null },
+          ]);
+        },
+        { timeout: 5_000, interval: 100 },
+      );
       expect((await request(relay.getHttpServer()).get('/health/ready')).status).toBe(200);
       expect((await request(relay.getHttpServer()).get('/internal/v1/wiring-probe')).status).toBe(
         404,
       );
     } finally {
       await relay.close();
+      await system.run(({ client }) =>
+        client.query('delete from outbox_events where id = $1', [eventId]),
+      );
+    }
+  });
+
+  it('reports the companion unready when the application role cannot settle reservations', async () => {
+    const relay = await createApplication(TaskOutboxRelayModule, {
+      service: 'task-service-relay',
+      config: loadConfig(runtimeConfigSchema),
+      internalTokenVerification: 'off',
+      logDestination: { write: (): void => undefined },
+    });
+    try {
+      await relay.init();
+      expect((await request(relay.getHttpServer()).get('/health/ready')).status).toBe(200);
+      await migrator.query('revoke update on outbox_events from task_app');
+      try {
+        const response = await request(relay.getHttpServer()).get('/health/ready');
+        expect(response.status).toBe(503);
+        expect(response.body).toMatchObject({ error: { 'outbox-relay': { status: 'down' } } });
+      } finally {
+        await migrator.query('grant update on outbox_events to task_app');
+      }
+      expect((await request(relay.getHttpServer()).get('/health/ready')).status).toBe(200);
+    } finally {
+      await relay.close();
+    }
+  });
+
+  it('recovers expired reservations for rollback and refuses clearance while a lease remains', async () => {
+    const system = service().get(SystemTransactionRunner);
+    const eventId = '01938f6e-0000-7000-8000-000000000002';
+    await system.run(({ client }) =>
+      client.query(
+        `insert into outbox_events
+           (id, event_name, subject, stream, payload, status, lease_token, lease_expires_at, next_attempt_at)
+         values ($1, 'task.wiring-probe.v1', 'evt.task.wiring-probe.v1', 'EVENTS',
+                 '{}', 'leased', uuidv7(), now() + interval '1 minute', now() + interval '1 day')`,
+        [eventId],
+      ),
+    );
+    try {
+      await expect(recoverOutboxLeases(system)).resolves.toEqual({
+        released: 0,
+        leasesRemain: true,
+      });
+      await system.run(({ client }) =>
+        client.query(
+          "update outbox_events set lease_expires_at = now() - interval '1 second' where id = $1",
+          [eventId],
+        ),
+      );
+      await expect(recoverOutboxLeases(system)).resolves.toEqual({
+        released: 1,
+        leasesRemain: false,
+      });
+      const recovered = await system.run(({ client }) =>
+        client.query(
+          'select status, lease_token, lease_expires_at from outbox_events where id = $1',
+          [eventId],
+        ),
+      );
+      expect(recovered.rows).toEqual([
+        { status: 'pending', lease_token: null, lease_expires_at: null },
+      ]);
+    } finally {
+      await system.run(({ client }) =>
+        client.query('delete from outbox_events where id = $1', [eventId]),
+      );
     }
   });
 

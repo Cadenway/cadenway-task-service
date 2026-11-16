@@ -133,7 +133,7 @@ version; it connects as the migrator role of `MIGRATION_DATABASE_URL` and applie
 does not list yet.
 
 The tables of the service kit reach the migrations through the platform module: the outbox,
-processed-ids and versions tables of `@cadenway/nest-messaging/outbox` and `idempotency_keys` of
+processed-ids and versions tables of `@cadenway/nest-messaging/outbox/schema` and `idempotency_keys` of
 `@cadenway/nest-common/database` are re-exported from
 `src/modules/platform/infrastructure/persistence/`. A kit version that changes one ships a note
 in its changeset: upgrade the package, generate, review the new migration.
@@ -149,14 +149,28 @@ the expected definition. Keep the expanded schema in place during a rollback.
 `TASK_SERVICE_OUTBOX_MODE=legacy` keeps the relay in the API process and is the default.
 `dedicated` leaves the API writing to the outbox while a separate relay publishes it.
 The companion uses the same image and selects `TASK_SERVICE_ROLE=outbox-relay`. Its only
-listener serves readiness on loopback. The companion runs with the legacy relay until the
-lease relay entry point is published, and `TASK_SERVICE_RELAY_REPLICAS` defaults to zero.
-On staging, switch the API only when a companion release capable of using the expanded
-schema and the companion-aware GitOps agent are ready. Wait for every old API container
-to stop before enabling the companion.
-To return to legacy mode, stop the companion, let its reservations expire and use the
-published kit's recovery operation to release them. Check that no rows remain `leased`
-before enabling the legacy relay. Its query selects only `pending` rows.
+listener serves readiness on loopback and checks the lease schema and the application role's
+permissions. The relay allows four concurrent publications per replica and its pool caps
+connections at four. `TASK_SERVICE_RELAY_REPLICAS` defaults to zero.
+
+In staging, deploy the expanded schema with the release in legacy mode. With the
+companion-aware GitOps agent running, switch the API to `dedicated` while leaving replicas at
+zero. Wait for all old API containers to stop, then enable the companion.
+
+To roll back, set `TASK_SERVICE_RELAY_REPLICAS=0` and leave the API in `dedicated` mode.
+After GitOps has stopped all relay replicas, run this command inside a running Task API
+container of the expanded release:
+
+```sh
+docker exec <task-api-container> node \
+  dist/modules/platform/infrastructure/adapters/postgres/recover-outbox-leases.js
+```
+
+The command uses the container's application database role. It releases only expired
+reservations, up to twenty batches of one hundred, and prints `released` and `leasesRemain`.
+If the exit status is nonzero, wait for live reservations to expire or rerun for the next
+batches. Switch the owner back to `legacy` only after exit code 0 and `"leasesRemain":false`.
+Keep the expanded schema in place. The legacy relay selects pending rows.
 
 ### Integration tests
 

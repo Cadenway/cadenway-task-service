@@ -1,19 +1,23 @@
 import { CONFIG, ConfigModule, HealthModule, postgresIndicator } from '@cadenway/nest-common';
-import type { PostgresProbe } from '@cadenway/nest-common';
+import type { HealthIndicator, PostgresProbe } from '@cadenway/nest-common';
 import { DATABASE_POOL, DatabaseModule } from '@cadenway/nest-common/database';
 import {
   MessagingConnection,
   MessagingModule,
   messagingHealthIndicator,
 } from '@cadenway/nest-messaging';
+import { PostgresEventDeduplicationModule } from '@cadenway/nest-messaging/consumer/postgres';
 import { OutboxModule } from '@cadenway/nest-messaging/outbox';
+import { OutboxRelayModule } from '@cadenway/nest-messaging/outbox/relay';
+import { OutboxWriterModule } from '@cadenway/nest-messaging/outbox/writer';
 import { Module } from '@nestjs/common';
+import type { DynamicModule, ModuleMetadata } from '@nestjs/common';
 
 import { appConfigSchema } from './config/app-config.js';
 import type { AppConfig } from './config/app-config.js';
 import { runtimeConfigSchema } from './config/runtime-config.js';
 import type { RuntimeConfig } from './config/runtime-config.js';
-import { PlatformModule } from './modules/platform/platform.module.js';
+import { OUTBOX_RELAY_HEALTH, PlatformModule } from './modules/platform/platform.module.js';
 
 /** Messaging wiring shared by the API and the relay under the same service identity. */
 const messaging = MessagingModule.forRootAsync({
@@ -28,14 +32,33 @@ const messaging = MessagingModule.forRootAsync({
   }),
 });
 
-/** Both processes report their own database and broker connectivity. */
-const health = HealthModule.forRootAsync({
+const apiHealth = HealthModule.forRootAsync({
   inject: [DATABASE_POOL, MessagingConnection],
   useFactory: (pool: PostgresProbe, connection: MessagingConnection) => ({
     indicators: [postgresIndicator(pool), messagingHealthIndicator(connection)],
     shutdownDelayMs: 0,
   }),
 });
+
+function apiImports(
+  ...outbox: NonNullable<ModuleMetadata['imports']>
+): NonNullable<ModuleMetadata['imports']> {
+  return [
+    ConfigModule.forRoot({ schema: appConfigSchema, eager: false }),
+    DatabaseModule.forRootAsync({
+      inject: [CONFIG],
+      useFactory: (config: AppConfig) => ({
+        connectionString: config.DATABASE_URL,
+        applicationName: 'task-service',
+        idempotency: true,
+      }),
+    }),
+    messaging,
+    ...outbox,
+    apiHealth,
+    PlatformModule,
+  ];
+}
 
 /**
  * Class AppModule
@@ -57,8 +80,8 @@ const health = HealthModule.forRootAsync({
  *   `EVENTS` stream exists: cadenway-ops creates the streams (`manageStreams: false`), and only
  *   notification-service runs the dead-letter worker. The service publishes and consumes nothing
  *   yet, since `@cadenway/contracts` defines no event of its own.
- * - `OutboxModule`: the outbox writer and PostgreSQL deduplicator. In legacy mode it also runs
- *   the relay in every API replica; `for update skip locked` coordinates concurrent passes.
+ * - In legacy mode, `OutboxModule` runs the relay in every API replica. In dedicated mode,
+ *   this process only installs the outbox writer and PostgreSQL deduplicator.
  * - `HealthModule`: `GET /health/live` answers as soon as the process runs; `GET /health/ready`
  *   answers 503 while PostgreSQL or NATS does not answer within 1 second, and from the start of a
  *   shutdown. Both routes are exempt from the internal token, every other route requires it.
@@ -72,27 +95,21 @@ const health = HealthModule.forRootAsync({
  *
  * Business modules under `src/modules/` are registered here as they are created.
  */
-@Module({
-  imports: [
-    ConfigModule.forRoot({ schema: appConfigSchema, eager: false }),
-    DatabaseModule.forRootAsync({
-      inject: [CONFIG],
-      useFactory: (config: AppConfig) => ({
-        connectionString: config.DATABASE_URL,
-        applicationName: 'task-service',
-        idempotency: true,
-      }),
-    }),
-    messaging,
-    OutboxModule.forRootAsync({
-      inject: [CONFIG],
-      useFactory: (config: AppConfig) => ({ relay: config.TASK_SERVICE_OUTBOX_MODE === 'legacy' }),
-    }),
-    health,
-    PlatformModule,
-  ],
-})
-export class AppModule {}
+@Module({})
+export class AppModule {
+  // #region Methods
+  /** Configures the HTTP process with the requested outbox topology. */
+  public static forOutboxMode(mode: AppConfig['TASK_SERVICE_OUTBOX_MODE']): DynamicModule {
+    return {
+      module: AppModule,
+      imports:
+        mode === 'legacy'
+          ? apiImports(OutboxModule.forRoot())
+          : apiImports(OutboxWriterModule.forRoot(), PostgresEventDeduplicationModule),
+    };
+  }
+  // #endregion
+}
 
 /** The standalone relay, with no application controllers and only loopback probes. */
 @Module({
@@ -103,11 +120,23 @@ export class AppModule {}
       useFactory: (config: RuntimeConfig) => ({
         connectionString: config.DATABASE_URL,
         applicationName: 'task-service-relay',
+        poolSize: 4,
       }),
     }),
     messaging,
-    OutboxModule.forRoot(),
-    health,
+    OutboxRelayModule.forRoot({ shutdownTimeoutMs: 8_000 }),
+    HealthModule.forRootAsync({
+      imports: [PlatformModule.forOutboxRelay()],
+      inject: [DATABASE_POOL, MessagingConnection, OUTBOX_RELAY_HEALTH],
+      useFactory: (
+        pool: PostgresProbe,
+        connection: MessagingConnection,
+        leases: HealthIndicator,
+      ) => ({
+        indicators: [postgresIndicator(pool), messagingHealthIndicator(connection), leases],
+        shutdownDelayMs: 0,
+      }),
+    }),
   ],
 })
 export class TaskOutboxRelayModule {}

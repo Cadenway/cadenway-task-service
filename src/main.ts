@@ -27,15 +27,18 @@ await runApplication({ service: 'task-service' }, async (): Promise<void> => {
   }
 
   const config: Readonly<AppConfig> = loadConfig(appConfigSchema);
-  const app: NestExpressApplication = await createApplication(AppModule, {
-    service: 'task-service',
-    config,
-    internalToken: {
-      verifier: {
-        audience: config.INTERNAL_TOKEN_AUDIENCE,
-        trustedIssuers: config.INTERNAL_TOKEN_TRUSTED_ISSUERS,
+  const app: NestExpressApplication = await createApplication(
+    AppModule.forOutboxMode(config.TASK_SERVICE_OUTBOX_MODE),
+    {
+      service: 'task-service',
+      config,
+      internalToken: {
+        verifier: {
+          audience: config.INTERNAL_TOKEN_AUDIENCE,
+          trustedIssuers: config.INTERNAL_TOKEN_TRUSTED_ISSUERS,
+        },
       },
     },
-  });
+  );
   await app.listen(config.PORT);
 });

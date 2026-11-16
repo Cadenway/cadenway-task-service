@@ -1,18 +1,30 @@
+import type { PostgresProbe } from '@cadenway/nest-common';
+import { DATABASE_POOL } from '@cadenway/nest-common/database';
 import { Module } from '@nestjs/common';
+import type { DynamicModule } from '@nestjs/common';
 
-/**
- * Class PlatformModule
- *
- * @description
- * Owner, inside this service, of the tables the service kit stores in the service's own database:
- * the outbox, processed-ids and versions tables of `@cadenway/nest-messaging/outbox` and the
- * `Idempotency-Key` table of `@cadenway/nest-common/database`. Its persistence layer re-exports them
- * so that drizzle-kit, which reads `src/modules/<module>/infrastructure/persistence/*.schema.ts`
- * only, writes them into the migrations of the service.
- *
- * It declares no provider, controller or handler and holds no business rule: what reads and writes
- * the tables is the kit, through `DatabaseModule`, `MessagingModule` and `OutboxModule`, registered
- * in `AppModule`. See its `MODULE.md`.
- */
+import { outboxRelayIndicator } from './infrastructure/messaging/outbox/leases/outbox-lease-readiness.adapter.js';
+
+/** Readiness indicator required by the dedicated outbox relay. */
+export const OUTBOX_RELAY_HEALTH: unique symbol = Symbol('OUTBOX_RELAY_HEALTH');
+
+/** Owns the service-kit tables in Task's migrations and the lease readiness check. */
 @Module({})
-export class PlatformModule {}
+export class PlatformModule {
+  // #region Methods
+  /** Registers the lease readiness indicator only in the dedicated process. */
+  public static forOutboxRelay(): DynamicModule {
+    return {
+      module: PlatformModule,
+      providers: [
+        {
+          provide: OUTBOX_RELAY_HEALTH,
+          inject: [DATABASE_POOL],
+          useFactory: (pool: PostgresProbe) => outboxRelayIndicator(pool),
+        },
+      ],
+      exports: [OUTBOX_RELAY_HEALTH],
+    };
+  }
+  // #endregion
+}
