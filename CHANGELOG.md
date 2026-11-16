@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/Cadenway/cadenway-task-service/compare/v0.2.0...v0.3.0) (2026-11-16)
+
+
+### Features
+
+* wire messaging and the outbox onto nest-common 0.3.0 ([#19](https://github.com/Cadenway/cadenway-task-service/issues/19)) ([0d9fdc3](https://github.com/Cadenway/cadenway-task-service/commit/0d9fdc3313690a0cdaa5343e6006e5ee4d157229))
+
+
+### Bug Fixes
+
+* **deploy:** keep the migrator url out of the running service ([#22](https://github.com/Cadenway/cadenway-task-service/issues/22)) ([c560ed2](https://github.com/Cadenway/cadenway-task-service/commit/c560ed2ee645d9ea0093437c8545fb805ff44d16))
+* **dev:** keep the application role out of the drizzle schema ([#21](https://github.com/Cadenway/cadenway-task-service/issues/21)) ([039422d](https://github.com/Cadenway/cadenway-task-service/commit/039422d84b03293bd631b13706eda2f78a6c4c08))
+
 ## [0.2.0](https://github.com/Cadenway/cadenway-task-service/compare/v0.1.0...v0.2.0) (2026-11-15)
 
 
