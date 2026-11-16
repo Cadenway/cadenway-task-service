@@ -24,8 +24,9 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
 
-import { AppModule } from '../src/app.module.js';
+import { AppModule, TaskOutboxRelayModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
+import { runtimeConfigSchema } from '../src/config/runtime-config.js';
 
 // The service as main.ts assembles it, on a disposable PostgreSQL and NATS. `@cadenway/nest-testing`
 // does not export its container fixtures yet and a service never depends on `testcontainers` itself,
@@ -254,6 +255,7 @@ describe('task-service wiring', () => {
     migrator.on('error', () => undefined);
 
     vi.stubEnv('PORT', '3013');
+    vi.stubEnv('TASK_SERVICE_OUTBOX_MODE', 'legacy');
     vi.stubEnv('LOG_PRETTY', 'false');
     vi.stubEnv('DATABASE_URL', `postgres://task_app:task_app@127.0.0.1:${postgresPort}/task`);
     vi.stubEnv('NATS_URL', `nats://127.0.0.1:${natsHostPort}`);
@@ -317,7 +319,7 @@ describe('task-service wiring', () => {
     expect(tables.rows).toEqual(
       platformTables.map((tablename) => ({ tablename, tableowner: 'task_migrator' })),
     );
-    expect(journal.rows).toEqual([{ applied: 1 }]);
+    expect(journal.rows).toEqual([{ applied: 2 }]);
   });
 
   it('applies nothing when the migrator runs again', async () => {
@@ -326,7 +328,52 @@ describe('task-service wiring', () => {
     const journal = await migrator.query<{ applied: number }>(
       'select count(*)::int as applied from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows).toEqual([{ applied: 1 }]);
+    expect(journal.rows).toEqual([{ applied: 2 }]);
+  });
+
+  it('validates the lease checks and builds the index for expired reservations', async () => {
+    const checks = await migrator.query<{ conname: string; convalidated: boolean }>(
+      `select conname, convalidated from pg_constraint
+       where conrelid = 'outbox_events'::regclass and conname in
+         ('outbox_events_status_check', 'outbox_events_lease_check')
+       order by conname`,
+    );
+    const expiration = await migrator.query<{ indisvalid: boolean; predicate: string }>(
+      `select indisvalid, pg_get_expr(indpred, indrelid) as predicate from pg_index
+       where indexrelid = 'outbox_events_lease_expiry_index'::regclass`,
+    );
+
+    expect(checks.rows).toEqual([
+      { conname: 'outbox_events_lease_check', convalidated: true },
+      { conname: 'outbox_events_status_check', convalidated: true },
+    ]);
+    expect(expiration.rows).toEqual([{ indisvalid: true, predicate: "(status = 'leased'::text)" }]);
+  });
+
+  it('keeps a leased row invisible to the legacy relay and requires clearing its metadata', async () => {
+    const system = service().get(SystemTransactionRunner);
+    const event = await system.run((tx) =>
+      tx.client.query(
+        `insert into outbox_events
+        (id, event_name, subject, stream, payload, status, lease_token, lease_expires_at)
+       values (uuidv7(), 'task.wiring-probe.v1', 'evt.task.wiring-probe.v1', 'EVENTS',
+               '{}', 'leased', uuidv7(), now()) returning id`,
+      ),
+    );
+    const id: unknown = (event.rows[0] as { id: unknown }).id;
+    try {
+      await expect(service().get(OutboxRelay).publishPending()).resolves.toMatchObject({
+        published: 0,
+        failed: 0,
+      });
+      await expect(
+        system.run((tx) =>
+          tx.client.query("update outbox_events set status = 'pending' where id = $1", [id]),
+        ),
+      ).rejects.toMatchObject({ code: '23514', constraint: 'outbox_events_lease_check' });
+    } finally {
+      await system.run((tx) => tx.client.query('delete from outbox_events where id = $1', [id]));
+    }
   });
 
   it('forces row-level security on the tables that carry an organization', async () => {
@@ -522,7 +569,7 @@ describe('task-service wiring', () => {
     const journal = await migrator.query<{ applied: number }>(
       'select count(*)::int as applied from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows).toEqual([{ applied: 1 }]);
+    expect(journal.rows).toEqual([{ applied: 2 }]);
   });
 
   it('runs the outbox relay from the start, and it stays healthy against an empty outbox', async () => {
@@ -545,6 +592,70 @@ describe('task-service wiring', () => {
     );
     const response = await request(service().getHttpServer()).get('/health/ready');
     expect(response.status).toBe(200);
+  });
+
+  it('serves readiness in dedicated mode without starting the inline relay', async () => {
+    vi.stubEnv('TASK_SERVICE_OUTBOX_MODE', 'dedicated');
+    try {
+      const config = loadConfig(appConfigSchema);
+      const writer: NestExpressApplication = await createApplication(AppModule, {
+        service: 'task-service',
+        config,
+        internalToken: {
+          verifier: {
+            audience: config.INTERNAL_TOKEN_AUDIENCE,
+            trustedIssuers: config.INTERNAL_TOKEN_TRUSTED_ISSUERS,
+          },
+        },
+        logDestination: { write: (): void => undefined },
+      });
+      const inline = writer.get(OutboxRelay);
+      const onWriter = vi.fn(inline.publishPending.bind(inline));
+      inline.publishPending = onWriter;
+      try {
+        await writer.init();
+        const start = performance.now();
+        await vi.waitFor(
+          () => {
+            expect(performance.now() - start).toBeGreaterThan(1_100);
+          },
+          { interval: 100, timeout: 2_000 },
+        );
+        expect(onWriter).not.toHaveBeenCalled();
+        expect((await request(writer.getHttpServer()).get('/health/ready')).status).toBe(200);
+      } finally {
+        await writer.close();
+      }
+    } finally {
+      vi.stubEnv('TASK_SERVICE_OUTBOX_MODE', 'legacy');
+    }
+  });
+
+  it('starts the standalone relay with its health endpoints and no application routes', async () => {
+    const relay: NestExpressApplication = await createApplication(TaskOutboxRelayModule, {
+      service: 'task-service-relay',
+      config: loadConfig(runtimeConfigSchema),
+      internalTokenVerification: 'off',
+      logDestination: { write: (): void => undefined },
+    });
+    const publisher = relay.get(OutboxRelay);
+    const passes = vi.fn(publisher.publishPending.bind(publisher));
+    publisher.publishPending = passes;
+    try {
+      await relay.init();
+      await vi.waitFor(() => {
+        expect(passes.mock.settledResults).toContainEqual({
+          type: 'fulfilled',
+          value: { published: 0, failed: 0, interrupted: false },
+        });
+      });
+      expect((await request(relay.getHttpServer()).get('/health/ready')).status).toBe(200);
+      expect((await request(relay.getHttpServer()).get('/internal/v1/wiring-probe')).status).toBe(
+        404,
+      );
+    } finally {
+      await relay.close();
+    }
   });
 
   it('runs against a broker that enforces the permissions of cadenway-ops', () => {

@@ -1,10 +1,9 @@
-import { baseConfigShape, internalTokenVerifierConfigShape } from '@cadenway/nest-common';
-import type { BaseConfig, InternalTokenVerifierConfig } from '@cadenway/nest-common';
-import { databaseConfigShape } from '@cadenway/nest-common/database';
-import type { DatabaseConfig } from '@cadenway/nest-common/database';
-import { messagingConfigShape } from '@cadenway/nest-messaging';
-import type { MessagingConfig } from '@cadenway/nest-messaging';
+import { internalTokenVerifierConfigShape } from '@cadenway/nest-common';
+import type { InternalTokenVerifierConfig } from '@cadenway/nest-common';
 import { z } from 'zod';
+
+import { runtimeConfigSchema } from './runtime-config.js';
+import type { RuntimeConfig } from './runtime-config.js';
 
 /**
  * Type AppConfig
@@ -24,12 +23,15 @@ import { z } from 'zod';
  *   them.
  * - `INTERNAL_TOKEN_AUDIENCE` and `INTERNAL_TOKEN_TRUSTED_ISSUERS`: the `aud` this service accepts
  *   and the public keys of the backends allowed to call it.
+ * - `TASK_SERVICE_OUTBOX_MODE`: `legacy` runs the relay in the API process. In `dedicated` mode
+ *   the API writes to the outbox and publication is handled by the companion process.
  *
  * `OTEL_EXPORTER_OTLP_ENDPOINT` is read by `telemetry.ts`, before the application exists.
  *
- * @type {BaseConfig & DatabaseConfig & MessagingConfig & InternalTokenVerifierConfig}
+ * @type {RuntimeConfig & InternalTokenVerifierConfig & { readonly TASK_SERVICE_OUTBOX_MODE: 'legacy' | 'dedicated' }}
  */
-export type AppConfig = BaseConfig & DatabaseConfig & MessagingConfig & InternalTokenVerifierConfig;
+export type AppConfig = RuntimeConfig &
+  InternalTokenVerifierConfig & { readonly TASK_SERVICE_OUTBOX_MODE: 'legacy' | 'dedicated' };
 
 /**
  * Constant appConfigSchema
@@ -42,11 +44,9 @@ export type AppConfig = BaseConfig & DatabaseConfig & MessagingConfig & Internal
  *
  * @type {z.ZodType<AppConfig>}
  */
-export const appConfigSchema: z.ZodType<AppConfig> = z.object({
-  ...baseConfigShape,
-  ...databaseConfigShape,
-  ...messagingConfigShape,
+export const appConfigSchema: z.ZodType<AppConfig> = runtimeConfigSchema.extend({
   ...internalTokenVerifierConfigShape,
+  TASK_SERVICE_OUTBOX_MODE: z.enum(['legacy', 'dedicated']).default('legacy'),
 });
 
 /**

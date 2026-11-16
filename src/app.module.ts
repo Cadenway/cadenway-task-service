@@ -11,7 +11,31 @@ import { Module } from '@nestjs/common';
 
 import { appConfigSchema } from './config/app-config.js';
 import type { AppConfig } from './config/app-config.js';
+import { runtimeConfigSchema } from './config/runtime-config.js';
+import type { RuntimeConfig } from './config/runtime-config.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
+
+/** Messaging wiring shared by the API and the relay under the same service identity. */
+const messaging = MessagingModule.forRootAsync({
+  inject: [CONFIG],
+  useFactory: (config: RuntimeConfig) => ({
+    service: 'task-service',
+    servers: config.NATS_URL,
+    user: config.NATS_USER,
+    password: config.NATS_PASSWORD,
+    manageStreams: false,
+    deadLetterWorker: false,
+  }),
+});
+
+/** Both processes report their own database and broker connectivity. */
+const health = HealthModule.forRootAsync({
+  inject: [DATABASE_POOL, MessagingConnection],
+  useFactory: (pool: PostgresProbe, connection: MessagingConnection) => ({
+    indicators: [postgresIndicator(pool), messagingHealthIndicator(connection)],
+    shutdownDelayMs: 0,
+  }),
+});
 
 /**
  * Class AppModule
@@ -33,9 +57,8 @@ import { PlatformModule } from './modules/platform/platform.module.js';
  *   `EVENTS` stream exists: cadenway-ops creates the streams (`manageStreams: false`), and only
  *   notification-service runs the dead-letter worker. The service publishes and consumes nothing
  *   yet, since `@cadenway/contracts` defines no event of its own.
- * - `OutboxModule`: the outbox writer, the PostgreSQL deduplicator and the relay, which polls
- *   `outbox_events` every second in a system transaction and publishes the pending rows. It runs in
- *   every replica; `for update skip locked` keeps two of them from publishing the same row.
+ * - `OutboxModule`: the outbox writer and PostgreSQL deduplicator. In legacy mode it also runs
+ *   the relay in every API replica; `for update skip locked` coordinates concurrent passes.
  * - `HealthModule`: `GET /health/live` answers as soon as the process runs; `GET /health/ready`
  *   answers 503 while PostgreSQL or NATS does not answer within 1 second, and from the start of a
  *   shutdown. Both routes are exempt from the internal token, every other route requires it.
@@ -60,26 +83,31 @@ import { PlatformModule } from './modules/platform/platform.module.js';
         idempotency: true,
       }),
     }),
-    MessagingModule.forRootAsync({
+    messaging,
+    OutboxModule.forRootAsync({
       inject: [CONFIG],
-      useFactory: (config: AppConfig) => ({
-        service: 'task-service',
-        servers: config.NATS_URL,
-        user: config.NATS_USER,
-        password: config.NATS_PASSWORD,
-        manageStreams: false,
-        deadLetterWorker: false,
-      }),
+      useFactory: (config: AppConfig) => ({ relay: config.TASK_SERVICE_OUTBOX_MODE === 'legacy' }),
     }),
-    OutboxModule.forRoot(),
-    HealthModule.forRootAsync({
-      inject: [DATABASE_POOL, MessagingConnection],
-      useFactory: (pool: PostgresProbe, connection: MessagingConnection) => ({
-        indicators: [postgresIndicator(pool), messagingHealthIndicator(connection)],
-        shutdownDelayMs: 0,
-      }),
-    }),
+    health,
     PlatformModule,
   ],
 })
 export class AppModule {}
+
+/** The standalone relay, with no application controllers and only loopback probes. */
+@Module({
+  imports: [
+    ConfigModule.forRoot({ schema: runtimeConfigSchema, eager: false }),
+    DatabaseModule.forRootAsync({
+      inject: [CONFIG],
+      useFactory: (config: RuntimeConfig) => ({
+        connectionString: config.DATABASE_URL,
+        applicationName: 'task-service-relay',
+      }),
+    }),
+    messaging,
+    OutboxModule.forRoot(),
+    health,
+  ],
+})
+export class TaskOutboxRelayModule {}

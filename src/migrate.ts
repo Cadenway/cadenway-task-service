@@ -27,6 +27,33 @@ import type { MigrationConfig } from './config/app-config.js';
  */
 const migrationsFolder: string = fileURLToPath(new URL('../migrations', import.meta.url));
 
+/**
+ * Completes the index and validation of the lease expansion outside Drizzle's transaction.
+ *
+ * @param {pg.PoolClient} client - The migration connection holding the advisory lock.
+ * @returns {Promise<void>} Resolves when the index and both constraints are ready.
+ */
+async function completeOutboxLeaseExpansion(client: pg.PoolClient): Promise<void> {
+  const index: pg.QueryResult<{ indisvalid: boolean }> = await client.query(
+    `SELECT indisvalid FROM pg_index
+     WHERE indexrelid = to_regclass('public.outbox_events_lease_expiry_index')`,
+  );
+  if (index.rows[0]?.indisvalid === false) {
+    await client.query('DROP INDEX CONCURRENTLY public.outbox_events_lease_expiry_index');
+  }
+  if (index.rows[0]?.indisvalid !== true) {
+    await client.query(
+      `CREATE INDEX CONCURRENTLY outbox_events_lease_expiry_index
+       ON public.outbox_events (lease_expires_at, id) WHERE status = 'leased'`,
+    );
+  }
+  await client.query(
+    `ALTER TABLE public.outbox_events
+       VALIDATE CONSTRAINT outbox_events_status_check,
+       VALIDATE CONSTRAINT outbox_events_lease_check`,
+  );
+}
+
 if (!existsSync(`${migrationsFolder}/meta/_journal.json`)) {
   console.log('No migration has been generated yet: nothing to apply.');
 } else {
@@ -36,8 +63,17 @@ if (!existsSync(`${migrationsFolder}/meta/_journal.json`)) {
     application_name: 'task-service-migrator',
   });
   try {
-    await migrate(drizzle({ client: pool }), { migrationsFolder });
-    console.log('Migrations applied.');
+    const client: pg.PoolClient = await pool.connect();
+    try {
+      // One session owns the expansion across the transactional and concurrent DDL phases.
+      await client.query("SELECT pg_advisory_lock(hashtextextended('task-service-migrations', 0))");
+      await migrate(drizzle({ client }), { migrationsFolder });
+      await completeOutboxLeaseExpansion(client);
+      console.log('Migrations applied.');
+    } finally {
+      // Destroy the session, including any advisory lock, even after a failed statement.
+      client.release(true);
+    }
   } finally {
     await pool.end();
   }

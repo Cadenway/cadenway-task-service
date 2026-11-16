@@ -138,6 +138,26 @@ processed-ids and versions tables of `@cadenway/nest-messaging/outbox` and `idem
 `src/modules/platform/infrastructure/persistence/`. A kit version that changes one ships a note
 in its changeset: upgrade the package, generate, review the new migration.
 
+The outbox lease expansion adds two nullable columns and widens the status check in a
+short transaction. The migrator keeps the same PostgreSQL session to build the partial
+lease expiry index concurrently and validate the two checks after that transaction
+commits. Rerun the migrator if index creation fails: it replaces an invalid index with
+the expected definition. Keep the expanded schema in place during a rollback.
+
+### Outbox relay mode
+
+`TASK_SERVICE_OUTBOX_MODE=legacy` keeps the relay in the API process and is the default.
+`dedicated` leaves the API writing to the outbox while a separate relay publishes it.
+The companion uses the same image and selects `TASK_SERVICE_ROLE=outbox-relay`. Its only
+listener serves readiness on loopback. The companion runs with the legacy relay until the
+lease relay entry point is published, and `TASK_SERVICE_RELAY_REPLICAS` defaults to zero.
+On staging, switch the API only when a companion release capable of using the expanded
+schema and the companion-aware GitOps agent are ready. Wait for every old API container
+to stop before enabling the companion.
+To return to legacy mode, stop the companion, let its reservations expire and use the
+published kit's recovery operation to release them. Check that no rows remain `leased`
+before enabling the legacy relay. Its query selects only `pending` rows.
+
 ### Integration tests
 
 `pnpm test:integration` needs Docker. `tests/service-wiring.int-spec.ts` starts PostgreSQL, NATS

@@ -20,6 +20,7 @@ services:
     restart: unless-stopped
     environment:
       PORT: '3013'
+      TASK_SERVICE_OUTBOX_MODE: ${TASK_SERVICE_OUTBOX_MODE:-legacy}
       DATABASE_URL: ${TASK_SERVICE_DATABASE_URL}
       NATS_URL: ${NATS_URL}
       NATS_USER: task
@@ -39,6 +40,30 @@ services:
       retries: 5
       start_period: 20s
     deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  task-service-relay:
+    image: ghcr.io/${GHCR_OWNER}/cadenway-task-service:${TASK_SERVICE_VERSION}
+    restart: unless-stopped
+    environment:
+      PORT: '3013'
+      TASK_SERVICE_ROLE: outbox-relay
+      DATABASE_URL: ${TASK_SERVICE_DATABASE_URL}
+      NATS_URL: ${NATS_URL}
+      NATS_USER: task
+      NATS_PASSWORD: ${TASK_NATS_PASSWORD}
+    networks:
+      - internal
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3013/health/ready']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    deploy:
+      replicas: ${TASK_SERVICE_RELAY_REPLICAS:-0}
       resources:
         limits:
           memory: 256M

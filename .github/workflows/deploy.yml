@@ -64,7 +64,9 @@ jobs:
             config --format json >definition.json
           jq -e --arg service "$service" --arg image "ghcr.io/owner/$REPOSITORY:$VERSION" '
             def only($allowed): (keys - $allowed) == [];
-            (.services | keys) == [$service]
+            ($service + "-relay") as $relay
+            | ((.services | keys) == [$service] or
+                ($service == "task-service" and (.services | keys) == [$service, $relay]))
             and (.services[$service] as $s
               | ($s | only(["command", "configs", "deploy", "entrypoint", "environment",
                   "healthcheck", "image", "labels", "networks", "restart"]))
@@ -91,6 +93,29 @@ jobs:
                 | $s.labels // {} | to_entries | map(select(.key | endswith(".middlewares")))
                 | all(.value | split(",") | all(. as $m | $defined | index($m))))
               and ($s.labels["traefik.docker.network"] // "cadenway-edge-env") == "cadenway-edge-env")
+            and (if .services[$relay] == null then true else
+              .services[$service] as $owner
+              | .services[$relay] as $r
+              | ($r | only(["command", "deploy", "entrypoint", "environment", "healthcheck",
+                  "image", "networks", "restart"]))
+                and $r.command == null and $r.entrypoint == null
+                and $r.image == $image and $r.restart == "unless-stopped"
+                and ($r.networks | keys) == ["internal"]
+                and ($r.deploy | only(["placement", "replicas", "resources"]))
+                and ($r.deploy.placement // {}) == {}
+                and ($r.deploy.replicas == 0 or $r.deploy.replicas == 1 or $r.deploy.replicas == 2)
+                and ($r.deploy.resources | only(["limits"]))
+                and ($r.deploy.resources.limits | has("memory"))
+                and ($r.environment | only(["PORT", "TASK_SERVICE_ROLE", "DATABASE_URL",
+                  "NATS_URL", "NATS_USER", "NATS_PASSWORD", "OTEL_EXPORTER_OTLP_ENDPOINT"]))
+                and $r.environment.TASK_SERVICE_ROLE == "outbox-relay"
+                and $r.environment.PORT == "3013"
+                and $r.environment.DATABASE_URL == $owner.environment.DATABASE_URL
+                and $r.environment.NATS_URL == $owner.environment.NATS_URL
+                and $r.environment.NATS_USER == $owner.environment.NATS_USER
+                and $r.environment.NATS_PASSWORD == $owner.environment.NATS_PASSWORD
+                and $r.healthcheck.test == ["CMD", "wget", "-qO-", "http://127.0.0.1:3013/health/ready"]
+              end)
             and (.networks // {} | only(["edge", "internal"]))
             and (.networks.edge == null or (.networks.edge.external == true
               and .networks.edge.name == "cadenway-edge-env"))

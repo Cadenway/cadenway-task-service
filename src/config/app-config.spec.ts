@@ -5,6 +5,7 @@ import { ConfigError, loadConfig } from '@cadenway/nest-common';
 import { describe, expect, it } from 'vitest';
 
 import { appConfigSchema, migrationConfigSchema } from './app-config.js';
+import { processRoleSchema, runtimeConfigSchema } from './runtime-config.js';
 
 describe('appConfigSchema', () => {
   const trustedIssuers: string =
@@ -29,6 +30,7 @@ describe('appConfigSchema', () => {
       NATS_URL: 'nats://localhost:4222',
       NATS_USER: 'task',
       NATS_PASSWORD: 'task',
+      TASK_SERVICE_OUTBOX_MODE: 'legacy',
       INTERNAL_TOKEN_AUDIENCE: 'task-service',
       INTERNAL_TOKEN_TRUSTED_ISSUERS: {
         'api-gateway': [
@@ -50,6 +52,15 @@ describe('appConfigSchema', () => {
 
     expect(() => loadConfig(appConfigSchema, example)).not.toThrow();
     expect(() => loadConfig(migrationConfigSchema, example)).not.toThrow();
+  });
+
+  it('accepts only a known deployment mode for the outbox', () => {
+    expect(
+      loadConfig(appConfigSchema, { ...complete, TASK_SERVICE_OUTBOX_MODE: 'dedicated' }),
+    ).toHaveProperty('TASK_SERVICE_OUTBOX_MODE', 'dedicated');
+    expect(() =>
+      loadConfig(appConfigSchema, { ...complete, TASK_SERVICE_OUTBOX_MODE: 'relays' }),
+    ).toThrow(/TASK_SERVICE_OUTBOX_MODE/u);
   });
 
   it('refuses to start without the database, the broker, the audience or the trusted issuers', () => {
@@ -101,6 +112,28 @@ describe('appConfigSchema', () => {
 
   it('does not read the migrator URL: the running service never needs it', () => {
     expect(loadConfig(appConfigSchema, complete)).not.toHaveProperty('MIGRATION_DATABASE_URL');
+  });
+});
+
+describe('relay process', () => {
+  it('defaults to the API and accepts the standalone relay role', () => {
+    expect(loadConfig(processRoleSchema, {})).toEqual({ TASK_SERVICE_ROLE: 'api' });
+    expect(loadConfig(processRoleSchema, { TASK_SERVICE_ROLE: 'outbox-relay' })).toEqual({
+      TASK_SERVICE_ROLE: 'outbox-relay',
+    });
+    expect(() => loadConfig(processRoleSchema, { TASK_SERVICE_ROLE: 'worker' })).toThrow(
+      /TASK_SERVICE_ROLE/u,
+    );
+  });
+
+  it('reads only the service database and messaging credentials for readiness', () => {
+    expect(
+      loadConfig(runtimeConfigSchema, {
+        PORT: '3013',
+        DATABASE_URL: 'postgres://task_app@localhost/task',
+        NATS_URL: 'nats://localhost:4222',
+      }),
+    ).not.toHaveProperty('INTERNAL_TOKEN_TRUSTED_ISSUERS');
   });
 });
 

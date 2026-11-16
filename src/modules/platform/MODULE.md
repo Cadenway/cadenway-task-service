@@ -30,6 +30,10 @@ transaction runners.
 
 Created by `migrations/0000_platform_tables.sql`, owned by the migrator role `task_migrator`. The
 application role `task_app` reads and writes their rows and holds no DDL right on them.
+`0001_outbox_leases.sql` adds lease columns and checks while keeping the legacy pending state.
+The migrator builds the partial expiry index concurrently and validates the checks outside the
+schema expansion transaction. The existing root outbox module can keep publishing pending rows
+in legacy mode on the expanded schema.
 
 ## API
 
