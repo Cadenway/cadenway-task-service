@@ -5,15 +5,13 @@ paths:
 
 # Application layer
 
-- Under V2, group use cases at `application/use-cases/{commands,queries}/<area>/<operation>/`
-  and ports at `application/ports/outbound/<concern>/<area>/`. Each named exported contract
-  has its own file. Keep the application framework-free.
-
+- Use the [V2 module layout](../skills/cw-hexagonal-module-layout/SKILL.md) for operations, ports and named contracts. Keep application framework-free.
 - One use case per class, with explicit input and output types; the name says the intent
   (`ChangeTaskStatus`, `ListSprintTasks`).
 - A write use case owns its transaction through a unit-of-work port. Load, persist and append
   outgoing events with adapters bound to that same transaction. Keep external HTTP calls outside
-  it. A query can use a read port and return a projection without a write transaction.
+  it. For example, if appending the status-change event fails, the task status change must roll
+  back. A query can use a read port and return a projection without a write transaction.
 - Every load filters on the caller's organization; the organization comes from the request context,
   never from the payload.
 - Never re-implement a domain rule here; call the domain method.

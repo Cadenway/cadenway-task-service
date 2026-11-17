@@ -15,6 +15,10 @@ paths:
   installed `@cadenway/contracts`.
 - Publish only through the outbox of `@cadenway/nest-messaging`, in the use case transaction. Never a
   direct NATS client.
-- Handlers deduplicate on the event id and call a use case; they never write another service's data.
+- Use the existing consumer deduplicator and call the owning use case. For database effects, keep
+  the deduplication record and changes in the same transaction so a failure leaves the delivery
+  eligible for retry. For example, a redelivered member-removal event must not record the
+  unassignment twice. Keep any effect outside the database idempotent too.
+- Handlers write only this service's data.
 - A shape change is a new version; the old one keeps being emitted until every consumer moved.
 - Events emitted by this service: `space.*`, `list.*`, `task.created`, `task.updated`, `task.status-changed`, `task.assigned`, `task.trashed`, `task.restored`, `task.purged`, `comment.created`, `approval.requested`, `approval.decided`, `milestone.reached`.
