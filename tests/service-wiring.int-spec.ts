@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { generateKeyPairSync } from 'node:crypto';
+import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 
@@ -15,14 +15,12 @@ import type {
   OrganizationContext,
 } from '@cadenway/nest-common';
 import { SystemTransactionRunner, TenantTransactionRunner } from '@cadenway/nest-common/database';
-import { OutboxRelay } from '@cadenway/nest-messaging/outbox';
 import { Controller, Get, Injectable, Module } from '@nestjs/common';
 import type { BeforeApplicationShutdown } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import pg from 'pg';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { MockInstance } from 'vitest';
 
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
@@ -210,7 +208,6 @@ describe('task-service wiring', () => {
   let app: NestExpressApplication | undefined;
   let signer: InternalTokenSigner;
   let migrator: pg.Pool;
-  let relayPasses: MockInstance<OutboxRelay['publishPending']>;
 
   /**
    * The running application.
@@ -264,9 +261,6 @@ describe('task-service wiring', () => {
       'INTERNAL_TOKEN_TRUSTED_ISSUERS',
       JSON.stringify({ 'api-gateway': [gateway.publicJwk] }),
     );
-    // Every pass of the relay, from the first one, which starts with the application.
-    relayPasses = vi.spyOn(OutboxRelay.prototype, 'publishPending');
-
     @Module({
       imports: [AppModule],
       controllers: [WiringProbeController],
@@ -300,7 +294,6 @@ describe('task-service wiring', () => {
       await app?.close();
       await migrator.end();
     } finally {
-      relayPasses.mockRestore();
       vi.unstubAllEnvs();
       compose('down', '--volumes', '--remove-orphans');
     }
@@ -525,24 +518,28 @@ describe('task-service wiring', () => {
     expect(journal.rows).toEqual([{ applied: 1 }]);
   });
 
-  it('runs the outbox relay from the start, and it stays healthy against an empty outbox', async () => {
-    // One pass a second: three passes span two poll intervals after the first one.
+  it('publishes pending outbox events automatically and stays healthy', async () => {
+    const system = service().get(SystemTransactionRunner);
+    const eventId = randomUUID();
+    await system.run((tx) =>
+      tx.client.query(
+        `insert into outbox_events (id, event_name, subject, stream, organization_id, payload)
+         values ($1::uuid, 'task.wiring-probe.v1', 'evt.task.wiring-probe.v1', 'EVENTS', $2::uuid,
+                 jsonb_build_object('id', $1::uuid::text, 'organizationId', $2::uuid::text, 'occurredAt', now()))`,
+        [eventId, atelierNordId],
+      ),
+    );
+
     await vi.waitFor(
-      () => {
-        expect(
-          relayPasses.mock.settledResults.filter((result) => result.type !== 'incomplete').length,
-        ).toBeGreaterThanOrEqual(3);
+      async () => {
+        const result = await system.run((tx) =>
+          tx.client.query('select status from outbox_events where id = $1', [eventId]),
+        );
+        expect(result.rows).toEqual([{ status: 'sent' }]);
       },
       { timeout: 10_000, interval: 100 },
     );
 
-    const passes = relayPasses.mock.settledResults.filter((result) => result.type !== 'incomplete');
-    expect(passes).toEqual(
-      passes.map(() => ({
-        type: 'fulfilled',
-        value: { published: 0, failed: 0, interrupted: false },
-      })),
-    );
     const response = await request(service().getHttpServer()).get('/health/ready');
     expect(response.status).toBe(200);
   });
