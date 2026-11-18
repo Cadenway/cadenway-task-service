@@ -11,8 +11,10 @@ import { Module } from '@nestjs/common';
 
 import { appConfigSchema } from './config/app-config.js';
 import type { AppConfig } from './config/app-config.js';
+import { MemberLifecycleModule } from './modules/member-lifecycle/member-lifecycle.module.js';
 import { OrganizationMembersModule } from './modules/organization-members/organization-members.module.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
+import { SpacesModule } from './modules/spaces/spaces.module.js';
 
 /**
  * Class AppModule
@@ -32,9 +34,9 @@ import { PlatformModule } from './modules/platform/platform.module.js';
  * - `MessagingModule`: the NATS connection of the `task` user, with the inbox prefix `_INBOX.task`
  *   the broker requires. The creation waits for the first connection, then checks that the
  *   `EVENTS` stream exists: cadenway-ops creates the streams (`manageStreams: false`), and only
- *   notification-service runs the dead-letter worker. The service publishes nothing yet, since
- *   `@cadenway/contracts` defines no event of its own; it consumes the member events of
- *   organization-service (`OrganizationMembersModule`).
+ *   notification-service runs the dead-letter worker. The service publishes the `space.*` and
+ *   `list.*` events of `SpacesModule` through the outbox, and consumes the member events of
+ *   organization-service (`MemberLifecycleModule`).
  * - `OutboxModule`: the outbox writer, the PostgreSQL deduplicator and the relay, which polls
  *   `outbox_events` every second in a system transaction and publishes the pending rows. It runs in
  *   every replica; `for update skip locked` keeps two of them from publishing the same row.
@@ -49,9 +51,14 @@ import { PlatformModule } from './modules/platform/platform.module.js';
  *   request away; set it above the probe interval of a proxy if one ever routes on readiness.
  * - `PlatformModule`: the owner of the kit tables in the migrations of the service.
  * - `OrganizationMembersModule`: the copy of the memberships of organization-service, the source of
- *   the members and roles of the service, fed by `member.joined.v1`, `member.role-changed.v1` and
- *   `member.removed.v1` through three durable consumers (`task-service__project-member-*`) that
- *   the deduplicator of `OutboxModule` runs in the tenant transaction of each event.
+ *   the members and roles of the service.
+ * - `SpacesModule`: the spaces, their statuses and prefixes, and their lists and sprints, with the
+ *   internal routes of `/internal/v1/spaces` and `/internal/v1/lists`.
+ * - `MemberLifecycleModule`: the three durable consumers (`task-service__project-member-*`) of
+ *   `member.joined.v1`, `member.role-changed.v1` and `member.removed.v1`, which the deduplicator of
+ *   `OutboxModule` runs in the tenant transaction of each event. Each event updates the copy of
+ *   `OrganizationMembersModule`; a removal then hands the private spaces of the former member over
+ *   to the owner through `SpacesModule`, which it imports.
  *
  * Business modules under `src/modules/` are registered here as they are created.
  */
@@ -87,6 +94,8 @@ import { PlatformModule } from './modules/platform/platform.module.js';
     }),
     PlatformModule,
     OrganizationMembersModule,
+    SpacesModule,
+    MemberLifecycleModule,
   ],
 })
 export class AppModule {}

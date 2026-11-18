@@ -63,7 +63,7 @@ export class FindOrganizationMember {
   ): Promise<FindOrganizationMemberOutput | null> {
     const active: Membership[] = await this.unitOfWork.run(
       (memberships: MembershipRepository): Promise<Membership[]> =>
-        memberships.listActiveByUser(input.organizationId, input.userId),
+        memberships.listActiveByUser(input.organizationId, input.userId, input.lock === true),
     );
     const membership: Membership | null = leastPrivilegedMembership(active);
     if (membership === null) {

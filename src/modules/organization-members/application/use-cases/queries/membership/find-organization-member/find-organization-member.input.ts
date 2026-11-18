@@ -29,5 +29,18 @@ export interface FindOrganizationMemberInput {
    * @readonly
    */
   readonly userId: string;
+
+  /**
+   * Property lock
+   *
+   * @description
+   * `true` to keep the memberships read locked (`FOR SHARE`) until the end of the transaction
+   * of the caller: a concurrent removal or role change of the account then waits for the write of
+   * the caller to commit, and sees what it wrote. Write use cases pass `true`; absent, `false`.
+   *
+   * @type {boolean | undefined}
+   * @readonly
+   */
+  readonly lock?: boolean;
   // #endregion
 }

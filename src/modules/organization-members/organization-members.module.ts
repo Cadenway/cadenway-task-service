@@ -1,11 +1,12 @@
 import { Module } from '@nestjs/common';
 
-import { memberEventsHandlerProvider } from './composition/providers/adapters/membership/member-events-handler.provider.js';
-import { memberEventsRedeliveryProvider } from './composition/providers/adapters/membership/member-events-redelivery.provider.js';
 import { tenantUnitOfWorkProvider } from './composition/providers/adapters/membership/tenant-unit-of-work.provider.js';
 import { applyMembershipChangeProvider } from './composition/providers/use-cases/membership/apply-membership-change.provider.js';
 import { findOrganizationMemberProvider } from './composition/providers/use-cases/membership/find-organization-member.provider.js';
 import { findOrganizationOwnerProvider } from './composition/providers/use-cases/membership/find-organization-owner.provider.js';
+import { ApplyMembershipChange } from './public/membership/apply-membership-change.js';
+import { FindOrganizationMember } from './public/membership/find-organization-member.js';
+import { FindOrganizationOwner } from './public/membership/find-organization-owner.js';
 
 /**
  * Class OrganizationMembersModule
@@ -13,12 +14,12 @@ import { findOrganizationOwnerProvider } from './composition/providers/use-cases
  * @description
  * Composition root of the copy of the memberships of organization-service, the source of the
  * members and roles of this service (decision 4 of the P3a plan, never the `role` claim of the
- * internal token): the handler of the three member events with their redelivery schedule, and the
- * two readings the modules of P3a will consume, `FindOrganizationMember` and
- * `FindOrganizationOwner`. They export nothing yet: the strict architecture check admits a public
- * entry and a Nest export only with an existing consuming module, so the change that adds the
- * first consumer adds its `public/membership/<operation>` entry, its row in `MODULE.md` and the
- * export.
+ * internal token). It subscribes to no event itself: `MemberLifecycleModule` consumes the three
+ * member events and applies each with `ApplyMembershipChange`, then drives the other modules a
+ * removal concerns, which this module cannot call without a module cycle. It exports its three
+ * public operations (`public/membership/`): `ApplyMembershipChange`, and the two readings the other
+ * modules bind their own ports to, `FindOrganizationMember` and `FindOrganizationOwner`. All three
+ * join the tenant transaction of their caller.
  */
 @Module({
   providers: [
@@ -26,8 +27,7 @@ import { findOrganizationOwnerProvider } from './composition/providers/use-cases
     applyMembershipChangeProvider,
     findOrganizationMemberProvider,
     findOrganizationOwnerProvider,
-    memberEventsRedeliveryProvider,
-    memberEventsHandlerProvider,
   ],
+  exports: [ApplyMembershipChange, FindOrganizationMember, FindOrganizationOwner],
 })
 export class OrganizationMembersModule {}

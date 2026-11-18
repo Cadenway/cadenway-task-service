@@ -12,8 +12,10 @@
      organizationId,
      actor: { type: 'user', id: userId },
      version,
-     taskId,
+     key: 'CAD-482', // a task is named by its key outside task-service, never by its id
      status,
+     previousStatus,
+     // … the rest of the payload of asyncapi/task-service.yaml
    });
    ```
 2. An event with an organization is appended in a tenant transaction of that organization; one
