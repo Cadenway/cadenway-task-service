@@ -12,8 +12,8 @@ The spaces of each organization ("Espaces", P3a) and what they hold besides task
 It decides who sees a space and who changes what (decision 3 of the P3a plan, "Who sees a space"
 and "Who changes what" of `openapi/public/spaces.yaml`), from the copy of the memberships of the
 organization-members module, never from the `role` claim of the internal token. Tasks, their
-counts (the space overview and the counts of a list, served by the task query module from PR 3)
-and the activity log belong to the task modules of P3a.
+counts (the space overview and the counts of a list, served by the tasks module from PR 3) and the
+activity log belong to the task modules of P3a.
 
 ## Public entry points
 
@@ -23,6 +23,9 @@ and the activity log belong to the task modules of P3a.
 | `public/space/hand-over-private-spaces`  | member-lifecycle        |
 | `public/space/hand-over-awaiting-spaces` | member-lifecycle        |
 | `public/list/find-visible-list`          | tasks                   |
+| `public/list/find-visible-space-lists`   | tasks                   |
+| `public/list/list-current-sprints`       | tasks                   |
+| `public/list/list-sidebar-lists`         | tasks                   |
 | `public/space/list-visible-space-ids`    | tasks                   |
 | `public/space/allocate-task-keys`        | tasks                   |
 
@@ -41,6 +44,17 @@ It also exports, for the tasks module:
   (statuses, prefix, `nextKey`) as plain `VisibleList` and `VisibleSpace` projections, or `null`
   when the list is unknown or the viewer does not see its space (a guest, a private space of
   another member, a space awaiting an owner);
+- `FindVisibleSpaceLists` (`{ organizationId, viewerUserId, viewerRole, spaceId }`): every list of
+  the space, unpaged and in creation order, as `{ lists: VisibleList[] }`, or `null` when the space
+  is unknown or the viewer does not see it (same cases as `FindVisibleList`); the space overview of
+  the tasks module needs them all, and slices its page itself;
+- `ListCurrentSprints` (`{ organizationId, viewerUserId, viewerRole, today, limit }`, `today` a
+  `YYYY-MM-DD` calendar date of the caller): the sprints of the spaces the viewer sees whose start
+  is on or before `today` and whose end is on or after it, ordered by end date, then creation, at
+  most `limit`, as `{ lists }`; empty for a guest, without a read;
+- `ListSidebarLists` (`{ organizationId, viewerUserId, viewerRole, limit }`): the first `limit`
+  lists of the spaces the viewer sees in sidebar order (spaces by creation, then the lists of each
+  by creation, sprints included), as `{ lists }`; empty for a guest, without a read;
 - `ListVisibleSpaceIds` (`{ organizationId, viewerUserId, viewerRole }`): the ids of the spaces the
   viewer sees, in creation order, with the filter of the space listing; empty for a guest;
 - `AllocateTaskKeys` (`{ organizationId, spaceId, count }`, `count` from 1 to 26): the prefix and
@@ -101,7 +115,7 @@ owner_user_id = $viewer`) runs after the index, which costs one row read per pri
   `409 idempotency.request-in-progress`; a malformed key, `400 request.invalid` with one issue on
   the `Idempotency-Key` header.
 - `GET /internal/v1/spaces/{spaceId}/overview` and `GET /internal/v1/lists/{listId}/counts` count
-  tasks: the task query module serves them from PR 3.
+  tasks: the tasks module serves the overview and the list counts (PR 3).
 
 ## Events emitted
 
@@ -179,8 +193,12 @@ batch, under the 10 s statement timeout and the 5 s lock timeout of the applicat
 request that writes a space the batch holds waits for it at most 5 s. A failed batch rolls back
 alone, the batches before it stay committed.
 
-`FindVisibleList`, `ListVisibleSpaceIds` and `AllocateTaskKeys` join the tenant transaction of the
-tasks module the same way. The two readings take no lock and append no event. The allocation is one
+`FindVisibleList`, `FindVisibleSpaceLists`, `ListCurrentSprints`, `ListSidebarLists`,
+`ListVisibleSpaceIds` and `AllocateTaskKeys` join the tenant transaction of the tasks module the
+same way. The five readings take no lock and append no event; the two listings of lists through
+their space join `spaces` on `(organization_id, id)` and apply the one visibility condition of
+`listVisible` and `listVisibleIds` (`(visibility = 'organization' or owner_user_id = $viewer) and
+not awaiting_owner`), kept in one infrastructure mapper. The allocation is one
 `UPDATE space_prefixes SET last_number = last_number + count ... RETURNING`, scoped by organization,
 prefix and space, which locks the prefix row until the caller commits: creations under one prefix
 are serialized, so the caller allocates last, after every validation, and takes no space lock.
@@ -206,9 +224,10 @@ poll of the relay, within a second.
   keys repeat it, so that a list or a prefix never references a space of another organization.
 - `If-Match` is optional; a stale one answers `412 request.version-mismatch` with the stored version,
   checked after the visibility of the space and before the domain rules.
-- The overview and the counts of a list moved from PR 1 to PR 3 (task queries), with the agreement
-  of the coordinating session: they count tasks, which exist from PR 2, and serving them from the
-  task query module avoids a cycle between spaces and tasks.
+- The overview and the counts of a list moved from PR 1 to PR 3, with the agreement of the
+  coordinating session: they count tasks, which exist from PR 2, and the tasks module serves the
+  overview and the list counts (PR 3), which avoids a cycle between spaces and tasks: the tasks
+  module depends on spaces through the public entries above, never the reverse.
 - The tasks module passes the role of the viewer to `FindVisibleList` and `ListVisibleSpaceIds`: it
   reads it from the copy of the memberships (`FindOrganizationMember`) in the same transaction,
   never from the token, and these operations apply `canSeeSpace` to it without a second reading.

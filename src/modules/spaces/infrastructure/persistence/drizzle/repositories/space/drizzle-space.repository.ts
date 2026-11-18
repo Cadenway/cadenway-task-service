@@ -1,5 +1,5 @@
 import type { TransactionDatabase } from '@cadenway/nest-common/database';
-import { and, asc, eq, or, sql } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 
 import type { PagePosition } from '../../../../../application/models/page/page-position.model.js';
 import type { SpaceRepository } from '../../../../../application/ports/outbound/persistence/space/space-repository.port.js';
@@ -8,6 +8,7 @@ import type { SpaceDraft } from '../../../../../domain/value-objects/space/space
 import { toSpace } from '../../mappers/space/space.mapper.js';
 import type { SpaceRow } from '../../mappers/space/space.mapper.js';
 import { keysetAfter } from '../../mappers/page/keyset-after.mapper.js';
+import { visibleSpaceCondition } from '../../mappers/space/visible-space.mapper.js';
 import { spaces } from '../../schemas/space/space.schema.js';
 
 /**
@@ -188,8 +189,7 @@ export class DrizzleSpaceRepository implements SpaceRepository {
       .where(
         and(
           eq(spaces.organizationId, organizationId),
-          or(eq(spaces.visibility, 'organization'), eq(spaces.ownerUserId, viewerUserId)),
-          eq(spaces.awaitingOwner, false),
+          visibleSpaceCondition(viewerUserId),
           keysetAfter(spaces.createdAt, spaces.id, after),
         ),
       )
@@ -217,13 +217,7 @@ export class DrizzleSpaceRepository implements SpaceRepository {
     const rows: { id: string }[] = await this.db
       .select({ id: spaces.id })
       .from(spaces)
-      .where(
-        and(
-          eq(spaces.organizationId, organizationId),
-          or(eq(spaces.visibility, 'organization'), eq(spaces.ownerUserId, viewerUserId)),
-          eq(spaces.awaitingOwner, false),
-        ),
-      )
+      .where(and(eq(spaces.organizationId, organizationId), visibleSpaceCondition(viewerUserId)))
       .orderBy(asc(spaces.createdAt), asc(spaces.id));
     return rows.map((row: { id: string }): string => row.id);
   }

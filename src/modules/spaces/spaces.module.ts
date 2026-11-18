@@ -6,8 +6,11 @@ import { memberDirectoryProvider } from './composition/providers/adapters/member
 import { spacesUnitOfWorkProvider } from './composition/providers/adapters/space/spaces-unit-of-work.provider.js';
 import { createListProvider } from './composition/providers/use-cases/list/create-list.provider.js';
 import { findVisibleListProvider } from './composition/providers/use-cases/list/find-visible-list.provider.js';
+import { findVisibleSpaceListsProvider } from './composition/providers/use-cases/list/find-visible-space-lists.provider.js';
 import { getListProvider } from './composition/providers/use-cases/list/get-list.provider.js';
+import { listCurrentSprintsProvider } from './composition/providers/use-cases/list/list-current-sprints.provider.js';
 import { listListsProvider } from './composition/providers/use-cases/list/list-lists.provider.js';
+import { listSidebarListsProvider } from './composition/providers/use-cases/list/list-sidebar-lists.provider.js';
 import { updateListProvider } from './composition/providers/use-cases/list/update-list.provider.js';
 import { allocateTaskKeysProvider } from './composition/providers/use-cases/space/allocate-task-keys.provider.js';
 import { createSpaceProvider } from './composition/providers/use-cases/space/create-space.provider.js';
@@ -21,6 +24,9 @@ import { ListsController } from './presentation/http/controllers/list/lists.cont
 import { SpaceListsController } from './presentation/http/controllers/list/space-lists.controller.js';
 import { SpacesController } from './presentation/http/controllers/space/spaces.controller.js';
 import { FindVisibleList } from './public/list/find-visible-list.js';
+import { FindVisibleSpaceLists } from './public/list/find-visible-space-lists.js';
+import { ListCurrentSprints } from './public/list/list-current-sprints.js';
+import { ListSidebarLists } from './public/list/list-sidebar-lists.js';
 import { AllocateTaskKeys } from './public/space/allocate-task-keys.js';
 import { HandOverAwaitingSpaces } from './public/space/hand-over-awaiting-spaces.js';
 import { HandOverPrivateSpaces } from './public/space/hand-over-private-spaces.js';
@@ -65,8 +71,9 @@ markIdempotent(SpaceListsController.prototype, 'create');
  * through the `MemberDirectory` port, never from the `role` claim of the internal token (decision 4
  * of the P3a plan). It exports `HandOverPrivateSpaces`, which the clean-up job of the
  * member-lifecycle module runs batch after batch once a member left the organization, and
- * `HandOverAwaitingSpaces`, which member-lifecycle runs when the copy learns the owner, and `FindVisibleList`, `ListVisibleSpaceIds` and `AllocateTaskKeys`, which the tasks module runs
- * in its own transaction.
+ * `HandOverAwaitingSpaces`, which member-lifecycle runs when the copy learns the owner, and
+ * `FindVisibleList`, `FindVisibleSpaceLists`, `ListCurrentSprints`, `ListSidebarLists`,
+ * `ListVisibleSpaceIds` and `AllocateTaskKeys`, which the tasks module runs in its own transaction.
  */
 @Module({
   imports: [OrganizationMembersModule],
@@ -85,6 +92,9 @@ markIdempotent(SpaceListsController.prototype, 'create');
     getListProvider,
     updateListProvider,
     findVisibleListProvider,
+    findVisibleSpaceListsProvider,
+    listCurrentSprintsProvider,
+    listSidebarListsProvider,
     listVisibleSpaceIdsProvider,
     allocateTaskKeysProvider,
   ],
@@ -92,6 +102,9 @@ markIdempotent(SpaceListsController.prototype, 'create');
     HandOverPrivateSpaces,
     HandOverAwaitingSpaces,
     FindVisibleList,
+    FindVisibleSpaceLists,
+    ListCurrentSprints,
+    ListSidebarLists,
     ListVisibleSpaceIds,
     AllocateTaskKeys,
   ],
