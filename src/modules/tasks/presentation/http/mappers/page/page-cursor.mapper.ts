@@ -58,12 +58,53 @@ export interface InstantPosition {
  * @param {Date} instant - The same instant, read by `Date`.
  * @returns {boolean} Whether the instant can start a page.
  */
-function isStoredInstant(text: string, instant: Date): boolean {
+export function isStoredInstant(text: string, instant: Date): boolean {
   if (Number.isNaN(instant.getTime())) {
     return false;
   }
   const year: number = instant.getUTCFullYear();
   return year >= 1970 && year <= 9999 && instant.toISOString() === text;
+}
+
+/**
+ * Function invalidCursor
+ *
+ * @description
+ * The refusal of a cursor that is not one of the collection asked for: `400 request.invalid` with
+ * one issue on `cursor` (`invalid_cursor`), which never quotes the cursor.
+ *
+ * @returns {ProblemException} The problem to throw.
+ */
+export function invalidCursor(): ProblemException {
+  return new ProblemException({
+    status: 400,
+    code: 'request.invalid',
+    detail: 'The request does not match its contract.',
+    details: {
+      issues: [
+        {
+          in: 'query',
+          path: 'cursor',
+          code: 'invalid_cursor',
+          message: 'Expected the nextCursor of a previous page of this collection.',
+        },
+      ],
+    },
+  });
+}
+
+/**
+ * Function isRowId
+ *
+ * @description
+ * Whether the id of a cursor has the shape of a row id. The cursor is not signed, so the id is
+ * checked before it reaches SQL.
+ *
+ * @param {string} id - The id the cursor carries.
+ * @returns {boolean} Whether it is a UUID in either case.
+ */
+export function isRowId(id: string): boolean {
+  return UUID.test(id);
 }
 
 /**
@@ -94,7 +135,8 @@ export function encodeInstantCursor(
  * one of this collection answers `400 request.invalid` with one issue on `cursor`
  * (`invalid_cursor`): `decodeCursor` of the kit answers it for a malformed cursor or one issued
  * for other filters, and this function answers the same for a decoded position that does not name
- * an instant and a row id.
+ * an instant and a row id. The id is returned in lower case, as the rows hold it, so a position can be
+ * compared with them in memory (the overview of a space pages its lists that way).
  *
  * @param {string | undefined} cursor - The `cursor` query parameter.
  * @param {unknown} filters - What defines the collection.
@@ -109,30 +151,16 @@ export function decodeInstantCursor(
     return null;
   }
   const position: CursorPosition = decodeCursor(cursor, filters);
-  const invalid: ProblemException = new ProblemException({
-    status: 400,
-    code: 'request.invalid',
-    detail: 'The request does not match its contract.',
-    details: {
-      issues: [
-        {
-          in: 'query',
-          path: 'cursor',
-          code: 'invalid_cursor',
-          message: 'Expected the nextCursor of a previous page of this collection.',
-        },
-      ],
-    },
-  });
+  const invalid: ProblemException = invalidCursor();
   const text: unknown = position.sort[0];
   if (position.sort.length !== 1 || typeof text !== 'string') {
     throw invalid;
   }
   const instant: Date = new Date(text);
-  if (!isStoredInstant(text, instant) || !UUID.test(position.id)) {
+  if (!isStoredInstant(text, instant) || !isRowId(position.id)) {
     throw invalid;
   }
-  return { instant, id: position.id };
+  return { instant, id: position.id.toLowerCase() };
 }
 
 /**

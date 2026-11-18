@@ -18,7 +18,7 @@ events leave through the outbox, and the tasks with their subtasks, assignees, l
 and activity log (`src/modules/tasks/MODULE.md`), whose internal routes exist and whose `task.*`
 events leave through the outbox; the removal of a member enqueues, in the transaction of
 `member.removed.v1`, a job of `@cadenway/nest-jobs` that hands their private spaces over, then
-unassigns them from their tasks, in batches. The task queries arrive next. The target architecture in this guide is what
+unassigns them from their tasks, in batches. The tasks module also serves the seven task queries (the tasks of a list, the group counts, the counts of a list, the overview of a space, the labels, "Mes tâches" and "Accueil"). The target architecture in this guide is what
 the next modules must follow.
 
 The commands below are the documented workflow. Inspect the repository's actual manifests and files before running them, and report unavailable checks rather than inventing replacements. Run Git, pnpm, build, and test commands with this repository as the working directory, never from the parent workspace.

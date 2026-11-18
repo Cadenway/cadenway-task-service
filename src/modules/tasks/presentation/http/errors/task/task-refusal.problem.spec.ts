@@ -12,6 +12,8 @@ describe('answerRefusals', () => {
     [{ reason: 'organization-not-found' }, 404, 'organization.not-found', undefined],
     [{ reason: 'task-not-found' }, 404, 'task.not-found', undefined],
     [{ reason: 'list-not-found' }, 404, 'list.not-found', undefined],
+    [{ reason: 'space-not-found' }, 404, 'space.not-found', undefined],
+    [{ reason: 'user-not-found' }, 404, 'user.not-found', undefined],
     [{ reason: 'checklist-item-not-found' }, 404, 'checklist-item.not-found', undefined],
     [{ reason: 'version-mismatch', version: 13 }, 412, 'request.version-mismatch', { version: 13 }],
     [
@@ -43,8 +45,8 @@ describe('answerRefusals', () => {
     [{ reason: 'subtask-limit-reached' }, 422, 'task.subtask-limit-reached', undefined],
   ];
 
-  it('covers the seventeen reasons of a refusal', () => {
-    expect(new Set(answers.map(([refusal]) => refusal.reason)).size).toBe(17);
+  it('covers the nineteen reasons of a refusal', () => {
+    expect(new Set(answers.map(([refusal]) => refusal.reason)).size).toBe(19);
   });
 
   it.each(answers)(

@@ -4,6 +4,7 @@ import {
   ATELIER_NORD,
   BUGS,
   CAMILLE,
+  CREATED_AT,
   DESIGN,
   HUGO,
   INES,
@@ -20,18 +21,31 @@ import type { ActivityEntryState } from '../../domain/value-objects/activity/act
 import type { ActivityKind } from '../../domain/value-objects/activity/activity-kind.value-object.js';
 import type { MemberRole } from '../../domain/value-objects/member/member-role.value-object.js';
 import type { Viewer } from '../../domain/value-objects/member/viewer.value-object.js';
+import { isLate } from '../../domain/policies/task/lateness.policy.js';
 import type { SubtreeShape } from '../../domain/value-objects/subtask/subtree-shape.value-object.js';
 import type { ChecklistItemDraft } from '../../domain/value-objects/task/checklist-item-draft.value-object.js';
 import type { ChecklistItemState } from '../../domain/value-objects/task/checklist-item-state.value-object.js';
+import { labelKey } from '../../domain/value-objects/task/label-name.value-object.js';
+import { PRIORITY_KEYS } from '../../domain/value-objects/task/priority-key.value-object.js';
+import { isClosedStatus } from '../../domain/value-objects/task/status-category.value-object.js';
 import type { StatusKey } from '../../domain/value-objects/task/status-key.value-object.js';
 import type { TaskDraft } from '../../domain/value-objects/task/task-draft.value-object.js';
 import type { TaskField } from '../../domain/value-objects/task/task-field.value-object.js';
-import type { TaskKey } from '../../domain/value-objects/task/task-key.value-object.js';
+import { TaskKey } from '../../domain/value-objects/task/task-key.value-object.js';
 import type { TaskState } from '../../domain/value-objects/task/task-state.value-object.js';
 import type { EventActor } from '../models/actor/event-actor.model.js';
 import type { ActivityPosition } from '../models/activity/activity-position.model.js';
 import type { ListActivityFilter } from '../models/activity/list-activity-filter.model.js';
+import type { LabelPosition } from '../models/label/label-position.model.js';
+import type { ListedLabel } from '../models/label/listed-label.model.js';
 import type { PagePosition } from '../models/page/page-position.model.js';
+import type { ListedTask } from '../models/query/listed-task.model.js';
+import { SORT_KEY_PREFIX_LENGTH } from '../models/query/sort-key-prefix-length.model.js';
+import type { TaskFilter } from '../models/query/task-filter.model.js';
+import type { TaskGrouping } from '../models/query/task-grouping.model.js';
+import type { TaskOrder } from '../models/query/task-order.model.js';
+import type { TaskPosition } from '../models/query/task-position.model.js';
+import type { MyTaskState } from '../models/user/my-task-state.model.js';
 import type { KeyAllocation } from '../models/placement/key-allocation.model.js';
 import type { ListPlacement } from '../models/placement/list-placement.model.js';
 import type { PlacedList } from '../models/placement/placed-list.model.js';
@@ -41,8 +55,17 @@ import type { TaskRefusalReason } from '../models/task/task-refusal-reason.model
 import type { ReadOptions } from '../models/transactions/read-options.model.js';
 import type { TasksStore } from '../models/transactions/tasks-store.model.js';
 import type { MemberDirectory } from '../ports/outbound/members/membership/member-directory.port.js';
+import type { AssignedTaskReader } from '../ports/outbound/persistence/assignee/assigned-task-reader.port.js';
+import type { TaskCounter } from '../ports/outbound/persistence/count/task-counter.port.js';
+import type { LabelReader } from '../ports/outbound/persistence/label/label-reader.port.js';
+import type { TaskQueryReader } from '../ports/outbound/persistence/query/task-query-reader.port.js';
 import type { SpaceDirectory } from '../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
+import type { TaskCountsView } from '../projections/count/task-counts.projection.js';
+import type { TaskGroupCountsView } from '../projections/query/task-group-counts.projection.js';
+import type { TaskGroupView } from '../projections/query/task-group.projection.js';
+import type { HomeStatsView } from '../projections/user/home-stats.projection.js';
+import type { MyTaskCountsView } from '../projections/user/my-task-counts.projection.js';
 import type { SubtaskCounts } from '../projections/task/subtask-counts.projection.js';
 import type { TaskReferenceView } from '../projections/task/task-reference.projection.js';
 import type { TaskSummaryView } from '../projections/task/task-summary.projection.js';
@@ -171,6 +194,63 @@ export function placedList(overrides: Partial<PlacedList> = {}): PlacedList {
   };
 }
 
+/**
+ * Builds the task CAD-(800 + index) in Sprint 14, for the specs of the queries: top-level, `todo`,
+ * `moyenne`, unassigned, without label, due date or checklist, created `index` minutes after
+ * CAD-482.
+ *
+ * @param index - Which task; it gives the key, the id, the name and the creation instant.
+ * @param overrides - Fields to replace.
+ * @returns The state.
+ */
+export function queryTask(index: number, overrides: Partial<TaskState> = {}): TaskState {
+  return taskState({
+    id: `019a7200-0000-7000-8000-000000000${String(800 + index)}`,
+    key: TaskKey.of('CAD', 800 + index),
+    name: `Tâche ${String(index)}`,
+    description: null,
+    status: 'todo',
+    priority: 'moyenne',
+    assigneeIds: [],
+    labels: [],
+    dueDate: null,
+    startDate: null,
+    estimateMinutes: null,
+    checklist: [],
+    createdAt: new Date(CREATED_AT.getTime() + index * 60_000),
+    version: 1,
+    ...overrides,
+  });
+}
+
+/**
+ * Compares two texts by code unit, as the database compares them with the collation "C".
+ *
+ * @param left - The first text.
+ * @param right - The second text.
+ * @returns A negative number, 0 or a positive number.
+ */
+export function compareText(left: string, right: string): number {
+  if (left === right) {
+    return 0;
+  }
+  return left < right ? -1 : 1;
+}
+
+/**
+ * Compares two rows in the order of their creation, the id breaking the ties.
+ *
+ * @param left - The first row.
+ * @param right - The second row.
+ * @returns A negative number, 0 or a positive number.
+ */
+export function byCreation(
+  left: { readonly createdAt: Date; readonly id: string },
+  right: { readonly createdAt: Date; readonly id: string },
+): number {
+  return left.createdAt.getTime() - right.createdAt.getTime() || compareText(left.id, right.id);
+}
+
 /** What a spec seeds in the fake spaces. */
 export interface InMemorySpaceSeed {
   // #region Properties
@@ -206,6 +286,15 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
 
   /** The `findVisibleList` calls, as list ids. */
   public readonly findCalls: string[] = [];
+
+  /** The `findVisibleSpaceLists` calls, as space ids. */
+  public readonly spaceListCalls: string[] = [];
+
+  /** The `currentSprints` calls. */
+  public readonly sprintCalls: { readonly today: string; readonly limit: number }[] = [];
+
+  /** The `sidebarLists` calls. */
+  public readonly sidebarCalls: { readonly limit: number }[] = [];
 
   /** The last number given for each prefix. */
   public readonly lastNumbers: Map<string, number>;
@@ -322,6 +411,93 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
   }
 
   /**
+   * Method findVisibleSpaceLists
+   *
+   * @description
+   * Lists the lists of a space of Atelier Nord the viewer sees, in the order of their creation.
+   *
+   * @param {string} organizationId - The organization.
+   * @param {Viewer} viewer - The acting member.
+   * @param {string} spaceId - The space.
+   * @returns {Promise<readonly PlacedList[] | null>} The lists, or `null`.
+   */
+  public findVisibleSpaceLists(
+    organizationId: string,
+    viewer: Viewer,
+    spaceId: string,
+  ): Promise<readonly PlacedList[] | null> {
+    this.trace.push('spaces.findVisibleSpaceLists');
+    this.spaceListCalls.push(spaceId);
+    const space: PlacedSpace | undefined = this.spaces.get(spaceId);
+    if (organizationId !== ATELIER_NORD || space === undefined || !this.sees(viewer, space)) {
+      return Promise.resolve(null);
+    }
+    return Promise.resolve(
+      [...this.lists.values()]
+        .filter((list: PlacedList): boolean => list.spaceId === spaceId)
+        .sort(byCreation),
+    );
+  }
+
+  /**
+   * Method currentSprints
+   *
+   * @description
+   * Lists the sprints of the spaces the viewer sees that are current on a date, by end date then
+   * creation.
+   *
+   * @param {string} organizationId - The organization.
+   * @param {Viewer} viewer - The acting member.
+   * @param {string} today - The date of the caller.
+   * @param {number} limit - How many sprints at most.
+   * @returns {Promise<readonly PlacedList[]>} The sprints.
+   */
+  public currentSprints(
+    organizationId: string,
+    viewer: Viewer,
+    today: string,
+    limit: number,
+  ): Promise<readonly PlacedList[]> {
+    this.trace.push('spaces.currentSprints');
+    this.sprintCalls.push({ today, limit });
+    return Promise.resolve(
+      this.listsOfVisibleSpaces(organizationId, viewer)
+        .filter(
+          (list: PlacedList): boolean =>
+            list.sprint !== null && list.sprint.startDate <= today && today <= list.sprint.endDate,
+        )
+        .sort(
+          (left: PlacedList, right: PlacedList): number =>
+            compareText(left.sprint?.endDate ?? '', right.sprint?.endDate ?? '') ||
+            byCreation(left, right),
+        )
+        .slice(0, limit),
+    );
+  }
+
+  /**
+   * Method sidebarLists
+   *
+   * @description
+   * Lists the first lists of the spaces the viewer sees: the spaces, then their lists, each in the
+   * order of their creation.
+   *
+   * @param {string} organizationId - The organization.
+   * @param {Viewer} viewer - The acting member.
+   * @param {number} limit - How many lists at most.
+   * @returns {Promise<readonly PlacedList[]>} The lists.
+   */
+  public sidebarLists(
+    organizationId: string,
+    viewer: Viewer,
+    limit: number,
+  ): Promise<readonly PlacedList[]> {
+    this.trace.push('spaces.sidebarLists');
+    this.sidebarCalls.push({ limit });
+    return Promise.resolve(this.listsOfVisibleSpaces(organizationId, viewer).slice(0, limit));
+  }
+
+  /**
    * Method allocateKeys
    *
    * @description
@@ -348,6 +524,31 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
     const last: number = this.lastNumbers.get(space.prefix) ?? 0;
     this.lastNumbers.set(space.prefix, last + count);
     return Promise.resolve({ prefix: space.prefix, firstNumber: last + 1 });
+  }
+
+  /**
+   * Method listsOfVisibleSpaces
+   *
+   * @description
+   * Lists the lists of the spaces the viewer sees in the order of the sidebar: the spaces by
+   * creation, then the lists of each by creation.
+   *
+   * @param {string} organizationId - The organization.
+   * @param {Viewer} viewer - The acting member.
+   * @returns {PlacedList[]} The lists.
+   */
+  private listsOfVisibleSpaces(organizationId: string, viewer: Viewer): PlacedList[] {
+    if (organizationId !== ATELIER_NORD) {
+      return [];
+    }
+    return [...this.spaces.values()]
+      .filter((space: PlacedSpace): boolean => this.sees(viewer, space))
+      .sort(byCreation)
+      .flatMap((space: PlacedSpace): PlacedList[] =>
+        [...this.lists.values()]
+          .filter((list: PlacedList): boolean => list.spaceId === space.id)
+          .sort(byCreation),
+      );
   }
 
   /**
@@ -508,6 +709,608 @@ export function summaryOf(state: TaskState, subtaskCounts: SubtaskCounts): TaskS
   };
 }
 
+/** What the specs read of the calls the fake readers received, kept across the runs. */
+export interface ReadRecords {
+  // #region Properties
+  /** The `pageOfList` calls. */
+  readonly pages: {
+    readonly listId: string;
+    readonly filter: TaskFilter;
+    readonly order: TaskOrder;
+    readonly after: TaskPosition | null;
+    readonly limit: number;
+  }[];
+
+  /** The lists of each `countsOfLists` call. */
+  readonly counts: (readonly string[])[];
+
+  /** The `pageAssignedTo` calls. */
+  readonly assigned: {
+    readonly state: MyTaskState;
+    readonly after: TaskPosition | null;
+    readonly limit: number;
+  }[];
+
+  /** The `pageOfLabels` calls. */
+  readonly labels: {
+    readonly spaceIds: readonly string[];
+    readonly search: string | null;
+    readonly limit: number;
+  }[];
+
+  /** The `groupsOfList` calls, as the grouping. */
+  readonly groups: TaskGrouping[];
+  // #endregion
+}
+
+/**
+ * Folds a text the way "without regard to case or accents" does, as the SQL fold does: lower case
+ * (`ß` as `ss`), the ligatures `œ` and `æ` and the stroked letters `ø ł đ ð ħ ŧ ı` that NFKD leaves
+ * whole replaced by their plain letters, decomposed, marks removed.
+ *
+ * @param text - The text.
+ * @returns The folded text.
+ */
+function fold(text: string): string {
+  const plain: Readonly<Record<string, string>> = {
+    ß: 'ss',
+    œ: 'oe',
+    æ: 'ae',
+    ø: 'o',
+    ł: 'l',
+    đ: 'd',
+    ð: 'd',
+    ħ: 'h',
+    ŧ: 't',
+    ı: 'i',
+  };
+  return text
+    .toLowerCase()
+    .replace(/[ßœæøłđðħŧı]/gu, (letter: string): string => plain[letter] ?? letter)
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '');
+}
+
+/**
+ * Cuts a folded text to the first code points a sort key keeps (`SORT_KEY_PREFIX_LENGTH`).
+ *
+ * @param folded - The folded text.
+ * @returns The prefix, counted in code points, not in UTF-16 units.
+ */
+function sortKeyOf(folded: string): string {
+  return Array.from(folded).slice(0, SORT_KEY_PREFIX_LENGTH).join('');
+}
+
+/**
+ * Class InMemoryTaskReads
+ *
+ * @description
+ * A fake of the four read ports of the queries (`TaskQueryReader`, `TaskCounter`,
+ * `AssignedTaskReader`, `LabelReader`) over the tasks of the unit of work, scoped to the
+ * organization as the repositories are. It applies the filters, the closed and late rules and the
+ * orders of the contract just enough for a use case to show its orchestration; the exact SQL
+ * semantics (folding, keyset, collations) are proven against PostgreSQL. It pages by the id of the
+ * position it is given.
+ */
+export class InMemoryTaskReads
+  implements TaskQueryReader, TaskCounter, AssignedTaskReader, LabelReader
+{
+  // #region Properties
+  /** The tasks of the unit of work. */
+  private readonly rows: () => readonly TaskState[];
+
+  /** Builds the summary row of a task. */
+  private readonly summarize: (state: TaskState) => TaskSummaryView;
+
+  /** The calls the specs read. */
+  private readonly records: ReadRecords;
+
+  /** The calls of every fake, in order. */
+  private readonly trace: string[];
+  // #endregion
+
+  // #region Constructor
+  /**
+   * Constructor
+   *
+   * @description
+   * Reads the tasks of one unit of work.
+   *
+   * @param {() => readonly TaskState[]} rows - The tasks of every organization.
+   * @param {(state: TaskState) => TaskSummaryView} summarize - Builds the summary of a task.
+   * @param {ReadRecords} records - Where the calls are recorded.
+   * @param {string[]} trace - The calls of every fake, in order.
+   * @constructor
+   */
+  public constructor(
+    rows: () => readonly TaskState[],
+    summarize: (state: TaskState) => TaskSummaryView,
+    records: ReadRecords,
+    trace: string[],
+  ) {
+    this.rows = rows;
+    this.summarize = summarize;
+    this.records = records;
+    this.trace = trace;
+  }
+  // #endregion
+
+  // #region Methods
+  /**
+   * Method pageOfList
+   *
+   * @description
+   * Reads the tasks of a list that match a filter, in an order.
+   *
+   * @param {string} organizationId - The organization.
+   * @param {string} listId - The list.
+   * @param {TaskFilter} filter - What the tasks must match.
+   * @param {TaskOrder} order - The order of the page.
+   * @param {TaskPosition | null} after - The last task of the previous page.
+   * @param {number} limit - How many rows at most.
+   * @returns {Promise<readonly ListedTask[]>} The tasks.
+   */
+  public pageOfList(
+    organizationId: string,
+    listId: string,
+    filter: TaskFilter,
+    order: TaskOrder,
+    after: TaskPosition | null,
+    limit: number,
+  ): Promise<readonly ListedTask[]> {
+    this.trace.push('queries.pageOfList');
+    this.records.pages.push({ listId, filter, order, after, limit });
+    const sorted: TaskState[] = this.inOrder(this.matching(organizationId, listId, filter), order);
+    const start: number = after === null ? 0 : this.indexAfter(sorted, after.id);
+    return Promise.resolve(
+      sorted.slice(start, start + limit).map((state: TaskState): ListedTask => ({
+        task: this.summarize(state),
+        position: {
+          sortValue: this.sortValueOf(state, order),
+          createdAt: state.createdAt,
+          id: state.id,
+        },
+      })),
+    );
+  }
+
+  /**
+   * Method countOfList
+   *
+   * @description
+   * Counts the tasks of a list that match a filter.
+   *
+   * @param {string} organizationId - The organization.
+   * @param {string} listId - The list.
+   * @param {TaskFilter} filter - What the tasks must match.
+   * @returns {Promise<number>} The count.
+   */
+  public countOfList(organizationId: string, listId: string, filter: TaskFilter): Promise<number> {
+    this.trace.push('queries.countOfList');
+    return Promise.resolve(this.matching(organizationId, listId, filter).length);
+  }
+
+  /**
+   * Method groupsOfList
+   *
+   * @description
+   * Counts the tasks of a list that match a filter by status, priority or assignee; the groups
+   * without a task are left out, except `none` of the assignees, which is always counted. The
+   * total counts the matching tasks once.
+   *
+   * @param {string} organizationId - The organization.
+   * @param {string} listId - The list.
+   * @param {TaskFilter} filter - What the tasks must match.
+   * @param {TaskGrouping} grouping - What the tasks are counted by.
+   * @returns {Promise<TaskGroupCountsView>} The groups, in the order the fake met them, and the
+   * total.
+   */
+  public groupsOfList(
+    organizationId: string,
+    listId: string,
+    filter: TaskFilter,
+    grouping: TaskGrouping,
+  ): Promise<TaskGroupCountsView> {
+    this.trace.push('queries.groupsOfList');
+    this.records.groups.push(grouping);
+    const counts = new Map<string, number>();
+    const add = (value: string): void => {
+      counts.set(value, (counts.get(value) ?? 0) + 1);
+    };
+    if (grouping === 'assignee') {
+      counts.set('none', 0);
+    }
+    const matching: TaskState[] = this.matching(organizationId, listId, filter);
+    for (const state of matching) {
+      if (grouping === 'status') {
+        add(state.status);
+      } else if (grouping === 'priority') {
+        add(state.priority);
+      } else if (state.assigneeIds.length === 0) {
+        add('none');
+      } else {
+        state.assigneeIds.forEach(add);
+      }
+    }
+    return Promise.resolve({
+      groups: [...counts.entries()].map(([value, count]: [string, number]): TaskGroupView => ({
+        value,
+        count,
+      })),
+      total: matching.length,
+    });
+  }
+
+  /**
+   * Method countsOfLists
+   *
+   * @description
+   * Counts the top-level tasks of lists; a list without a task is left out.
+   *
+   * @param {string} organizationId - The organization.
+   * @param {readonly string[]} listIds - The lists.
+   * @param {string} today - The date of the caller.
+   * @returns {Promise<ReadonlyMap<string, TaskCountsView>>} The counts by list id.
+   */
+  public countsOfLists(
+    organizationId: string,
+    listIds: readonly string[],
+    today: string,
+  ): Promise<ReadonlyMap<string, TaskCountsView>> {
+    this.trace.push('counter.countsOfLists');
+    this.records.counts.push(listIds);
+    const counts = new Map<string, TaskCountsView>();
+    for (const state of this.rows()) {
+      if (
+        state.organizationId !== organizationId ||
+        state.parentId !== null ||
+        !listIds.includes(state.listId)
+      ) {
+        continue;
+      }
+      const before: TaskCountsView = counts.get(state.listId) ?? {
+        total: 0,
+        open: 0,
+        done: 0,
+        cancelled: 0,
+        late: 0,
+      };
+      counts.set(state.listId, {
+        total: before.total + 1,
+        open: before.open + (isClosedStatus(state.status) ? 0 : 1),
+        done: before.done + (state.status === 'done' ? 1 : 0),
+        cancelled: before.cancelled + (state.status === 'cancelled' ? 1 : 0),
+        late: before.late + (isLate(state.status, state.dueDate, today) ? 1 : 0),
+      });
+    }
+    return Promise.resolve(counts);
+  }
+
+  /**
+   * Method stateCountsOf
+   *
+   * @description
+   * Counts the tasks assigned to an account in some spaces, subtasks included, by tab.
+   *
+   * @param {string} organizationId - The organization.
+   * @param {string} userId - The account.
+   * @param {readonly string[]} spaceIds - The spaces the actor sees.
+   * @returns {Promise<MyTaskCountsView>} The counts.
+   */
+  public stateCountsOf(
+    organizationId: string,
+    userId: string,
+    spaceIds: readonly string[],
+  ): Promise<MyTaskCountsView> {
+    this.trace.push('counter.stateCountsOf');
+    const assigned: TaskState[] = this.assignedTo(organizationId, userId, spaceIds);
+    const closed: number = assigned.filter((state: TaskState): boolean =>
+      isClosedStatus(state.status),
+    ).length;
+    return Promise.resolve({ open: assigned.length - closed, closed });
+  }
+
+  /**
+   * Method homeStatsOf
+   *
+   * @description
+   * Counts the tasks assigned to an account in some spaces, subtasks included, for "Accueil".
+   *
+   * @param {string} organizationId - The organization.
+   * @param {string} userId - The account.
+   * @param {readonly string[]} spaceIds - The spaces the actor sees.
+   * @param {string} today - The date of the caller.
+   * @returns {Promise<HomeStatsView>} The counters.
+   */
+  public homeStatsOf(
+    organizationId: string,
+    userId: string,
+    spaceIds: readonly string[],
+    today: string,
+  ): Promise<HomeStatsView> {
+    this.trace.push('counter.homeStatsOf');
+    const open: TaskState[] = this.assignedTo(organizationId, userId, spaceIds).filter(
+      (state: TaskState): boolean => !isClosedStatus(state.status),
+    );
+    return Promise.resolve({
+      assigned: open.length,
+      late: open.filter((state: TaskState): boolean => isLate(state.status, state.dueDate, today))
+        .length,
+      dueToday: open.filter((state: TaskState): boolean => state.dueDate === today).length,
+      done: this.assignedTo(organizationId, userId, spaceIds).filter(
+        (state: TaskState): boolean => state.status === 'done',
+      ).length,
+    });
+  }
+
+  /**
+   * Method pageAssignedTo
+   *
+   * @description
+   * Reads the tasks assigned to an account in some spaces, by due date (undated last), then in the
+   * order of creation.
+   *
+   * @param {string} organizationId - The organization.
+   * @param {string} userId - The account.
+   * @param {readonly string[]} spaceIds - The spaces the actor sees.
+   * @param {MyTaskState} state - The tab.
+   * @param {TaskPosition | null} after - The last task of the previous page.
+   * @param {number} limit - How many rows at most.
+   * @returns {Promise<readonly ListedTask[]>} The tasks.
+   */
+  public pageAssignedTo(
+    organizationId: string,
+    userId: string,
+    spaceIds: readonly string[],
+    state: MyTaskState,
+    after: TaskPosition | null,
+    limit: number,
+  ): Promise<readonly ListedTask[]> {
+    this.trace.push('assigned.pageAssignedTo');
+    this.records.assigned.push({ state, after, limit });
+    const sorted: TaskState[] = this.assignedTo(organizationId, userId, spaceIds)
+      .filter((row: TaskState): boolean => isClosedStatus(row.status) === (state === 'closed'))
+      .sort(
+        (left: TaskState, right: TaskState): number =>
+          this.dueFirst(left, right) || byCreation(left, right),
+      );
+    const start: number = after === null ? 0 : this.indexAfter(sorted, after.id);
+    return Promise.resolve(
+      sorted.slice(start, start + limit).map((row: TaskState): ListedTask => ({
+        task: this.summarize(row),
+        position: { sortValue: row.dueDate, createdAt: row.createdAt, id: row.id },
+      })),
+    );
+  }
+
+  /**
+   * Method pageOfLabels
+   *
+   * @description
+   * Reads the labels of the tasks in some spaces, each once per key, by folded name then key, in
+   * the spelling that comes first.
+   *
+   * @param {string} organizationId - The organization.
+   * @param {readonly string[]} spaceIds - The spaces the actor sees.
+   * @param {string | null} search - The text to find in the labels.
+   * @param {LabelPosition | null} after - The last label of the previous page.
+   * @param {number} limit - How many rows at most.
+   * @returns {Promise<readonly ListedLabel[]>} The labels.
+   */
+  public pageOfLabels(
+    organizationId: string,
+    spaceIds: readonly string[],
+    search: string | null,
+    after: LabelPosition | null,
+    limit: number,
+  ): Promise<readonly ListedLabel[]> {
+    this.trace.push('labels.pageOfLabels');
+    this.records.labels.push({ spaceIds, search, limit });
+    const names = new Map<string, string>();
+    for (const state of this.rows()) {
+      if (state.organizationId !== organizationId || !spaceIds.includes(state.spaceId)) {
+        continue;
+      }
+      for (const name of state.labels) {
+        const key: string = labelKey(name);
+        const first: string | undefined = names.get(key);
+        names.set(key, first === undefined || compareText(name, first) < 0 ? name : first);
+      }
+    }
+    const needle: string | null = search === null ? null : fold(search);
+    const listed: ListedLabel[] = [...names.entries()]
+      .filter(
+        ([key]: [string, string]): boolean =>
+          needle === null || (needle !== '' && fold(key).includes(needle)),
+      )
+      .map(([key, name]: [string, string]): ListedLabel => ({
+        label: { name },
+        position: { sortKey: sortKeyOf(fold(key)), labelKey: key },
+      }))
+      .sort(
+        (left: ListedLabel, right: ListedLabel): number =>
+          compareText(left.position.sortKey, right.position.sortKey) ||
+          compareText(left.position.labelKey, right.position.labelKey),
+      )
+      .filter(
+        (row: ListedLabel): boolean =>
+          after === null ||
+          compareText(row.position.sortKey, after.sortKey) > 0 ||
+          (row.position.sortKey === after.sortKey &&
+            compareText(row.position.labelKey, after.labelKey) > 0),
+      );
+    return Promise.resolve(listed.slice(0, limit));
+  }
+
+  /**
+   * Method matching
+   *
+   * @description
+   * Finds the tasks of a list of an organization that match a filter.
+   *
+   * @param {string} organizationId - The organization.
+   * @param {string} listId - The list.
+   * @param {TaskFilter} filter - What the tasks must match.
+   * @returns {TaskState[]} The tasks.
+   */
+  private matching(organizationId: string, listId: string, filter: TaskFilter): TaskState[] {
+    const { statuses, priorities, assignees, labelKeys, search, dueFrom, dueTo } = filter;
+    return this.rows().filter((state: TaskState): boolean => {
+      if (state.organizationId !== organizationId || state.listId !== listId) {
+        return false;
+      }
+      if (filter.rootsOnly && state.parentId !== null) {
+        return false;
+      }
+      if (statuses !== null && !statuses.includes(state.status)) {
+        return false;
+      }
+      if (priorities !== null && !priorities.includes(state.priority)) {
+        return false;
+      }
+      if (
+        assignees !== null &&
+        !state.assigneeIds.some((id: string): boolean => assignees.userIds.includes(id)) &&
+        !(assignees.unassigned && state.assigneeIds.length === 0)
+      ) {
+        return false;
+      }
+      if (
+        labelKeys !== null &&
+        !state.labels.some((name: string): boolean => labelKeys.includes(labelKey(name)))
+      ) {
+        return false;
+      }
+      if (
+        search !== null &&
+        ![state.name, state.key.format(), ...state.labels].some(
+          (text: string): boolean => fold(search) !== '' && fold(text).includes(fold(search)),
+        )
+      ) {
+        return false;
+      }
+      return (
+        (dueFrom === null || (state.dueDate !== null && state.dueDate >= dueFrom)) &&
+        (dueTo === null || (state.dueDate !== null && state.dueDate <= dueTo))
+      );
+    });
+  }
+
+  /**
+   * Method assignedTo
+   *
+   * @description
+   * Finds the tasks assigned to an account in some spaces, subtasks included.
+   *
+   * @param {string} organizationId - The organization.
+   * @param {string} userId - The account.
+   * @param {readonly string[]} spaceIds - The spaces the actor sees.
+   * @returns {TaskState[]} The tasks.
+   */
+  private assignedTo(
+    organizationId: string,
+    userId: string,
+    spaceIds: readonly string[],
+  ): TaskState[] {
+    return this.rows().filter(
+      (state: TaskState): boolean =>
+        state.organizationId === organizationId &&
+        state.assigneeIds.includes(userId) &&
+        spaceIds.includes(state.spaceId),
+    );
+  }
+
+  /**
+   * Method inOrder
+   *
+   * @description
+   * Sorts tasks: the order of the list for `manual` and `createdAt`; the due date with the undated
+   * last, the rank of the priority or the folded name otherwise, ties in the order of the list. A
+   * leading `-` reverses the key only, except for `manual` and `createdAt`, and keeps the undated
+   * last.
+   *
+   * @param {TaskState[]} rows - The tasks, sorted in place.
+   * @param {TaskOrder} order - The order.
+   * @returns {TaskState[]} The same tasks, sorted.
+   */
+  private inOrder(rows: TaskState[], order: TaskOrder): TaskState[] {
+    const sign: number = order.descending ? -1 : 1;
+    return rows.sort((left: TaskState, right: TaskState): number => {
+      if (order.key === 'manual' || order.key === 'createdAt') {
+        return sign * byCreation(left, right);
+      }
+      if (order.key === 'dueDate') {
+        return this.dueFirst(left, right, sign) || byCreation(left, right);
+      }
+      const leftValue: string | number | null = this.sortValueOf(left, order);
+      const rightValue: string | number | null = this.sortValueOf(right, order);
+      const delta: number =
+        typeof leftValue === 'number' && typeof rightValue === 'number'
+          ? leftValue - rightValue
+          : compareText(String(leftValue), String(rightValue));
+      return sign * delta || byCreation(left, right);
+    });
+  }
+
+  /**
+   * Method sortValueOf
+   *
+   * @description
+   * The value an order sorts a task by, as its position holds it.
+   *
+   * @param {TaskState} state - The task.
+   * @param {TaskOrder} order - The order.
+   * @returns {string | number | null} The due date, the rank of the priority, the folded prefix of
+   * the name, or `null` for the order of creation.
+   */
+  private sortValueOf(state: TaskState, order: TaskOrder): string | number | null {
+    switch (order.key) {
+      case 'dueDate':
+        return state.dueDate;
+      case 'priority':
+        return PRIORITY_KEYS.indexOf(state.priority) + 1;
+      case 'name':
+        return sortKeyOf(fold(state.name));
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * Method dueFirst
+   *
+   * @description
+   * Compares two tasks by due date, a task without one always after those with one.
+   *
+   * @param {TaskState} left - The first task.
+   * @param {TaskState} right - The second task.
+   * @param {number} [sign] - 1 for the earliest first, -1 for the latest first.
+   * @returns {number} A negative number, 0 or a positive number.
+   */
+  private dueFirst(left: TaskState, right: TaskState, sign: number = 1): number {
+    if (left.dueDate === null || right.dueDate === null) {
+      return left.dueDate === right.dueDate ? 0 : left.dueDate === null ? 1 : -1;
+    }
+    return sign * compareText(left.dueDate, right.dueDate);
+  }
+
+  /**
+   * Method indexAfter
+   *
+   * @description
+   * Finds where the rows after a position start.
+   *
+   * @param {readonly TaskState[]} sorted - The rows, in the order of the page.
+   * @param {string} id - The id of the last row of the previous page.
+   * @returns {number} The index after that row, the end when it is not in the rows.
+   */
+  private indexAfter(sorted: readonly TaskState[], id: string): number {
+    const index: number = sorted.findIndex((state: TaskState): boolean => state.id === id);
+    return index === -1 ? sorted.length : index + 1;
+  }
+  // #endregion
+}
+
 /**
  * Class InMemoryTasks
  *
@@ -540,6 +1343,15 @@ export class InMemoryTasks implements TasksUnitOfWork {
 
   /** How many of the read-only runs asked for one snapshot. */
   public snapshotRuns: number = 0;
+
+  /** The calls the fake readers of the queries received, across the runs. */
+  public readonly reads: ReadRecords = {
+    pages: [],
+    counts: [],
+    assigned: [],
+    labels: [],
+    groups: [],
+  };
 
   /** The calls of every fake, in order. */
   public readonly trace: string[];
@@ -752,6 +1564,13 @@ export class InMemoryTasks implements TasksUnitOfWork {
           (filter.actorIds === null || filter.actorIds.includes(entry.actor.id))
         );
       });
+    const reads = new InMemoryTaskReads(
+      (): readonly TaskState[] => [...tasks.values()],
+      (state: TaskState): TaskSummaryView =>
+        summaryOf(state, countsOf(state.organizationId, state.id)),
+      this.reads,
+      this.trace,
+    );
     return {
       tasks: {
         findByKey: (organizationId: string, key: TaskKey, lock: boolean): Promise<Task | null> => {
@@ -987,6 +1806,10 @@ export class InMemoryTasks implements TasksUnitOfWork {
         countOfList: (organizationId: string, filter: ListActivityFilter): Promise<number> =>
           Promise.resolve(inList(organizationId, filter).length),
       },
+      queries: reads,
+      counter: reads,
+      assigned: reads,
+      labels: reads,
       events: {
         taskCreated: (task: Task, actor: EventActor): Promise<void> => {
           this.trace.push('events.created');

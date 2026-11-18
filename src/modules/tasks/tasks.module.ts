@@ -13,6 +13,13 @@ import { unassignRemovedMemberProvider } from './composition/providers/use-cases
 import { unassignTaskProvider } from './composition/providers/use-cases/assignee/unassign-task.provider.js';
 import { addChecklistItemProvider } from './composition/providers/use-cases/checklist/add-checklist-item.provider.js';
 import { updateChecklistItemProvider } from './composition/providers/use-cases/checklist/update-checklist-item.provider.js';
+import { countListTaskGroupsProvider } from './composition/providers/use-cases/list/count-list-task-groups.provider.js';
+import { getListCountsProvider } from './composition/providers/use-cases/list/get-list-counts.provider.js';
+import { listListTasksProvider } from './composition/providers/use-cases/list/list-list-tasks.provider.js';
+import { getSpaceOverviewProvider } from './composition/providers/use-cases/space/get-space-overview.provider.js';
+import { listLabelsProvider } from './composition/providers/use-cases/label/list-labels.provider.js';
+import { getHomeProvider } from './composition/providers/use-cases/user/get-home.provider.js';
+import { listMyTasksProvider } from './composition/providers/use-cases/user/list-my-tasks.provider.js';
 import { addTaskLabelProvider } from './composition/providers/use-cases/label/add-task-label.provider.js';
 import { removeTaskLabelProvider } from './composition/providers/use-cases/label/remove-task-label.provider.js';
 import { createSubtaskProvider } from './composition/providers/use-cases/subtask/create-subtask.provider.js';
@@ -21,6 +28,11 @@ import { createTaskProvider } from './composition/providers/use-cases/task/creat
 import { getTaskDetailProvider } from './composition/providers/use-cases/task/get-task-detail.provider.js';
 import { getTaskProvider } from './composition/providers/use-cases/task/get-task.provider.js';
 import { updateTaskProvider } from './composition/providers/use-cases/task/update-task.provider.js';
+import { ListCountsController } from './presentation/http/controllers/count/list-counts.controller.js';
+import { SpaceOverviewController } from './presentation/http/controllers/count/space-overview.controller.js';
+import { LabelsController } from './presentation/http/controllers/label/labels.controller.js';
+import { TaskGroupsController } from './presentation/http/controllers/query/task-groups.controller.js';
+import { UserTasksController } from './presentation/http/controllers/user/user-tasks.controller.js';
 import { ListActivityController } from './presentation/http/controllers/activity/list-activity.controller.js';
 import { TaskActivityController } from './presentation/http/controllers/activity/task-activity.controller.js';
 import { TaskAssigneesController } from './presentation/http/controllers/assignee/task-assignees.controller.js';
@@ -66,8 +78,10 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
  * Class TasksModule
  *
  * @description
- * Composition root of the tasks (P3a): their subtasks, assignees, labels and checklist, and the
- * activity log of a task and of a list. The use cases run on one tenant unit of work that appends
+ * Composition root of the tasks (P3a): their subtasks, assignees, labels and checklist, the activity
+ * log of a task and of a list, and the queries (the tasks of a list with their filters, sorts and
+ * groups, the counters of a list and of a space, the labels, "Mes tâches" and "Accueil"). The use
+ * cases run on one tenant unit of work that appends
  * their events to the outbox in the same transaction. They read the role of the actor, and of the
  * people to assign, from `OrganizationMembersModule` through the `MemberDirectory` port, never from
  * the `role` claim of the internal token (decision 4 of the P3a plan), and the lists, the spaces
@@ -81,6 +95,11 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
   controllers: [
     ListTasksController,
     ListActivityController,
+    TaskGroupsController,
+    ListCountsController,
+    SpaceOverviewController,
+    LabelsController,
+    UserTasksController,
     TasksController,
     TaskAssigneesController,
     TaskLabelsController,
@@ -107,6 +126,13 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
     updateChecklistItemProvider,
     listTaskActivityProvider,
     listListActivityProvider,
+    listListTasksProvider,
+    countListTaskGroupsProvider,
+    getListCountsProvider,
+    getSpaceOverviewProvider,
+    listLabelsProvider,
+    listMyTasksProvider,
+    getHomeProvider,
   ],
   exports: [UnassignRemovedMember],
 })

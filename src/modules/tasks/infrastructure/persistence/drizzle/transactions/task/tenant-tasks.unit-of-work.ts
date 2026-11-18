@@ -11,6 +11,10 @@ import type { TasksUnitOfWork } from '../../../../../application/ports/outbound/
 import { PostgresqlTransactionClock } from '../../../../adapters/postgresql/transaction-clock.adapter.js';
 import { OutboxTaskEvents } from '../../../../messaging/outbox/task/outbox-task-events.adapter.js';
 import { DrizzleActivityRepository } from '../../repositories/activity/drizzle-activity.repository.js';
+import { DrizzleAssignedTaskReader } from '../../repositories/assignee/drizzle-assigned-task-reader.repository.js';
+import { DrizzleTaskCounter } from '../../repositories/count/drizzle-task-counter.repository.js';
+import { DrizzleLabelReader } from '../../repositories/label/drizzle-label-reader.repository.js';
+import { DrizzleTaskQueryReader } from '../../repositories/query/drizzle-task-query-reader.repository.js';
 import { DrizzleTaskReader } from '../../repositories/task/drizzle-task-reader.repository.js';
 import { DrizzleTaskRepository } from '../../repositories/task/drizzle-task.repository.js';
 
@@ -149,6 +153,10 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
           tasks: new DrizzleTaskRepository(transaction.db),
           reader: new DrizzleTaskReader(transaction.db),
           activity: new DrizzleActivityRepository(transaction.db),
+          queries: new DrizzleTaskQueryReader(transaction.db),
+          counter: new DrizzleTaskCounter(transaction.db),
+          assigned: new DrizzleAssignedTaskReader(transaction.db),
+          labels: new DrizzleLabelReader(transaction.db),
           events: new OutboxTaskEvents(transaction, this.outbox, (): void => {
             appends.count += 1;
           }),

@@ -405,6 +405,48 @@ export class InMemorySpaces implements SpacesUnitOfWork {
   }[] = [];
 
   /**
+   * Property listAllOfSpaceCalls
+   *
+   * @description
+   * The space of each `listAllOfSpace` call.
+   *
+   * @type {string[]}
+   * @readonly
+   */
+  public readonly listAllOfSpaceCalls: string[] = [];
+
+  /**
+   * Property listCurrentSprintsCalls
+   *
+   * @description
+   * The arguments of each `listCurrentSprintsVisibleTo` call.
+   *
+   * @type {{ organizationId: string; viewerUserId: string; today: string; limit: number }[]}
+   * @readonly
+   */
+  public readonly listCurrentSprintsCalls: {
+    readonly organizationId: string;
+    readonly viewerUserId: string;
+    readonly today: string;
+    readonly limit: number;
+  }[] = [];
+
+  /**
+   * Property listFirstVisibleCalls
+   *
+   * @description
+   * The arguments of each `listFirstVisibleTo` call.
+   *
+   * @type {{ organizationId: string; viewerUserId: string; limit: number }[]}
+   * @readonly
+   */
+  public readonly listFirstVisibleCalls: {
+    readonly organizationId: string;
+    readonly viewerUserId: string;
+    readonly limit: number;
+  }[] = [];
+
+  /**
    * Property lastNumbers
    *
    * @description
@@ -474,6 +516,30 @@ export class InMemorySpaces implements SpacesUnitOfWork {
    */
   private static prefixKey(organizationId: string, prefix: string): string {
     return `${organizationId}/${prefix}`;
+  }
+
+  /**
+   * Method isVisibleSpace
+   *
+   * @description
+   * The visibility filter of the repositories for a member that is no guest: the space is of the
+   * organization, belongs to the whole organization or to the viewer, and does not await an owner.
+   *
+   * @param {SpaceState | undefined} space - The space, when it exists.
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} viewerUserId - The account of the member.
+   * @returns {boolean} Whether the viewer sees the space.
+   */
+  private static isVisibleSpace(
+    space: SpaceState | undefined,
+    organizationId: string,
+    viewerUserId: string,
+  ): boolean {
+    return (
+      space?.organizationId === organizationId &&
+      !space.awaitingOwner &&
+      (space.visibility === 'organization' || space.ownerUserId === viewerUserId)
+    );
   }
 
   /**
@@ -713,6 +779,77 @@ export class InMemorySpaces implements SpacesUnitOfWork {
             InMemorySpaces.page(inSpace, after, limit).map((row: TaskListState): TaskList =>
               TaskList.restore(row),
             ),
+          );
+        },
+        listAllOfSpace: (organizationId: string, spaceId: string): Promise<TaskList[]> => {
+          this.listAllOfSpaceCalls.push(spaceId);
+          return Promise.resolve(
+            InMemorySpaces.page(
+              [...lists.values()].filter(
+                (row: TaskListState): boolean =>
+                  row.organizationId === organizationId && row.spaceId === spaceId,
+              ),
+              null,
+              Number.MAX_SAFE_INTEGER,
+            ).map((row: TaskListState): TaskList => TaskList.restore(row)),
+          );
+        },
+        listCurrentSprintsVisibleTo: (
+          organizationId: string,
+          viewerUserId: string,
+          today: string,
+          limit: number,
+        ): Promise<TaskList[]> => {
+          this.listCurrentSprintsCalls.push({ organizationId, viewerUserId, today, limit });
+          const current: TaskListState[] = [...lists.values()].filter(
+            (row: TaskListState): boolean =>
+              row.organizationId === organizationId &&
+              InMemorySpaces.isVisibleSpace(
+                spaces.get(row.spaceId),
+                organizationId,
+                viewerUserId,
+              ) &&
+              row.sprint !== null &&
+              row.sprint.startDate <= today &&
+              row.sprint.endDate >= today,
+          );
+          return Promise.resolve(
+            current
+              .sort(
+                (left: TaskListState, right: TaskListState): number =>
+                  (left.sprint?.endDate ?? '').localeCompare(right.sprint?.endDate ?? '') ||
+                  left.createdAt.getTime() - right.createdAt.getTime() ||
+                  left.id.localeCompare(right.id),
+              )
+              .slice(0, limit)
+              .map((row: TaskListState): TaskList => TaskList.restore(row)),
+          );
+        },
+        listFirstVisibleTo: (
+          organizationId: string,
+          viewerUserId: string,
+          limit: number,
+        ): Promise<TaskList[]> => {
+          this.listFirstVisibleCalls.push({ organizationId, viewerUserId, limit });
+          const visible: TaskListState[] = [...lists.values()].filter(
+            (row: TaskListState): boolean =>
+              row.organizationId === organizationId &&
+              InMemorySpaces.isVisibleSpace(spaces.get(row.spaceId), organizationId, viewerUserId),
+          );
+          return Promise.resolve(
+            visible
+              .sort((left: TaskListState, right: TaskListState): number => {
+                const leftSpace: SpaceState | undefined = spaces.get(left.spaceId);
+                const rightSpace: SpaceState | undefined = spaces.get(right.spaceId);
+                return (
+                  (leftSpace?.createdAt.getTime() ?? 0) - (rightSpace?.createdAt.getTime() ?? 0) ||
+                  left.spaceId.localeCompare(right.spaceId) ||
+                  left.createdAt.getTime() - right.createdAt.getTime() ||
+                  left.id.localeCompare(right.id)
+                );
+              })
+              .slice(0, limit)
+              .map((row: TaskListState): TaskList => TaskList.restore(row)),
           );
         },
       },

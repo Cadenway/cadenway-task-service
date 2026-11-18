@@ -76,5 +76,59 @@ export interface TaskListRepository {
     after: PagePosition | null,
     limit: number,
   ): Promise<TaskList[]>;
+
+  /**
+   * Method listAllOfSpace
+   *
+   * @description
+   * Every list of a space in the order of their creation (id as tie-breaker), unpaged: a space
+   * holds few lists, and the caller needs all of them. It does not check that the viewer sees the
+   * space.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} spaceId - The space.
+   * @returns {Promise<TaskList[]>} Its lists.
+   */
+  listAllOfSpace(organizationId: string, spaceId: string): Promise<TaskList[]>;
+
+  /**
+   * Method listCurrentSprintsVisibleTo
+   *
+   * @description
+   * The sprints of the spaces a viewer sees (the whole organization and the private ones the viewer
+   * owns, none awaiting an owner) whose period holds `today`, bounds included, ordered by end date,
+   * then creation instant, then id, at most `limit`.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} viewerUserId - The account of the member.
+   * @param {string} today - The calendar date of the caller, `YYYY-MM-DD`.
+   * @param {number} limit - Most rows to return.
+   * @returns {Promise<TaskList[]>} The sprints, at most `limit`.
+   */
+  listCurrentSprintsVisibleTo(
+    organizationId: string,
+    viewerUserId: string,
+    today: string,
+    limit: number,
+  ): Promise<TaskList[]>;
+
+  /**
+   * Method listFirstVisibleTo
+   *
+   * @description
+   * The first lists of the spaces a viewer sees, in sidebar order: spaces by creation instant (id as
+   * tie-breaker), then the lists of each space by creation instant (id as tie-breaker), at most
+   * `limit`. Sprints are lists and are included.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} viewerUserId - The account of the member.
+   * @param {number} limit - Most rows to return.
+   * @returns {Promise<TaskList[]>} The lists, at most `limit`.
+   */
+  listFirstVisibleTo(
+    organizationId: string,
+    viewerUserId: string,
+    limit: number,
+  ): Promise<TaskList[]>;
   // #endregion
 }

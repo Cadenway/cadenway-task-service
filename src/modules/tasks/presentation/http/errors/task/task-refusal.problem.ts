@@ -67,6 +67,10 @@ function shapeOf(refusal: TaskRefusalReason): ProblemShape {
       return { status: 404, code: 'task.not-found' };
     case 'list-not-found':
       return { status: 404, code: 'list.not-found' };
+    case 'space-not-found':
+      return { status: 404, code: 'space.not-found' };
+    case 'user-not-found':
+      return { status: 404, code: 'user.not-found' };
     case 'checklist-item-not-found':
       return { status: 404, code: 'checklist-item.not-found' };
     case 'version-mismatch':

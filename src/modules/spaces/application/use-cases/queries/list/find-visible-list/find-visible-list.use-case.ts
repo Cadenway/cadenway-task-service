@@ -1,10 +1,9 @@
 import type { TaskList } from '../../../../../domain/aggregates/list/task-list.aggregate.js';
 import type { Space } from '../../../../../domain/aggregates/space/space.aggregate.js';
-import type { TaskListState } from '../../../../../domain/value-objects/list/task-list-state.value-object.js';
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
+import { toVisibleList } from '../../../../mappers/list/visible-list.mapper.js';
 import type { SpacesStore } from '../../../../models/transactions/spaces-store.model.js';
 import type { SpacesUnitOfWork } from '../../../../ports/outbound/transactions/space/spaces-unit-of-work.port.js';
-import type { VisibleList } from '../../../../projections/list/visible-list.projection.js';
 import type { VisibleSpace } from '../../../../projections/space/visible-space.projection.js';
 import type { SpaceView } from '../../../../projections/space/space-view.projection.js';
 import { SpaceViewBuilder } from '../../../../services/space/space-view-builder.service.js';
@@ -96,38 +95,9 @@ export class FindVisibleList {
           input.organizationId,
           space.snapshot,
         );
-        return { list: this.toVisibleList(list.snapshot), space: this.toVisibleSpace(view) };
+        return { list: toVisibleList(list.snapshot), space: this.toVisibleSpace(view) };
       },
     );
-  }
-
-  /**
-   * Method toVisibleList
-   *
-   * @description
-   * Copies a stored list into its public projection.
-   *
-   * @param {TaskListState} state - The stored list.
-   * @returns {VisibleList} The projection.
-   */
-  private toVisibleList(state: TaskListState): VisibleList {
-    return {
-      id: state.id,
-      spaceId: state.spaceId,
-      name: state.name,
-      icon: state.icon,
-      color: state.color,
-      sprint:
-        state.sprint === null
-          ? null
-          : {
-              startDate: state.sprint.startDate,
-              endDate: state.sprint.endDate,
-              goal: state.sprint.goal,
-            },
-      createdAt: state.createdAt,
-      version: state.version,
-    };
   }
 
   /**

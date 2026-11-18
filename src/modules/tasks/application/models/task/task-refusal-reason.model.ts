@@ -8,8 +8,9 @@ import type { StatusKey } from '../../../domain/value-objects/task/status-key.va
  * (`openapi/internal/task-service.yaml`): the presentation layer maps each reason to its problem.
  *
  * - `organization-not-found`: the copy of the memberships does not hold the actor as a member.
- * - `task-not-found`, `list-not-found`, `checklist-item-not-found`: unknown, or not seen by the
- *   actor.
+ * - `task-not-found`, `list-not-found`, `space-not-found`, `checklist-item-not-found`: unknown, or
+ *   not seen by the actor.
+ * - `user-not-found`: the `userId` of a route of the tasks of the actor is not the actor.
  * - `version-mismatch`: `If-Match` names another version than the stored one.
  * - `status-hidden`: the status is hidden in the space the task is in after the operation.
  * - `cancel-reason-required`, `cancel-reason-unexpected`: the cancellation rules.
@@ -24,6 +25,8 @@ export type TaskRefusalReason =
   | { readonly reason: 'organization-not-found' }
   | { readonly reason: 'task-not-found' }
   | { readonly reason: 'list-not-found' }
+  | { readonly reason: 'space-not-found' }
+  | { readonly reason: 'user-not-found' }
   | { readonly reason: 'checklist-item-not-found' }
   | { readonly reason: 'version-mismatch'; readonly version: number }
   | { readonly reason: 'status-hidden'; readonly status: StatusKey }

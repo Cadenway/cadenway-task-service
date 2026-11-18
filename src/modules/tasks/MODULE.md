@@ -11,14 +11,20 @@ The tasks of each organization (P3a, "Tâches") and what hangs from a task:
 - the activity log of the tasks (creation, status, priority, due date, assignment), read by task
   and by list;
 - the unassignment of a member who left the organization from their tasks, one batch per call,
-  which the clean-up job of member-lifecycle runs after the removal.
+  which the clean-up job of member-lifecycle runs after the removal;
+- the seven queries the product screens read: the tasks of a list with filters and sorts, the
+  counts of its groups, the counters of a list, the overview of a space, the labels, "Mes tâches"
+  and "Accueil". They live here, not in a module of their own, because they read the tables of
+  this module (see Decisions).
 
 It decides who sees a task: whoever sees the space of its list, with the visibility rules of the
 spaces module, from the copy of the memberships of the organization-members module, never from the
 `role` claim of the internal token. It does not own spaces, lists or the numbers of the task keys
 (spaces hands them out), the memberships (organization-members), the documents, the attachments or
-the automation rules (other services), nor the task queries by list, group, label or assignee, nor
-the overview, the counts and the home, which the task query module serves from PR 3.
+the automation rules (other services). The lists, sprints and spaces the queries show come from
+five public entries of the spaces module (`FindVisibleList`, `ListVisibleSpaceIds`,
+`FindVisibleSpaceLists`, `ListCurrentSprints`, `ListSidebarLists`), which join the transaction of
+the query.
 
 ## Public entry points
 
@@ -45,7 +51,8 @@ handed over, from `afterTaskId: null`, then after each `lastTaskId`, until `none
 | `checklist_items`  | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
 | `activity_entries` | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
 
-Created by `migrations/0003_tasks.sql`, which forces the five policies by hand.
+Created by `migrations/0003_tasks.sql`, which forces the five policies by hand;
+`migrations/0004_task_queries.sql` adds the two indexes below, as plain `CREATE INDEX` (see Decisions).
 
 - `tasks.id`, `checklist_items.id` and `activity_entries.id` come from `uuidv7()`. The instants
   that order a page (`created_at`, `occurred_at`, `completed_at`) are `timestamptz(3)`, so that the
@@ -73,8 +80,47 @@ created_at, id)` (subtasks, counts, the subtree and the ancestors);
   `activity_entries (organization_id, task_id, occurred_at, id)` and
   `activity_entries (organization_id, list_id, occurred_at, id)` (the two activity routes, their
   counts and the merge candidate). The assignees, labels and checklist are read through their
-  primary or unique key prefix. No query plan was taken on representative data yet. PR 3 adds the
-  indexes the list queries need.
+  primary or unique key prefix.
+- `tasks (organization_id, list_id, created_at, id)` (`tasks_list_created_index`): every statement
+  on the tasks of one list (page, total, groups, counters) is a range of the list, and the pages in
+  creation order (`manual`, `createdAt`, both directions) are an ordered scan that stops at the
+  limit when the filters keep a fair share of the list (a rare filter reads more of the range
+  before it finds `limit` rows, up to the whole list). Plans taken as `task_app` on 75,000+ tasks (PostgreSQL 18; 98 top-level tasks and 150
+  subtasks in Sprint 14, a list of 20,000 top-level tasks and 5,000 subtasks, 25,000 tasks in a
+  sibling list and 25,000 in another organization): Sprint 14 page, total, groups and counters read
+  7 to 15 blocks of the 2,375 of `tasks` in 0.1 to 0.3 ms (without the index: a Seq Scan, 2,375
+  blocks, 3 to 5 ms); on the large list the first page in creation order reads 105 blocks in 0.1 ms
+  (6 blocks for `-manual`) against a Seq Scan of 15 ms. The other sorts read the whole range of the
+  list (a bitmap scan, 1,086 blocks) and keep the top rows in memory: 19 to 22 ms for `dueDate` and
+  `priority`, 65 to 69 ms for `name` (106 ms for its second page: the name is folded for each row).
+  So a page of any sort but the creation order is O(tasks of the list) at every depth, the second
+  page and the hundredth alike; no index serves them (see "Not indexed"). The
+  large list is 27 % of the table, so the total, groups and counters of it cost about what a Seq Scan
+  costs (4 to 11 ms).
+- `task_labels (organization_id, label_key, task_id)` (`task_labels_key_index`): the label filter
+  only. Kept because plans use it, with a small gain at this size: the label total of the large
+  list is a bitmap scan of the key, 11.5 ms against 14.0 ms for a Seq Scan of `task_labels` without
+  it; in creation order the primary key serves the nested loop as well (1.0 ms with, 0.7 ms
+  without). The labels route does not use it: it groups the label rows of the visible tasks and
+  sorts the groups by an expression of `label_key`, so it reads them all whatever the index (a Seq
+  Scan, 2,940 to 3,534 blocks, 31 to 41 ms).
+- Not indexed, on purpose: `search` (a fold of the name and the labels, and a lower-cased key, of
+  one list, 28 to 84 ms for 20,000 tasks; an index would need `pg_trgm`), the `dueDate`, `priority` and `name` sorts (the
+  total is already O(list)), "Mes tâches" and "Accueil" (the hash join of the assignments of the
+  caller with their tasks, 17 to 44 ms for a person assigned to 10,006 of the 75,000 tasks;
+  `task_assignees_user_index` serves the assignment side) and the counters of lists that are most of
+  the table (a Seq Scan, 24 ms, for a space of 45,000 tasks; the counters of the lists of a small
+  space are a range, 15 blocks). If counters outgrow their budget, add `INCLUDE (parent_id, status,
+due_date)` to the list index for index-only counts; status changes then stop being HOT updates.
+- The counters, the totals and the groups read every task row of the list (or of the space): they
+  need `status`, `due_date` and `parent_id`, which the index does not hold, so each is a heap read of
+  the range. `list_id` is in the index, so moving a task to another list is not a HOT update.
+- The two indexes are built by plain `CREATE INDEX` in the transaction of the migrator, which takes
+  a `SHARE` lock on `tasks` and on `task_labels` until it commits: writes to them wait, and may fail
+  on the 5 s `lock_timeout` of the application role (`55P03`, answered `500`) while the new version
+  deploys; reads go on. A concurrent build needs a separate non-transactional step later (see
+  Decisions). Rollback is `DROP INDEX IF EXISTS tasks_list_created_index, task_labels_key_index;` in
+  a new migration (a merged migration is never edited).
 
 ## API
 
@@ -97,6 +143,13 @@ created_at, id)` (subtasks, counts, the subtree and the ancestors);
 | `POST /internal/v1/tasks/{taskKey}/checklist-items`                    | `addChecklistItemInternal`    | `201`, `Location`, `ETag` |
 | `PATCH /internal/v1/tasks/{taskKey}/checklist-items/{checklistItemId}` | `updateChecklistItemInternal` | `200`, `ETag`             |
 | `GET /internal/v1/tasks/{taskKey}/activity`                            | `listTaskActivityInternal`    | `200`                     |
+| `GET /internal/v1/lists/{listId}/tasks`                                | `listTasksInternal`           | `200`                     |
+| `GET /internal/v1/lists/{listId}/task-groups`                          | `countTaskGroupsInternal`     | `200`                     |
+| `GET /internal/v1/lists/{listId}/counts`                               | `getListCountsInternal`       | `200`                     |
+| `GET /internal/v1/spaces/{spaceId}/overview`                           | `getSpaceOverviewInternal`    | `200`                     |
+| `GET /internal/v1/labels`                                              | `listLabelsInternal`          | `200`                     |
+| `GET /internal/v1/users/{userId}/tasks`                                | `listMyTasksInternal`         | `200`                     |
+| `GET /internal/v1/users/{userId}/home`                                 | `getHomeInternal`             | `200`                     |
 
 - The task routes and `listSubtasks` name a task by its key, `^[A-Z]{2,5}-[1-9][0-9]{0,8}$`: a
   lower-case or zero-padded key answers `400 request.invalid`.
@@ -114,15 +167,20 @@ created_at, id)` (subtasks, counts, the subtree and the ancestors);
 - `kind` and `actorId` of the activity routes are comma-separated (`?kind=status,assign`), as the
   gateway forwards them; a repeated parameter is read the same way. An `actorId` that is a UUID is
   lower-cased; any other actor id (`task-service`, an automation) is matched as sent.
-- Refusals: `404 task.not-found`, `list.not-found`, `checklist-item.not-found`,
-  `organization.not-found`; `412 request.version-mismatch`; `422 task.status-hidden`
+- Refusals: `404 task.not-found`, `list.not-found`, `space.not-found` (the overview),
+  `user.not-found` (the two `users` routes, when `userId` is not the actor, checked before the
+  membership), `checklist-item.not-found`, `organization.not-found`; `412 request.version-mismatch`; `422 task.status-hidden`
   (`details.status`), `task.cancel-reason-required`, `task.cancel-reason-unexpected`,
   `task.assignee-invalid` (`details.userIds`), `task.assignee-limit-reached`,
   `task.label-limit-reached`, `task.checklist-limit-reached`, `task.start-date-invalid`,
   `task.list-invalid`, `task.parent-invalid` (`details.parentKey`), `task.subtask-depth-exceeded`
   and `task.subtask-limit-reached`.
-- The task queries by list, group, label or assignee (`GET /internal/v1/lists/{listId}/tasks`, groups, my
-  tasks, labels), the overview and the counts are PR 3.
+- The seven queries answer `200` without an `ETag`. `limit` is 1 to 100 (50 by default), `cursor` is
+  the `nextCursor` of a page of the same collection with the same filters, sort, list, space or
+  account, at most 2,048 characters: any other answers `400 request.invalid` with one issue
+  `{ in: 'query', path: 'cursor', code: 'invalid_cursor' }`. `status`, `priority`, `assignee` and
+  `label` are comma-separated or repeated; ids are read in either case. A parameter the route does not
+  declare, and a date of the year 0000 in `today`, `dueFrom` or `dueTo`, answer `400`.
 
 ## Events emitted
 
@@ -205,6 +263,39 @@ never changes the assignees.
 - A text holding U+0000, in any member, or a calendar date of the year 0000 in `dueDate` or
   `startDate`, answers `400 request.invalid`: the contract validators accept them, PostgreSQL cannot
   store them. A name, a label or a note that reads `0000-11-03` is only a text.
+- Visibility of the queries: a list or a space the actor does not see answers `404`; the cross-list
+  routes (labels, "Mes tâches", "Accueil") read the tasks of the spaces the actor sees only. A guest
+  sees nothing: the list and space routes answer `404`, labels and "Mes tâches" an empty page with
+  zero counts, "Accueil" zeros and empty lists. An account that is not the actor never reads
+  another's tasks or home.
+- Filters of a list (tasks and groups): values of one filter add up, filters narrow each other.
+  `assignee` takes account ids, `me` (the actor) and `none` (nobody assigned); `label` compares the
+  label key (trimmed, form C, lower case), so case is ignored and accents are significant; `search`
+  looks in the name, the key and the labels, ignoring case and accents, the text as sent, with no
+  wildcard, and a text that folds to nothing (combining marks alone) matches nothing; `dueFrom` and `dueTo` are inclusive and leave out the undated, `dueFrom` after `dueTo`
+  gives an empty result; `level` `roots` (default) keeps the top-level tasks, `all` adds the
+  subtasks as tasks, for the page, the `total` and the groups alike. `total` counts the matching
+  tasks on every page.
+- Sorts: `manual` is `createdAt`, the order of creation (no position is stored yet); `dueDate` puts
+  the undated last in both directions; `priority` goes from `urgente` to `basse`; `name` ignores case
+  and accents. The order of the list (`created_at`, `id`) breaks every tie. A leading `-` reverses the
+  key only: ties stay in ascending list order, except `-manual` and `-createdAt`, which reverse the
+  whole order.
+- Groups: `status` and `priority` list every key in the order of the contract, zeros included;
+  `assignee` lists the accounts assigned to at least one matching task by descending count then
+  account, then `none`, always last and present even at 0. A task with several assignees counts in
+  each group; `total` counts each task once.
+- Counters (`TaskCounts`, the overview, "Accueil" lists and sprints) count top-level tasks only:
+  `total`, `open` (not `done` or `cancelled`), `done` (« Terminées »), `cancelled` and `late` (open
+  and due strictly before the `today` of the caller, which the service does not know). The overview
+  gives `listCount` and `taskCount` of the whole space on every page; "Mes tâches" and the stats of
+  "Accueil" count the tasks assigned to the actor, subtasks included, with the counts of both tabs
+  on every page; "Accueil" lists the 7 next open tasks, the current sprints (start and end
+  inclusive, at most 10, by end date then creation) and the first 6 lists in the order of the
+  sidebar (spaces then lists, by creation), sprints included.
+- Labels: one per label key, whatever the case, in the order of the first 128 code points of the
+  folded key then the key (code point order); the spelling is the first in code point order among
+  the visible tasks, so a private space leaks none. A search that folds to nothing matches nothing.
 
 ## Transactions
 
@@ -251,7 +342,46 @@ transaction, and the request answers an error or the batch of the clean-up job i
 412 is checked inside the transaction, after the visibility of the task and before the domain
 rules.
 
-Reads (`GET` routes) run in read-only transactions without locks (see above).
+Reads (`GET` routes) run in read-only transactions without locks (see above). The tasks of a list,
+the groups, the counters of a list, the labels and "Mes tâches" read each statement as committed
+when it started (the page and the total of a list are two statements); the overview and "Accueil"
+run on one snapshot (`REPEATABLE READ`), so that their counters agree with each other. The
+statements of a route do not depend on the page size or on the size of the organization: the tasks
+of a list 6 to 11 (the summaries are skipped for an empty page), the groups 5 (the groups and the
+total of the assignees come from one statement), the counters of a list 5, the overview 4, the
+labels 3, "Mes tâches" 9, "Accueil" 12 (control statements of the transaction not counted).
+
+What a request costs, per route (what grows with the data, whatever the page size; the numbers are
+the medians of five calls through HTTP on the 75,000 tasks of `tests/task-queries.int-spec.ts`):
+
+- Tasks of a list: O(tasks of the list) for the total and for every sort but the creation order,
+  at every depth; the creation order reads about `limit` rows through the index. The large list
+  (20,000 top-level tasks) answers in 19 ms (creation order), 40 ms (`dueDate`, `priority`), 85 ms
+  (`name`), 125 to 130 ms (`search`) and 80 ms (`assignee=me,none`); Sprint 14 in 8 to 16 ms.
+- Groups and counters of a list: O(tasks of the list), one statement each (16 to 36 ms on the large
+  list, 8 to 10 ms on Sprint 14). The groups of the assignees are one grouped scan of the tasks
+  joined to their assignees, with the total as an extra grouping set.
+- Overview: O(tasks of the space) whatever `limit`: it reads every list of the space whole, counts
+  the tasks of all of them and slices the page in memory; `listCount` and `taskCount` are counted
+  again on every page (29 ms for the space of the large list).
+- Labels: O(label rows of the visible tasks), whatever `limit`, `search` or `cursor`: a join of
+  `task_labels` and `tasks` grouped by label key (31 to 48 ms at 75,000 tasks), the fold running
+  once per distinct key. Page 2 and a search cost the same as page 1.
+- "Mes tâches" and "Accueil": O(assignments of the actor), lifetime ones included (the hash join of
+  the assignments with their tasks; 50 to 80 ms for 10,006 assignments), "Accueil" doing it for the
+  stats and the seven tasks and calling two spaces reads.
+- Every route that sorts or searches in SQL pays the fold of the name per row; the fold takes the
+  short path for ASCII text.
+
+The application role runs under a 10 s `statement_timeout` (and a 5 s `lock_timeout`): a query that
+exceeds it is cancelled by PostgreSQL (SQLSTATE `57014`, "canceling statement due to statement
+timeout") and the route answers `500 internal.unexpected`; a `57014` in the completion line of a
+request therefore means a costly list query (a large list with a search or an unselective sort),
+not a defect of the request. Only the statement is bounded: a request that sends several statements
+can hold its connection longer than 10 s. The server span of a request carries its query string
+(`url.query`: the `search` text, the labels) when OTLP is configured, because the
+`startTelemetry` of `@cadenway/nest-common` passes no `redactedQueryParams`: a gap of
+cadenway-service-kit, to be reported there.
 
 A batch of the unassignment of a removed member (`UnassignRemovedMember`) runs in its own tenant
 transaction of the organization of the clean-up job: the locking read of up to 500 tasks (a range
@@ -313,6 +443,51 @@ member-lifecycle (its MODULE.md).
   for one batch at most. The job loops within its attempt rather than enqueuing a continuation: the
   remaining assignments in `task_assignees` are the cursor, so a retry resumes from `null` without
   carrying state.
+- The seven queries live in this module: a separate module cannot import the task tables (the strict
+  layout forbids the import of another module's schemas), every route must call a use case of its
+  own module, and the overview, the counters and "Accueil" need the tasks of the lists that spaces
+  hands over, which adds no cycle (tasks already depends on spaces; spaces never depends on tasks).
+  Decision of the coordinating session for PR 3 of P3a.
+- "Without regard to case or accents" is one SQL expression used on both sides of every
+  comparison: `regexp_replace(normalize(translate(replace(replace(casefold(x COLLATE
+"pg_unicode_fast"), 'œ', 'oe'), 'æ', 'ae'), 'øłđðħŧı', 'olddhti'), NFKD), <combining marks>, '',
+'g')`. The `replace` and `translate` steps fold the letters NFKD leaves whole (`Œuvre` is found by
+  `oeuvre` and sorts among the `o`); a text of only ASCII is just lower-cased, and a text without
+  one of those letters skips the two steps. It needs PostgreSQL 18 (`casefold`, `pg_unicode_fast`)
+  and a UTF8 database, and no extension; `strpos` avoids escaping `LIKE` wildcards. The key of a
+  task is ASCII, so the search compares `lower(key)` with the folded text. The application fakes
+  fold the same way.
+- The cursor of `name` carries the first 128 code points of the folded name, and the cursor of the
+  labels the first 128 of the folded key (`SORT_KEY_PREFIX_LENGTH`, one constant of the domain, re-exported
+  by the application for the presentation layer, that the order, the cursor validators and the fakes share; the kit refuses a cursor over 2,048
+  characters, a name has up to 300 and the fold expands, for example `U+FDFA` into eighteen
+  letters). Two names equal on 128 folded code points fall back to the order of the list, two labels
+  to the order of their keys.
+- The cursor of the groups is `sort = [count]`, `id = value` for the three groupings; the groups
+  are all computed on each request (bounded by the statuses, priorities or assignees of one list)
+  and sliced in memory, as the overview slices its lists.
+- Reversed sorts keep ties in ascending list order, `none` is always present, assignee ties go by
+  account, and `dueFrom` after `dueTo` gives an empty result: the contract leaves these open.
+- A label that contains a comma cannot be a `label` filter (comma-separated by the contract): to
+  report to the contract owner.
+- Left as they are, measured and documented: the overview reads every list of its space and slices
+  in memory (`taskCount` needs the whole space anyway); the visible space ids go to the labels,
+  "Mes tâches" and "Accueil" as one array, unbounded by the number of spaces of the organization;
+  `total` is counted again on every page, cursor pages included (the contract gives it on each
+  page); the page and the total of a list are two statements, so a concurrent write can make them
+  disagree by a task (read committed).
+- The two indexes are plain `CREATE INDEX`: the Drizzle migrator runs all migrations in one
+  transaction, which forbids `CONCURRENTLY`. The tables are small in P3a (the build takes about a
+  second on 75,000 tasks); a large production table would need a separate concurrent step in
+  `src/migrate.ts`. Rollback: `DROP INDEX IF EXISTS tasks_list_created_index,
+task_labels_key_index;`, which the previous release does not need.
+- `tests/task-queries.int-spec.ts` is the integration test of the queries on real PostgreSQL and
+  NATS: every route against its generated response validator and a reference model of the filters,
+  sorts, groups and counters written in the spec, the exact counters of Sprint 14 of the contract
+  (98, 72, 24, 2, 3 on 2026-11-08), visibility, guests, isolation of the organizations as `task_app`,
+  the 400 cases, the statements per route and the plans above (no Seq Scan of `tasks` for Sprint 14
+  pages, totals and groups, under 2 % of its blocks), and the median of five calls per route against
+  generous bounds (300 ms at the size of Sprint 14, 2,000 ms on the large list).
 - `tests/tasks.int-spec.ts` is the integration test of the routes, the rules, idempotency, row-level
   security and the removal of a member on real PostgreSQL, NATS and pg-boss: the removal commits
   with its clean-up job, the job empties 1,200 assignments in three batches, a redelivered removal
