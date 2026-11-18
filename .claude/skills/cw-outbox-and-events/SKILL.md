@@ -8,9 +8,10 @@ description: "How to publish and consume events reliably with @cadenway/nest-mes
 The wiring is in place (`src/app.module.ts`): `MessagingModule` connects as the NATS user `task`,
 `OutboxModule` provides the writer, the relay and the deduplicator, and the platform module
 (`src/modules/platform`) brings their tables into the migrations. The README of
-`@cadenway/nest-messaging` is the reference for every call below. No event of this service exists
-in `@cadenway/contracts` yet: an event is published or consumed only once its AsyncAPI spec is
-released (`cw-contract-first`).
+`@cadenway/nest-messaging` is the reference for every call below. The organization-members module
+consumes the three member events of organization-service (its `MODULE.md`). No event of this
+service exists in `@cadenway/contracts` yet: an event is published or consumed only once its
+AsyncAPI spec is released (`cw-contract-first`).
 
 - Publish through the outbox inside the use case transaction. Match the transaction runner to the
   event's tenant scope. The relay publishes after commit.

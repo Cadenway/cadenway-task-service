@@ -27,8 +27,8 @@
 
 ## Consuming
 
-1. Register the handler from `onApplicationBootstrap` of a provider of the `api/messaging/` layer,
-   with the injected `EventConsumers`. It gets the durable consumer `task-service__<handler>`,
+1. Register the handler from `onApplicationBootstrap` of a handler in
+   `presentation/messaging/handlers/<event-family>/`, with the injected `EventConsumers`. It gets the durable consumer `task-service__<handler>`,
    filtered on the one subject of its event:
 
    ```ts
@@ -47,7 +47,9 @@
 3. Call a use case; it is idempotent for anything outside the database (an e-mail, a call).
 4. A rejection is retried after 1 s, 5 s, 30 s and 2 min; the fifth failure, or a payload that does
    not match its schema, becomes a dead letter in `EVENTS_DLQ`, copied by notification-service.
-   Document in MODULE.md what an operator does with it.
+   A security projection (the copy of the memberships) passes its own `redelivery` schedule to
+   `subscribe`, at least 24 hours before the dead letter. Document in MODULE.md what an operator
+   does with it.
 5. A handler with outside effects registers with `deliverPolicy: 'new'`; the default `all` delivers
    up to seven days of events to a new consumer.
 
@@ -71,9 +73,12 @@ Subjects (`evt.<name>`), durable pull consumers (`<service>__<handler>`), `Nats-
 deduplication, the retry schedule, the dead-letter copy and `traceparent` propagation belong to
 `@cadenway/nest-messaging`. The three streams (`EVENTS`, `EVENTS_RESTRICTED`, `EVENTS_DLQ`) and the
 permissions of the `task` user (publish `evt.space.>`, `evt.list.>`, `evt.task.>`, `evt.comment.>`,
-`evt.approval.>`, `evt.milestone.>`, subscribe `_INBOX.task.>` and `rebuild.task.>`) belong to
-cadenway-ops (`docs/messaging.md`). This service runs with `manageStreams: false` and
-`deadLetterWorker: false`: never declare a stream, a consumer or a subject here. An event of a new
+`evt.approval.>`, `evt.milestone.>`, subscribe `_INBOX.task.>` and `rebuild.task.>`, and the four
+subjects of each of its durable consumers by exact name) belong to cadenway-ops
+(`docs/messaging.md`, "Adding a consumer"). A new handler is a new consumer: its grant is merged
+there and reaches every environment before the release that adds it, which otherwise fails at
+start-up, and `compose.dev.yaml` copies it. This service runs with `manageStreams: false` and
+`deadLetterWorker: false`: never declare a stream or a subject here. An event of a new
 entity needs its `evt.<entity>.>` in cadenway-ops first.
 
 ## Rebuilding a consumer

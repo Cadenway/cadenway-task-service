@@ -12,9 +12,12 @@
 # NATS runs with the authorization of the broker of cadenway-ops (docs/messaging.md and
 # compose/nats/nats-server.conf there): a connection without a user is refused, and the `task` user
 # has the same permissions as there. It publishes the subjects of the entities this service owns,
-# uses the JetStream API of a consumer of EVENTS, and subscribes to its own inbox prefix
-# `_INBOX.task.>` and to `rebuild.task.>` only. When cadenway-ops changes those permissions, change
-# them here too. `admin` stands for the user of the `nats-streams` container of cadenway-ops.
+# creates, reads, pulls from and acknowledges on its own durable consumers of EVENTS only, by their
+# exact names and filters (four subjects per consumer, "Adding a consumer" of docs/messaging.md
+# there), and subscribes to its own inbox prefix `_INBOX.task.>` and to `rebuild.task.>` only. A new
+# handler is a new consumer: its grant reaches cadenway-ops first, then this copy. When cadenway-ops
+# changes those permissions, change them here too. `admin` stands for the user of the
+# `nats-streams` container of cadenway-ops.
 #
 # The streams: `nats-streams` runs compose/nats/ensure-streams.sh of cadenway-ops, copied below, as
 # `admin`, the way the `nats-streams` container of cadenway-ops does. It creates EVENTS,
@@ -132,9 +135,21 @@ configs:
                   "rebuild.*.space", "rebuild.*.list", "rebuild.*.task", "rebuild.*.comment",
                   "rebuild.*.approval", "rebuild.*.milestone",
                   "$$JS.API.INFO", "$$JS.API.STREAM.NAMES", "$$JS.API.STREAM.INFO.EVENTS",
-                  "$$JS.API.CONSUMER.CREATE.EVENTS.>", "$$JS.API.CONSUMER.DURABLE.CREATE.EVENTS.*",
-                  "$$JS.API.CONSUMER.INFO.EVENTS.*", "$$JS.API.CONSUMER.MSG.NEXT.EVENTS.*",
-                  "$$JS.ACK.EVENTS.>"
+
+                  "$$JS.API.CONSUMER.CREATE.EVENTS.task-service__project-member-joined.evt.member.joined.v1",
+                  "$$JS.API.CONSUMER.INFO.EVENTS.task-service__project-member-joined",
+                  "$$JS.API.CONSUMER.MSG.NEXT.EVENTS.task-service__project-member-joined",
+                  "$$JS.ACK.EVENTS.task-service__project-member-joined.>",
+
+                  "$$JS.API.CONSUMER.CREATE.EVENTS.task-service__project-member-role-changed.evt.member.role-changed.v1",
+                  "$$JS.API.CONSUMER.INFO.EVENTS.task-service__project-member-role-changed",
+                  "$$JS.API.CONSUMER.MSG.NEXT.EVENTS.task-service__project-member-role-changed",
+                  "$$JS.ACK.EVENTS.task-service__project-member-role-changed.>",
+
+                  "$$JS.API.CONSUMER.CREATE.EVENTS.task-service__project-member-removed.evt.member.removed.v1",
+                  "$$JS.API.CONSUMER.INFO.EVENTS.task-service__project-member-removed",
+                  "$$JS.API.CONSUMER.MSG.NEXT.EVENTS.task-service__project-member-removed",
+                  "$$JS.ACK.EVENTS.task-service__project-member-removed.>"
                 ]
               }
               subscribe: { allow: ["_INBOX.task.>", "rebuild.task.>"] }

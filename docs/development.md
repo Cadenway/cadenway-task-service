@@ -8,10 +8,12 @@ The application under `src/` runs on `@cadenway/nest-common` and `@cadenway/nest
 configuration is validated when the application is created, a failed start-up is one JSON line on
 the standard error, it writes JSON log lines, starts OpenTelemetry before the application, requires
 the internal token on every route but the health probes, connects to NATS as the `task` user, runs
-the outbox relay, and its readiness checks PostgreSQL and NATS. The one migration creates the tables
-of the service kit, owned by the platform module (`src/modules/platform/MODULE.md`). No business
-code, route or event exists yet: `@cadenway/contracts` defines no event of this service, so nothing
-is published or consumed. The target architecture in this guide is what they must follow.
+the outbox relay, and its readiness checks PostgreSQL and NATS. The migrations create the tables
+of the service kit, owned by the platform module (`src/modules/platform/MODULE.md`), and the copy of
+the organization memberships (`src/modules/organization-members/MODULE.md`), which three durable
+consumers of `EVENTS` feed from the member events of organization-service. No route exists yet, and
+`@cadenway/contracts` defines no event of this service, so nothing is published. The target
+architecture in this guide is what the next modules must follow.
 
 The commands below are the documented workflow. Inspect the repository's actual manifests and files before running them, and report unavailable checks rather than inventing replacements. Run Git, pnpm, build, and test commands with this repository as the working directory, never from the parent workspace.
 
@@ -148,8 +150,13 @@ checks the ownership and forced row-level security of the kit tables, that the a
 reads and writes the rows of its organization only and runs no DDL, that the relay runs against an
 empty outbox, that the broker enforces the permissions of cadenway-ops, the health routes (readiness
 503 while NATS or PostgreSQL is down and from the start of a shutdown, back to 200 once NATS
-returns) and the internal token. It moves to the fixtures of `@cadenway/nest-testing` once that
-package exports them.
+returns) and the internal token. `tests/organization-members.int-spec.ts` starts its own throwaway
+project the same way and publishes member events with the `admin` user, as organization-service
+would: it checks that the copy of the memberships reads the events published before the service
+started, applies joins, role changes and removals by version, ignores a redelivered or older event,
+keeps two organizations apart under row-level security, and that the broker grants the `task` user
+its three consumers by exact name only. Both move to the fixtures of `@cadenway/nest-testing` once
+that package exports them.
 
 ## Minimum checks by change
 

@@ -16,7 +16,7 @@ The core of the product.
 
 **Events emitted**: `space.*`, `list.*`, `task.created`, `task.updated`, `task.status-changed`, `task.assigned`, `task.trashed`, `task.restored`, `task.purged`, `comment.created`, `approval.requested`, `approval.decided`, `milestone.reached`.
 
-**Events consumed**: `organization.deleted`, `member.removed` (unassigns the member).
+**Events consumed**: `member.joined`, `member.role-changed` and `member.removed`, the copy of the memberships that answers who is a member, with which role, and who owns the organization (decision 4 of the P3a plan: never the `role` claim of the internal token; the removal will also unassign the member), and later `organization.deleted`, which `@cadenway/contracts` does not define yet.
 
 **External systems**: None.
 
