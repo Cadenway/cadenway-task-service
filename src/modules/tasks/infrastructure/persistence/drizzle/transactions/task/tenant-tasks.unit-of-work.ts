@@ -1,0 +1,113 @@
+import type { TenantTransactionRunner, TransactionScope } from '@cadenway/nest-common/database';
+import type { OutboxRelay, OutboxWriter } from '@cadenway/nest-messaging/outbox';
+
+import type { TasksStore } from '../../../../../application/models/transactions/tasks-store.model.js';
+import type { TasksUnitOfWork } from '../../../../../application/ports/outbound/transactions/task/tasks-unit-of-work.port.js';
+import { PostgresqlTransactionClock } from '../../../../adapters/postgresql/transaction-clock.adapter.js';
+import { OutboxTaskEvents } from '../../../../messaging/outbox/task/outbox-task-events.adapter.js';
+import { DrizzleActivityRepository } from '../../repositories/activity/drizzle-activity.repository.js';
+import { DrizzleTaskReader } from '../../repositories/task/drizzle-task-reader.repository.js';
+import { DrizzleTaskRepository } from '../../repositories/task/drizzle-task.repository.js';
+
+/**
+ * Class TenantTasksUnitOfWork
+ *
+ * @description
+ * `TasksUnitOfWork` on the tenant transaction runner: the work runs in the organization context
+ * of the caller, and row-level security limits it to that organization. A route marked
+ * `@Idempotent()` and the handler of a member event run in the transaction a kit interceptor
+ * opened: `run` joins it. The store of each run is bound to that run's transaction, the clock
+ * included (the instant of the transaction is read once per run). The events appended go to the
+ * outbox of the same transaction.
+ *
+ * Once a run that appended events resolves, the relay is woken so they leave now instead of at
+ * its next poll. A run joined to an outer transaction resolves before that one commits: the pass
+ * it wakes does not see the rows yet, and the next poll publishes them.
+ */
+export class TenantTasksUnitOfWork implements TasksUnitOfWork {
+  // #region Properties
+  /**
+   * Property runner
+   *
+   * @description
+   * The tenant transaction runner of the kit.
+   *
+   * @type {TenantTransactionRunner}
+   * @readonly
+   */
+  private readonly runner: TenantTransactionRunner;
+
+  /**
+   * Property outbox
+   *
+   * @description
+   * The outbox writer of the kit.
+   *
+   * @type {OutboxWriter}
+   * @readonly
+   */
+  private readonly outbox: OutboxWriter;
+
+  /**
+   * Property relay
+   *
+   * @description
+   * The outbox relay, woken after a run that appended events.
+   *
+   * @type {OutboxRelay}
+   * @readonly
+   */
+  private readonly relay: OutboxRelay;
+  // #endregion
+
+  // #region Constructor
+  /**
+   * Constructor
+   *
+   * @description
+   * Takes the runner, the outbox writer and the relay of the kit.
+   *
+   * @param {TenantTransactionRunner} runner - The tenant transaction runner.
+   * @param {OutboxWriter} outbox - The outbox writer.
+   * @param {OutboxRelay} relay - The outbox relay.
+   * @constructor
+   */
+  public constructor(runner: TenantTransactionRunner, outbox: OutboxWriter, relay: OutboxRelay) {
+    this.runner = runner;
+    this.outbox = outbox;
+    this.relay = relay;
+  }
+  // #endregion
+
+  // #region Methods
+  /**
+   * Method run
+   *
+   * @description
+   * Runs `work` in the tenant transaction of the current organization context, joining the
+   * transaction of the caller when there is one, with a store bound to it.
+   *
+   * @param {(store: TasksStore) => Promise<TResult>} work - The unit of work.
+   * @returns {Promise<TResult>} What the work resolved with.
+   */
+  public async run<TResult>(work: (store: TasksStore) => Promise<TResult>): Promise<TResult> {
+    const appends: { count: number } = { count: 0 };
+    const result: TResult = await this.runner.run(
+      (transaction: TransactionScope): Promise<TResult> =>
+        work({
+          tasks: new DrizzleTaskRepository(transaction.db),
+          reader: new DrizzleTaskReader(transaction.db),
+          activity: new DrizzleActivityRepository(transaction.db),
+          events: new OutboxTaskEvents(transaction, this.outbox, (): void => {
+            appends.count += 1;
+          }),
+          clock: new PostgresqlTransactionClock(transaction.db),
+        }),
+    );
+    if (appends.count > 0) {
+      this.relay.wake();
+    }
+    return result;
+  }
+  // #endregion
+}
