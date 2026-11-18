@@ -7,7 +7,8 @@ import type { StatusKey } from '../../../domain/value-objects/task/status-key.va
  * @description
  * The filters of `GET /internal/v1/lists/{listId}/tasks` and of `.../task-groups` as the route
  * carries them, already validated by the presentation layer: the assignees still hold `me`,
- * `none` and account ids, the labels are as typed. `null` leaves a filter out.
+ * `none` and account ids, the values may repeat and the labels are as typed. `TaskFilterBuilder`
+ * removes the duplicates and lower-cases the accounts. `null` leaves a filter out.
  */
 export interface TaskFilterInput {
   // #region Properties
@@ -17,7 +18,7 @@ export interface TaskFilterInput {
   /** The priorities to keep, 1 to 4. */
   readonly priorities: readonly PriorityKey[] | null;
 
-  /** The assignees to keep, 1 to 20: `me`, `none` or a lower-case account id. */
+  /** The assignees to keep, 1 to 20: `me`, `none` or an account id in either case. */
   readonly assignees: readonly string[] | null;
 
   /** The labels to keep, 1 to 20, as typed. */

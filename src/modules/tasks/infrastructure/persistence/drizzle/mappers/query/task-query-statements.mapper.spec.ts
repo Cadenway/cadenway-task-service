@@ -36,8 +36,6 @@ const SELECTED: string = [
 
 const WHERE: string =
   '("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and "tasks"."parent_id" is null)';
-const ASSIGNEES: string =
-  'select 1 from "task_assignees" where "task_assignees"."organization_id" = "tasks"."organization_id" and "task_assignees"."task_id" = "tasks"."id"';
 
 describe('pageStatement: one page of the tasks of a list', () => {
   it('selects the columns of a summary, filters, orders and limits in one statement', () => {
@@ -105,15 +103,13 @@ describe('groupStatement: the counts by status, priority or assignee', () => {
     );
   });
 
-  it('counts a task in each of its assignees, then the tasks nobody is assigned to as none', () => {
+  it('counts a task in each of its assignees, the tasks nobody has as none, and every task once, in one scan', () => {
     expect(renderSql(groupStatement('org', 'list', NONE, 'assignee'))).toEqual({
       sql:
-        'select "grouped_assignees"."user_id"::text as "value", count(*)::int as "count" from "tasks" ' +
-        'join "task_assignees" as "grouped_assignees" on "grouped_assignees"."organization_id" = "tasks"."organization_id" and "grouped_assignees"."task_id" = "tasks"."id" ' +
-        `where ("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and "tasks"."parent_id" is null) group by "grouped_assignees"."user_id" ` +
-        `union all select 'none'::text as "value", count(*)::int as "count" from "tasks" ` +
-        `where ("tasks"."organization_id" = $3 and "tasks"."list_id" = $4 and "tasks"."parent_id" is null) and not exists (${ASSIGNEES})`,
-      params: ['org', 'list', 'org', 'list'],
+        `select coalesce("grouped_assignees"."user_id"::text, 'none') as "value", count(distinct "tasks"."id")::int as "count", (grouping("grouped_assignees"."user_id") = 1) as "total" from "tasks" ` +
+        'left join "task_assignees" as "grouped_assignees" on "grouped_assignees"."organization_id" = "tasks"."organization_id" and "grouped_assignees"."task_id" = "tasks"."id" ' +
+        `where ${WHERE} group by grouping sets (("grouped_assignees"."user_id"), ())`,
+      params: ['org', 'list'],
     });
   });
 });

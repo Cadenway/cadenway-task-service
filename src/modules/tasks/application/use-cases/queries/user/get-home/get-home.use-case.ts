@@ -99,11 +99,11 @@ export class GetHome {
    * @throws {TaskRefusal} `user-not-found` or `organization-not-found`.
    */
   public async execute(input: GetHomeInput): Promise<GetHomeOutput> {
+    if (input.userId.toLowerCase() !== input.actorUserId.toLowerCase()) {
+      throw new TaskRefusal({ reason: 'user-not-found' });
+    }
     return this.unitOfWork.runReadOnly(
       async (store: TasksStore): Promise<GetHomeOutput> => {
-        if (input.userId.toLowerCase() !== input.actorUserId.toLowerCase()) {
-          throw new TaskRefusal({ reason: 'user-not-found' });
-        }
         const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
         const spaceIds: readonly string[] = await this.spaces.visibleSpaceIds(
           input.organizationId,

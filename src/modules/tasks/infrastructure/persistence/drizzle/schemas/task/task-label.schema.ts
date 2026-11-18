@@ -23,8 +23,10 @@ import { tasks } from './task.schema.js';
  * (`ALTER TABLE "task_labels" FORCE ROW LEVEL SECURITY;`).
  *
  * Index `task_labels_key_index` on `(organization_id, label_key, task_id)` serves the label filter
- * of the tasks of a list (the inner side of the semi-join is a range of the asked keys) and the
- * list of the labels of an organization in the order of their key.
+ * of the tasks of a list only: the inner side of the semi-join is an index-only range of the asked
+ * keys. It does not serve the labels route, which groups the rows of the visible tasks and sorts
+ * the groups by the folded key (`ORDER BY` an expression of `label_key`, not `label_key`), so that
+ * route reads the label rows of the visible spaces whatever the index.
  */
 export const taskLabels = pgTable(
   'task_labels',

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { TaskFilter } from '../../../../../application/models/query/task-filter.model.js';
 import { foldedSql, renderSql } from './query-sql.fixture.js';
-import { taskFilterCondition, taskWithoutAssignee } from './task-filter.mapper.js';
+import { taskFilterCondition } from './task-filter.mapper.js';
 
 const NONE: TaskFilter = {
   statuses: null,
@@ -102,17 +102,24 @@ describe('taskFilterCondition: the where of the tasks of one list', () => {
     });
   });
 
-  it('looks for the folded text in the name, the key and the labels, without LIKE wildcards', () => {
-    const needle: string = foldedSql('$3');
+  it('looks for the folded text in the name, the lower-cased key and the labels, without LIKE wildcards', () => {
     const rendered = renderSql(taskFilterCondition('org', 'list', { ...NONE, search: '50%_' }));
 
     expect(rendered.sql).toBe(
       '("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and (' +
-        `strpos(${foldedSql('"tasks"."name"')}, ${needle}) > 0 or ` +
-        `strpos(${foldedSql('"tasks"."key_prefix" || \'-\' || "tasks"."key_number"::text')}, ${foldedSql('$4')}) > 0 or ` +
-        `exists (${LABELS} and strpos(${foldedSql('"task_labels"."label_key"')}, ${foldedSql('$5')}) > 0)))`,
+        `${foldedSql('$3')} <> '' and (` +
+        `strpos(${foldedSql('"tasks"."name"')}, ${foldedSql('$4')}) > 0 or ` +
+        `strpos(lower("tasks"."key_prefix" || '-' || "tasks"."key_number"::text), ${foldedSql('$5')}) > 0 or ` +
+        `exists (${LABELS} and strpos(${foldedSql('"task_labels"."label_key"')}, ${foldedSql('$6')}) > 0))))`,
     );
-    expect(rendered.params).toEqual(['org', 'list', '50%_', '50%_', '50%_']);
+    expect(rendered.params).toEqual(['org', 'list', '50%_', '50%_', '50%_', '50%_']);
+  });
+
+  it('does not fold the key, which is ASCII, and matches nothing for a search that folds to nothing', () => {
+    const rendered = renderSql(taskFilterCondition('org', 'list', { ...NONE, search: 'cad' }));
+
+    expect(rendered.sql).not.toContain(foldedSql('"tasks"."key_prefix"'));
+    expect(rendered.sql).toContain(`and (${foldedSql('$3')} <> '' and (`);
   });
 
   it('bounds the due date on both ends, inclusive, so an undated task is left out', () => {
@@ -124,11 +131,5 @@ describe('taskFilterCondition: the where of the tasks of one list', () => {
       sql: '("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and "tasks"."due_date" >= $3::date and "tasks"."due_date" <= $4::date)',
       params: ['org', 'list', '2026-11-01', '2026-11-30'],
     });
-  });
-});
-
-describe('taskWithoutAssignee: the group none', () => {
-  it('finds the tasks nobody is assigned to', () => {
-    expect(renderSql(taskWithoutAssignee()).sql).toBe(`not exists (${ASSIGNEES})`);
   });
 });

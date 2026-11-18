@@ -1,23 +1,12 @@
 import { sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 
+import { SORT_KEY_PREFIX_LENGTH } from '../../../../../domain/value-objects/task/sort-key-prefix-length.value-object.js';
 import type { TaskOrder } from '../../../../../application/models/query/task-order.model.js';
 import type { TaskPosition } from '../../../../../application/models/query/task-position.model.js';
 import { PRIORITY_KEYS } from '../../../../../domain/value-objects/task/priority-key.value-object.js';
 import { tasks } from '../../schemas/task/task.schema.js';
 import { foldText } from './text-fold.mapper.js';
-
-/**
- * Constant SORT_NAME_PREFIX_LENGTH
- *
- * @description
- * How many code points of the folded name the order by name (and so its cursor) keeps. A cursor
- * carries the sort value and is limited in size; two names equal on their first 128 folded code
- * points fall back to the order of the list.
- *
- * @type {number}
- */
-export const SORT_NAME_PREFIX_LENGTH: number = 128;
 
 /**
  * Function priorityRank
@@ -37,13 +26,13 @@ function priorityRank(): SQL {
  * Function namePrefix
  *
  * @description
- * The folded name cut to its first code points, in the `C` collation so the order does not depend
+ * The folded name cut to its first `SORT_KEY_PREFIX_LENGTH` code points, in the `C` collation so the order does not depend
  * on the locale of the database.
  *
  * @returns {SQL} The expression.
  */
 function namePrefix(): SQL {
-  return sql`left(${foldText(tasks.name)}, ${sql.raw(String(SORT_NAME_PREFIX_LENGTH))}) collate "C"`;
+  return sql`left(${foldText(tasks.name)}, ${sql.raw(String(SORT_KEY_PREFIX_LENGTH))}) collate "C"`;
 }
 
 /**

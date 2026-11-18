@@ -8,7 +8,7 @@ import type { TaskSummaryView } from '../../../../../application/projections/tas
 import type { TaskReader } from '../../../../../application/ports/outbound/persistence/task/task-reader.port.js';
 import { keysetAfter } from '../../mappers/page/keyset-after.mapper.js';
 import { anyOf } from '../../mappers/page/any-of.mapper.js';
-import { toTaskReference, toTaskSummary } from '../../mappers/task/task-summary.mapper.js';
+import { toTaskReference } from '../../mappers/task/task-summary.mapper.js';
 import type { TaskRow } from '../../mappers/task/task.mapper.js';
 import { tasks } from '../../schemas/task/task.schema.js';
 import { DrizzleTaskCollections } from './task-collections.repository.js';
@@ -20,9 +20,9 @@ import { DrizzleTaskCollections } from './task-collections.repository.js';
  * `TaskReader` on `tasks`, `task_assignees`, `task_labels` and `checklist_items`, in the
  * transaction of its unit of work, without a lock. Every query names `organization_id`. The counts
  * and the references are one grouped or `= ANY($ids)` query for any number of tasks; a page of
- * subtasks costs six queries however many rows it holds: the parent key, the page (served by
+ * subtasks costs six queries however many rows it holds: the page (served by
  * `tasks_parent_created_index`, bounded by the `limit` of the caller), then the assignees, the
- * labels, the subtask counts and the checklist counts of its rows.
+ * labels, the subtask counts, the checklist counts and the parent key of its rows.
  */
 export class DrizzleTaskReader implements TaskReader {
   // #region Properties
@@ -90,15 +90,17 @@ export class DrizzleTaskReader implements TaskReader {
    *
    * @description
    * Reads a page of the direct subtasks of a task in the order `(created_at, id)`, after
-   * `after`, with their assignees, labels, subtask counts and checklist counts, each loaded for
-   * the whole page in one query.
+   * `after`, summarized by `DrizzleTaskCollections.summarize` (as the pages of the queries are):
+   * the assignees, labels, subtask counts and checklist counts, each loaded for the whole page in
+   * one query, and the key of the parent. A parent that holds no subtask, or is unknown, gives no
+   * row.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} parentId - The parent.
    * @param {PagePosition | null} after - The last row of the previous page, `null` for the first.
    * @param {number} limit - How many rows at most.
    * @returns {Promise<readonly TaskSummaryView[]>} The rows.
-   * @throws {Error} When the parent is unknown or a stored value is outside its set.
+   * @throws {Error} When a stored value is outside its set.
    */
   public async childrenOf(
     organizationId: string,
@@ -106,11 +108,6 @@ export class DrizzleTaskReader implements TaskReader {
     after: PagePosition | null,
     limit: number,
   ): Promise<readonly TaskSummaryView[]> {
-    const parentKeys = await this.collections.keysOf(organizationId, [parentId]);
-    const parentKey = parentKeys.get(parentId);
-    if (parentKey === undefined) {
-      return [];
-    }
     const rows: TaskRow[] = await this.db
       .select()
       .from(tasks)
@@ -123,25 +120,7 @@ export class DrizzleTaskReader implements TaskReader {
       )
       .orderBy(asc(tasks.createdAt), asc(tasks.id))
       .limit(limit);
-    if (rows.length === 0) {
-      return [];
-    }
-    const ids: string[] = rows.map((row: TaskRow): string => row.id);
-    const assignees = await this.collections.assigneesOf(organizationId, ids);
-    const labels = await this.collections.labelsOf(organizationId, ids);
-    const subtasks = await this.collections.subtaskCountsOf(organizationId, ids);
-    const checklists = await this.collections.checklistCountsOf(organizationId, ids);
-    const parentKeyText: string = parentKey.format();
-    return rows.map((row: TaskRow): TaskSummaryView =>
-      toTaskSummary(
-        row,
-        parentKeyText,
-        assignees.get(row.id) ?? [],
-        labels.get(row.id) ?? [],
-        subtasks.get(row.id) ?? { total: 0, closed: 0 },
-        checklists.get(row.id) ?? { total: 0, done: 0 },
-      ),
-    );
+    return this.collections.summarize(organizationId, rows);
   }
 
   /**

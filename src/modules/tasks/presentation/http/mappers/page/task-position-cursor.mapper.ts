@@ -1,6 +1,7 @@
 import { decodeCursor, encodeCursor } from '@cadenway/nest-common';
 import type { CursorPosition, CursorValue } from '@cadenway/nest-common';
 
+import { SORT_KEY_PREFIX_LENGTH } from '../../../../application/models/query/sort-key-prefix-length.model.js';
 import type { TaskPosition } from '../../../../application/models/query/task-position.model.js';
 import { invalidCursor, isRowId, isStoredInstant } from './page-cursor.mapper.js';
 
@@ -33,18 +34,6 @@ const CALENDAR_DATE: RegExp = /^(\d{4})-(\d{2})-(\d{2})$/u;
  * @type {RegExp}
  */
 const LONE_SURROGATE: RegExp = /\p{Surrogate}/u;
-
-/**
- * Constant MAX_NAME_PREFIX_LENGTH
- *
- * @description
- * The longest folded prefix of a name a cursor carries, in code points: the infrastructure cuts the
- * sort key of the name sort at this length, so that a cursor stays well under the 2048 characters
- * the kit accepts (design of PR 3, section 2, "Sorts").
- *
- * @type {number}
- */
-const MAX_NAME_PREFIX_LENGTH: number = 128;
 
 /**
  * Function isStoredDate
@@ -98,7 +87,7 @@ function isSortValue(kind: TaskSortKind, value: CursorValue | undefined): boolea
         typeof value === 'string' &&
         !value.includes('\u0000') &&
         !LONE_SURROGATE.test(value) &&
-        Array.from(value).length <= MAX_NAME_PREFIX_LENGTH
+        Array.from(value).length <= SORT_KEY_PREFIX_LENGTH
       );
     case 'created':
       return false;

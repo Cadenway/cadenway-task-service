@@ -1,26 +1,15 @@
 import { decodeCursor, encodeCursor } from '@cadenway/nest-common';
 import type { CursorPosition } from '@cadenway/nest-common';
 
+import { SORT_KEY_PREFIX_LENGTH } from '../../../../application/models/query/sort-key-prefix-length.model.js';
 import type { LabelPosition } from '../../../../application/models/label/label-position.model.js';
 import { invalidCursor } from '../page/page-cursor.mapper.js';
-
-/**
- * Constant MAX_SORT_KEY_LENGTH
- *
- * @description
- * The longest folded name a cursor carries, in characters. A label has 32 code points at most and
- * the folding can expand each of them; the bound keeps a forged cursor within the 2048 characters
- * of the kit.
- *
- * @type {number}
- */
-const MAX_SORT_KEY_LENGTH: number = 1024;
 
 /**
  * Constant MAX_LABEL_KEY_LENGTH
  *
  * @description
- * The longest label key a cursor carries, in characters.
+ * The longest label key a cursor carries, in code points.
  *
  * @type {number}
  */
@@ -54,15 +43,17 @@ function labelsFilters(search: string | undefined): object {
  * Function isStorableText
  *
  * @description
- * Whether a text can reach a SQL comparison: not longer than a bound, without U+0000 and without a
- * lone surrogate. The cursor is not signed.
+ * Whether a text can reach a SQL comparison: not longer than a bound in code points, without U+0000
+ * and without a lone surrogate. The cursor is not signed.
  *
  * @param {string} text - The text the cursor carries.
- * @param {number} maxLength - The bound, in characters.
+ * @param {number} maxLength - The bound, in code points.
  * @returns {boolean} Whether it can start a page.
  */
 function isStorableText(text: string, maxLength: number): boolean {
-  return text.length <= maxLength && !text.includes('\u0000') && !LONE_SURROGATE.test(text);
+  return (
+    !text.includes('\u0000') && !LONE_SURROGATE.test(text) && Array.from(text).length <= maxLength
+  );
 }
 
 /**
@@ -70,7 +61,9 @@ function isStorableText(text: string, maxLength: number): boolean {
  *
  * @description
  * Encodes where the next page of the labels starts as the opaque cursor of the kit: `sort` is
- * `[sortKey]`, the folded name the labels are listed by, and `id` the key of the label.
+ * `[sortKey]`, the first `SORT_KEY_PREFIX_LENGTH` code points of the folded key the labels are listed
+ * by, and `id` the key of the label, so the cursor stays far under the 2048 characters of the kit
+ * whatever the fold expands a label to.
  *
  * @param {LabelPosition | null} position - Where the next page starts, or `null`.
  * @param {string | undefined} search - The `search` parameter.
@@ -109,7 +102,7 @@ export function toLabelPosition(
   if (
     position.sort.length !== 1 ||
     typeof sortKey !== 'string' ||
-    !isStorableText(sortKey, MAX_SORT_KEY_LENGTH) ||
+    !isStorableText(sortKey, SORT_KEY_PREFIX_LENGTH) ||
     position.id.length === 0 ||
     !isStorableText(position.id, MAX_LABEL_KEY_LENGTH)
   ) {

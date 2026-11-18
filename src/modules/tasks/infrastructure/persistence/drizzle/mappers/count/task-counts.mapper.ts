@@ -4,15 +4,15 @@ import type { SQL } from 'drizzle-orm';
 import { tasks } from '../../schemas/task/task.schema.js';
 import { assignedTasksCondition, assignedTasksSource } from '../assignee/assigned-task.mapper.js';
 import { anyOf } from '../page/any-of.mapper.js';
-import { isClosed, isNotClosed } from './closed-status.mapper.js';
+import { hasStatus, isClosed, isLateOn, isNotClosed } from './closed-status.mapper.js';
 
 /**
  * Function countsOfListsStatement
  *
  * @description
  * The counts of the top-level tasks of lists, one row per list that has a task, in one grouped
- * scan: all, not closed, `done`, `cancelled`, and late (not closed and due strictly before
- * `today`).
+ * scan: all, not closed (`CLOSED_STATUS_KEYS`), `done`, `cancelled`, and late (`isLate` of the
+ * lateness policy: not closed and due strictly before `today`).
  *
  * @param {string} organizationId - The organization of the transaction.
  * @param {readonly string[]} listIds - The lists.
@@ -24,7 +24,7 @@ export function countsOfListsStatement(
   listIds: readonly string[],
   today: string,
 ): SQL {
-  return sql`select ${tasks.listId} as "listId", count(*)::int as "total", (count(*) filter (where ${isNotClosed()}))::int as "open", (count(*) filter (where ${tasks.status} = 'done'))::int as "done", (count(*) filter (where ${tasks.status} = 'cancelled'))::int as "cancelled", (count(*) filter (where ${isNotClosed()} and ${tasks.dueDate} < ${today}::date))::int as "late" from ${tasks} where ${and(eq(tasks.organizationId, organizationId), anyOf(tasks.listId, listIds, 'uuid'), isNull(tasks.parentId))} group by ${tasks.listId}`;
+  return sql`select ${tasks.listId} as "listId", count(*)::int as "total", (count(*) filter (where ${isNotClosed()}))::int as "open", (count(*) filter (where ${hasStatus('done')}))::int as "done", (count(*) filter (where ${hasStatus('cancelled')}))::int as "cancelled", (count(*) filter (where ${isLateOn(today)}))::int as "late" from ${tasks} where ${and(eq(tasks.organizationId, organizationId), anyOf(tasks.listId, listIds, 'uuid'), isNull(tasks.parentId))} group by ${tasks.listId}`;
 }
 
 /**
@@ -66,5 +66,5 @@ export function homeStatsStatement(
   spaceIds: readonly string[],
   today: string,
 ): SQL {
-  return sql`select (count(*) filter (where ${isNotClosed()}))::int as "assigned", (count(*) filter (where ${isNotClosed()} and ${tasks.dueDate} < ${today}::date))::int as "late", (count(*) filter (where ${isNotClosed()} and ${tasks.dueDate} = ${today}::date))::int as "dueToday", (count(*) filter (where ${tasks.status} = 'done'))::int as "done" from ${assignedTasksSource()} where ${assignedTasksCondition(organizationId, userId, spaceIds)}`;
+  return sql`select (count(*) filter (where ${isNotClosed()}))::int as "assigned", (count(*) filter (where ${isLateOn(today)}))::int as "late", (count(*) filter (where ${isNotClosed()} and ${tasks.dueDate} = ${today}::date))::int as "dueToday", (count(*) filter (where ${hasStatus('done')}))::int as "done" from ${assignedTasksSource()} where ${assignedTasksCondition(organizationId, userId, spaceIds)}`;
 }

@@ -23,7 +23,10 @@ export function renderSql(fragment: SQL | undefined): { sql: string; params: unk
  * Function foldedSql
  *
  * @description
- * The text of `F(expression)`, the fold the statements apply on both sides of a comparison.
+ * The text of `F(expression)`, the fold the statements apply on both sides of a comparison: case
+ * folding, the ligatures and stroked letters replaced, NFKD, the combining marks removed. A bound
+ * parameter (`$3`) is folded in full; a column or an expression takes the guarded form (ASCII,
+ * without a letter to replace, or full).
  *
  * @param {string} expression - The SQL of the folded expression.
  * @returns {string} The folded expression.
@@ -37,5 +40,13 @@ export function foldedSql(expression: string): string {
     '20d0-' + bs + 'u20ff',
     'fe20-' + bs + 'ufe2f',
   ].join(bs + 'u');
-  return `regexp_replace(normalize(casefold((${expression})::text collate "pg_unicode_fast"), NFKD), '[${bs}u${marks}]', '', 'g')`;
+  const text: string = `(${expression})::text collate "pg_unicode_fast"`;
+  const without = (folded: string): string =>
+    `regexp_replace(normalize(${folded}, NFKD), '[${bs}u${marks}]', '', 'g')`;
+  const ligatures: string = `replace(replace(casefold(${text}), 'œ', 'oe'), 'æ', 'ae')`;
+  const full: string = without(`translate(${ligatures}, 'øłđðħŧı', 'olddhti')`);
+  if (/^\$\d+$/u.test(expression)) {
+    return full;
+  }
+  return `(case when octet_length(${text}) = char_length(${text}) then lower(${text}) when ${text} ~ '[œæøłđðħŧıŒÆØŁĐÐĦŦ]' then ${full} else ${without(`casefold(${text})`)} end)`;
 }

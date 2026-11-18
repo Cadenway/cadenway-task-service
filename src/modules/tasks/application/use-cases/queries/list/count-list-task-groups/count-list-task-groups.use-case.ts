@@ -8,6 +8,7 @@ import type { TasksStore } from '../../../../models/transactions/tasks-store.mod
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
+import type { TaskGroupCountsView } from '../../../../projections/query/task-group-counts.projection.js';
 import type { TaskGroupView } from '../../../../projections/query/task-group.projection.js';
 import { ViewerResolver } from '../../../../services/member/viewer-resolver.service.js';
 import { PageSlicer } from '../../../../services/page/page-slicer.service.js';
@@ -24,9 +25,8 @@ import type { CountListTaskGroupsOutput } from './count-list-task-groups.output.
  * (`GET /internal/v1/lists/{listId}/task-groups`), without a lock. An unknown list and a list of a
  * space the actor does not see (a guest sees none) get the same answer, `list-not-found`. Every
  * group is counted on each request, then the page is cut in memory: their number is bounded by the
- * ten statuses, the four priorities or the assignees of one list. `total` counts each task once: the
- * sum of the groups of a status or a priority, and a count of its own for the assignees, whom a
- * task can count in twice.
+ * ten statuses, the four priorities or the assignees of one list. `total` counts each task once, as
+ * the same statement that counts the groups returns it (a task with two assignees is in two groups).
  */
 export class CountListTaskGroups {
   // #region Properties
@@ -101,23 +101,27 @@ export class CountListTaskGroups {
           throw new TaskRefusal({ reason: 'list-not-found' });
         }
         const filter: TaskFilter = this.filters.build(input.filter, input.actorUserId);
-        const counted: readonly TaskGroupView[] = await store.queries.groupsOfList(
+        const counted: TaskGroupCountsView = await store.queries.groupsOfList(
           input.organizationId,
           input.listId,
           filter,
           input.grouping,
         );
-        const groups: readonly TaskGroupView[] = this.organizer.organize(input.grouping, counted);
-        const total: number =
-          input.grouping === 'assignee'
-            ? await store.queries.countOfList(input.organizationId, input.listId, filter)
-            : groups.reduce((sum: number, group: TaskGroupView): number => sum + group.count, 0);
+        const groups: readonly TaskGroupView[] = this.organizer.organize(
+          input.grouping,
+          counted.groups,
+        );
         const page: Slice<TaskGroupView, GroupPosition> = this.pages.slice(
           this.organizer.after(input.grouping, groups, input.after),
           input.limit,
           (group: TaskGroupView): GroupPosition => ({ value: group.value, count: group.count }),
         );
-        return { grouping: input.grouping, items: page.items, next: page.next, total };
+        return {
+          grouping: input.grouping,
+          items: page.items,
+          next: page.next,
+          total: counted.total,
+        };
       },
     );
   }

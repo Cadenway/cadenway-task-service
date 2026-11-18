@@ -6,6 +6,7 @@ import type { TaskGrouping } from '../../../../../application/models/query/task-
 import type { TaskOrder } from '../../../../../application/models/query/task-order.model.js';
 import type { TaskPosition } from '../../../../../application/models/query/task-position.model.js';
 import type { TaskQueryReader } from '../../../../../application/ports/outbound/persistence/query/task-query-reader.port.js';
+import type { TaskGroupCountsView } from '../../../../../application/projections/query/task-group-counts.projection.js';
 import type { TaskGroupView } from '../../../../../application/projections/query/task-group.projection.js';
 import {
   countStatement,
@@ -119,28 +120,41 @@ export class DrizzleTaskQueryReader implements TaskQueryReader {
    * Method groupsOfList
    *
    * @description
-   * Counts the tasks of a list that match a filter by status, priority or assignee. For the
-   * assignees the group `none` is always returned, with 0 when nobody qualifies.
+   * Counts the tasks of a list that match a filter by status, priority or assignee, with the
+   * number of matching tasks, each counted once, in one statement. For a status or a priority the
+   * total is the sum of the groups; for the assignees the statement counts it on its own row, since
+   * a task with two assignees is in two groups.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} listId - The list.
    * @param {TaskFilter} filter - What the tasks must match.
    * @param {TaskGrouping} grouping - What the tasks are counted by.
-   * @returns {Promise<readonly TaskGroupView[]>} The groups, in any order.
+   * @returns {Promise<TaskGroupCountsView>} The groups, in any order, and the total.
    */
   public async groupsOfList(
     organizationId: string,
     listId: string,
     filter: TaskFilter,
     grouping: TaskGrouping,
-  ): Promise<readonly TaskGroupView[]> {
-    const result = await this.db.execute<{ value: string; count: number }>(
+  ): Promise<TaskGroupCountsView> {
+    const result = await this.db.execute<{ value: string; count: number; total?: boolean }>(
       groupStatement(organizationId, listId, filter, grouping),
     );
-    return result.rows.map((row: { value: string; count: number }): TaskGroupView => ({
-      value: row.value,
-      count: row.count,
-    }));
+    const groups: TaskGroupView[] = result.rows
+      .filter((row: { total?: boolean }): boolean => row.total !== true)
+      .map((row: { value: string; count: number }): TaskGroupView => ({
+        value: row.value,
+        count: row.count,
+      }));
+    const totalRow: { count: number } | undefined = result.rows.find(
+      (row: { total?: boolean }): boolean => row.total === true,
+    );
+    return {
+      groups,
+      total:
+        totalRow?.count ??
+        groups.reduce((sum: number, group: TaskGroupView): number => sum + group.count, 0),
+    };
   }
   // #endregion
 }

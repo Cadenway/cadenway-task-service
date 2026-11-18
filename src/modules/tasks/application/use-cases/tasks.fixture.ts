@@ -40,6 +40,7 @@ import type { LabelPosition } from '../models/label/label-position.model.js';
 import type { ListedLabel } from '../models/label/listed-label.model.js';
 import type { PagePosition } from '../models/page/page-position.model.js';
 import type { ListedTask } from '../models/query/listed-task.model.js';
+import { SORT_KEY_PREFIX_LENGTH } from '../models/query/sort-key-prefix-length.model.js';
 import type { TaskFilter } from '../models/query/task-filter.model.js';
 import type { TaskGrouping } from '../models/query/task-grouping.model.js';
 import type { TaskOrder } from '../models/query/task-order.model.js';
@@ -61,6 +62,7 @@ import type { TaskQueryReader } from '../ports/outbound/persistence/query/task-q
 import type { SpaceDirectory } from '../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
 import type { TaskCountsView } from '../projections/count/task-counts.projection.js';
+import type { TaskGroupCountsView } from '../projections/query/task-group-counts.projection.js';
 import type { TaskGroupView } from '../projections/query/task-group.projection.js';
 import type { HomeStatsView } from '../projections/user/home-stats.projection.js';
 import type { MyTaskCountsView } from '../projections/user/my-task-counts.projection.js';
@@ -742,14 +744,41 @@ export interface ReadRecords {
 }
 
 /**
- * Folds a text the way "without regard to case or accents" does: decomposed, marks removed, lower
- * case.
+ * Folds a text the way "without regard to case or accents" does, as the SQL fold does: lower case
+ * (`ß` as `ss`), the ligatures `œ` and `æ` and the stroked letters `ø ł đ ð ħ ŧ ı` that NFKD leaves
+ * whole replaced by their plain letters, decomposed, marks removed.
  *
  * @param text - The text.
  * @returns The folded text.
  */
 function fold(text: string): string {
-  return text.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
+  const plain: Readonly<Record<string, string>> = {
+    ß: 'ss',
+    œ: 'oe',
+    æ: 'ae',
+    ø: 'o',
+    ł: 'l',
+    đ: 'd',
+    ð: 'd',
+    ħ: 'h',
+    ŧ: 't',
+    ı: 'i',
+  };
+  return text
+    .toLowerCase()
+    .replace(/[ßœæøłđðħŧı]/gu, (letter: string): string => plain[letter] ?? letter)
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '');
+}
+
+/**
+ * Cuts a folded text to the first code points a sort key keeps (`SORT_KEY_PREFIX_LENGTH`).
+ *
+ * @param folded - The folded text.
+ * @returns The prefix, counted in code points, not in UTF-16 units.
+ */
+function sortKeyOf(folded: string): string {
+  return Array.from(folded).slice(0, SORT_KEY_PREFIX_LENGTH).join('');
 }
 
 /**
@@ -866,20 +895,22 @@ export class InMemoryTaskReads
    *
    * @description
    * Counts the tasks of a list that match a filter by status, priority or assignee; the groups
-   * without a task are left out, except `none` of the assignees, which is always counted.
+   * without a task are left out, except `none` of the assignees, which is always counted. The
+   * total counts the matching tasks once.
    *
    * @param {string} organizationId - The organization.
    * @param {string} listId - The list.
    * @param {TaskFilter} filter - What the tasks must match.
    * @param {TaskGrouping} grouping - What the tasks are counted by.
-   * @returns {Promise<readonly TaskGroupView[]>} The groups, in the order the fake met them.
+   * @returns {Promise<TaskGroupCountsView>} The groups, in the order the fake met them, and the
+   * total.
    */
   public groupsOfList(
     organizationId: string,
     listId: string,
     filter: TaskFilter,
     grouping: TaskGrouping,
-  ): Promise<readonly TaskGroupView[]> {
+  ): Promise<TaskGroupCountsView> {
     this.trace.push('queries.groupsOfList');
     this.records.groups.push(grouping);
     const counts = new Map<string, number>();
@@ -889,7 +920,8 @@ export class InMemoryTaskReads
     if (grouping === 'assignee') {
       counts.set('none', 0);
     }
-    for (const state of this.matching(organizationId, listId, filter)) {
+    const matching: TaskState[] = this.matching(organizationId, listId, filter);
+    for (const state of matching) {
       if (grouping === 'status') {
         add(state.status);
       } else if (grouping === 'priority') {
@@ -900,12 +932,13 @@ export class InMemoryTaskReads
         state.assigneeIds.forEach(add);
       }
     }
-    return Promise.resolve(
-      [...counts.entries()].map(([value, count]: [string, number]): TaskGroupView => ({
+    return Promise.resolve({
+      groups: [...counts.entries()].map(([value, count]: [string, number]): TaskGroupView => ({
         value,
         count,
       })),
-    );
+      total: matching.length,
+    });
   }
 
   /**
@@ -1086,10 +1119,13 @@ export class InMemoryTaskReads
     }
     const needle: string | null = search === null ? null : fold(search);
     const listed: ListedLabel[] = [...names.entries()]
-      .filter(([key]: [string, string]): boolean => needle === null || fold(key).includes(needle))
+      .filter(
+        ([key]: [string, string]): boolean =>
+          needle === null || (needle !== '' && fold(key).includes(needle)),
+      )
       .map(([key, name]: [string, string]): ListedLabel => ({
         label: { name },
-        position: { sortKey: fold(key), labelKey: key },
+        position: { sortKey: sortKeyOf(fold(key)), labelKey: key },
       }))
       .sort(
         (left: ListedLabel, right: ListedLabel): number =>
@@ -1147,8 +1183,8 @@ export class InMemoryTaskReads
       }
       if (
         search !== null &&
-        ![state.name, state.key.format(), ...state.labels].some((text: string): boolean =>
-          fold(text).includes(fold(search)),
+        ![state.name, state.key.format(), ...state.labels].some(
+          (text: string): boolean => fold(search) !== '' && fold(text).includes(fold(search)),
         )
       ) {
         return false;
@@ -1234,7 +1270,7 @@ export class InMemoryTaskReads
       case 'priority':
         return PRIORITY_KEYS.indexOf(state.priority) + 1;
       case 'name':
-        return fold(state.name).slice(0, 128);
+        return sortKeyOf(fold(state.name));
       default:
         return null;
     }

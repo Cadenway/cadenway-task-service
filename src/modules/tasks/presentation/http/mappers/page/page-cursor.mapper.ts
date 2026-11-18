@@ -135,7 +135,8 @@ export function encodeInstantCursor(
  * one of this collection answers `400 request.invalid` with one issue on `cursor`
  * (`invalid_cursor`): `decodeCursor` of the kit answers it for a malformed cursor or one issued
  * for other filters, and this function answers the same for a decoded position that does not name
- * an instant and a row id.
+ * an instant and a row id. The id is returned in lower case, as the rows hold it, so a position can be
+ * compared with them in memory (the overview of a space pages its lists that way).
  *
  * @param {string | undefined} cursor - The `cursor` query parameter.
  * @param {unknown} filters - What defines the collection.
@@ -159,7 +160,7 @@ export function decodeInstantCursor(
   if (!isStoredInstant(text, instant) || !isRowId(position.id)) {
     throw invalid;
   }
-  return { instant, id: position.id };
+  return { instant, id: position.id.toLowerCase() };
 }
 
 /**

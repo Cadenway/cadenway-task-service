@@ -3,19 +3,6 @@ import type { TaskOrder } from '../../../../application/models/query/task-order.
 import type { ListTasksQuery } from '../../dto/input/task/list-tasks-query.dto.js';
 
 /**
- * Function distinct
- *
- * @description
- * The distinct values of a filter, in the order they were first written.
- *
- * @param {readonly TValue[] | undefined} values - The values of a parameter, already split.
- * @returns {readonly TValue[] | null} The distinct values, `null` when the parameter is absent.
- */
-function distinct<TValue>(values: readonly TValue[] | undefined): readonly TValue[] | null {
-  return values === undefined ? null : [...new Set<TValue>(values)];
-}
-
-/**
  * Function sortedDistinct
  *
  * @description
@@ -54,10 +41,10 @@ function toKey(key: string): TaskOrder['key'] {
  *
  * @description
  * Gives the filters of `GET /internal/v1/lists/{listId}/tasks` and `.../task-groups` the shape the
- * use cases take: every list without duplicates, `null` for a filter the query does not name, the
- * account ids in lower case (`me` and `none` stay as they are, the use case resolves them) and the
- * level as the query gives it. The labels and the search text are kept as sent: the folding of the
- * contract ("without regard to case") belongs to the use case and to SQL.
+ * use cases take: `null` for a filter the query does not name, the values as sent and the level as
+ * the query gives it. The duplicates, the case of the account ids, `me`, `none` and the folding of
+ * the labels ("without regard to case") belong to `TaskFilterBuilder`, which is the one place that
+ * normalizes them; the fingerprint of a cursor normalizes its own copy.
  *
  * @param {Pick<ListTasksQuery, 'status' | 'priority' | 'assignee' | 'label' | 'search' | 'dueFrom' | 'dueTo' | 'level'>} query
  * The validated query.
@@ -70,10 +57,10 @@ export function toTaskFilterInput(
   >,
 ): TaskFilterInput {
   return {
-    statuses: distinct(query.status),
-    priorities: distinct(query.priority),
-    assignees: distinct(query.assignee?.map((token: string): string => token.toLowerCase())),
-    labels: distinct(query.label),
+    statuses: query.status ?? null,
+    priorities: query.priority ?? null,
+    assignees: query.assignee ?? null,
+    labels: query.label ?? null,
     search: query.search ?? null,
     dueFrom: query.dueFrom ?? null,
     dueTo: query.dueTo ?? null,
@@ -86,8 +73,8 @@ export function toTaskFilterInput(
  *
  * @description
  * What the filters of a collection of tasks contribute to the fingerprint of its cursor: every list
- * sorted and without duplicates, so that the order the caller wrote the values in does not change
- * the collection. The account ids are already in lower case.
+ * sorted and without duplicates, the account ids in lower case, so that neither the order the caller
+ * wrote the values in nor their case changes the collection.
  *
  * @param {TaskFilterInput} filter - The filters of the route.
  * @returns {object} The filters to fingerprint.
@@ -105,7 +92,11 @@ export function taskFilterFingerprint(filter: TaskFilterInput): {
   return {
     status: sortedDistinct(filter.statuses),
     priority: sortedDistinct(filter.priorities),
-    assignee: sortedDistinct(filter.assignees),
+    assignee: sortedDistinct(
+      filter.assignees === null
+        ? null
+        : filter.assignees.map((token: string): string => token.toLowerCase()),
+    ),
     label: sortedDistinct(filter.labels),
     search: filter.search,
     dueFrom: filter.dueFrom,

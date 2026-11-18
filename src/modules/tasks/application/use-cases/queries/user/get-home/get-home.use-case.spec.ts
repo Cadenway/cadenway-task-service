@@ -189,14 +189,16 @@ describe('GetHome: the task part of "Accueil"', () => {
 });
 
 describe('GetHome: only the actor, and only what the actor sees', () => {
-  it('refuses another userId as user-not-found, before reading the copy of the memberships', async () => {
+  it('refuses another userId as user-not-found, before reading the copy of the memberships and without a transaction', async () => {
     const members = atelierNordMembers();
-    const useCase = new GetHome(atelierNord(), members, spaces());
+    const tasks = atelierNord();
+    const useCase = new GetHome(tasks, members, spaces());
 
     expect(await refusalOf(useCase.execute(read({ userId: INES })))).toEqual({
       reason: 'user-not-found',
     });
     expect(members.roleCalls).toEqual([]);
+    expect(tasks.runs).toBe(0);
   });
 
   it('refuses the actor the copy does not hold as organization-not-found', async () => {

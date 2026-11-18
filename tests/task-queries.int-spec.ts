@@ -468,15 +468,36 @@ function sees(list: Seed['list'], person: Person): boolean {
 }
 
 /**
+ * The letters the fold of the SQL replaces after `casefold`, which NFKD leaves whole: `replace` for
+ * the ligatures and the sharp s, `translate` for the stroked letters.
+ */
+const PLAIN_LETTERS: Readonly<Record<string, string>> = {
+  ß: 'ss',
+  œ: 'oe',
+  æ: 'ae',
+  ø: 'o',
+  ł: 'l',
+  đ: 'd',
+  ð: 'd',
+  ħ: 'h',
+  ŧ: 't',
+  ı: 'i',
+};
+
+/**
  * The text compared "without regard to case or accents" (`openapi/public/tasks.yaml:225-226`): the
- * reference of the fold the SQL computes with `casefold`, `normalize(NFKD)` and the removal of the
- * combining marks.
+ * reference of the fold the SQL computes with `casefold`, the plain letters of `PLAIN_LETTERS`,
+ * `normalize(NFKD)` and the removal of the combining marks.
  *
  * @param text - Any text.
  * @returns The folded text.
  */
 function fold(text: string): string {
-  return text.normalize('NFKD').toLowerCase().replace(/[̀-ͯ]/gu, '');
+  return text
+    .toLowerCase()
+    .replace(/[ßœæøłđðħŧı]/gu, (letter) => PLAIN_LETTERS[letter] ?? letter)
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/gu, '');
 }
 
 /**
@@ -4386,6 +4407,25 @@ describe('task queries', () => {
         2_000,
       );
       await check(
+        'Labels',
+        'search=sécurité',
+        '/internal/v1/labels',
+        { search: 'sécurité' },
+        camille,
+        2_000,
+      );
+      const firstLabels = await read(ListLabelsInternalResponse, '/internal/v1/labels', camille, {
+        limit: 3,
+      });
+      await check(
+        'Labels',
+        'page 2 of 3',
+        '/internal/v1/labels',
+        { limit: 3, cursor: firstLabels.nextCursor ?? undefined },
+        camille,
+        2_000,
+      );
+      await check(
         'My tasks',
         'open',
         `/internal/v1/users/${camille.userId}/tasks`,
@@ -4437,6 +4477,125 @@ describe('task queries', () => {
       console.info(`Indexes named by a plan: ${[...used].sort().join(', ')}`);
       expect(used.has('tasks_list_created_index')).toBe(true);
     }, 60_000);
+  });
+
+  describe('the fold also ignores the letters NFKD leaves whole, and a search without a letter finds nothing', () => {
+    let typographyList: ListBody;
+    const names = [
+      'Zèbre',
+      'Ordre du jour',
+      'Œuvre complète',
+      'Ours polaire',
+      'Opéra',
+      'Ødegaard',
+      'Æther',
+      'Łódź',
+      'Đorđe',
+    ];
+    const longLabel = 'ﷺ'.repeat(32);
+    const nearLabel = `${'ﷺ'.repeat(31)}x`;
+
+    beforeAll(async () => {
+      const created = await createSpace(camille, { name: 'Typographie', prefix: 'TYP' });
+      typographyList = created.firstList;
+      for (const [index, name] of names.entries()) {
+        const response = await send(
+          'post',
+          `/internal/v1/lists/${typographyList.id}/tasks`,
+          camille,
+          {
+            body: {
+              name,
+              priority: 'moyenne',
+              status: 'todo',
+              labels: index === 2 ? ['Œuvre', longLabel, nearLabel] : [],
+            },
+          },
+        );
+        expectStatus(response, 201);
+      }
+    }, 60_000);
+
+    /**
+     * Reads the tasks of the list of the typography space.
+     *
+     * @param query - The query parameters.
+     * @returns The page.
+     */
+    async function typographyTasks(query: Query = {}): Promise<TaskPageBody> {
+      return read(
+        ListTasksInternalResponse,
+        `/internal/v1/lists/${typographyList.id}/tasks`,
+        camille,
+        query,
+      );
+    }
+
+    it('finds "Œuvre" by "oeuvre" and "ŒUVRE", and "Æther", "Łódź", "Đorđe" and "Ødegaard" by their plain letters', async () => {
+      expect(namesOf(await typographyTasks({ search: 'oeuvre' }))).toEqual(['Œuvre complète']);
+      expect(namesOf(await typographyTasks({ search: 'ŒUVRE' }))).toEqual(['Œuvre complète']);
+      expect(namesOf(await typographyTasks({ search: 'aether' }))).toEqual(['Æther']);
+      expect(namesOf(await typographyTasks({ search: 'lodz' }))).toEqual(['Łódź']);
+      expect(namesOf(await typographyTasks({ search: 'dorde' }))).toEqual(['Đorđe']);
+      expect(namesOf(await typographyTasks({ search: 'odegaard' }))).toEqual(['Ødegaard']);
+    });
+
+    it('sorts the names by their folded text, "Œuvre" among the o', async () => {
+      const expected = [...names].sort((left, right) => byCodePoint(fold(left), fold(right)));
+
+      const ascending = await typographyTasks({ sort: 'name' });
+      const descending = await typographyTasks({ sort: '-name' });
+
+      expect(expected.slice(3, 8)).toEqual([
+        'Ødegaard',
+        'Œuvre complète',
+        'Opéra',
+        'Ordre du jour',
+        'Ours polaire',
+      ]);
+      expect(namesOf(ascending)).toEqual(expected);
+      expect(namesOf(descending)).toEqual([...expected].reverse());
+      const pages = await walk((cursor) => typographyTasks({ sort: 'name', limit: 2, cursor }));
+      expect(pages.flatMap((page) => namesOf(page))).toEqual(expected);
+    });
+
+    it('finds the label "Œuvre" by "oeuvre" on the labels route', async () => {
+      const page = await labelsOf({ search: 'oeuvre' });
+
+      expect(page.items.map((label) => label.name)).toEqual(['Œuvre']);
+    });
+
+    it('matches nothing for a search that folds to the empty text, for the tasks, the groups and the labels', async () => {
+      const marksOnly = '́';
+
+      const tasksPage = await typographyTasks({ search: marksOnly });
+      const groups = await read(
+        CountTaskGroupsInternalResponse,
+        `/internal/v1/lists/${typographyList.id}/task-groups`,
+        camille,
+        { groupBy: 'status', search: marksOnly },
+      );
+      const labels = await labelsOf({ search: marksOnly });
+
+      expect(tasksPage).toMatchObject({ items: [], total: 0, nextCursor: null });
+      expect(groups.total).toBe(0);
+      expect(labels.items).toEqual([]);
+    });
+
+    it('pages two labels of 32 × U+FDFA, equal on their first 128 folded code points, with a cursor under the 2048 characters of the kit', async () => {
+      const search = 'الله';
+
+      const first = await labelsOf({ search, limit: 1 });
+      const cursor = first.nextCursor;
+      const second = await labelsOf({ search, limit: 1, cursor: cursor ?? undefined });
+
+      // The key of the second label ends with "x" (U+0078), which comes before U+FDFA by code point.
+      expect(first.items.map((label) => label.name)).toEqual([nearLabel]);
+      expect(cursor).not.toBeNull();
+      expect(cursor?.length).toBeLessThan(2_048);
+      expect(second.items.map((label) => label.name)).toEqual([longLabel]);
+      expect(second.nextCursor).toBeNull();
+    });
   });
 
   // #endregion

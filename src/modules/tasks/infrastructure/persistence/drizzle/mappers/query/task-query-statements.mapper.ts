@@ -7,7 +7,7 @@ import type { TaskOrder } from '../../../../../application/models/query/task-ord
 import type { TaskPosition } from '../../../../../application/models/query/task-position.model.js';
 import { taskAssignees } from '../../schemas/task/task-assignee.schema.js';
 import { tasks } from '../../schemas/task/task.schema.js';
-import { taskFilterCondition, taskWithoutAssignee } from './task-filter.mapper.js';
+import { taskFilterCondition } from './task-filter.mapper.js';
 import { keysetAfterOrder, orderTerms, sortValueExpression } from './task-order.mapper.js';
 import { taskPageColumns } from './task-page-row.mapper.js';
 
@@ -62,15 +62,18 @@ export function countStatement(organizationId: string, listId: string, filter: T
  *
  * @description
  * The groups of the tasks of a list that match a filter. Status and priority: one grouped scan,
- * the groups without a task absent. Assignee: one row per account assigned to at least one
- * matching task (a task with two assignees counts in both), then one row `none` for the matching
- * tasks nobody is assigned to, always present.
+ * the groups without a task absent. Assignee: one scan of the matching tasks left-joined to their
+ * assignees, grouped by assignee, so that a task with two assignees counts in both groups and a
+ * task with none counts in `none` (the null assignee); the grouping set `()` adds one row, flagged
+ * `total`, that counts every matching task once (`count(distinct)`), so the total needs no
+ * statement of its own.
  *
  * @param {string} organizationId - The organization of the transaction.
  * @param {string} listId - The list.
  * @param {TaskFilter} filter - What the tasks must match.
  * @param {TaskGrouping} grouping - What the tasks are counted by.
- * @returns {SQL} The statement; each row is `{ value, count }`.
+ * @returns {SQL} The statement; each row is `{ value, count }` and, for the assignees, `total`
+ * (true on the one row that counts every task once, the others are the groups).
  */
 export function groupStatement(
   organizationId: string,
@@ -83,5 +86,5 @@ export function groupStatement(
     const column = grouping === 'status' ? tasks.status : tasks.priority;
     return sql`select ${column} as "value", count(*)::int as "count" from ${tasks} where ${condition} group by ${column}`;
   }
-  return sql`select "grouped_assignees"."user_id"::text as "value", count(*)::int as "count" from ${tasks} join ${taskAssignees} as "grouped_assignees" on "grouped_assignees"."organization_id" = ${tasks.organizationId} and "grouped_assignees"."task_id" = ${tasks.id} where ${condition} group by "grouped_assignees"."user_id" union all select 'none'::text as "value", count(*)::int as "count" from ${tasks} where ${condition} and ${taskWithoutAssignee()}`;
+  return sql`select coalesce("grouped_assignees"."user_id"::text, 'none') as "value", count(distinct ${tasks.id})::int as "count", (grouping("grouped_assignees"."user_id") = 1) as "total" from ${tasks} left join ${taskAssignees} as "grouped_assignees" on "grouped_assignees"."organization_id" = ${tasks.organizationId} and "grouped_assignees"."task_id" = ${tasks.id} where ${condition} group by grouping sets (("grouped_assignees"."user_id"), ())`;
 }

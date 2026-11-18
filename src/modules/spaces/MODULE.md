@@ -228,9 +228,19 @@ poll of the relay, within a second.
   coordinating session: they count tasks, which exist from PR 2, and the tasks module serves the
   overview and the list counts (PR 3), which avoids a cycle between spaces and tasks: the tasks
   module depends on spaces through the public entries above, never the reverse.
-- The tasks module passes the role of the viewer to `FindVisibleList` and `ListVisibleSpaceIds`: it
+- The tasks module passes the role of the viewer to the five readings (`FindVisibleList`,
+  `FindVisibleSpaceLists`, `ListCurrentSprints`, `ListSidebarLists` and `ListVisibleSpaceIds`): it
   reads it from the copy of the memberships (`FindOrganizationMember`) in the same transaction,
-  never from the token, and these operations apply `canSeeSpace` to it without a second reading.
+  never from the token, and these operations apply `canSeeSpace` to it without a second reading
+  (a guest gets `null` or an empty list, without a statement for the three new ones).
+- Cost of the three readings added in PR 3, all bounded by the lists of the organization, not by its
+  tasks: `FindVisibleSpaceLists` reads every list of one space through `lists (organization_id,
+space_id, created_at, id)` (unpaged on purpose: the overview counts every list); `ListSidebarLists`
+  reads the lists of the visible spaces in sidebar order and stops at `limit`; `ListCurrentSprints`
+  filters the lists of the visible spaces on their sprint dates, which no index serves (the lists
+  of an organization are few, and the space and list counts are the bound). "Accueil" calls the last
+  two on every load, and the overview calls the first on every page. If an organization comes to
+  hold thousands of lists, add an index on the sprint dates before it is measured slow.
 - `tests/spaces.int-spec.ts` proves the routes, the visibility rules, the prefixes, idempotency,
   row-level security and the handover by the clean-up job on real PostgreSQL, NATS and pg-boss,
   the window before it included. The batches of 100 and a failed batch that rolls back alone are

@@ -159,14 +159,16 @@ describe('ListMyTasks: the tasks assigned to the actor, by due date, subtasks in
 });
 
 describe('ListMyTasks: only the tasks of the actor', () => {
-  it('refuses another userId as user-not-found, before reading the copy of the memberships', async () => {
+  it('refuses another userId as user-not-found, before reading the copy of the memberships and without a transaction', async () => {
     const members = atelierNordMembers();
-    const useCase = new ListMyTasks(atelierNord(), members, new InMemorySpaceDirectory());
+    const tasks = atelierNord();
+    const useCase = new ListMyTasks(tasks, members, new InMemorySpaceDirectory());
 
     expect(await refusalOf(useCase.execute(read({ userId: INES })))).toEqual({
       reason: 'user-not-found',
     });
     expect(members.roleCalls).toEqual([]);
+    expect(tasks.runs).toBe(0);
   });
 
   it('refuses another userId as user-not-found even for an account the copy does not hold', async () => {

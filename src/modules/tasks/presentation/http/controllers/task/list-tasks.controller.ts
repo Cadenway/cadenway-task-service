@@ -13,6 +13,7 @@ import { CreateTask } from '../../../../application/use-cases/commands/task/crea
 import type { ListListTasksOutput } from '../../../../application/use-cases/queries/list/list-list-tasks/list-list-tasks.output.js';
 import { ListListTasks } from '../../../../application/use-cases/queries/list/list-list-tasks/list-list-tasks.use-case.js';
 import { CreateTaskBody } from '../../dto/input/task/create-task-body.dto.js';
+import { CreateTaskPath } from '../../dto/input/task/create-task-path.dto.js';
 import { ListTasksPath } from '../../dto/input/task/list-tasks-path.dto.js';
 import { ListTasksQuery } from '../../dto/input/task/list-tasks-query.dto.js';
 import { answerRefusals } from '../../errors/task/task-refusal.problem.js';
@@ -129,7 +130,7 @@ export class ListTasksController {
    * `Location` and `ETag`. `404 list.not-found` and the `422` refusals of a task come from the
    * use case.
    *
-   * @param {ListTasksPath} path - The id of the list.
+   * @param {CreateTaskPath} path - The id of the list.
    * @param {CreateTaskBody} body - The task, with the defaults of the contract applied.
    * @param {Response} response - The response, for `Location`.
    * @returns {Promise<Task>} The task.
@@ -140,7 +141,7 @@ export class ListTasksController {
   @Post(':listId/tasks')
   @HttpCode(201)
   public async create(
-    @Param() path: ListTasksPath,
+    @Param() path: CreateTaskPath,
     @Body() body: CreateTaskBody,
     @Res({ passthrough: true }) response: Response,
   ): Promise<Task> {

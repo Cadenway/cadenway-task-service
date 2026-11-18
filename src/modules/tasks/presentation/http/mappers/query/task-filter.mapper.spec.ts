@@ -18,7 +18,7 @@ describe('the filters of the tasks of a list', () => {
     });
   });
 
-  it('removes duplicates and lower-cases the accounts, leaving me, none and the labels as sent', () => {
+  it('passes the values as sent, for the use case to normalize them in one place', () => {
     expect(
       toTaskFilterInput({
         status: ['todo', 'todo', 'review'],
@@ -31,10 +31,10 @@ describe('the filters of the tasks of a list', () => {
         level: 'all',
       }),
     ).toEqual({
-      statuses: ['todo', 'review'],
-      priorities: ['haute'],
-      assignees: ['me', CAMILLE, 'none'],
-      labels: ['Auth', 'auth'],
+      statuses: ['todo', 'todo', 'review'],
+      priorities: ['haute', 'haute'],
+      assignees: ['me', CAMILLE.toUpperCase(), CAMILLE, 'none', 'me'],
+      labels: ['Auth', 'auth', 'Auth'],
       search: ' SSO ',
       dueFrom: '2026-11-01',
       dueTo: '2026-11-30',
@@ -51,6 +51,16 @@ describe('the filters of the tasks of a list', () => {
       taskFilterFingerprint(
         toTaskFilterInput({ status: ['todo', 'review'], assignee: ['me', 'none'], level: 'roots' }),
       ),
+    );
+  });
+
+  it('fingerprints the same collection whatever the case and the duplicates of the accounts', () => {
+    expect(
+      taskFilterFingerprint(
+        toTaskFilterInput({ assignee: [CAMILLE.toUpperCase(), 'me', CAMILLE], level: 'roots' }),
+      ),
+    ).toEqual(
+      taskFilterFingerprint(toTaskFilterInput({ assignee: ['me', CAMILLE], level: 'roots' })),
     );
   });
 

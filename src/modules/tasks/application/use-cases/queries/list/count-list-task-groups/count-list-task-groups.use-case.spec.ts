@@ -185,15 +185,15 @@ describe('CountListTaskGroups: the tasks of a list counted by group', () => {
     });
   });
 
-  it('counts the tasks once with a statement of its own only for the assignees', async () => {
-    const byStatus = sprint14();
-    const byAssignee = sprint14();
+  it('counts the groups and the total in one read, whatever the grouping, with no count of its own', async () => {
+    for (const grouping of ['status', 'priority', 'assignee'] as const) {
+      const tasks = sprint14();
 
-    await over(byStatus).execute(read());
-    await over(byAssignee).execute(read({ grouping: 'assignee' }));
+      await over(tasks).execute(read({ grouping }));
 
-    expect(byStatus.trace).not.toContain('queries.countOfList');
-    expect(byAssignee.trace).toContain('queries.countOfList');
+      expect(tasks.trace).toContain('queries.groupsOfList');
+      expect(tasks.trace).not.toContain('queries.countOfList');
+    }
   });
 });
 

@@ -92,8 +92,28 @@ describe('the cursor of the labels', () => {
     expectInvalidCursor(() => toLabelPosition(forged([null], 'auth'), undefined));
     expectInvalidCursor(() => toLabelPosition(forged(['a\u0000b'], 'auth'), undefined));
     expectInvalidCursor(() => toLabelPosition(forged(['a\ud800'], 'auth'), undefined));
-    expectInvalidCursor(() => toLabelPosition(forged(['a'.repeat(1025)], 'auth'), undefined));
+    expectInvalidCursor(() => toLabelPosition(forged(['a'.repeat(129)], 'auth'), undefined));
     expectInvalidCursor(() => toLabelPosition(forged(['auth'], 'a\u0000b'), undefined));
     expectInvalidCursor(() => toLabelPosition(forged(['auth'], 'a'.repeat(257)), undefined));
+  });
+
+  it('counts the sort key in code points: 128 are accepted, also outside the basic plane, 129 are not', () => {
+    const rockets: string = '🚀'.repeat(128);
+
+    expect(toLabelPosition(forged([rockets], 'auth'), undefined)).toEqual({
+      sortKey: rockets,
+      labelKey: 'auth',
+    });
+    expectInvalidCursor(() => toLabelPosition(forged(['🚀'.repeat(129)], 'auth'), undefined));
+  });
+
+  it('keeps the cursor of a label of 32 × U+FDFA under the 2048 characters of the kit', () => {
+    // U+FDFA folds to eighteen letters: 576 code points, cut to 128 by the statement.
+    const labelKey: string = 'ﷺ'.repeat(32);
+    const sortKey: string = 'صلى الله عليه وسلم'.repeat(32).slice(0, 128);
+    const cursor: string | null = toLabelCursor({ sortKey, labelKey }, undefined);
+
+    expect(cursor?.length).toBeLessThan(2048);
+    expect(toLabelPosition(cursor ?? undefined, undefined)).toEqual({ sortKey, labelKey });
   });
 });

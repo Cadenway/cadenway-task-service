@@ -40,6 +40,16 @@ describe('the cursor of the subtasks of a task', () => {
     expect(toSubtasksPosition(cursor ?? undefined, 'CAD-482')).toEqual(position);
   });
 
+  it('lower-cases the id of a forged cursor in upper case, as the rows hold it', () => {
+    const filters = { collection: 'subtasks', taskKey: 'CAD-482' };
+    const upper: string = encodeCursor(
+      { sort: [position.createdAt.toISOString()], id: position.id.toUpperCase() },
+      filters,
+    );
+
+    expect(toSubtasksPosition(upper, 'CAD-482')).toEqual(position);
+  });
+
   it('refuses the cursor of another task, on the cursor parameter', () => {
     const cursor: string | null = toSubtasksCursor(position, 'CAD-482');
     const refusal: ProblemException = refusalOf(() =>

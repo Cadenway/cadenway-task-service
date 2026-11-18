@@ -68,14 +68,17 @@ function labelCondition(labelKeys: readonly string[]): SQL {
  * @description
  * The text found, folded, in the name, in the key (`CAD-482`) or in a label of the task. `strpos`
  * avoids escaping the wildcards of `LIKE`; the folded search is a constant of the statement, so
- * PostgreSQL folds it once.
+ * PostgreSQL folds it once. The key is ASCII (`^[A-Z]{2,5}$`, then digits), so lower-casing it is
+ * its fold and only the name and the labels pay for the full fold. A search that folds to the empty
+ * text (only combining marks, for example) matches nothing, where `strpos(x, '')` would match every
+ * task.
  *
  * @param {string} search - The text, as sent.
  * @returns {SQL} The condition.
  */
 function searchCondition(search: string): SQL {
-  const key: SQL = sql`${tasks.keyPrefix} || '-' || ${tasks.keyNumber}::text`;
-  return sql`(strpos(${foldText(tasks.name)}, ${foldText(search)}) > 0 or strpos(${foldText(key)}, ${foldText(search)}) > 0 or exists (select 1 from ${taskLabels} where ${taskLabels.organizationId} = ${tasks.organizationId} and ${taskLabels.taskId} = ${tasks.id} and strpos(${foldText(taskLabels.labelKey)}, ${foldText(search)}) > 0))`;
+  const key: SQL = sql`lower(${tasks.keyPrefix} || '-' || ${tasks.keyNumber}::text)`;
+  return sql`(${foldText(search)} <> '' and (strpos(${foldText(tasks.name)}, ${foldText(search)}) > 0 or strpos(${key}, ${foldText(search)}) > 0 or exists (select 1 from ${taskLabels} where ${taskLabels.organizationId} = ${tasks.organizationId} and ${taskLabels.taskId} = ${tasks.id} and strpos(${foldText(taskLabels.labelKey)}, ${foldText(search)}) > 0)))`;
 }
 
 /**
@@ -109,16 +112,4 @@ export function taskFilterCondition(
     filter.dueTo === null ? undefined : sql`${tasks.dueDate} <= ${filter.dueTo}::date`,
   ];
   return and(...conditions) ?? sql`true`;
-}
-
-/**
- * Function taskWithoutAssignee
- *
- * @description
- * The condition that nobody is assigned to the task, for the group `none`.
- *
- * @returns {SQL} The condition.
- */
-export function taskWithoutAssignee(): SQL {
-  return sql`not exists (${assigneesOfTask(null)})`;
 }

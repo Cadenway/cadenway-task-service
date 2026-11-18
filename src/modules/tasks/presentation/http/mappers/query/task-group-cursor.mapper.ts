@@ -5,18 +5,8 @@ import type { CursorPosition } from '@cadenway/nest-common';
 import type { GroupPosition } from '../../../../application/models/query/group-position.model.js';
 import type { TaskFilterInput } from '../../../../application/models/query/task-filter-input.model.js';
 import type { TaskGrouping } from '../../../../application/models/query/task-grouping.model.js';
-import { invalidCursor } from '../page/page-cursor.mapper.js';
+import { invalidCursor, isRowId } from '../page/page-cursor.mapper.js';
 import { taskFilterFingerprint } from './task-filter.mapper.js';
-
-/**
- * Constant UUID
- *
- * @description
- * A UUID in its canonical text form, in either case.
- *
- * @type {RegExp}
- */
-const UUID: RegExp = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
 /**
  * Constant MAX_COUNT
@@ -73,7 +63,7 @@ function isGroupValue(grouping: TaskGrouping, value: string): boolean {
     case 'priority':
       return PRIORITY_KEYS.some((key: string): boolean => key === value);
     case 'assignee':
-      return value === 'none' || UUID.test(value);
+      return value === 'none' || isRowId(value);
   }
 }
 

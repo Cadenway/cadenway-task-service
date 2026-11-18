@@ -3,7 +3,7 @@ import type { TaskFilter } from '../../../../models/query/task-filter.model.js';
 import type { TaskGrouping } from '../../../../models/query/task-grouping.model.js';
 import type { TaskOrder } from '../../../../models/query/task-order.model.js';
 import type { TaskPosition } from '../../../../models/query/task-position.model.js';
-import type { TaskGroupView } from '../../../../projections/query/task-group.projection.js';
+import type { TaskGroupCountsView } from '../../../../projections/query/task-group-counts.projection.js';
 
 /**
  * Interface TaskQueryReader
@@ -58,22 +58,22 @@ export interface TaskQueryReader {
    * Method groupsOfList
    *
    * @description
-   * Counts the tasks of a list that match a filter by status, priority or assignee. The groups
-   * without a task may be left out, except `none` of the assignees, which a task counts in when
-   * nobody is assigned to it; the application fills in the zeros and orders the groups. A task
-   * with two assignees counts in both groups.
+   * Counts the tasks of a list that match a filter by status, priority or assignee, with the
+   * number of tasks that match, each counted once. The groups without a task may be left out; the
+   * application fills in the zeros and orders the groups. A task with two assignees counts in both
+   * of their groups and once in the total; `none` holds the tasks nobody is assigned to.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} listId - The list.
    * @param {TaskFilter} filter - What the tasks must match.
    * @param {TaskGrouping} grouping - What the tasks are counted by.
-   * @returns {Promise<readonly TaskGroupView[]>} The groups, in any order.
+   * @returns {Promise<TaskGroupCountsView>} The groups, in any order, and the total.
    */
   groupsOfList(
     organizationId: string,
     listId: string,
     filter: TaskFilter,
     grouping: TaskGrouping,
-  ): Promise<readonly TaskGroupView[]>;
+  ): Promise<TaskGroupCountsView>;
   // #endregion
 }
