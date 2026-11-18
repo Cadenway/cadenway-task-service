@@ -51,24 +51,50 @@ describe('refuseUnstorableValues: a text with U+0000 is refused, PostgreSQL cann
   });
 });
 
-describe('refuseUnstorableValues: a date of the year 0000 is refused, PostgreSQL has no year 0', () => {
-  it('refuses a calendar date of the year 0000', () => {
-    expect(issuesOf('0000-11-03')).toEqual([{ path: [], message: YEAR_ZERO_MESSAGE }]);
+describe('refuseUnstorableValues: a date member of the year 0000 is refused, PostgreSQL has no year 0', () => {
+  it.each(['dueDate', 'startDate'])('refuses a calendar date of the year 0000 in %s', (member) => {
+    expect(issuesOf({ [member]: '0000-11-03' })).toEqual([
+      { path: [member], message: YEAR_ZERO_MESSAGE },
+    ]);
   });
 
-  it('accepts the year 0001 and a current date', () => {
-    expect(issuesOf('0001-01-01')).toEqual([]);
-    expect(issuesOf('2026-11-03')).toEqual([]);
+  it('accepts the year 0001 and a current date in a date member', () => {
+    expect(issuesOf({ dueDate: '0001-01-01', startDate: '2026-11-03' })).toEqual([]);
   });
 
-  it('accepts a text that only looks like a date of the year 0000', () => {
-    expect(issuesOf('0000-11-03T08:00')).toEqual([]);
-    expect(issuesOf('00000-11-03')).toEqual([]);
-    expect(issuesOf('sprint 0000-11-03')).toEqual([]);
+  it('accepts a text that only looks like a date of the year 0000, in a date member', () => {
+    expect(issuesOf({ dueDate: '0000-11-03T08:00' })).toEqual([]);
+    expect(issuesOf({ dueDate: '00000-11-03' })).toEqual([]);
+    expect(issuesOf({ dueDate: 'sprint 0000-11-03' })).toEqual([]);
   });
 
-  it('raises one issue for a text that breaks both rules', () => {
-    expect(issuesOf('0000-11-03').length).toBe(1);
+  it('accepts a name, a description, a label, a note or a checklist text that reads 0000-11-03', () => {
+    expect(
+      issuesOf({
+        name: '0000-11-03',
+        description: '0000-11-03',
+        labels: ['0000-11-03'],
+        subtasks: [{ name: '0000-11-03' }],
+        text: '0000-11-03',
+        cancelNote: '0000-11-03',
+      }),
+    ).toEqual([]);
+  });
+
+  it('accepts a bare text that reads 0000-11-03, which is no date member', () => {
+    expect(issuesOf('0000-11-03')).toEqual([]);
+  });
+
+  it('refuses a date in a date member nested in an array of objects', () => {
+    expect(issuesOf({ subtasks: [{ dueDate: '0000-11-03' }] })).toEqual([
+      { path: ['subtasks', 0, 'dueDate'], message: YEAR_ZERO_MESSAGE },
+    ]);
+  });
+
+  it('still refuses U+0000 in a text that reads like a date, on any member', () => {
+    expect(issuesOf({ name: '0000-11-03\u0000' })).toEqual([
+      { path: ['name'], message: NUL_MESSAGE },
+    ]);
   });
 });
 
@@ -86,18 +112,16 @@ describe('refuseUnstorableValues: it walks nested objects and arrays', () => {
   });
 
   it('walks arrays of objects', () => {
-    expect(issuesOf([{ day: '0000-01-01' }, { day: '2026-11-03' }])).toEqual([
-      { path: [0, 'day'], message: YEAR_ZERO_MESSAGE },
+    expect(issuesOf([{ dueDate: '0000-01-01' }, { dueDate: '2026-11-03' }])).toEqual([
+      { path: [0, 'dueDate'], message: YEAR_ZERO_MESSAGE },
     ]);
   });
 
   it('raises one issue per refused value', () => {
-    expect(
-      issuesOf({ name: 'a\u0000', sprint: { startDate: '0000-01-01', endDate: '0000-01-02' } }),
-    ).toEqual([
+    expect(issuesOf({ name: 'a\u0000', dueDate: '0000-01-02', startDate: '0000-01-01' })).toEqual([
       { path: ['name'], message: NUL_MESSAGE },
-      { path: ['sprint', 'startDate'], message: YEAR_ZERO_MESSAGE },
-      { path: ['sprint', 'endDate'], message: YEAR_ZERO_MESSAGE },
+      { path: ['dueDate'], message: YEAR_ZERO_MESSAGE },
+      { path: ['startDate'], message: YEAR_ZERO_MESSAGE },
     ]);
   });
 

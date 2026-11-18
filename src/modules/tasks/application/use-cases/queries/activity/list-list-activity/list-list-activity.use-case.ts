@@ -83,41 +83,46 @@ export class ListListActivity {
    * @throws {TaskRefusal} `organization-not-found` or `list-not-found`.
    */
   public async execute(input: ListListActivityInput): Promise<ListListActivityOutput> {
-    return this.unitOfWork.run(async (store: TasksStore): Promise<ListListActivityOutput> => {
-      const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
-      const placement: ListPlacement | null = await this.spaces.findVisibleList(
-        input.organizationId,
-        viewer,
-        input.listId,
-      );
-      if (placement === null) {
-        throw new TaskRefusal({ reason: 'list-not-found' });
-      }
-      const filter: ListActivityFilter = {
-        listId: input.listId,
-        spaceIds: await this.spaces.visibleSpaceIds(input.organizationId, viewer),
-        kinds: input.kinds,
-        actorIds: input.actorIds,
-      };
-      const rows: readonly ActivityEntryState[] = await store.activity.pageOfList(
-        input.organizationId,
-        filter,
-        input.after,
-        input.limit + 1,
-      );
-      const page: Slice<ActivityEntryState, ActivityPosition> = this.pages.slice(
-        rows,
-        input.limit,
-        (row: ActivityEntryState): ActivityPosition => ({ occurredAt: row.occurredAt, id: row.id }),
-      );
-      const total: number = await store.activity.countOfList(input.organizationId, filter);
-      const items: readonly ActivityEntryView[] = await this.views.build(
-        store.reader,
-        input.organizationId,
-        page.items,
-      );
-      return { items, next: page.next, total };
-    });
+    return this.unitOfWork.runReadOnly(
+      async (store: TasksStore): Promise<ListListActivityOutput> => {
+        const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
+        const placement: ListPlacement | null = await this.spaces.findVisibleList(
+          input.organizationId,
+          viewer,
+          input.listId,
+        );
+        if (placement === null) {
+          throw new TaskRefusal({ reason: 'list-not-found' });
+        }
+        const filter: ListActivityFilter = {
+          listId: input.listId,
+          spaceIds: await this.spaces.visibleSpaceIds(input.organizationId, viewer),
+          kinds: input.kinds,
+          actorIds: input.actorIds,
+        };
+        const rows: readonly ActivityEntryState[] = await store.activity.pageOfList(
+          input.organizationId,
+          filter,
+          input.after,
+          input.limit + 1,
+        );
+        const page: Slice<ActivityEntryState, ActivityPosition> = this.pages.slice(
+          rows,
+          input.limit,
+          (row: ActivityEntryState): ActivityPosition => ({
+            occurredAt: row.occurredAt,
+            id: row.id,
+          }),
+        );
+        const total: number = await store.activity.countOfList(input.organizationId, filter);
+        const items: readonly ActivityEntryView[] = await this.views.build(
+          store.reader,
+          input.organizationId,
+          page.items,
+        );
+        return { items, next: page.next, total };
+      },
+    );
   }
   // #endregion
 }

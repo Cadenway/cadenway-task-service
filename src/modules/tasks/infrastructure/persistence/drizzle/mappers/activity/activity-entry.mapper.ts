@@ -28,34 +28,45 @@ export type ActivityEntryRow = typeof activityEntries.$inferSelect;
  * @throws {Error} When the kind is unknown or the detail of the kind is incomplete.
  */
 function toActivityChange(row: ActivityEntryRow): ActivityChange {
+  const subject: string = `activity entry ${row.id}`;
   switch (row.kind) {
     case 'create':
       return { kind: 'create' };
     case 'status':
       if (row.statusFrom === null || row.statusTo === null) {
-        throw new Error('A stored status entry has no status.');
+        throw new Error(`The stored status entry ${row.id} of task ${row.taskId} has no status.`);
       }
       return {
         kind: 'status',
-        status: { from: toStatusKey(row.statusFrom), to: toStatusKey(row.statusTo) },
+        status: {
+          from: toStatusKey(row.statusFrom, subject),
+          to: toStatusKey(row.statusTo, subject),
+        },
       };
     case 'priority':
       if (row.priorityFrom === null || row.priorityTo === null) {
-        throw new Error('A stored priority entry has no priority.');
+        throw new Error(
+          `The stored priority entry ${row.id} of task ${row.taskId} has no priority.`,
+        );
       }
       return {
         kind: 'priority',
-        priority: { from: toPriorityKey(row.priorityFrom), to: toPriorityKey(row.priorityTo) },
+        priority: {
+          from: toPriorityKey(row.priorityFrom, subject),
+          to: toPriorityKey(row.priorityTo, subject),
+        },
       };
     case 'due':
       return { kind: 'due', dueDate: { from: row.dueFrom, to: row.dueTo } };
     case 'assign':
       if (row.assigneeUserId === null || row.assigneeAdded === null) {
-        throw new Error('A stored assign entry has no assignee.');
+        throw new Error(`The stored assign entry ${row.id} of task ${row.taskId} has no assignee.`);
       }
       return { kind: 'assign', assignee: { userId: row.assigneeUserId, added: row.assigneeAdded } };
     default:
-      throw new Error('A stored activity kind is outside the kinds.');
+      throw new Error(
+        `The stored activity entry ${row.id} of task ${row.taskId} has a kind outside the kinds.`,
+      );
   }
 }
 
@@ -77,7 +88,7 @@ export function toActivityEntry(row: ActivityEntryRow): ActivityEntryState {
     organizationId: row.organizationId,
     taskId: row.taskId,
     listId: row.listId,
-    actor: { type: toActorType(row.actorType), id: row.actorId },
+    actor: { type: toActorType(row.actorType, `activity entry ${row.id}`), id: row.actorId },
     occurredAt: row.occurredAt,
     change: toActivityChange(row),
   }).snapshot;

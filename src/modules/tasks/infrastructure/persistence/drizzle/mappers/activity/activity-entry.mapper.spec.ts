@@ -75,13 +75,13 @@ describe('toActivityEntry: a stored row becomes the entry it stores', () => {
 
   it('refuses a stored kind outside the five kinds', () => {
     expect(() => toActivityEntry(rowOf(priorityEntry(), { kind: 'comment' }))).toThrow(
-      'A stored activity kind is outside the kinds.',
+      'The stored activity entry 019a7400-0000-7000-8000-000000000001 of task 019a7200-0000-7000-8000-000000000482 has a kind outside the kinds.',
     );
   });
 
   it('refuses a stored actor type outside the four types', () => {
     expect(() => toActivityEntry(rowOf(priorityEntry(), { actorType: 'robot' }))).toThrow(
-      'A stored actor type is outside the actor types.',
+      'A stored actor type is outside the actor types (activity entry 019a7400-0000-7000-8000-000000000001)',
     );
   });
 
@@ -91,13 +91,13 @@ describe('toActivityEntry: a stored row becomes the entry it stores', () => {
     });
 
     expect(() => toActivityEntry(rowOf(entry, { statusTo: null }))).toThrow(
-      'A stored status entry has no status.',
+      'The stored status entry 019a7400-0000-7000-8000-000000000001 of task 019a7200-0000-7000-8000-000000000482 has no status.',
     );
   });
 
   it('refuses a priority entry without its priorities', () => {
     expect(() => toActivityEntry(rowOf(priorityEntry(), { priorityFrom: null }))).toThrow(
-      'A stored priority entry has no priority.',
+      'The stored priority entry 019a7400-0000-7000-8000-000000000001 of task 019a7200-0000-7000-8000-000000000482 has no priority.',
     );
   });
 
@@ -107,13 +107,13 @@ describe('toActivityEntry: a stored row becomes the entry it stores', () => {
     });
 
     expect(() => toActivityEntry(rowOf(entry, { assigneeAdded: null }))).toThrow(
-      'A stored assign entry has no assignee.',
+      'The stored assign entry 019a7400-0000-7000-8000-000000000001 of task 019a7200-0000-7000-8000-000000000482 has no assignee.',
     );
   });
 
   it('refuses a status or priority outside its set', () => {
     expect(() => toActivityEntry(rowOf(priorityEntry(), { priorityTo: 'critique' }))).toThrow(
-      'A stored priority is outside the priorities.',
+      'A stored priority is outside the priorities (activity entry 019a7400-0000-7000-8000-000000000001)',
     );
   });
 

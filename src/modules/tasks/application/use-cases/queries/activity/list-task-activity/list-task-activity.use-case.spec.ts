@@ -153,3 +153,17 @@ describe('ListTaskActivity: what the actor does not see is not found', () => {
     });
   });
 });
+
+describe('ListTaskActivity: the read runs in one read-only transaction', () => {
+  it('opens a single read-only run, with the default isolation, with no snapshot', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState()] });
+
+    await new ListTaskActivity(tasks, atelierNordMembers(), new InMemorySpaceDirectory()).execute(
+      read(),
+    );
+
+    expect(tasks.runs).toBe(1);
+    expect(tasks.readOnlyRuns).toBe(1);
+    expect(tasks.snapshotRuns).toBe(0);
+  });
+});

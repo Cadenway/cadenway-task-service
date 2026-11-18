@@ -54,6 +54,30 @@ describe('the body of a task creation', () => {
     }
   });
 
+  it('accepts a name, a description, a label and a subtask name that read 0000-11-03', () => {
+    const result = CreateTaskBody.schema.safeParse({
+      name: '0000-11-03',
+      description: '0000-11-03',
+      labels: ['0000-11-03'],
+      subtasks: [{ name: '0000-11-03' }],
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('refuses the due date 0000-11-03 and the start date 0000-11-03, on their members only', () => {
+    const result = CreateTaskBody.schema.safeParse({
+      name: '0000-11-03',
+      dueDate: '0000-11-03',
+      startDate: '0000-11-03',
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.map((issue) => issue.path)).toEqual([['dueDate'], ['startDate']]);
+    }
+  });
+
   it('refuses more than 25 subtasks and more than 20 labels', () => {
     expect(
       CreateTaskBody.schema.safeParse({

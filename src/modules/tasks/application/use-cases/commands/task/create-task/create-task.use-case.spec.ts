@@ -174,6 +174,43 @@ describe('CreateTask: the subtasks of the request take the next keys, the list a
     ]);
   });
 
+  it('stores the task with one insert and all the subtasks with one more, whatever their number', async () => {
+    const { tasks, useCase } = atelierNord();
+
+    await useCase.execute(
+      createTask({ subtaskNames: ['Maquette', 'Recette', 'Revue', 'Livraison'] }),
+    );
+
+    expect(tasks.trace.filter((call) => call === 'tasks.insert')).toHaveLength(1);
+    expect(tasks.trace.filter((call) => call === 'tasks.insertMany')).toHaveLength(1);
+    expect(tasks.trace.indexOf('spaces.allocateKeys')).toBeLessThan(
+      tasks.trace.indexOf('tasks.insert'),
+    );
+  });
+
+  it('does not call the multi-row insert for a task without subtask', async () => {
+    const { tasks, useCase } = atelierNord();
+
+    await useCase.execute(createTask({ subtaskNames: [] }));
+
+    expect(tasks.trace).not.toContain('tasks.insertMany');
+  });
+
+  it('gives the subtasks the keys after the one of the task, in body order', async () => {
+    const { tasks, useCase } = atelierNord();
+
+    await useCase.execute(createTask({ subtaskNames: ['Maquette', 'Recette', 'Revue'] }));
+
+    expect(
+      [...tasks.tasks.values()].map((row) => [row.key.format(), row.name, row.parentId === null]),
+    ).toEqual([
+      ['CAD-496', 'Configurer le domaine vérifié', true],
+      ['CAD-497', 'Maquette', false],
+      ['CAD-498', 'Recette', false],
+      ['CAD-499', 'Revue', false],
+    ]);
+  });
+
   it('appends the events of the task before those of each subtask', async () => {
     const { tasks, useCase } = atelierNord();
 

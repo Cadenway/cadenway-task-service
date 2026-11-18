@@ -74,12 +74,16 @@ export class AllocateTaskKeys {
    */
   public async execute(input: AllocateTaskKeysInput): Promise<AllocateTaskKeysOutput> {
     if (!Number.isInteger(input.count) || input.count < 1 || input.count > MAX_COUNT) {
-      throw new Error(`Task keys are allocated 1 to ${String(MAX_COUNT)} at a time.`);
+      throw new Error(
+        `Task keys are allocated 1 to ${String(MAX_COUNT)} at a time, not ${String(input.count)} (space ${input.spaceId}).`,
+      );
     }
     return this.unitOfWork.run(async (store: SpacesStore): Promise<AllocateTaskKeysOutput> => {
       const space: Space | null = await store.spaces.find(input.organizationId, input.spaceId);
       if (space === null) {
-        throw new Error('The space of the task keys is unknown to the organization.');
+        throw new Error(
+          `The space ${input.spaceId} of the task keys is unknown to the organization.`,
+        );
       }
       const { prefix }: { readonly prefix: string } = space.snapshot;
       const last: number | null = await store.prefixes.allocate(
@@ -89,11 +93,13 @@ export class AllocateTaskKeys {
         input.count,
       );
       if (last === null) {
-        throw new Error('The prefix of the space has no counter.');
+        throw new Error(`The prefix ${prefix} of the space ${input.spaceId} has no counter.`);
       }
       // The transaction is rolled back by this throw: no number past the bound is kept.
       if (!isTaskNumber(last)) {
-        throw new Error('The task numbers of the prefix are exhausted.');
+        throw new Error(
+          `The task numbers of the prefix ${prefix} (space ${input.spaceId}) are exhausted.`,
+        );
       }
       return { prefix, firstNumber: last - input.count + 1 };
     });

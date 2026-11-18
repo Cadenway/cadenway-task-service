@@ -131,6 +131,10 @@ None directly; member-lifecycle calls `HandOverPrivateSpaces` on `member.removed
   answers 500 and rolls back). `nextKey` and `FindVisibleList` only preview the next number and
   reserve nothing; the allocation emits nothing and leaves the version of the space unchanged.
 - A sprint ends on or after its start (`422 list.sprint-dates-invalid`).
+- A list never changes space, and a space or a list is never deleted in this version: the tasks
+  module copies `space_id` and `list_id` onto its rows without a foreign key (the strict layout
+  forbids importing these schemas), and what it stores stays right only while both hold. A change
+  that moves a list to another space, or deletes a space or a list, has to migrate the tasks first.
 - A private space always has an owner who is a member, so that someone sees it. When the owner of a
   private space leaves the organization, the owner of the organization becomes its owner, unless
   the account is still a member under another membership. While the copy does not hold the owner
@@ -142,8 +146,9 @@ None directly; member-lifecycle calls `HandOverPrivateSpaces` on `member.removed
   (`403 space.visibility-forbidden`) while the copy holds no owner of the organization.
 - The organization and the actor come from the verified token only, lower-cased; an actor id that
   is not a UUID answers `403 auth.actor-not-allowed`.
-- A text holding U+0000, or a calendar date of the year 0000, answers `400 request.invalid`: the
-  contract validators accept them, PostgreSQL cannot store them.
+- A text holding U+0000, in any member, or a calendar date of the year 0000 in the `startDate` or
+  `endDate` of a sprint, answers `400 request.invalid`: the contract validators accept them,
+  PostgreSQL cannot store them. A name or a goal that reads `0000-11-03` is only a text.
 
 ## Transactions
 

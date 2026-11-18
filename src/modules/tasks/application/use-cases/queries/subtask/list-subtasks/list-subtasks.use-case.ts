@@ -19,7 +19,7 @@ import type { ListSubtasksOutput } from './list-subtasks.output.js';
  * @description
  * Lists the direct subtasks of a task, in the order of their creation, one keyset page at a time
  * (`GET /internal/v1/tasks/{taskKey}/subtasks`), without a lock. It reads one row more than the
- * page to know whether another follows, and counts the subtasks in the same transaction.
+ * page to know whether another follows, and counts the subtasks in the same read-only transaction.
  * Visibility is that of the parent (`task-not-found`).
  */
 export class ListSubtasks {
@@ -73,7 +73,7 @@ export class ListSubtasks {
    * @throws {TaskRefusal} `organization-not-found` or `task-not-found`.
    */
   public async execute(input: ListSubtasksInput): Promise<ListSubtasksOutput> {
-    return this.unitOfWork.run(async (store: TasksStore): Promise<ListSubtasksOutput> => {
+    return this.unitOfWork.runReadOnly(async (store: TasksStore): Promise<ListSubtasksOutput> => {
       const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
       const { task }: LocatedTask = await this.locator.locate(store, {
         organizationId: input.organizationId,

@@ -133,7 +133,9 @@ export class DrizzleActivityRepository implements ActivityRepository {
       )
       .returning({ id: activityEntries.id });
     if (updated.length !== 1) {
-      throw new Error('The activity entry vanished while its task was locked.');
+      throw new Error(
+        `The activity entry ${entry.id} of task ${entry.taskId} vanished while its task was locked.`,
+      );
     }
   }
 

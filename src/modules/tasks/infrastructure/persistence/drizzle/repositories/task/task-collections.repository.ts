@@ -195,10 +195,13 @@ export class DrizzleTaskCollections {
    * @description
    * Turns task rows into tasks: the assignees, labels, checklists and parent keys of all of them
    * are loaded in four queries, after the rows were read (and locked, when the caller asked), so a
-   * task is the committed state at that instant. The tasks keep the order of the rows.
+   * task is the committed state at that instant. The tasks keep the order of the rows. With
+   * `withChecklists` false the checklist query is skipped and every task carries an empty
+   * checklist: only for a caller that never reads it (the unassignment of a removed member).
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly TaskRow[]} rows - The rows.
+   * @param {boolean} [withChecklists] - `false` to leave the checklists unloaded; `true` by default.
    * @returns {Promise<readonly Task[]>} The tasks.
    * @throws {Error} When a stored value is outside its set, or a parent is missing.
    * @throws {InvalidTaskError} When a stored state breaks an invariant of the domain.
@@ -206,6 +209,7 @@ export class DrizzleTaskCollections {
   public async assemble(
     organizationId: string,
     rows: readonly TaskRow[],
+    withChecklists: boolean = true,
   ): Promise<readonly Task[]> {
     if (rows.length === 0) {
       return [];
@@ -223,17 +227,16 @@ export class DrizzleTaskCollections {
       ids,
     );
     const labels: ReadonlyMap<string, readonly string[]> = await this.labelsOf(organizationId, ids);
-    const checklists: ReadonlyMap<string, readonly ChecklistItemState[]> = await this.checklistsOf(
-      organizationId,
-      ids,
-    );
+    const checklists: ReadonlyMap<string, readonly ChecklistItemState[]> = withChecklists
+      ? await this.checklistsOf(organizationId, ids)
+      : new Map<string, readonly ChecklistItemState[]>();
     const parentKeys: ReadonlyMap<string, TaskKey> = await this.keysOf(organizationId, parentIds);
     return rows.map((row: TaskRow): Task => {
       let parentKey: TaskKey | null = null;
       if (row.parentId !== null) {
         parentKey = parentKeys.get(row.parentId) ?? null;
         if (parentKey === null) {
-          throw new Error('The parent of a stored task is missing.');
+          throw new Error(`The parent ${row.parentId} of the stored task ${row.id} is missing.`);
         }
       }
       return toTask(

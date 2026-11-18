@@ -100,13 +100,13 @@ describe('toTask: a stored row becomes the task it stores', () => {
 
   it('refuses a stored status outside the ten keys', () => {
     expect(() => toTask(rowOf(taskState(), { status: 'archived' }), null, [], [], [])).toThrow(
-      'A stored status is outside the status keys.',
+      'A stored status is outside the status keys (task 019a7200-0000-7000-8000-000000000482)',
     );
   });
 
   it('refuses a stored priority outside the four priorities', () => {
     expect(() => toTask(rowOf(taskState(), { priority: 'critique' }), null, [], [], [])).toThrow(
-      'A stored priority is outside the priorities.',
+      'A stored priority is outside the priorities (task 019a7200-0000-7000-8000-000000000482)',
     );
   });
 
@@ -114,13 +114,13 @@ describe('toTask: a stored row becomes the task it stores', () => {
     const state: TaskState = taskState({ status: 'cancelled', cancelReason: 'duplicate' });
 
     expect(() => toTask(rowOf(state, { cancelReason: 'boredom' }), null, [], [], [])).toThrow(
-      'A stored cancel reason is outside the cancel reasons.',
+      'A stored cancel reason is outside the cancel reasons (task 019a7200-0000-7000-8000-000000000482)',
     );
   });
 
   it('refuses a stored creator type outside the four actor types', () => {
     expect(() => toTask(rowOf(taskState(), { createdByType: 'robot' }), null, [], [], [])).toThrow(
-      'A stored actor type is outside the actor types.',
+      'A stored actor type is outside the actor types (task 019a7200-0000-7000-8000-000000000482)',
     );
   });
 
@@ -278,7 +278,9 @@ describe('toChecklistItem and the summaries', () => {
         { total: 0, closed: 0 },
         { total: 0, done: 0 },
       ),
-    ).toThrow('A stored status is outside the status keys.');
+    ).toThrow(
+      'A stored status is outside the status keys (task 019a7200-0000-7000-8000-000000000482)',
+    );
   });
 
   it('builds a reference with the key, the name and the status as they are now', () => {

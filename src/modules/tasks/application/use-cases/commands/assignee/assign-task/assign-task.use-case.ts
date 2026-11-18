@@ -114,7 +114,9 @@ export class AssignTask {
       const now: Date = await store.clock.now();
       const update: TaskUpdate = this.rules.apply((): TaskUpdate => {
         if (candidate === undefined) {
-          throw new Error('The candidate of the assignment is missing.');
+          throw new Error(
+            `The candidate ${input.userId} of the assignment to ${input.taskKey} is missing.`,
+          );
         }
         return task.assign(candidate, now);
       });

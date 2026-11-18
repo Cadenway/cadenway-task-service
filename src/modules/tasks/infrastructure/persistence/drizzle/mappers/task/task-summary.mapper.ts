@@ -45,13 +45,14 @@ export function toTaskSummary(
   subtaskCounts: SubtaskCounts,
   checklistCounts: ChecklistCounts,
 ): TaskSummaryView {
+  const subject: string = `task ${row.id}`;
   return {
     id: row.id,
     key: toTaskKeyText(row.keyPrefix, row.keyNumber),
     name: row.name,
-    status: toStatusKey(row.status),
-    cancelReason: toCancelReason(row.cancelReason),
-    priority: toPriorityKey(row.priority),
+    status: toStatusKey(row.status, subject),
+    cancelReason: toCancelReason(row.cancelReason, subject),
+    priority: toPriorityKey(row.priority, subject),
     assigneeIds,
     dueDate: row.dueDate,
     startDate: row.startDate,
@@ -81,9 +82,10 @@ export function toTaskSummary(
 export function toTaskReference(
   row: Pick<TaskRow, 'keyPrefix' | 'keyNumber' | 'name' | 'status'>,
 ): TaskReferenceView {
+  const key: string = toTaskKeyText(row.keyPrefix, row.keyNumber);
   return {
-    key: toTaskKeyText(row.keyPrefix, row.keyNumber),
+    key,
     name: row.name,
-    status: toStatusKey(row.status),
+    status: toStatusKey(row.status, `task ${key}`),
   };
 }

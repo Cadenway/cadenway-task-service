@@ -9,7 +9,7 @@ import type { ChecklistItemDraft } from '../../../../../domain/value-objects/tas
 import type { ChecklistItemState } from '../../../../../domain/value-objects/task/checklist-item-state.value-object.js';
 import { labelKey } from '../../../../../domain/value-objects/task/label-name.value-object.js';
 import type { TaskDraft } from '../../../../../domain/value-objects/task/task-draft.value-object.js';
-import type { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
+import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import type { TaskState } from '../../../../../domain/value-objects/task/task-state.value-object.js';
 import { anyOf } from '../../mappers/page/any-of.mapper.js';
 import { toChecklistItem } from '../../mappers/task/checklist-item.mapper.js';
@@ -21,6 +21,17 @@ import { taskAssignees } from '../../schemas/task/task-assignee.schema.js';
 import { taskLabels } from '../../schemas/task/task-label.schema.js';
 import { tasks } from '../../schemas/task/task.schema.js';
 import { DrizzleTaskCollections } from './task-collections.repository.js';
+
+/** A draft of `insertMany` with the row PostgreSQL stored for it. */
+interface StoredDraft {
+  // #region Properties
+  /** The task the domain created. */
+  readonly draft: TaskDraft;
+
+  /** The row PostgreSQL stored for it. */
+  readonly row: TaskRow;
+  // #endregion
+}
 
 /**
  * Class DrizzleTaskRepository
@@ -39,8 +50,9 @@ import { DrizzleTaskCollections } from './task-collections.repository.js';
  *   the checklist, comparing `before` and `after`: at most one statement per kind of change.
  * - The tree reads are recursive CTEs bounded by the depth limit of 3 levels (one level more is
  *   read to see a violation), through the primary key and `tasks_parent_created_index`.
- * - `lockAssignedTo` and `unassignBatch` are set-based: a batch is one locking read, one delete of
- *   the assignee rows and one update of the versions.
+ * - `lockAssignedTo` and `unassignBatch` are set-based: a batch is one locking read (a range scan
+ *   of `task_assignees_user_index`, without the checklists), the loads of the assignees, labels and
+ *   parents, one delete of the assignee rows and one update of the versions.
  */
 export class DrizzleTaskRepository implements TaskRepository {
   // #region Properties
@@ -145,10 +157,7 @@ export class DrizzleTaskRepository implements TaskRepository {
    * Method insert
    *
    * @description
-   * Stores a new task under its key with one `INSERT ... RETURNING`, then its assignees and its
-   * labels in order, one multi-row statement each. The task is restored from the row PostgreSQL
-   * returned (id, creation instant, version 1) and the draft's collections; a new task has no
-   * checklist.
+   * Stores one new task: `insertMany` of a single draft.
    *
    * @param {TaskDraft} draft - The task the domain created.
    * @param {TaskKey} key - The key allocated for it.
@@ -156,36 +165,70 @@ export class DrizzleTaskRepository implements TaskRepository {
    * @throws {Error} When no row came back.
    */
   public async insert(draft: TaskDraft, key: TaskKey): Promise<Task> {
+    const stored: readonly Task[] = await this.insertMany([draft], [key]);
+    const task: Task | undefined = stored[0];
+    if (task === undefined) {
+      throw new Error(`The task ${key.format()} of space ${draft.spaceId} was not stored.`);
+    }
+    return task;
+  }
+
+  /**
+   * Method insertMany
+   *
+   * @description
+   * Stores new tasks with one multi-row `INSERT ... RETURNING`, then the assignees of all of them
+   * and the labels of all of them in order, one multi-row statement each (three statements
+   * whatever the number of tasks). Each task is restored from the row PostgreSQL returned (id,
+   * creation instant, version 1) and the draft's collections; a new task has no checklist. The
+   * rows are matched to the drafts by key, so the order of `RETURNING` does not matter. Within one
+   * statement `uuidv7()` increases, so the tasks of one call, which share their creation instant,
+   * keep the order of the drafts under the `(created_at, id)` order of the subtask pages.
+   *
+   * @param {readonly TaskDraft[]} drafts - The tasks the domain created.
+   * @param {readonly TaskKey[]} keys - The key allocated for each draft, in the same order.
+   * @returns {Promise<readonly Task[]>} The stored tasks, in the order of the drafts.
+   * @throws {Error} When a draft has no key or no row came back for it.
+   */
+  public async insertMany(
+    drafts: readonly TaskDraft[],
+    keys: readonly TaskKey[],
+  ): Promise<readonly Task[]> {
+    if (drafts.length === 0) {
+      return [];
+    }
+    if (keys.length !== drafts.length) {
+      throw new Error(
+        `${String(drafts.length)} tasks were given ${String(keys.length)} keys, one each is needed.`,
+      );
+    }
     const rows: TaskRow[] = await this.db
       .insert(tasks)
-      .values(toTaskInsert(draft, key))
+      .values(
+        drafts.map((draft: TaskDraft, index: number) =>
+          toTaskInsert(draft, this.keyAt(keys, index)),
+        ),
+      )
       .returning();
-    const row: TaskRow | undefined = rows[0];
-    if (row === undefined) {
-      throw new Error('The task was not stored.');
-    }
-    if (draft.assigneeIds.length > 0) {
-      await this.db.insert(taskAssignees).values(
-        draft.assigneeIds.map((userId: string, position: number) => ({
-          organizationId: row.organizationId,
-          taskId: row.id,
-          userId,
-          position,
-        })),
-      );
-    }
-    if (draft.labels.length > 0) {
-      await this.db.insert(taskLabels).values(
-        draft.labels.map((name: string, position: number) => ({
-          organizationId: row.organizationId,
-          taskId: row.id,
-          labelKey: labelKey(name),
-          name,
-          position,
-        })),
-      );
-    }
-    return toTask(row, draft.parentKey, draft.assigneeIds, draft.labels, []);
+    const byKey = new Map<string, TaskRow>(
+      rows.map((row: TaskRow): [string, TaskRow] => [
+        TaskKey.of(row.keyPrefix, row.keyNumber).format(),
+        row,
+      ]),
+    );
+    const stored: readonly StoredDraft[] = drafts.map((draft: TaskDraft, index: number) => {
+      const key: TaskKey = this.keyAt(keys, index);
+      const row: TaskRow | undefined = byKey.get(key.format());
+      if (row === undefined) {
+        throw new Error(`The task ${key.format()} of space ${draft.spaceId} was not stored.`);
+      }
+      return { draft, row };
+    });
+    await this.insertAssignees(stored);
+    await this.insertLabels(stored);
+    return stored.map(({ draft, row }: StoredDraft): Task =>
+      toTask(row, draft.parentKey, draft.assigneeIds, draft.labels, []),
+    );
   }
 
   /**
@@ -220,7 +263,16 @@ export class DrizzleTaskRepository implements TaskRepository {
       )
       .returning({ id: tasks.id });
     if (updated.length !== 1) {
-      throw new Error('The task vanished or changed while it was locked.');
+      const remaining: readonly { id: string }[] = await this.db
+        .select({ id: tasks.id })
+        .from(tasks)
+        .where(and(eq(tasks.organizationId, next.organizationId), eq(tasks.id, next.id)));
+      const label: string = `${next.key.format()} (${next.id})`;
+      throw new Error(
+        remaining.length === 0
+          ? `The task ${label} vanished while it was locked.`
+          : `The task ${label} is no longer at version ${String(previous.version)} it was read at.`,
+      );
     }
     await this.saveAssignees(previous, next);
     await this.saveLabels(previous, next);
@@ -257,7 +309,9 @@ export class DrizzleTaskRepository implements TaskRepository {
       .returning();
     const row: ChecklistItemRow | undefined = rows[0];
     if (row === undefined) {
-      throw new Error('The checklist item was not stored.');
+      throw new Error(
+        `The checklist item at position ${String(draft.position)} of task ${taskId} was not stored.`,
+      );
     }
     return toChecklistItem(row);
   }
@@ -291,7 +345,7 @@ export class DrizzleTaskRepository implements TaskRepository {
     `);
     const level: number | undefined = result.rows[0]?.level;
     if (level === undefined || level < 1) {
-      throw new Error('The task is unknown, it cannot have a level.');
+      throw new Error(`The task ${taskId} is unknown, it cannot have a level.`);
     }
     return level;
   }
@@ -356,16 +410,22 @@ export class DrizzleTaskRepository implements TaskRepository {
    * Method lockAssignedTo
    *
    * @description
-   * Locks a batch of the tasks an account is assigned to, `ORDER BY tasks.id LIMIT n FOR NO KEY
-   * UPDATE OF tasks`, found through `task_assignees_user_index` and after `afterId` in the key
-   * order of the primary key. Closed tasks are included. The collections are loaded after the
-   * lock.
+   * Locks a batch of the tasks an account is assigned to. The keyset and the order are on
+   * `task_assignees.task_id`: `WHERE organization_id = $1 AND user_id = $2 AND task_id > $3 ORDER BY
+   * task_id LIMIT n` is one range scan of `task_assignees_user_index` that starts where the previous
+   * batch ended, so a batch costs the same whatever its position (a keyset on `tasks.id` would let
+   * the planner walk the primary key of `tasks` and probe the assignees, which is quadratic over
+   * the batches). The tasks are joined by primary key and locked `FOR NO KEY UPDATE OF tasks`;
+   * their assignees and labels are read after the lock. Closed tasks are included. The checklists
+   * are not loaded: the removal never reads them and its events never carry them, so the tasks
+   * returned carry an empty checklist.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} userId - The account.
    * @param {string | null} afterId - The last id of the previous batch, `null` for the first.
    * @param {number} limit - The size of the batch.
-   * @returns {Promise<readonly Task[]>} The tasks; fewer than `limit` on the last batch.
+   * @returns {Promise<readonly Task[]>} The tasks without checklist; fewer than `limit` on the last
+   * batch.
    */
   public async lockAssignedTo(
     organizationId: string,
@@ -373,29 +433,29 @@ export class DrizzleTaskRepository implements TaskRepository {
     afterId: string | null,
     limit: number,
   ): Promise<readonly Task[]> {
-    const after: SQL | undefined = afterId === null ? undefined : gt(tasks.id, afterId);
+    const after: SQL | undefined = afterId === null ? undefined : gt(taskAssignees.taskId, afterId);
     const rows: TaskRow[] = await this.db
       .select(getTableColumns(tasks))
-      .from(tasks)
+      .from(taskAssignees)
       .innerJoin(
-        taskAssignees,
+        tasks,
         and(
-          eq(taskAssignees.organizationId, tasks.organizationId),
-          eq(taskAssignees.taskId, tasks.id),
+          eq(tasks.organizationId, taskAssignees.organizationId),
+          eq(tasks.id, taskAssignees.taskId),
         ),
       )
       .where(
         and(
-          eq(tasks.organizationId, organizationId),
           eq(taskAssignees.organizationId, organizationId),
           eq(taskAssignees.userId, userId),
+          eq(tasks.organizationId, organizationId),
           after,
         ),
       )
-      .orderBy(asc(tasks.id))
+      .orderBy(asc(taskAssignees.taskId))
       .limit(limit)
       .for('no key update', { of: tasks });
-    return this.collections.assemble(organizationId, rows);
+    return this.collections.assemble(organizationId, rows, false);
   }
 
   /**
@@ -448,7 +508,75 @@ export class DrizzleTaskRepository implements TaskRepository {
         and ${tasks.version} = changed.version - 1
     `);
     if (result.rowCount !== updated.length) {
-      throw new Error('A task of the batch vanished or changed while it was locked.');
+      throw new Error(
+        `${String(updated.length - (result.rowCount ?? 0))} of the ${String(updated.length)} tasks of the batch, from ${ids[0] ?? ''}, vanished or changed version while they were locked.`,
+      );
+    }
+  }
+
+  /**
+   * Method keyAt
+   *
+   * @description
+   * Reads the key of the draft at an index.
+   *
+   * @param {readonly TaskKey[]} keys - The keys.
+   * @param {number} index - The index of the draft.
+   * @returns {TaskKey} The key.
+   * @throws {Error} When there is no key at the index.
+   */
+  private keyAt(keys: readonly TaskKey[], index: number): TaskKey {
+    const key: TaskKey | undefined = keys[index];
+    if (key === undefined) {
+      throw new Error(`The task at position ${String(index)} has no key.`);
+    }
+    return key;
+  }
+
+  /**
+   * Method insertAssignees
+   *
+   * @description
+   * Stores the assignees of the new tasks in order, in one multi-row statement.
+   *
+   * @param {readonly StoredDraft[]} stored - The drafts with their rows.
+   * @returns {Promise<void>} Resolves once written; nothing is sent when no task has an assignee.
+   */
+  private async insertAssignees(stored: readonly StoredDraft[]): Promise<void> {
+    const values = stored.flatMap(({ draft, row }: StoredDraft) =>
+      draft.assigneeIds.map((userId: string, position: number) => ({
+        organizationId: row.organizationId,
+        taskId: row.id,
+        userId,
+        position,
+      })),
+    );
+    if (values.length > 0) {
+      await this.db.insert(taskAssignees).values(values);
+    }
+  }
+
+  /**
+   * Method insertLabels
+   *
+   * @description
+   * Stores the labels of the new tasks in order, in one multi-row statement.
+   *
+   * @param {readonly StoredDraft[]} stored - The drafts with their rows.
+   * @returns {Promise<void>} Resolves once written; nothing is sent when no task has a label.
+   */
+  private async insertLabels(stored: readonly StoredDraft[]): Promise<void> {
+    const values = stored.flatMap(({ draft, row }: StoredDraft) =>
+      draft.labels.map((name: string, position: number) => ({
+        organizationId: row.organizationId,
+        taskId: row.id,
+        labelKey: labelKey(name),
+        name,
+        position,
+      })),
+    );
+    if (values.length > 0) {
+      await this.db.insert(taskLabels).values(values);
     }
   }
 

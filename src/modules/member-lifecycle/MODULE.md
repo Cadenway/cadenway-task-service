@@ -103,8 +103,13 @@ transaction of the event.
   category (`Error` for every failure of the modules or of PostgreSQL), so a warning does not tell
   a defect from an outage: warnings that go on once PostgreSQL answers point at a defect of the
   events. The warning carries no organization: the kit writes it outside the context of the event.
-- Signals for operators, outside this service: the warnings `event handler failed: will retry` of
-  these three consumers; any message on `dlq.task-service__project-member-*`; and, on the broker,
+- Signals for operators, outside this service: the warnings `event handler failed: will retry` and
+  `event handler timed out: will retry` (a `HandlerTimeoutError`: the delivery went past the 25 s
+  `handlerTimeoutMs` of the kit and was abandoned and rolled back) of these three consumers; the
+  warning `The removal of a member failed.` of this service, once per failed delivery of a removal,
+  with the error under `err` (its message and its SQLSTATE) and the `deliveryCount`, which tells a
+  lock wait or a statement timeout from another database error; any message on
+  `dlq.task-service__project-member-*`; and, on the broker,
   `num_ack_pending`, `num_redelivered` and `num_pending` of the three durable consumers. No metric
   of this service counts the events waiting.
 - Rollout: a later change of the schedule is rolled out with a deployment that replaces every
@@ -161,10 +166,8 @@ Nothing is committed unless all of them resolve; an owner unknown to the copy is
   organization only when there is one to hand over: a removal never waits for an owner it does not
   need.
 - The unassignment runs in the transaction of the removal, in batches of 500 tasks (PR 2 of P3a).
-  The whole delivery must end within the 25 s `handlerTimeoutMs` of the kit, or every delivery is
-  abandoned and rolled back and the removal never commits: a member assigned to more tasks than one
-  delivery can unassign in that time would break "a removal always commits". Moving the rest to a
-  job enqueued in the same transaction waits for `@cadenway/nest-jobs` in this service.
+  TODO: unassignment job (PR 2 follow-up change) replaces this inline unassignment; the bound it
+  puts on "a removal always commits" and the operator action are written then.
 - The first version of PR 1 rolled the removal back while the owner of the organization was
   unknown, so the removed member stayed a member for up to about 25 h 43 min; the coordinating
   session revised it: the removal commits and the spaces fail closed, awaiting an owner.

@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
+import { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
 import type { TaskState } from '../../../../../domain/value-objects/task/task-state.value-object.js';
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
+import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
+import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
 import {
   ARCHIVES,
   ATELIER_NORD,
@@ -550,5 +553,200 @@ describe('UpdateTask: attaching and detaching a subtask', () => {
     expect(
       await refusalOf(useCase.execute(patchOf({ parentKey: 'CAD-482' }, { taskKey: 'CAD-490' }))),
     ).toEqual({ reason: 'subtask-limit-reached' });
+  });
+});
+
+/**
+ * Builds a use case over a fake store whose repository another request changes at a precise
+ * moment, the way a concurrent transaction commits while this one waits for a lock.
+ *
+ * @param stored - The tasks.
+ * @param decorate - Wraps the repository of the store; it receives the real one.
+ * @returns The fake store and the use case.
+ */
+function racing(
+  stored: readonly TaskState[],
+  decorate: (repository: TasksStore['tasks']) => TasksStore['tasks'],
+): { readonly tasks: InMemoryTasks; readonly useCase: UpdateTask } {
+  const trace: string[] = [];
+  const tasks = new InMemoryTasks({ tasks: stored, trace });
+  const unitOfWork: TasksUnitOfWork = {
+    run: (work) => tasks.run((store) => work({ ...store, tasks: decorate(store.tasks) })),
+    runReadOnly: (work, options) => tasks.runReadOnly(work, options),
+  };
+  return {
+    tasks,
+    useCase: new UpdateTask(
+      unitOfWork,
+      atelierNordMembers([], trace),
+      new InMemorySpaceDirectory({ trace }),
+    ),
+  };
+}
+
+describe('UpdateTask: the visibility is checked again when the lock shows another list', () => {
+  /**
+   * Shows CAD-482 in another list once it is locked, as if another request moved it meanwhile.
+   *
+   * @param listId - The list the locked task is in.
+   * @param spaceId - Its space.
+   * @returns The decorator of the repository.
+   */
+  function movedAtLock(listId: string, spaceId: string) {
+    return (repository: TasksStore['tasks']): TasksStore['tasks'] => ({
+      ...repository,
+      findByKey: async (organizationId, key, lock) => {
+        const found = await repository.findByKey(organizationId, key, lock);
+        return lock && found !== null
+          ? Task.restore({ ...found.snapshot, listId, spaceId })
+          : found;
+      },
+    });
+  }
+
+  it('answers task-not-found when the locked task is now in a space the actor does not see', async () => {
+    const { tasks, useCase } = racing([taskState()], movedAtLock(MAQUETTES, DESIGN));
+
+    expect(await refusalOf(useCase.execute(patchOf({ name: 'Refonte' })))).toEqual({
+      reason: 'task-not-found',
+    });
+    expect(tasks.stored(CAD_482).version).toBe(12);
+  });
+
+  it('decides the rules of the patch on the space the locked task is in', async () => {
+    const { useCase } = racing([taskState()], movedAtLock(CLOTURES, ARCHIVES));
+
+    expect(await refusalOf(useCase.execute(patchOf({ status: 'testing' })))).toEqual({
+      reason: 'status-hidden',
+      status: 'testing',
+    });
+  });
+
+  it('checks the visibility of the list once when the task did not move', async () => {
+    const trace: string[] = [];
+    const tasks = new InMemoryTasks({ tasks: [taskState()], trace });
+    const spaces = new InMemorySpaceDirectory({ trace });
+
+    await new UpdateTask(tasks, atelierNordMembers([], trace), spaces).execute(
+      patchOf({ name: 'Refonte' }),
+    );
+
+    expect(spaces.findCalls).toEqual([SPRINT_14]);
+  });
+});
+
+describe('UpdateTask: the parent to attach to is checked on the list it is in once locked', () => {
+  /**
+   * Shows CAD-482 in another list once it is locked as a parent.
+   *
+   * @param listId - The list the locked parent is in.
+   * @param spaceId - Its space.
+   * @returns The decorator of the repository.
+   */
+  function parentMovedAtLock(listId: string, spaceId: string) {
+    return (repository: TasksStore['tasks']): TasksStore['tasks'] => ({
+      ...repository,
+      lockByIds: async (organizationId, ids) =>
+        (await repository.lockByIds(organizationId, ids)).map((task) =>
+          task.snapshot.id === CAD_482 ? Task.restore({ ...task.snapshot, listId, spaceId }) : task,
+        ),
+    });
+  }
+
+  it('refuses a parent that is now in the private space of another member as parent-invalid', async () => {
+    const { useCase } = racing([taskState(), cad490State()], parentMovedAtLock(MAQUETTES, DESIGN));
+
+    expect(
+      await refusalOf(useCase.execute(patchOf({ parentKey: 'CAD-482' }, { taskKey: 'CAD-490' }))),
+    ).toEqual({ reason: 'parent-invalid', parentKey: 'CAD-482' });
+  });
+
+  it('checks a new status against the space the locked parent is in', async () => {
+    const { useCase } = racing([taskState(), cad490State()], parentMovedAtLock(CLOTURES, ARCHIVES));
+
+    expect(
+      await refusalOf(
+        useCase.execute(
+          patchOf({ parentKey: 'CAD-482', status: 'testing' }, { taskKey: 'CAD-490' }),
+        ),
+      ),
+    ).toEqual({ reason: 'status-hidden', status: 'testing' });
+  });
+});
+
+describe('UpdateTask: a move carries only the tasks that are still descendants once locked', () => {
+  const lateChild = subtaskState({
+    id: '019a7200-0000-7000-8000-000000000495',
+    key: TaskKey.of('CAD', 495),
+    parentId: CAD_483,
+    parentKey: TaskKey.of('CAD', 483),
+  });
+
+  it('leaves a descendant that another request detached before the lock was granted', async () => {
+    let first = true;
+    const { tasks, useCase } = racing(tree(), (repository) => ({
+      ...repository,
+      lockByIds: async (organizationId, ids) => {
+        const locked = await repository.lockByIds(organizationId, ids);
+        const grandchildTask = locked.find((task) => task.snapshot.id === CAD_484);
+        if (first && grandchildTask !== undefined) {
+          first = false;
+          await repository.save(
+            grandchildTask,
+            Task.restore({
+              ...grandchildTask.snapshot,
+              parentId: null,
+              parentKey: null,
+              version: 2,
+            }),
+          );
+        }
+        return locked;
+      },
+    }));
+
+    await useCase.execute(patchOf({ listId: BUGS }));
+
+    expect(tasks.stored(CAD_484)).toMatchObject({ listId: SPRINT_14, parentId: null, version: 2 });
+    expect(tasks.stored(CAD_483)).toMatchObject({ listId: BUGS, version: 2 });
+    expect(tasks.events.map((event) => event.key)).toEqual(['CAD-482', 'CAD-483']);
+  });
+
+  it('also locks and moves a descendant that appeared while the first ones were locked', async () => {
+    let first = true;
+    const { tasks, useCase } = racing(tree(), (repository) => ({
+      ...repository,
+      lockByIds: async (organizationId, ids) => {
+        const locked = await repository.lockByIds(organizationId, ids);
+        if (first) {
+          first = false;
+          await repository.insert(lateChild, TaskKey.of('CAD', 495));
+        }
+        return locked;
+      },
+    }));
+
+    await useCase.execute(patchOf({ listId: BUGS }));
+
+    expect(tasks.events.map((event) => event.key).sort()).toEqual([
+      'CAD-482',
+      'CAD-483',
+      'CAD-484',
+      'CAD-495',
+    ]);
+    expect([...tasks.tasks.values()].every((row) => row.listId === BUGS)).toBe(true);
+  });
+
+  it('refuses to lock a subtree larger than a valid tree can be', async () => {
+    const crowd = Array.from({ length: 651 }, (_, index) =>
+      subtaskState({
+        id: `019a7200-0000-7000-8000-${String(10_000 + index).padStart(12, '0')}`,
+        key: TaskKey.of('CAD', 1000 + index),
+      }),
+    );
+    const { tasks, useCase } = atelierNord([taskState(), ...crowd]);
+
+    await expect(useCase.execute(patchOf({ listId: BUGS }))).rejects.toThrow('descendants');
+    expect(tasks.stored(CAD_482).listId).toBe(SPRINT_14);
   });
 });

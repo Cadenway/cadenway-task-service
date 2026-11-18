@@ -63,7 +63,8 @@ Created by `migrations/0003_tasks.sql`, which forces the five policies by hand.
   `checklist_items` is unique on `(organization_id, task_id, position)`.
 - Indexes: `tasks_key_unique` (every route by key); `tasks (organization_id, parent_id,
 created_at, id)` (subtasks, counts, the subtree and the ancestors);
-  `task_assignees (organization_id, user_id)` (the unassignment of a removed member);
+  `task_assignees (organization_id, user_id, task_id)` (the unassignment of a removed member, which
+  pages by `task_id` so that every batch is one range scan starting where the last one ended);
   `activity_entries (organization_id, task_id, occurred_at, id)` and
   `activity_entries (organization_id, list_id, occurred_at, id)` (the two activity routes, their
   counts and the merge candidate). The assignees, labels and checklist are read through their
@@ -75,22 +76,22 @@ created_at, id)` (subtasks, counts, the subtree and the ancestors);
 `openapi/internal/task-service.yaml` (`@cadenway/contracts` 0.9.0), issuer `api-gateway`, actor
 `user`, organization required:
 
-| Route                                                         | Operation                     | Success                   |
-| ------------------------------------------------------------- | ----------------------------- | ------------------------- |
-| `POST /internal/v1/lists/{listId}/tasks`                      | `createTaskInternal`          | `201`, `Location`, `ETag` |
-| `GET /internal/v1/lists/{listId}/activity`                    | `listListActivityInternal`    | `200`                     |
-| `GET /internal/v1/tasks/{taskKey}`                            | `getTaskInternal`             | `200`, `ETag`             |
-| `PATCH /internal/v1/tasks/{taskKey}`                          | `updateTaskInternal`          | `200`, `ETag`             |
-| `GET /internal/v1/tasks/{taskKey}/detail`                     | `getTaskDetailInternal`       | `200`, `ETag`             |
-| `PUT /internal/v1/tasks/{taskKey}/assignees/{userId}`         | `assignTaskInternal`          | `200`, `ETag`             |
-| `DELETE /internal/v1/tasks/{taskKey}/assignees/{userId}`      | `unassignTaskInternal`        | `204`, `ETag`             |
-| `POST /internal/v1/tasks/{taskKey}/labels/add`                | `addTaskLabelInternal`        | `200`, `ETag`             |
-| `POST /internal/v1/tasks/{taskKey}/labels/remove`             | `removeTaskLabelInternal`     | `200`, `ETag`             |
-| `GET /internal/v1/tasks/{taskKey}/subtasks`                   | `listSubtasksInternal`        | `200`                     |
-| `POST /internal/v1/tasks/{taskKey}/subtasks`                  | `createSubtaskInternal`       | `201`, `Location`, `ETag` |
-| `POST /internal/v1/tasks/{taskKey}/checklist-items`           | `addChecklistItemInternal`    | `201`, `Location`, `ETag` |
-| `PATCH /internal/v1/tasks/{taskKey}/checklist-items/{itemId}` | `updateChecklistItemInternal` | `200`, `ETag`             |
-| `GET /internal/v1/tasks/{taskKey}/activity`                   | `listTaskActivityInternal`    | `200`                     |
+| Route                                                                  | Operation                     | Success                   |
+| ---------------------------------------------------------------------- | ----------------------------- | ------------------------- |
+| `POST /internal/v1/lists/{listId}/tasks`                               | `createTaskInternal`          | `201`, `Location`, `ETag` |
+| `GET /internal/v1/lists/{listId}/activity`                             | `listListActivityInternal`    | `200`                     |
+| `GET /internal/v1/tasks/{taskKey}`                                     | `getTaskInternal`             | `200`, `ETag`             |
+| `PATCH /internal/v1/tasks/{taskKey}`                                   | `updateTaskInternal`          | `200`, `ETag`             |
+| `GET /internal/v1/tasks/{taskKey}/detail`                              | `getTaskDetailInternal`       | `200`, `ETag`             |
+| `PUT /internal/v1/tasks/{taskKey}/assignees/{userId}`                  | `assignTaskInternal`          | `200`, `ETag`             |
+| `DELETE /internal/v1/tasks/{taskKey}/assignees/{userId}`               | `unassignTaskInternal`        | `204`, `ETag`             |
+| `POST /internal/v1/tasks/{taskKey}/labels/add`                         | `addTaskLabelInternal`        | `200`, `ETag`             |
+| `POST /internal/v1/tasks/{taskKey}/labels/remove`                      | `removeTaskLabelInternal`     | `200`, `ETag`             |
+| `GET /internal/v1/tasks/{taskKey}/subtasks`                            | `listSubtasksInternal`        | `200`                     |
+| `POST /internal/v1/tasks/{taskKey}/subtasks`                           | `createSubtaskInternal`       | `201`, `Location`, `ETag` |
+| `POST /internal/v1/tasks/{taskKey}/checklist-items`                    | `addChecklistItemInternal`    | `201`, `Location`, `ETag` |
+| `PATCH /internal/v1/tasks/{taskKey}/checklist-items/{checklistItemId}` | `updateChecklistItemInternal` | `200`, `ETag`             |
+| `GET /internal/v1/tasks/{taskKey}/activity`                            | `listTaskActivityInternal`    | `200`                     |
 
 - The task routes and `listSubtasks` name a task by its key, `^[A-Z]{2,5}-[1-9][0-9]{0,8}$`: a
   lower-case or zero-padded key answers `400 request.invalid`.
@@ -181,8 +182,9 @@ the same tenant transaction. `member.role-changed.v1` never changes the assignee
   another visible list stay.
 - The organization and the actor come from the verified token only, lower-cased; an actor id that is
   not a UUID answers `403 auth.actor-not-allowed`.
-- A text holding U+0000, or a calendar date of the year 0000, answers `400 request.invalid`: the
-  contract validators accept them, PostgreSQL cannot store them.
+- A text holding U+0000, in any member, or a calendar date of the year 0000 in `dueDate` or
+  `startDate`, answers `400 request.invalid`: the contract validators accept them, PostgreSQL cannot
+  store them. A name, a label or a note that reads `0000-11-03` is only a text.
 
 ## Transactions
 
@@ -195,6 +197,13 @@ The readings of the copy of the memberships, `FindVisibleList`, `ListVisibleSpac
 resolved when an event was appended (inside a joined transaction, before the outer commit, so the
 rows leave at the next poll).
 
+The queries (`GET` routes) run in `runReadOnly`: a read-only transaction, in which a write fails in
+the database, and the detail in a read-only `REPEATABLE READ` one, so that the task, its space, its
+list, its parent and its subtasks come from one snapshot ("read in one transaction" in the
+contract). The operations of the other modules a query calls join it: the kit only refuses a join
+that asks for more than the running transaction gives. The other queries read each statement as
+committed when it started; the page and the total of a list are two statements.
+
 Lock order, the same for every writer:
 
 1. the memberships `FOR SHARE`: the actor, then the people being assigned;
@@ -203,20 +212,41 @@ Lock order, the same for every writer:
 3. the `space_prefixes` row, last, by `AllocateTaskKeys`, which serializes the creations of a prefix
    until the commit.
 
-A task write takes no space lock. The removal of a member locks its membership exclusively, then the
-private spaces, then the tasks in ascending id order in batches of 500. A sequential task lock that
+A task write does not lock before it knows the actor may see the task: it reads the task without
+a lock, checks the visibility of its list, then locks it and reads it again, and checks the
+visibility again when the locked task is in another list (a move committed meanwhile). An
+attachment does the same for the new parent. A move or an attachment locks the descendants in
+ordered statements until the subtree read under the locks holds nothing unlocked, and carries only
+the tasks that are still descendants then; a valid subtree has three levels and at most 650
+descendants, which bounds the passes, and a larger one is a defect that answers 500. A subtask
+created without `assigneeIds` reads the first assignee of the parent and locks that membership
+before the parent; no membership is locked once the parent is, so the order cannot deadlock with a
+removal. If the parent was reassigned in between, the subtask keeps the account that was read while
+it is still one of the parent's assignees, and is created without assignee otherwise (accepted
+race). A task write takes no space lock. The removal of a member locks its membership exclusively,
+then the private spaces, then the tasks in ascending id order in batches of 500. A sequential task lock that
 is not globally ordered could still meet another writer that holds several: PostgreSQL then aborts
 one transaction, the request answers an error and a removal is redelivered. The 412 is checked
 inside the transaction, after the visibility of the task and before the domain rules.
 
-Reads (`GET` routes) run in the same unit of work without locks; the detail reads the task, its
-space, its list, its parent and its subtasks in one transaction.
+Reads (`GET` routes) run in read-only transactions without locks (see above).
 
 `UnassignRemovedMember` runs inside the existing `task-service__project-member-removed` consumer:
-no consumer or grant is added. A transient failure (the database, the lock timeout of 5 s or the
-statement timeout of 10 s) rolls the copy, the handover and the unassignments back together, and
-the event is redelivered; after a commit a redelivery is skipped by `processed_events`. The whole
-delivery must finish within the 25 s `handlerTimeoutMs` of the kit, under the 30 s ack wait.
+no consumer or grant is added. A transient failure (the database, the lock timeout of 5 s, or the
+statement timeout, which on this path is the `handlerTimeoutMs` of the kit, 25 s, that the
+deduplicator sets, not the 10 s of a request) rolls the copy, the handover and the unassignments
+back together, and the event is redelivered; after a commit a redelivery is skipped by
+`processed_events`. A batch of 500 tasks is: the locking read (a range scan of
+`task_assignees_user_index`, without the checklists, which the removal never reads), the loads of
+the assignees, the labels and the parent keys, one delete of the assignee rows, one update of the
+versions and one insert of the activity entries, that is seven statements (six when no task has a
+parent); each task also costs one outbox append, two round trips. A task is rewritten only when the
+domain changed it. A request that writes a task the removal has locked waits for it at most the 5 s
+`lock_timeout`, then answers 500 (SQLSTATE 55P03): a long removal can make the writers of the
+removed member's tasks fail.
+
+TODO: unassignment job (PR 2 follow-up change) replaces this inline unassignment; this paragraph
+and the decision on its bound are rewritten then.
 
 ## Decisions
 
@@ -236,14 +266,22 @@ delivery must finish within the 25 s `handlerTimeoutMs` of the kit, under the 30
   entry, whose position moved.
 - No lock on the space in a task write: a status hidden, a prefix changed or a space made private
   concurrently with a write is accepted (the key stays unique and under a prefix of the space).
-- `PUT /assignees/{userId}` reads no body: the contract body is the empty object, with nothing to
-  validate or keep.
-- The unassignment of a removed member is bounded by the 25 s of the handler: three set-based
-  statements per batch of 500 tasks and one outbox insert per task, with no cap. A member assigned to
-  more tasks than the delivery can finish would make every delivery time out and the removal never
-  commit. The rate has not been measured on this code yet; the integration test of the change records
-  it. The remedy, once `@cadenway/nest-jobs` is wired, is to commit the removal with the first
-  unassignments and enqueue the rest as a job in the same transaction.
+- `PUT /assignees/{userId}` has a body, the empty object of the contract (`AssignTaskBody`): it is
+  validated, so a missing body or an array answers `400`, and not read. The generated schema is not
+  strict, so the members of an object body are dropped; making it strict is a change of the
+  contract.
+- The activity instant and `updatedAt` are the instant the transaction started (`now()`), taken
+  once per run. A writer that waits for a lock keeps the instant it started with, so two changes of
+  one task can commit in the reverse order of their instants; the version still orders them. This is
+  accepted, and the 60-second coalescing compares the same instants.
+- The `total` of the activity of a list counts every matching entry of the list, joined with the
+  tasks to leave out those of a space the actor does not see, on each page. It is left as it is
+  until it is measured on representative data; a total carried by the first page, or a capped
+  count, are the options.
+- A `PATCH` that names `description` without `If-Match` answers `400` before the `404` of a task
+  that does not exist: the header is validated at the boundary.
+- TODO: unassignment job (PR 2 follow-up change) replaces the inline unassignment of a removed
+  member, and with it the bound of the delivery and what an operator does about it.
 - `tests/tasks.int-spec.ts` is the integration test of the routes, the rules, idempotency, row-level
   security and the removal of a member on real PostgreSQL and NATS; the change that follows this one
   writes it.

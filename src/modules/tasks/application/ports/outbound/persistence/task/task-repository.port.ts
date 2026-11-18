@@ -56,6 +56,21 @@ export interface TaskRepository {
   insert(draft: TaskDraft, key: TaskKey): Promise<Task>;
 
   /**
+   * Method insertMany
+   *
+   * @description
+   * Stores several new tasks, at version 1 with an empty checklist, and their assignees and labels
+   * in order, in a constant number of statements (one multi-row statement for the tasks, one for
+   * their assignees, one for their labels). The database gives the ids and the creation instant,
+   * which the tasks of one call share; their ids increase in the order of the drafts.
+   *
+   * @param {readonly TaskDraft[]} drafts - The tasks the domain created.
+   * @param {readonly TaskKey[]} keys - The key allocated for each draft, in the same order.
+   * @returns {Promise<readonly Task[]>} The stored tasks, in the order of the drafts.
+   */
+  insertMany(drafts: readonly TaskDraft[], keys: readonly TaskKey[]): Promise<readonly Task[]>;
+
+  /**
    * Method save
    *
    * @description
@@ -127,13 +142,16 @@ export interface TaskRepository {
    *
    * @description
    * Locks a batch of the tasks an account is assigned to, closed ones included, in ascending id
-   * order after a given id, and reads them after the lock.
+   * order after a given id, and reads them after the lock. The tasks carry no checklist (it is
+   * left empty, not loaded): they are only for the unassignment of a removed member, which never
+   * reads it and whose events never carry it. Do not use them for anything else.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} userId - The account.
    * @param {string | null} afterId - The last id of the previous batch, `null` for the first.
    * @param {number} limit - The size of the batch.
-   * @returns {Promise<readonly Task[]>} The tasks; fewer than `limit` on the last batch.
+   * @returns {Promise<readonly Task[]>} The tasks without checklist; fewer than `limit` on the last
+   * batch.
    */
   lockAssignedTo(
     organizationId: string,

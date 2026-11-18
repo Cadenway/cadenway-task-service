@@ -21,8 +21,9 @@ import { tasks } from './task.schema.js';
  * case that handles the removal. The primary key `(organization_id, task_id, user_id)` also serves
  * the batch load of the assignees of the tasks of a page by its `(organization_id, task_id)` prefix.
  *
- * Index `task_assignees_user_index` serves the unassignment of a removed member (every task an
- * account is assigned to) and, later, "My tasks". A tenant table: `organization_id` carries the
+ * Index `task_assignees_user_index` on `(organization_id, user_id, task_id)` serves the
+ * unassignment of a removed member (every task an account is assigned to, keyset-paged on
+ * `task_id` so each batch starts at its range start) and, later, "My tasks". A tenant table: `organization_id` carries the
  * policy of the kit, which the migration forces by hand
  * (`ALTER TABLE "task_assignees" FORCE ROW LEVEL SECURITY;`).
  */
@@ -45,7 +46,7 @@ export const taskAssignees = pgTable(
       columns: [table.organizationId, table.taskId],
       foreignColumns: [tasks.organizationId, tasks.id],
     }),
-    index('task_assignees_user_index').on(table.organizationId, table.userId),
+    index('task_assignees_user_index').on(table.organizationId, table.userId, table.taskId),
     check('task_assignees_position_check', sql`${table.position} >= 0`),
     organizationPolicy('task_assignees_organization_isolation'),
   ],

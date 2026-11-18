@@ -1,6 +1,6 @@
 import type { Task } from '@cadenway/contracts/types/internal/task-service';
 import { formatEtag, InternalAccess } from '@cadenway/nest-common';
-import { Controller, Delete, Headers, HttpCode, Param, Put, Res } from '@nestjs/common';
+import { Body, Controller, Delete, Headers, HttpCode, Param, Put, Res } from '@nestjs/common';
 import type { Response } from 'express';
 
 import type { Caller } from '../../../../application/models/caller/caller.model.js';
@@ -8,6 +8,7 @@ import type { AssignTaskOutput } from '../../../../application/use-cases/command
 import { AssignTask } from '../../../../application/use-cases/commands/assignee/assign-task/assign-task.use-case.js';
 import type { UnassignTaskOutput } from '../../../../application/use-cases/commands/assignee/unassign-task/unassign-task.output.js';
 import { UnassignTask } from '../../../../application/use-cases/commands/assignee/unassign-task/unassign-task.use-case.js';
+import { AssignTaskBody } from '../../dto/input/assignee/assign-task-body.dto.js';
 import { AssigneePath } from '../../dto/input/assignee/assignee-path.dto.js';
 import { answerRefusals } from '../../errors/task/task-refusal.problem.js';
 import { toCaller } from '../../mappers/caller/caller.mapper.js';
@@ -76,11 +77,13 @@ export class TaskAssigneesController {
    * @description
    * `PUT /internal/v1/tasks/{taskKey}/assignees/{userId}`: `200` with the task, the same version
    * when the person was already assigned. The body of the contract is the empty object `{}`: there
-   * is nothing to read, so the handler takes none. `If-Match` is optional. `404 task.not-found`,
+   * is nothing to read, but it is bound so that a missing body or an array answers
+   * `400 request.invalid`. `If-Match` is optional. `404 task.not-found`,
    * `412 request.version-mismatch` with `details.version`, `422 task.assignee-invalid` with
    * `details.userIds` and `422 task.assignee-limit-reached` come from the use case.
    *
    * @param {AssigneePath} path - The key of the task and the account of the person.
+   * @param {AssignTaskBody} _body - The empty body, validated and not read.
    * @param {string | undefined} ifMatch - The `If-Match` header, optional.
    * @returns {Promise<Task>} The task after the change.
    * @throws {ProblemException} The refusals above, or `400 request.invalid` for a malformed
@@ -89,6 +92,7 @@ export class TaskAssigneesController {
   @Put(':taskKey/assignees/:userId')
   public async assign(
     @Param() path: AssigneePath,
+    @Body() _body: AssignTaskBody,
     @Headers('if-match') ifMatch: string | undefined,
   ): Promise<Task> {
     const caller: Caller = toCaller();

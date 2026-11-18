@@ -1,6 +1,11 @@
-import type { TenantTransactionRunner, TransactionScope } from '@cadenway/nest-common/database';
+import type {
+  TenantTransactionRunner,
+  TransactionOptions,
+  TransactionScope,
+} from '@cadenway/nest-common/database';
 import type { OutboxRelay, OutboxWriter } from '@cadenway/nest-messaging/outbox';
 
+import type { ReadOptions } from '../../../../../application/models/transactions/read-options.model.js';
 import type { TasksStore } from '../../../../../application/models/transactions/tasks-store.model.js';
 import type { TasksUnitOfWork } from '../../../../../application/ports/outbound/transactions/task/tasks-unit-of-work.port.js';
 import { PostgresqlTransactionClock } from '../../../../adapters/postgresql/transaction-clock.adapter.js';
@@ -23,6 +28,11 @@ import { DrizzleTaskRepository } from '../../repositories/task/drizzle-task.repo
  * Once a run that appended events resolves, the relay is woken so they leave now instead of at
  * its next poll. A run joined to an outer transaction resolves before that one commits: the pass
  * it wakes does not see the rows yet, and the next poll publishes them.
+ *
+ * `runReadOnly` passes the options of the kit's runner (`readOnly`, and `repeatable read` for a
+ * snapshot). The operations of organization-members and spaces a read calls run without options,
+ * so they join that transaction: the kit only refuses a join that asks for more than the running
+ * transaction gives (a stronger isolation, or read-only access over a read-write one).
  */
 export class TenantTasksUnitOfWork implements TasksUnitOfWork {
   // #region Properties
@@ -91,6 +101,47 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
    * @returns {Promise<TResult>} What the work resolved with.
    */
   public async run<TResult>(work: (store: TasksStore) => Promise<TResult>): Promise<TResult> {
+    return this.execute(work, {});
+  }
+
+  /**
+   * Method runReadOnly
+   *
+   * @description
+   * Runs `work` in a read-only tenant transaction, `REPEATABLE READ` when a snapshot is asked,
+   * joining the transaction of the caller when there is one and it provides as much.
+   *
+   * @param {(store: TasksStore) => Promise<TResult>} work - The read.
+   * @param {ReadOptions} [options] - How the run sees the database.
+   * @returns {Promise<TResult>} What the work resolved with.
+   */
+  public async runReadOnly<TResult>(
+    work: (store: TasksStore) => Promise<TResult>,
+    options: ReadOptions = {},
+  ): Promise<TResult> {
+    return this.execute(
+      work,
+      options.snapshot === true
+        ? { readOnly: true, isolationLevel: 'repeatable read' }
+        : { readOnly: true },
+    );
+  }
+
+  /**
+   * Method execute
+   *
+   * @description
+   * Runs `work` through the kit's runner with the requirements of the transaction, then wakes the
+   * relay when the run appended events.
+   *
+   * @param {(store: TasksStore) => Promise<TResult>} work - The unit of work.
+   * @param {TransactionOptions} options - Isolation and read-only requirements.
+   * @returns {Promise<TResult>} What the work resolved with.
+   */
+  private async execute<TResult>(
+    work: (store: TasksStore) => Promise<TResult>,
+    options: TransactionOptions,
+  ): Promise<TResult> {
     const appends: { count: number } = { count: 0 };
     const result: TResult = await this.runner.run(
       (transaction: TransactionScope): Promise<TResult> =>
@@ -103,6 +154,7 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
           }),
           clock: new PostgresqlTransactionClock(transaction.db),
         }),
+      options,
     );
     if (appends.count > 0) {
       this.relay.wake();

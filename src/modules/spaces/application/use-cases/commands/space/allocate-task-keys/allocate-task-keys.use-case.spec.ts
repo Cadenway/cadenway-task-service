@@ -132,6 +132,24 @@ describe('AllocateTaskKeys: a defect throws a plain error and keeps the counter'
     expect(spaces.allocateCalls).toEqual([]);
   });
 
+  it('names the space, and the prefix, in the message so the failure can be traced', async () => {
+    const unknown = atelierNord();
+    await expect(
+      new AllocateTaskKeys(unknown).execute(allocate({ spaceId: UNKNOWN_SPACE })),
+    ).rejects.toThrow(UNKNOWN_SPACE);
+
+    const noCounter = atelierNord();
+    noCounter.prefixOwners.clear();
+    await expect(new AllocateTaskKeys(noCounter).execute(allocate())).rejects.toThrow(
+      `prefix CAD of the space ${PRODUIT}`,
+    );
+
+    const exhausted = atelierNord(999_999_999);
+    await expect(new AllocateTaskKeys(exhausted).execute(allocate())).rejects.toThrow(
+      `prefix CAD (space ${PRODUIT})`,
+    );
+  });
+
   it('throws for a space of another organization', async () => {
     const spaces = atelierNord();
 

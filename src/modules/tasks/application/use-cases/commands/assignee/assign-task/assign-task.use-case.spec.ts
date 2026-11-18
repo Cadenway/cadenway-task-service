@@ -94,7 +94,7 @@ describe('AssignTask: a current member other than a guest is assigned', () => {
 
     await useCase.execute(assign());
 
-    expect(tasks.trace.slice(0, 3)).toEqual([
+    expect(tasks.trace.filter((call) => call.endsWith(':lock'))).toEqual([
       `members.roleOf:${CAMILLE}:lock`,
       `members.roleOf:${HUGO}:lock`,
       'tasks.findByKey:lock',

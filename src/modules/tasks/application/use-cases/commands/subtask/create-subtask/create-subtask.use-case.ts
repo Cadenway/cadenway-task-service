@@ -30,9 +30,17 @@ import type { CreateSubtaskOutput } from './create-subtask.output.js';
  * The subtask takes the list of its parent. Locks follow the order of the module: the membership
  * of the actor, those of the assignees (explicit, or the first assignee of the parent, whose
  * account is read before the parent is locked), then the parent `FOR NO KEY UPDATE`, then the
- * key counter. The domain decides the depth, the limit of 25 and every other rule
- * (`Task.create`). A parent whose first assignee is no longer a member other than a guest gives a
- * subtask without assignee, with no refusal. The parent itself is not changed and emits nothing.
+ * key counter. A membership is never locked while the parent is: a removal locks the membership
+ * and then the tasks, so the opposite order could deadlock with it. The domain decides the depth,
+ * the limit of 25 and every other rule (`Task.create`). A parent whose first assignee is no
+ * longer a member other than a guest gives a subtask without assignee, with no refusal. The
+ * parent itself is not changed and emits nothing.
+ *
+ * Accepted race: the first assignee of the parent is read before the parent is locked. If the
+ * parent was reassigned in between, the subtask inherits the account that was read when that
+ * account is still one of the parent's assignees after the lock (its membership is already
+ * locked), and is created without assignee otherwise, even though the parent now has another
+ * first assignee. The next subtask inherits the current one.
  */
 export class CreateSubtask {
   // #region Properties
@@ -129,20 +137,15 @@ export class CreateSubtask {
         ...request,
         lock: true,
       });
-      const first: string | undefined = parent.snapshot.assigneeIds[0];
-      if (input.assigneeIds === null && first !== peeked) {
-        // The parent was reassigned between the read and the lock: read the new first assignee.
-        inherited = await this.assignees.candidates(
-          organizationId,
-          first === undefined ? [] : [first],
-          true,
-        );
-      }
+      // No membership is locked from here: the parent is. A parent reassigned between the read and
+      // the lock keeps the account read when it is still assigned, and gets none otherwise.
+      const stillAssigned: boolean =
+        peeked !== undefined && parent.snapshot.assigneeIds.includes(peeked);
       const assignees: readonly AssigneeCandidate[] =
         input.assigneeIds === null
           ? inherited.filter(
               (candidate: AssigneeCandidate): boolean =>
-                candidate.role !== null && candidate.role !== 'guest',
+                stillAssigned && candidate.role !== null && candidate.role !== 'guest',
             )
           : requested;
       const now: Date = await store.clock.now();

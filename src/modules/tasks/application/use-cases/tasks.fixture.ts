@@ -38,6 +38,7 @@ import type { PlacedList } from '../models/placement/placed-list.model.js';
 import type { PlacedSpace } from '../models/placement/placed-space.model.js';
 import { TaskRefusal } from '../models/task/task-refusal.model.js';
 import type { TaskRefusalReason } from '../models/task/task-refusal-reason.model.js';
+import type { ReadOptions } from '../models/transactions/read-options.model.js';
 import type { TasksStore } from '../models/transactions/tasks-store.model.js';
 import type { MemberDirectory } from '../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../ports/outbound/spaces/space/space-directory.port.js';
@@ -534,6 +535,12 @@ export class InMemoryTasks implements TasksUnitOfWork {
   /** How many units of work started, committed or not. */
   public runs: number = 0;
 
+  /** How many read-only runs started; their writes are dropped as the database would refuse them. */
+  public readOnlyRuns: number = 0;
+
+  /** How many of the read-only runs asked for one snapshot. */
+  public snapshotRuns: number = 0;
+
   /** The calls of every fake, in order. */
   public readonly trace: string[];
 
@@ -636,6 +643,35 @@ export class InMemoryTasks implements TasksUnitOfWork {
   }
 
   /**
+   * Method runReadOnly
+   *
+   * @description
+   * Runs the read on a copy of the rows that is always dropped, as a read-only transaction writes
+   * nothing, and counts the run (and the snapshot, when asked).
+   *
+   * @param {(store: TasksStore) => Promise<TResult>} work - The read.
+   * @param {ReadOptions} [options] - How the run sees the database.
+   * @returns {Promise<TResult>} What the work resolved with.
+   */
+  public async runReadOnly<TResult>(
+    work: (store: TasksStore) => Promise<TResult>,
+    options: ReadOptions = {},
+  ): Promise<TResult> {
+    this.runs += 1;
+    this.readOnlyRuns += 1;
+    if (options.snapshot === true) {
+      this.snapshotRuns += 1;
+    }
+    return work(
+      this.store(
+        new Map<string, TaskState>(this.tasks),
+        new Map<string, ActivityEntryState>(this.activity),
+        [...this.events],
+      ),
+    );
+  }
+
+  /**
    * Method store
    *
    * @description
@@ -691,6 +727,19 @@ export class InMemoryTasks implements TasksUnitOfWork {
             row.occurredAt.getTime() < after.occurredAt.getTime() ||
             (row.occurredAt.getTime() === after.occurredAt.getTime() && row.id < after.id),
         );
+    const insertDraft = (draft: TaskDraft, key: TaskKey): TaskState => {
+      const state: TaskState = {
+        ...draft,
+        id: this.nextId('019a7200'),
+        key,
+        checklist: [],
+        createdAt: this.now,
+        updatedAt: this.now,
+        version: 1,
+      };
+      tasks.set(state.id, state);
+      return state;
+    };
     const inList = (organizationId: string, filter: ListActivityFilter): ActivityEntryState[] =>
       [...activity.values()].filter((entry: ActivityEntryState): boolean => {
         const task: TaskState | undefined = tasks.get(entry.taskId);
@@ -723,17 +772,22 @@ export class InMemoryTasks implements TasksUnitOfWork {
         },
         insert: (draft: TaskDraft, key: TaskKey): Promise<Task> => {
           this.trace.push('tasks.insert');
-          const state: TaskState = {
-            ...draft,
-            id: this.nextId('019a7200'),
-            key,
-            checklist: [],
-            createdAt: this.now,
-            updatedAt: this.now,
-            version: 1,
-          };
-          tasks.set(state.id, state);
-          return Promise.resolve(Task.restore(state));
+          return Promise.resolve(Task.restore(insertDraft(draft, key)));
+        },
+        insertMany: (
+          drafts: readonly TaskDraft[],
+          keys: readonly TaskKey[],
+        ): Promise<readonly Task[]> => {
+          this.trace.push('tasks.insertMany');
+          return Promise.resolve(
+            drafts.map((draft: TaskDraft, index: number): Task => {
+              const key: TaskKey | undefined = keys[index];
+              if (key === undefined) {
+                throw new Error('A draft has no key.');
+              }
+              return Task.restore(insertDraft(draft, key));
+            }),
+          );
         },
         save: (before: Task, after: Task): Promise<void> => {
           this.trace.push('tasks.save');
@@ -792,7 +846,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
               )
               .sort((left: TaskState, right: TaskState): number => left.id.localeCompare(right.id))
               .slice(0, limit)
-              .map((row: TaskState): Task => Task.restore(row)),
+              .map((row: TaskState): Task => Task.restore({ ...row, checklist: [] })),
           );
         },
         unassignBatch: (
@@ -802,7 +856,11 @@ export class InMemoryTasks implements TasksUnitOfWork {
         ): Promise<void> => {
           this.trace.push('tasks.unassignBatch');
           for (const task of updated) {
-            tasks.set(task.snapshot.id, task.snapshot);
+            // The batch is written without its checklist, which the rows keep.
+            tasks.set(task.snapshot.id, {
+              ...task.snapshot,
+              checklist: tasks.get(task.snapshot.id)?.checklist ?? [],
+            });
           }
           return Promise.resolve();
         },

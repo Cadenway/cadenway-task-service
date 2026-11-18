@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
+import { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
+import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
 import {
   ARCHIVES,
   ATELIER_NORD,
@@ -158,12 +160,76 @@ describe('CreateSubtask: a subtask takes the list of its parent and the next key
       'tasks.findByKey:read',
       'spaces.findVisibleList',
       `members.roleOf:${CAMILLE}:lock`,
-      'tasks.findByKey:lock',
+      'tasks.findByKey:read',
       'spaces.findVisibleList',
+      'tasks.findByKey:lock',
       'spaces.allocateKeys',
       'tasks.insert',
       'events.created',
     ]);
+  });
+});
+
+/**
+ * Builds a use case on Atelier Nord, holding CAD-482 assigned to Camille Martin, whose parent is
+ * found with other assignees once it is locked, as if another request reassigned it in between.
+ *
+ * @param assigneesAtLock - The assignees of the parent when it is read under its lock.
+ * @returns The fake and the use case.
+ */
+function reassignedAtLock(assigneesAtLock: readonly string[]): {
+  readonly tasks: InMemoryTasks;
+  readonly useCase: CreateSubtask;
+} {
+  const trace: string[] = [];
+  const tasks = new InMemoryTasks({ tasks: [taskState()], trace });
+  const racing: TasksUnitOfWork = {
+    run: (work) =>
+      tasks.run((store) =>
+        work({
+          ...store,
+          tasks: {
+            ...store.tasks,
+            findByKey: async (organizationId, key, lock) => {
+              const found = await store.tasks.findByKey(organizationId, key, lock);
+              return lock && found !== null
+                ? Task.restore({ ...found.snapshot, assigneeIds: assigneesAtLock })
+                : found;
+            },
+          },
+        }),
+      ),
+    runReadOnly: (work, options) => tasks.runReadOnly(work, options),
+  };
+  return {
+    tasks,
+    useCase: new CreateSubtask(
+      racing,
+      atelierNordMembers([], trace),
+      new InMemorySpaceDirectory({ trace }),
+    ),
+  };
+}
+
+describe('CreateSubtask: a parent reassigned between the read of its assignee and its lock', () => {
+  it('keeps the account that was read while it is still assigned, and locks no membership under the parent lock', async () => {
+    const { tasks, useCase } = reassignedAtLock([HUGO, CAMILLE]);
+
+    const view = await useCase.execute(createSubtask({ assigneeIds: null }));
+
+    expect(view.assigneeIds).toEqual([CAMILLE]);
+    const afterLock = tasks.trace.slice(tasks.trace.indexOf('tasks.findByKey:lock'));
+    expect(afterLock.filter((call) => call.startsWith('members.'))).toEqual([]);
+  });
+
+  it('creates the subtask without assignee when the account that was read left the parent', async () => {
+    const { tasks, useCase } = reassignedAtLock([HUGO]);
+
+    const view = await useCase.execute(createSubtask({ assigneeIds: null }));
+
+    expect(view.assigneeIds).toEqual([]);
+    const afterLock = tasks.trace.slice(tasks.trace.indexOf('tasks.findByKey:lock'));
+    expect(afterLock.filter((call) => call.startsWith('members.'))).toEqual([]);
   });
 });
 

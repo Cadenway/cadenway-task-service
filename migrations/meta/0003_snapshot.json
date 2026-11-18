@@ -1,5 +1,5 @@
 {
-  "id": "2b0f4358-9a43-46ad-a270-13f8a42facba",
+  "id": "01ed7f65-65cb-4ca2-9c21-16996d2ab337",
   "prevId": "388260ce-5403-4175-8ac1-cd923205b2e7",
   "version": "7",
   "dialect": "postgresql",
@@ -1361,6 +1361,12 @@
             },
             {
               "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "task_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

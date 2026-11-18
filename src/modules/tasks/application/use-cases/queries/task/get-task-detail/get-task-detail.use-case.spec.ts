@@ -108,3 +108,17 @@ describe('GetTaskDetail: what the actor does not see is not found', () => {
     expect(await refusalOf(useCase.execute(read()))).toEqual({ reason: 'task-not-found' });
   });
 });
+
+describe('GetTaskDetail: the read runs in one read-only transaction', () => {
+  it('opens a single read-only run, with one snapshot (repeatable read), so its statements agree with each other', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState()] });
+
+    await new GetTaskDetail(tasks, atelierNordMembers(), new InMemorySpaceDirectory()).execute(
+      read(),
+    );
+
+    expect(tasks.runs).toBe(1);
+    expect(tasks.readOnlyRuns).toBe(1);
+    expect(tasks.snapshotRuns).toBe(1);
+  });
+});

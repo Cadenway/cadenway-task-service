@@ -17,8 +17,9 @@ import type { GetTaskDetailOutput } from './get-task-detail.output.js';
  * Class GetTaskDetail
  *
  * @description
- * Reads the detail of a task (`GET /internal/v1/tasks/{taskKey}/detail`) in one transaction, so
- * that the task, its space, its list, its parent and its subtasks agree, without a lock. The
+ * Reads the detail of a task (`GET /internal/v1/tasks/{taskKey}/detail`) in one read-only
+ * transaction on one snapshot (repeatable read), so that the task, its space, its list, its parent
+ * and its subtasks agree even while writers commit, without a lock. The
  * parent is read as a reference, with its name and status as they are now; the subtasks are the
  * direct ones, in the order of their creation (at most 25). Visibility is that of `GetTask`.
  */
@@ -73,34 +74,37 @@ export class GetTaskDetail {
    * @throws {TaskRefusal} `organization-not-found` or `task-not-found`.
    */
   public async execute(input: GetTaskDetailInput): Promise<GetTaskDetailOutput> {
-    return this.unitOfWork.run(async (store: TasksStore): Promise<GetTaskDetailOutput> => {
-      const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
-      const { task, placement }: LocatedTask = await this.locator.locate(store, {
-        organizationId: input.organizationId,
-        viewer,
-        taskKey: input.taskKey,
-        lock: false,
-        expectedVersions: null,
-      });
-      const { id, parentId } = task.snapshot;
-      const references: ReadonlyMap<string, TaskReferenceView> =
-        parentId === null
-          ? new Map()
-          : await store.reader.references(input.organizationId, [parentId]);
-      const subtasks: readonly TaskSummaryView[] = await store.reader.childrenOf(
-        input.organizationId,
-        id,
-        null,
-        MAX_DIRECT_SUBTASKS,
-      );
-      return {
-        task: await this.views.build(store.reader, task),
-        space: placement.space,
-        list: placement.list,
-        parent: parentId === null ? null : (references.get(parentId) ?? null),
-        subtasks,
-      };
-    });
+    return this.unitOfWork.runReadOnly(
+      async (store: TasksStore): Promise<GetTaskDetailOutput> => {
+        const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
+        const { task, placement }: LocatedTask = await this.locator.locate(store, {
+          organizationId: input.organizationId,
+          viewer,
+          taskKey: input.taskKey,
+          lock: false,
+          expectedVersions: null,
+        });
+        const { id, parentId } = task.snapshot;
+        const references: ReadonlyMap<string, TaskReferenceView> =
+          parentId === null
+            ? new Map()
+            : await store.reader.references(input.organizationId, [parentId]);
+        const subtasks: readonly TaskSummaryView[] = await store.reader.childrenOf(
+          input.organizationId,
+          id,
+          null,
+          MAX_DIRECT_SUBTASKS,
+        );
+        return {
+          task: await this.views.build(store.reader, task),
+          space: placement.space,
+          list: placement.list,
+          parent: parentId === null ? null : (references.get(parentId) ?? null),
+          subtasks,
+        };
+      },
+      { snapshot: true },
+    );
   }
   // #endregion
 }

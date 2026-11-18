@@ -15,13 +15,37 @@ import type { TasksStore } from '../../models/transactions/tasks-store.model.js'
 import type { SpaceDirectory } from '../../ports/outbound/spaces/space/space-directory.port.js';
 
 /**
+ * How many times the subtree is read to lock it: the three levels the read goes down, plus the
+ * read that finds nothing new. A subtree that keeps growing while it is locked is a defect.
+ */
+const MAX_LOCK_PASSES: number = 5;
+
+/**
+ * The most descendants a valid task can have: 25 subtasks, each with 25 subtasks of its own (three
+ * levels at most). More means the stored tree breaks the limits, and locking it would be unbounded.
+ */
+const MAX_DESCENDANTS: number = 650;
+
+/** The tasks locked for a move, and the subtree they were locked against. */
+interface LockedSubtree {
+  // #region Properties
+  /** The locked descendants, and the other tasks asked for. */
+  readonly tasks: readonly Task[];
+
+  /** The subtree as the last read, under the locks, found it. */
+  readonly shape: SubtreeShape;
+  // #endregion
+}
+
+/**
  * Class TaskMovePlanner
  *
  * @description
  * Resolves the target of a patch for the domain: the list to move to and the task to attach to
  * are looked up, checked for existence and visibility (`list-invalid`, `parent-invalid`), and the
- * tasks that move with the task (its descendants, and the new parent) are locked in one ordered
- * statement after the task itself. It also picks the statuses the domain checks a new status
+ * tasks that move with the task (its descendants, and the new parent) are locked in ordered
+ * statements after the task itself, until every descendant of the task is locked (a descendant
+ * that left the subtree while the locks were taken is not kept). It also picks the statuses the domain checks a new status
  * against: those of the space the task ends up in. The rules of the tree (depth, limit, cycles,
  * the list of a subtask) stay with `Task.update`.
  */
@@ -83,7 +107,7 @@ export class TaskMovePlanner {
       statuses = attached.statuses;
       descendants = attached.descendants;
     } else if (moves) {
-      descendants = await this.lockDescendants(store, task, []);
+      descendants = (await this.lockSubtree(store, task, [])).tasks;
     }
     const patch: TaskPatch = {
       ...fields,
@@ -133,7 +157,9 @@ export class TaskMovePlanner {
    *
    * @description
    * Finds the task to attach to, which the actor must see, locks it with the descendants of the
-   * task and reads its level and the number of its subtasks under that lock.
+   * task and reads its level and the number of its subtasks under that lock. The parent was read
+   * without a lock to check its visibility: when the locked parent is in another list, the
+   * visibility and the statuses are those of the list it is in now.
    *
    * @param {TasksStore} store - The store of the transaction.
    * @param {Viewer} viewer - The acting member.
@@ -169,21 +195,34 @@ export class TaskMovePlanner {
     if (found === null || placement === null) {
       throw invalid;
     }
-    const locked: readonly Task[] = await this.lockDescendants(store, task, [found.snapshot.id]);
+    const { tasks: locked, shape: subtree } = await this.lockSubtree(store, task, [
+      found.snapshot.id,
+    ]);
     const parent: Task | undefined = locked.find(
       (candidate: Task): boolean => candidate.snapshot.id === found.snapshot.id,
     );
     if (parent === undefined) {
       throw invalid;
     }
-    const subtree: SubtreeShape = await store.tasks.subtreeOf(organizationId, task.snapshot.id);
+    let statuses: SpaceStatusUse = placement.space.statuses;
+    if (parent.snapshot.listId !== found.snapshot.listId) {
+      const moved: ListPlacement | null = await this.spaces.findVisibleList(
+        organizationId,
+        viewer,
+        parent.snapshot.listId,
+      );
+      if (moved === null) {
+        throw invalid;
+      }
+      statuses = moved.space.statuses;
+    }
     const [level, childCount] = [
       await store.tasks.levelOf(organizationId, parent.snapshot.id),
       await store.tasks.childCount(organizationId, parent.snapshot.id),
     ];
     return {
       attachment: { parent: parent.asParent(level, childCount), subtree },
-      statuses: placement.space.statuses,
+      statuses,
       descendants: locked.filter((candidate: Task): boolean =>
         subtree.descendantIds.includes(candidate.snapshot.id),
       ),
@@ -191,39 +230,61 @@ export class TaskMovePlanner {
   }
 
   /**
-   * Method lockDescendants
+   * Method lockSubtree
    *
    * @description
-   * Locks the descendants of a task, and some other tasks, in one statement in id order; then reads
-   * the tree again under the lock and locks the descendants that appeared meanwhile.
+   * Locks the descendants of a task, and some other tasks, in statements in id order, until the
+   * subtree read after the locks holds nothing that is not locked. A task locked on the strength
+   * of an earlier read may have left the subtree meanwhile (another transaction re-parented it
+   * before the lock was granted); the last read decides, so only the tasks that are still
+   * descendants, and the other tasks asked for, are returned. Writers lock a task before they
+   * change its parent or its subtasks, so the subtree cannot change once every task of it is
+   * locked. A valid subtree has three levels and at most 650 descendants, which bounds the passes
+   * and the locks.
    *
    * @param {TasksStore} store - The store of the transaction.
    * @param {Task} task - The task, locked by the caller.
    * @param {readonly string[]} otherIds - The other tasks to lock with them.
-   * @returns {Promise<readonly Task[]>} The locked tasks: the descendants and the others.
+   * @returns {Promise<LockedSubtree>} The locked descendants and other tasks, and the subtree they
+   * were checked against.
+   * @throws {Error} When the stored subtree is larger than a valid one, or keeps growing while it
+   * is locked.
    */
-  private async lockDescendants(
+  private async lockSubtree(
     store: TasksStore,
     task: Task,
     otherIds: readonly string[],
-  ): Promise<readonly Task[]> {
+  ): Promise<LockedSubtree> {
     const { organizationId, id } = task.snapshot;
-    const first: SubtreeShape = await store.tasks.subtreeOf(organizationId, id);
-    const locked: Task[] = [
-      ...(await store.tasks.lockByIds(organizationId, [
-        ...new Set<string>([...otherIds, ...first.descendantIds]),
-      ])),
-    ];
-    const lockedIds: ReadonlySet<string> = new Set<string>(
-      locked.map((candidate: Task): string => candidate.snapshot.id),
-    );
-    const late: readonly string[] = (
-      await store.tasks.subtreeOf(organizationId, id)
-    ).descendantIds.filter((descendantId: string): boolean => !lockedIds.has(descendantId));
-    if (late.length > 0) {
-      locked.push(...(await store.tasks.lockByIds(organizationId, late)));
+    const asked = new Set<string>();
+    const held = new Map<string, Task>();
+    for (let pass = 0; pass < MAX_LOCK_PASSES; pass += 1) {
+      const shape: SubtreeShape = await store.tasks.subtreeOf(organizationId, id);
+      if (shape.descendantIds.length > MAX_DESCENDANTS) {
+        throw new Error(
+          `The task ${id} has ${String(shape.descendantIds.length)} descendants, more than ${String(MAX_DESCENDANTS)}.`,
+        );
+      }
+      const wanted: readonly string[] = [...new Set<string>([...otherIds, ...shape.descendantIds])];
+      const unlocked: readonly string[] = wanted.filter(
+        (wantedId: string): boolean => !asked.has(wantedId),
+      );
+      if (unlocked.length === 0) {
+        return {
+          tasks: [...held.values()].filter((candidate: Task): boolean =>
+            wanted.includes(candidate.snapshot.id),
+          ),
+          shape,
+        };
+      }
+      for (const wantedId of unlocked) {
+        asked.add(wantedId);
+      }
+      for (const locked of await store.tasks.lockByIds(organizationId, unlocked)) {
+        held.set(locked.snapshot.id, locked);
+      }
     }
-    return locked;
+    throw new Error(`The subtree of the task ${id} kept changing while it was locked.`);
   }
   // #endregion
 }

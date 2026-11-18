@@ -32,9 +32,13 @@ import type { CreateTaskOutput } from './create-task.output.js';
  * idempotency interceptor: the membership of the actor is locked, the list is read through the
  * spaces module (`list-not-found` for an unknown list or a space the actor does not see), the
  * memberships of the assignees are locked in id order, the domain drafts the task (`Task.create`
- * decides every rule and its refusals), then the keys are allocated last, one for the task and one
- * per subtask in body order, so that the counter of the prefix stays locked for the shortest time.
- * Each task gets its `create` activity entry and its events (`task.created.v1`, then one
+ * decides every rule and its refusals), then the keys are allocated, one for the task and one per
+ * subtask in body order, so that the counter of the prefix stays locked for the shortest time:
+ * after the key counter only statements remain, one for the task and, whatever the number of
+ * subtasks, one multi-row statement for the subtasks, one for their assignees and one for their
+ * labels. A subtask names its parent by the id and the key of the stored task, which the database
+ * and the allocation give, so the drafts of the subtasks are built once the task is stored, not
+ * before the allocation. Each task gets its `create` activity entry and its events (`task.created.v1`, then one
  * `task.assigned.v1` per assignee, the subtasks after the task). A subtask takes the list, the
  * status `todo`, the priority `moyenne` and the first assignee of the task.
  */
@@ -158,39 +162,43 @@ export class CreateTask {
         1 + input.subtaskNames.length,
       );
       const task: Task = await store.tasks.insert(draft, TaskKey.of(keys.prefix, keys.firstNumber));
-      const created: Task[] = [task];
       const firstAssignee: readonly AssigneeCandidate[] = candidates.slice(0, 1);
-      for (const [index, name] of input.subtaskNames.entries()) {
-        const subtaskDraft: TaskDraft = this.rules.apply((): TaskDraft =>
-          Task.create(
-            {
-              organizationId: input.organizationId,
-              placement: where,
-              parent: task.asParent(1, index),
-              name,
-              description: null,
-              status: 'todo',
-              cancelReason: null,
-              cancelNote: null,
-              priority: 'moyenne',
-              assignees: firstAssignee,
-              dueDate: null,
-              startDate: null,
-              estimateMinutes: null,
-              labels: [],
-              createdBy: creator,
-            },
-            placement.space.statuses,
-            now,
+      const subtaskDrafts: readonly TaskDraft[] = input.subtaskNames.map(
+        (name: string, index: number): TaskDraft =>
+          this.rules.apply((): TaskDraft =>
+            Task.create(
+              {
+                organizationId: input.organizationId,
+                placement: where,
+                parent: task.asParent(1, index),
+                name,
+                description: null,
+                status: 'todo',
+                cancelReason: null,
+                cancelNote: null,
+                priority: 'moyenne',
+                assignees: firstAssignee,
+                dueDate: null,
+                startDate: null,
+                estimateMinutes: null,
+                labels: [],
+                createdBy: creator,
+              },
+              placement.space.statuses,
+              now,
+            ),
           ),
-        );
-        created.push(
-          await store.tasks.insert(
-            subtaskDraft,
-            TaskKey.of(keys.prefix, keys.firstNumber + 1 + index),
-          ),
-        );
-      }
+      );
+      const subtasks: readonly Task[] =
+        subtaskDrafts.length === 0
+          ? []
+          : await store.tasks.insertMany(
+              subtaskDrafts,
+              subtaskDrafts.map((_subtask: TaskDraft, index: number): TaskKey =>
+                TaskKey.of(keys.prefix, keys.firstNumber + 1 + index),
+              ),
+            );
+      const created: readonly Task[] = [task, ...subtasks];
       await this.recorder.record(
         store.activity,
         created.map((made: Task) => ActivityEntry.forCreation(made.snapshot, creator, now)),

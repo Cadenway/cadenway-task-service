@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import type { TaskState } from '../../../../../domain/value-objects/task/task-state.value-object.js';
 import {
@@ -151,6 +152,93 @@ describe('UnassignRemovedMember: a member who left is removed from every task th
   });
 });
 
+describe('UnassignRemovedMember: a task that lost the account before it was locked', () => {
+  it('writes, records and announces only the tasks it changed, and counts only them', async () => {
+    const tasks = new InMemoryTasks({ tasks: [assignedToHugo(1), assignedToHugo(2)] });
+    const written: string[][] = [];
+    const racing: InMemoryTasks['run'] = (work) =>
+      tasks.run((store) =>
+        work({
+          ...store,
+          tasks: {
+            ...store.tasks,
+            // The account was deleted from the second task by a concurrent write between the read
+            // of its assignee rows and the lock: the task comes back without it.
+            lockAssignedTo: async (organizationId, userId, afterId, limit) =>
+              (await store.tasks.lockAssignedTo(organizationId, userId, afterId, limit)).map(
+                (task) =>
+                  task.snapshot.id === assignedToHugo(2).id
+                    ? Task.restore({ ...task.snapshot, assigneeIds: [] })
+                    : task,
+              ),
+            unassignBatch: (organizationId, userId, updated) => {
+              written.push(updated.map((task) => task.snapshot.id));
+              return store.tasks.unassignBatch(organizationId, userId, updated);
+            },
+          },
+        }),
+      );
+
+    const output = await new UnassignRemovedMember(
+      { run: racing, runReadOnly: (work, options) => tasks.runReadOnly(work, options) },
+      atelierNordMembers([HUGO]),
+    ).execute({ organizationId: ATELIER_NORD, userId: HUGO });
+
+    expect(output).toEqual({ unassigned: 1 });
+    expect(written).toEqual([[assignedToHugo(1).id]]);
+    expect(tasks.events).toEqual([
+      { kind: 'updated', key: 'CAD-1001', version: 4, changed: ['assigneeIds'], actor: system },
+    ]);
+    expect([...tasks.activity.values()]).toEqual([
+      expect.objectContaining({ taskId: assignedToHugo(1).id }),
+    ]);
+  });
+
+  it('writes nothing when no task of the batch changed', async () => {
+    const tasks = new InMemoryTasks({ tasks: [assignedToHugo(1)] });
+    const racing: InMemoryTasks['run'] = (work) =>
+      tasks.run((store) =>
+        work({
+          ...store,
+          tasks: {
+            ...store.tasks,
+            lockAssignedTo: async (organizationId, userId, afterId, limit) =>
+              (await store.tasks.lockAssignedTo(organizationId, userId, afterId, limit)).map(
+                (task) => Task.restore({ ...task.snapshot, assigneeIds: [] }),
+              ),
+          },
+        }),
+      );
+
+    const output = await new UnassignRemovedMember(
+      { run: racing, runReadOnly: (work, options) => tasks.runReadOnly(work, options) },
+      atelierNordMembers([HUGO]),
+    ).execute({ organizationId: ATELIER_NORD, userId: HUGO });
+
+    expect(output).toEqual({ unassigned: 0 });
+    expect(tasks.events).toEqual([]);
+    expect(tasks.activity.size).toBe(0);
+  });
+});
+
+describe('UnassignRemovedMember: the batches come without checklist', () => {
+  it('leaves the checklists of the tasks it rewrites as they were', async () => {
+    const withChecklist: TaskState = assignedToHugo(1, {
+      checklist: [
+        { id: '019a7300-0000-7000-8000-000000000001', text: 'Valider', done: true, position: 0 },
+      ],
+    });
+    const tasks = new InMemoryTasks({ tasks: [withChecklist] });
+
+    await new UnassignRemovedMember(tasks, atelierNordMembers([HUGO])).execute({
+      organizationId: ATELIER_NORD,
+      userId: HUGO,
+    });
+
+    expect(tasks.stored(withChecklist.id).checklist).toEqual(withChecklist.checklist);
+  });
+});
+
 describe('UnassignRemovedMember: the tasks are rewritten in batches of 500', () => {
   it('walks 1,200 tasks in three batches, each written in one set-based call', async () => {
     const tasks = new InMemoryTasks({
@@ -202,7 +290,10 @@ describe('UnassignRemovedMember: the tasks are rewritten in batches of 500', () 
       );
 
     await expect(
-      new UnassignRemovedMember({ run: failing }, atelierNordMembers([HUGO])).execute({
+      new UnassignRemovedMember(
+        { run: failing, runReadOnly: (work, options) => tasks.runReadOnly(work, options) },
+        atelierNordMembers([HUGO]),
+      ).execute({
         organizationId: ATELIER_NORD,
         userId: HUGO,
       }),

@@ -79,39 +79,44 @@ export class ListTaskActivity {
    * @throws {TaskRefusal} `organization-not-found` or `task-not-found`.
    */
   public async execute(input: ListTaskActivityInput): Promise<ListTaskActivityOutput> {
-    return this.unitOfWork.run(async (store: TasksStore): Promise<ListTaskActivityOutput> => {
-      const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
-      const { task }: LocatedTask = await this.locator.locate(store, {
-        organizationId: input.organizationId,
-        viewer,
-        taskKey: input.taskKey,
-        lock: false,
-        expectedVersions: null,
-      });
-      const rows: readonly ActivityEntryState[] = await store.activity.pageOfTask(
-        input.organizationId,
-        task.snapshot.id,
-        input.kinds,
-        input.after,
-        input.limit + 1,
-      );
-      const page: Slice<ActivityEntryState, ActivityPosition> = this.pages.slice(
-        rows,
-        input.limit,
-        (row: ActivityEntryState): ActivityPosition => ({ occurredAt: row.occurredAt, id: row.id }),
-      );
-      const total: number = await store.activity.countOfTask(
-        input.organizationId,
-        task.snapshot.id,
-        input.kinds,
-      );
-      const items: readonly ActivityEntryView[] = await this.views.build(
-        store.reader,
-        input.organizationId,
-        page.items,
-      );
-      return { items, next: page.next, total };
-    });
+    return this.unitOfWork.runReadOnly(
+      async (store: TasksStore): Promise<ListTaskActivityOutput> => {
+        const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
+        const { task }: LocatedTask = await this.locator.locate(store, {
+          organizationId: input.organizationId,
+          viewer,
+          taskKey: input.taskKey,
+          lock: false,
+          expectedVersions: null,
+        });
+        const rows: readonly ActivityEntryState[] = await store.activity.pageOfTask(
+          input.organizationId,
+          task.snapshot.id,
+          input.kinds,
+          input.after,
+          input.limit + 1,
+        );
+        const page: Slice<ActivityEntryState, ActivityPosition> = this.pages.slice(
+          rows,
+          input.limit,
+          (row: ActivityEntryState): ActivityPosition => ({
+            occurredAt: row.occurredAt,
+            id: row.id,
+          }),
+        );
+        const total: number = await store.activity.countOfTask(
+          input.organizationId,
+          task.snapshot.id,
+          input.kinds,
+        );
+        const items: readonly ActivityEntryView[] = await this.views.build(
+          store.reader,
+          input.organizationId,
+          page.items,
+        );
+        return { items, next: page.next, total };
+      },
+    );
   }
   // #endregion
 }

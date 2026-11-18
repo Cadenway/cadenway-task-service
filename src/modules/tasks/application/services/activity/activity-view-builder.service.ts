@@ -37,7 +37,9 @@ export class ActivityViewBuilder {
     return entries.map((entry: ActivityEntryState): ActivityEntryView => {
       const task: TaskReferenceView | undefined = references.get(entry.taskId);
       if (task === undefined) {
-        throw new Error('An activity entry names a task the organization does not hold.');
+        throw new Error(
+          `The activity entry ${entry.id} names the task ${entry.taskId}, which the organization does not hold.`,
+        );
       }
       return {
         id: entry.id,

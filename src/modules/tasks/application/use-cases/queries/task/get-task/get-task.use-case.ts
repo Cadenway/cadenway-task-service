@@ -16,8 +16,8 @@ import type { GetTaskOutput } from './get-task.output.js';
  * @description
  * Reads one task by its key (`GET /internal/v1/tasks/{taskKey}`), without a lock. A task is seen
  * by whoever sees the space of its list: an unknown task and a task of a space the actor does not
- * see (a guest sees none) get the same answer, `task-not-found`. It runs in one tenant
- * transaction, scoped to the organization of the context.
+ * see (a guest sees none) get the same answer, `task-not-found`. It runs in one read-only
+ * tenant transaction, scoped to the organization of the context.
  */
 export class GetTask {
   // #region Properties
@@ -70,7 +70,7 @@ export class GetTask {
    * @throws {TaskRefusal} `organization-not-found` or `task-not-found`.
    */
   public async execute(input: GetTaskInput): Promise<GetTaskOutput> {
-    return this.unitOfWork.run(async (store: TasksStore): Promise<GetTaskOutput> => {
+    return this.unitOfWork.runReadOnly(async (store: TasksStore): Promise<GetTaskOutput> => {
       const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
       const { task }: LocatedTask = await this.locator.locate(store, {
         organizationId: input.organizationId,
