@@ -61,8 +61,13 @@ const platformTables = [
   'processed_events',
 ] as const;
 
-/** Every table the migrations create, by name: the kit tables, the memberships, the spaces. */
+/**
+ * Every table the migrations create, by name: the kit tables, the memberships, the spaces and the
+ * tasks with what hangs from them.
+ */
 const publicTables = [
+  'activity_entries',
+  'checklist_items',
   'event_versions',
   'idempotency_keys',
   'lists',
@@ -71,13 +76,16 @@ const publicTables = [
   'processed_events',
   'space_prefixes',
   'spaces',
+  'task_assignees',
+  'task_labels',
+  'tasks',
 ] as const;
 
 /**
- * Migrations of the journal: the platform tables, the copy of the memberships, then the spaces and
- * their lists.
+ * Migrations of the journal: the platform tables, the copy of the memberships, the spaces and their
+ * lists, then the tasks.
  */
-const appliedMigrations = 3;
+const appliedMigrations = 4;
 
 /**
  * Runs `docker compose` on the throwaway project.
@@ -356,6 +364,8 @@ describe('task-service wiring', () => {
     );
 
     expect(tables.rows).toEqual([
+      { relname: 'activity_entries', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'checklist_items', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'event_versions', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'idempotency_keys', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'lists', relrowsecurity: true, relforcerowsecurity: true },
@@ -364,8 +374,13 @@ describe('task-service wiring', () => {
       { relname: 'processed_events', relrowsecurity: false, relforcerowsecurity: false },
       { relname: 'space_prefixes', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'spaces', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'task_assignees', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'task_labels', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'tasks', relrowsecurity: true, relforcerowsecurity: true },
     ]);
     expect(policies.rows).toEqual([
+      { tablename: 'activity_entries', policyname: 'activity_entries_organization_isolation' },
+      { tablename: 'checklist_items', policyname: 'checklist_items_organization_isolation' },
       { tablename: 'event_versions', policyname: 'event_versions_organization_isolation' },
       { tablename: 'idempotency_keys', policyname: 'idempotency_keys_organization_isolation' },
       { tablename: 'lists', policyname: 'lists_organization_isolation' },
@@ -376,6 +391,9 @@ describe('task-service wiring', () => {
       { tablename: 'outbox_events', policyname: 'outbox_events_organization_isolation' },
       { tablename: 'space_prefixes', policyname: 'space_prefixes_organization_isolation' },
       { tablename: 'spaces', policyname: 'spaces_organization_isolation' },
+      { tablename: 'task_assignees', policyname: 'task_assignees_organization_isolation' },
+      { tablename: 'task_labels', policyname: 'task_labels_organization_isolation' },
+      { tablename: 'tasks', policyname: 'tasks_organization_isolation' },
     ]);
   });
 
