@@ -24,6 +24,9 @@ export default defineConfig({
       exclude: [
         'src/**/*.spec.ts',
         'src/**/*.int-spec.ts',
+        'src/**/*.fixture.ts',
+        'src/**/*.mock.ts',
+        'src/**/*.harness.ts',
         'src/main.ts',
         'src/migrate.ts',
         'src/telemetry.ts',

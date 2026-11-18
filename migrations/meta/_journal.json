@@ -8,6 +8,13 @@
       "when": 1794749527491,
       "tag": "0000_platform_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794998398795,
+      "tag": "0001_organization_members",
+      "breakpoints": true
     }
   ]
 }

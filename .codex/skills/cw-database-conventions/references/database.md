@@ -50,8 +50,9 @@ as `migrations/0000_platform_tables.sql` does.
 
 ## Not there yet
 
-No business table exists yet. The two roles exist in cadenway-ops (`docs/database.md` there) and in
-`compose.dev.yaml`; `tests/service-wiring.int-spec.ts` proves on the kit tables that the policies are
-forced, that one organization cannot read or write another's rows, and that the application role
-runs no DDL. The same test for each business table, and the linting of migrations, arrive with the
-first business module. Until then these conventions are applied by review.
+The two roles exist in cadenway-ops (`docs/database.md` there) and in `compose.dev.yaml`;
+`tests/service-wiring.int-spec.ts` proves on every table that the policies are forced, and on the
+kit tables that one organization cannot read or write another's rows and that the application role
+runs no DDL; `tests/organization-members.int-spec.ts` proves the isolation of the first business
+table, `organization_members`, through its module. Each new business table adds the same proof.
+Migrations are not linted yet: these conventions are applied by review.

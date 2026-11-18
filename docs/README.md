@@ -4,7 +4,7 @@ Planned role: cadenway-task-service owns the core of the product. NestJS, its ow
 
 ## Current status
 
-The NestJS application under `src/` runs on `@cadenway/nest-common` and `@cadenway/nest-messaging`: configuration validated at start-up, JSON logs, OpenTelemetry preloaded, the internal token required on every route but the health probes, the NATS connection of the `task` user with the outbox relay, and a readiness route that checks PostgreSQL and NATS. The only migration creates the tables of the service kit (outbox, processed ids, versions, `Idempotency-Key`), owned by the platform module. No business code, route or event exists yet; the target architecture in this guide is what they must follow.
+The NestJS application under `src/` runs on `@cadenway/nest-common` and `@cadenway/nest-messaging`: configuration validated at start-up, JSON logs, OpenTelemetry preloaded, the internal token required on every route but the health probes, the NATS connection of the `task` user with the outbox relay, and a readiness route that checks PostgreSQL and NATS. The migrations create the tables of the service kit (outbox, processed ids, versions, `Idempotency-Key`), owned by the platform module, and the copy of the organization memberships of the organization-members module, fed by the member events of organization-service. No route exists yet and the service publishes no event; the target architecture in this guide is what the next modules must follow.
 
 ## Read the guides
 
