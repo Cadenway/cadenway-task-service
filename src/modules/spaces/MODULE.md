@@ -17,16 +17,30 @@ and the activity log belong to the task modules of P3a.
 
 ## Public entry points
 
-| Entry point                              | Consumers        |
-| ---------------------------------------- | ---------------- |
-| `spaces.module`                          | member-lifecycle |
-| `public/space/hand-over-private-spaces`  | member-lifecycle |
-| `public/space/hand-over-awaiting-spaces` | member-lifecycle |
+| Entry point                              | Consumers               |
+| ---------------------------------------- | ----------------------- |
+| `spaces.module`                          | member-lifecycle, tasks |
+| `public/space/hand-over-private-spaces`  | member-lifecycle        |
+| `public/space/hand-over-awaiting-spaces` | member-lifecycle        |
+| `public/list/find-visible-list`          | tasks                   |
+| `public/space/list-visible-space-ids`    | tasks                   |
+| `public/space/allocate-task-keys`        | tasks                   |
 
 `SpacesModule` exports the `HandOverPrivateSpaces` (input and output) and
 `HandOverAwaitingSpaces` (input) providers. member-lifecycle calls the first on
 `member.removed.v1` and the second when the copy learns the owner of an organization, in the
 tenant transaction of the event, which both join.
+
+It also exports, for the tasks module:
+
+- `FindVisibleList` (`{ organizationId, viewerUserId, viewerRole, listId }`): the list and its space
+  (statuses, prefix, `nextKey`) as plain `VisibleList` and `VisibleSpace` projections, or `null`
+  when the list is unknown or the viewer does not see its space (a guest, a private space of
+  another member, a space awaiting an owner);
+- `ListVisibleSpaceIds` (`{ organizationId, viewerUserId, viewerRole }`): the ids of the spaces the
+  viewer sees, in creation order, with the filter of the space listing; empty for a guest;
+- `AllocateTaskKeys` (`{ organizationId, spaceId, count }`, `count` from 1 to 26): the prefix and
+  the first number of `count` consecutive numbers handed out under the current prefix.
 
 ## Owned tables
 
@@ -111,6 +125,11 @@ None directly; member-lifecycle calls `HandOverPrivateSpaces` on `member.removed
   number, reserving nothing.
 - `todo` and `done` are never hidden (`422 space.status-required`); a status name has at most 24
   characters.
+- A task number is handed out once, by `AllocateTaskKeys`, in the transaction that creates the
+  task, and never again: the counter of a prefix only moves forward, a rollback gives the numbers
+  back, and no number is given twice nor above 999,999,999 (a counter past it is a defect that
+  answers 500 and rolls back). `nextKey` and `FindVisibleList` only preview the next number and
+  reserve nothing; the allocation emits nothing and leaves the version of the space unchanged.
 - A sprint ends on or after its start (`422 list.sprint-dates-invalid`).
 - A private space always has an owner who is a member, so that someone sees it. When the owner of a
   private space leaves the organization, the owner of the organization becomes its owner, unless
@@ -137,6 +156,12 @@ that a concurrent removal of the actor waits for the write, and its handover see
 the write just created or made private. Locks are always taken membership first, then space, and
 a change locks its space or list `FOR NO KEY UPDATE`.
 
+`FindVisibleList`, `ListVisibleSpaceIds` and `AllocateTaskKeys` join the tenant transaction of the
+tasks module the same way. The two readings take no lock and append no event. The allocation is one
+`UPDATE space_prefixes SET last_number = last_number + count ... RETURNING`, scoped by organization,
+prefix and space, which locks the prefix row until the caller commits: creations under one prefix
+are serialized, so the caller allocates last, after every validation, and takes no space lock.
+
 The unit of work wakes the relay once its `run` resolved when an event was appended: after the
 commit when it opened the transaction; inside a joined one (a creation with `Idempotency-Key`, the
 handover) before the outer commit, so that the rows then leave at the next poll of the relay,
@@ -153,5 +178,8 @@ within a second.
 - The overview and the counts of a list moved from PR 1 to PR 3 (task queries), with the agreement
   of the coordinating session: they count tasks, which exist from PR 2, and serving them from the
   task query module avoids a cycle between spaces and tasks.
+- The tasks module passes the role of the viewer to `FindVisibleList` and `ListVisibleSpaceIds`: it
+  reads it from the copy of the memberships (`FindOrganizationMember`) in the same transaction,
+  never from the token, and these operations apply `canSeeSpace` to it without a second reading.
 - `tests/spaces.int-spec.ts` proves the routes, the visibility rules, the prefixes, idempotency,
   row-level security and the handover on real PostgreSQL and NATS.

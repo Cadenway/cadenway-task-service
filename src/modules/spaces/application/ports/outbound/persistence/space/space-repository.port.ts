@@ -79,6 +79,21 @@ export interface SpaceRepository {
   ): Promise<Space[]>;
 
   /**
+   * Method listVisibleIds
+   *
+   * @description
+   * The ids of every space a member who is not a guest sees, in the order of their creation (id as
+   * tie-breaker), with the same filter as `listVisible`: those of the whole organization and the
+   * private ones the member owns, never one awaiting an owner. Not paged: it is read to filter
+   * other collections by space, and the number of spaces of an organization is small.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} viewerUserId - The account of the member.
+   * @returns {Promise<readonly string[]>} The ids of the spaces.
+   */
+  listVisibleIds(organizationId: string, viewerUserId: string): Promise<readonly string[]>;
+
+  /**
    * Method lockPrivateOwnedBy
    *
    * @description

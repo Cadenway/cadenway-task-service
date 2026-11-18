@@ -5,20 +5,26 @@ import { OrganizationMembersModule } from '../organization-members/organization-
 import { memberDirectoryProvider } from './composition/providers/adapters/membership/member-directory.provider.js';
 import { spacesUnitOfWorkProvider } from './composition/providers/adapters/space/spaces-unit-of-work.provider.js';
 import { createListProvider } from './composition/providers/use-cases/list/create-list.provider.js';
+import { findVisibleListProvider } from './composition/providers/use-cases/list/find-visible-list.provider.js';
 import { getListProvider } from './composition/providers/use-cases/list/get-list.provider.js';
 import { listListsProvider } from './composition/providers/use-cases/list/list-lists.provider.js';
 import { updateListProvider } from './composition/providers/use-cases/list/update-list.provider.js';
+import { allocateTaskKeysProvider } from './composition/providers/use-cases/space/allocate-task-keys.provider.js';
 import { createSpaceProvider } from './composition/providers/use-cases/space/create-space.provider.js';
 import { getSpaceProvider } from './composition/providers/use-cases/space/get-space.provider.js';
 import { handOverAwaitingSpacesProvider } from './composition/providers/use-cases/space/hand-over-awaiting-spaces.provider.js';
 import { handOverPrivateSpacesProvider } from './composition/providers/use-cases/space/hand-over-private-spaces.provider.js';
 import { listSpacesProvider } from './composition/providers/use-cases/space/list-spaces.provider.js';
+import { listVisibleSpaceIdsProvider } from './composition/providers/use-cases/space/list-visible-space-ids.provider.js';
 import { updateSpaceProvider } from './composition/providers/use-cases/space/update-space.provider.js';
 import { ListsController } from './presentation/http/controllers/list/lists.controller.js';
 import { SpaceListsController } from './presentation/http/controllers/list/space-lists.controller.js';
 import { SpacesController } from './presentation/http/controllers/space/spaces.controller.js';
+import { FindVisibleList } from './public/list/find-visible-list.js';
+import { AllocateTaskKeys } from './public/space/allocate-task-keys.js';
 import { HandOverAwaitingSpaces } from './public/space/hand-over-awaiting-spaces.js';
 import { HandOverPrivateSpaces } from './public/space/hand-over-private-spaces.js';
+import { ListVisibleSpaceIds } from './public/space/list-visible-space-ids.js';
 
 /**
  * Function markIdempotent
@@ -57,8 +63,10 @@ markIdempotent(SpaceListsController.prototype, 'create');
  * sprints (P3a). The use cases run on one tenant unit of work that appends their events to the
  * outbox in the same transaction, and read the roles and the owner from `OrganizationMembersModule`
  * through the `MemberDirectory` port, never from the `role` claim of the internal token (decision 4
- * of the P3a plan). It exports `HandOverPrivateSpaces`, which the member-lifecycle module runs when
- * a member leaves the organization.
+ * of the P3a plan). It exports `HandOverPrivateSpaces` and `HandOverAwaitingSpaces`, which the
+ * member-lifecycle module runs when a member leaves the organization or the copy learns its owner,
+ * and `FindVisibleList`, `ListVisibleSpaceIds` and `AllocateTaskKeys`, which the tasks module runs
+ * in its own transaction.
  */
 @Module({
   imports: [OrganizationMembersModule],
@@ -76,7 +84,16 @@ markIdempotent(SpaceListsController.prototype, 'create');
     listListsProvider,
     getListProvider,
     updateListProvider,
+    findVisibleListProvider,
+    listVisibleSpaceIdsProvider,
+    allocateTaskKeysProvider,
   ],
-  exports: [HandOverPrivateSpaces, HandOverAwaitingSpaces],
+  exports: [
+    HandOverPrivateSpaces,
+    HandOverAwaitingSpaces,
+    FindVisibleList,
+    ListVisibleSpaceIds,
+    AllocateTaskKeys,
+  ],
 })
 export class SpacesModule {}

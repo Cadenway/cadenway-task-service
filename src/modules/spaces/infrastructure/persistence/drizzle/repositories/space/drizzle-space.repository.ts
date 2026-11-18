@@ -199,6 +199,36 @@ export class DrizzleSpaceRepository implements SpaceRepository {
   }
 
   /**
+   * Method listVisibleIds
+   *
+   * @description
+   * Reads the ids of the spaces a viewer sees, with the filter of `listVisible` (the whole
+   * organization, the private ones the viewer owns, none awaiting an owner), in the order
+   * `(created_at, id)`. One query through `(organization_id, created_at, id)`, no limit.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} viewerUserId - The account of the member.
+   * @returns {Promise<readonly string[]>} The ids of the spaces.
+   */
+  public async listVisibleIds(
+    organizationId: string,
+    viewerUserId: string,
+  ): Promise<readonly string[]> {
+    const rows: { id: string }[] = await this.db
+      .select({ id: spaces.id })
+      .from(spaces)
+      .where(
+        and(
+          eq(spaces.organizationId, organizationId),
+          or(eq(spaces.visibility, 'organization'), eq(spaces.ownerUserId, viewerUserId)),
+          eq(spaces.awaitingOwner, false),
+        ),
+      )
+      .orderBy(asc(spaces.createdAt), asc(spaces.id));
+    return rows.map((row: { id: string }): string => row.id);
+  }
+
+  /**
    * Method lockPrivateOwnedBy
    *
    * @description

@@ -1,5 +1,5 @@
 import type { TransactionDatabase } from '@cadenway/nest-common/database';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 
 import type { SpacePrefixRepository } from '../../../../../application/ports/outbound/persistence/space/space-prefix-repository.port.js';
 import { spacePrefixes } from '../../schemas/space/space-prefix.schema.js';
@@ -10,8 +10,8 @@ import { spacePrefixes } from '../../schemas/space/space-prefix.schema.js';
  * @description
  * `SpacePrefixRepository` on the `space_prefixes` table, in the transaction of its unit of work.
  * Every query names `organization_id`, the first column of the primary key
- * `(organization_id, prefix)`; row-level security is the second barrier. Both reads are by
- * primary key, bounded by the prefixes asked for.
+ * `(organization_id, prefix)`; row-level security is the second barrier. The reads and the
+ * allocation are by primary key, bounded by the prefixes asked for.
  */
 export class DrizzleSpacePrefixRepository implements SpacePrefixRepository {
   // #region Properties
@@ -118,6 +118,42 @@ export class DrizzleSpacePrefixRepository implements SpacePrefixRepository {
       next.set(row.prefix, row.lastNumber + 1);
     }
     return next;
+  }
+
+  /**
+   * Method allocate
+   *
+   * @description
+   * Advances the counter of a prefix by `count` with one `UPDATE ... RETURNING`, scoped by
+   * organization, prefix and space. The update takes the row lock, kept until the transaction
+   * ends: a concurrent allocation of the prefix waits for the commit, then reads the new counter,
+   * so the numbers never overlap, and a rollback undoes the advance.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} prefix - The prefix.
+   * @param {string} spaceId - The space that must hold the prefix.
+   * @param {number} count - How many numbers, at least 1.
+   * @returns {Promise<number | null>} The counter after the allocation, or `null` when no row
+   * matches.
+   */
+  public async allocate(
+    organizationId: string,
+    prefix: string,
+    spaceId: string,
+    count: number,
+  ): Promise<number | null> {
+    const rows: { lastNumber: number }[] = await this.db
+      .update(spacePrefixes)
+      .set({ lastNumber: sql`${spacePrefixes.lastNumber} + ${count}::bigint` })
+      .where(
+        and(
+          eq(spacePrefixes.organizationId, organizationId),
+          eq(spacePrefixes.prefix, prefix),
+          eq(spacePrefixes.spaceId, spaceId),
+        ),
+      )
+      .returning({ lastNumber: spacePrefixes.lastNumber });
+    return rows[0]?.lastNumber ?? null;
   }
   // #endregion
 }
