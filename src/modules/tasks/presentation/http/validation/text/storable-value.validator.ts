@@ -14,13 +14,20 @@ const CALENDAR_DATE: RegExp = /^(\d{4})-\d{2}-\d{2}$/u;
  * Constant DATE_MEMBERS
  *
  * @description
- * The members of a body that hold a calendar date, `dueDate` and `startDate`: only these are
- * checked for the year 0000, so a name, a label or a note that merely reads like a date
- * (`0000-11-03`) is a text like any other.
+ * The members of a body or of a query that hold a calendar date: `dueDate` and `startDate` of the
+ * tasks, `today`, `dueFrom` and `dueTo` of the queries. Only these are checked for the year 0000,
+ * so a name, a label, a search text or a note that merely reads like a date (`0000-11-03`) is a
+ * text like any other.
  *
  * @type {ReadonlySet<string>}
  */
-const DATE_MEMBERS: ReadonlySet<string> = new Set<string>(['dueDate', 'startDate']);
+const DATE_MEMBERS: ReadonlySet<string> = new Set<string>([
+  'dueDate',
+  'startDate',
+  'today',
+  'dueFrom',
+  'dueTo',
+]);
 
 /**
  * Function refuseUnstorableValues

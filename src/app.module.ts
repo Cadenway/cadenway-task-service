@@ -110,10 +110,13 @@ function runJobInOrganization(
  *   the members and roles of the service.
  * - `SpacesModule`: the spaces, their statuses and prefixes, and their lists and sprints, with the
  *   internal routes of `/internal/v1/spaces` and `/internal/v1/lists`.
- * - `TasksModule`: the tasks, their subtasks, assignees, labels and checklist, and the activity log
- *   of a task and of a list, with the internal routes of `/internal/v1/tasks` and the task
- *   creation and activity routes of `/internal/v1/lists/{listId}`. It reads the members from
- *   `OrganizationMembersModule` and the lists, spaces and task keys from `SpacesModule`.
+ * - `TasksModule`: the tasks, their subtasks, assignees, labels and checklist, the activity log of
+ *   a task and of a list, and the task queries, with the internal routes of
+ *   `/internal/v1/tasks`, the task, activity, group and counter routes of
+ *   `/internal/v1/lists/{listId}`, the overview of `/internal/v1/spaces/{spaceId}`, the labels of
+ *   `/internal/v1/labels` and "Mes tâches" and "Accueil" of `/internal/v1/users/{userId}`. It
+ *   reads the members from `OrganizationMembersModule` and the lists, spaces and task keys from
+ *   `SpacesModule`.
  * - `MemberLifecycleModule`: the three durable consumers (`task-service__project-member-*`) of
  *   `member.joined.v1`, `member.role-changed.v1` and `member.removed.v1`, which the deduplicator of
  *   `OutboxModule` runs in the tenant transaction of each event. Each event updates the copy of

@@ -1,0 +1,2 @@
+CREATE INDEX "task_labels_key_index" ON "task_labels" USING btree ("organization_id","label_key","task_id");--> statement-breakpoint
+CREATE INDEX "tasks_list_created_index" ON "tasks" USING btree ("organization_id","list_id","created_at","id");

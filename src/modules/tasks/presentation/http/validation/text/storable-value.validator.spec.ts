@@ -52,10 +52,19 @@ describe('refuseUnstorableValues: a text with U+0000 is refused, PostgreSQL cann
 });
 
 describe('refuseUnstorableValues: a date member of the year 0000 is refused, PostgreSQL has no year 0', () => {
-  it.each(['dueDate', 'startDate'])('refuses a calendar date of the year 0000 in %s', (member) => {
-    expect(issuesOf({ [member]: '0000-11-03' })).toEqual([
-      { path: [member], message: YEAR_ZERO_MESSAGE },
-    ]);
+  it.each(['dueDate', 'startDate', 'today', 'dueFrom', 'dueTo'])(
+    'refuses a calendar date of the year 0000 in %s',
+    (member) => {
+      expect(issuesOf({ [member]: '0000-11-03' })).toEqual([
+        { path: [member], message: YEAR_ZERO_MESSAGE },
+      ]);
+    },
+  );
+
+  it('accepts the year 0001 in the date members of a query', () => {
+    expect(issuesOf({ today: '0001-01-01', dueFrom: '0001-01-01', dueTo: '2026-11-03' })).toEqual(
+      [],
+    );
   });
 
   it('accepts the year 0001 and a current date in a date member', () => {

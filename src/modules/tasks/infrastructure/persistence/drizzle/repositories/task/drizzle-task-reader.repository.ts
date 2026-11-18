@@ -1,8 +1,7 @@
 import type { TransactionDatabase } from '@cadenway/nest-common/database';
-import { and, asc, eq, isNotNull, sql } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 
 import type { PagePosition } from '../../../../../application/models/page/page-position.model.js';
-import type { ChecklistCounts } from '../../../../../application/projections/task/checklist-counts.projection.js';
 import type { SubtaskCounts } from '../../../../../application/projections/task/subtask-counts.projection.js';
 import type { TaskReferenceView } from '../../../../../application/projections/task/task-reference.projection.js';
 import type { TaskSummaryView } from '../../../../../application/projections/task/task-summary.projection.js';
@@ -11,7 +10,6 @@ import { keysetAfter } from '../../mappers/page/keyset-after.mapper.js';
 import { anyOf } from '../../mappers/page/any-of.mapper.js';
 import { toTaskReference, toTaskSummary } from '../../mappers/task/task-summary.mapper.js';
 import type { TaskRow } from '../../mappers/task/task.mapper.js';
-import { checklistItems } from '../../schemas/checklist/checklist-item.schema.js';
 import { tasks } from '../../schemas/task/task.schema.js';
 import { DrizzleTaskCollections } from './task-collections.repository.js';
 
@@ -73,7 +71,7 @@ export class DrizzleTaskReader implements TaskReader {
    *
    * @description
    * Counts the direct subtasks of tasks, and the closed ones, in one grouped query through
-   * `tasks_parent_created_index`.
+   * `tasks_parent_created_index`, loaded by the helper shared with the readers of the queries.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} taskIds - The tasks.
@@ -84,31 +82,7 @@ export class DrizzleTaskReader implements TaskReader {
     organizationId: string,
     taskIds: readonly string[],
   ): Promise<ReadonlyMap<string, SubtaskCounts>> {
-    const counts = new Map<string, SubtaskCounts>();
-    if (taskIds.length === 0) {
-      return counts;
-    }
-    const rows: { parentId: string | null; total: number; closed: number }[] = await this.db
-      .select({
-        parentId: tasks.parentId,
-        total: sql<number>`count(*)::int`,
-        closed: sql<number>`(count(*) filter (where ${tasks.status} in ('done', 'cancelled')))::int`,
-      })
-      .from(tasks)
-      .where(
-        and(
-          eq(tasks.organizationId, organizationId),
-          isNotNull(tasks.parentId),
-          anyOf(tasks.parentId, taskIds, 'uuid'),
-        ),
-      )
-      .groupBy(tasks.parentId);
-    for (const row of rows) {
-      if (row.parentId !== null) {
-        counts.set(row.parentId, { total: row.total, closed: row.closed });
-      }
-    }
-    return counts;
+    return this.collections.subtaskCountsOf(organizationId, taskIds);
   }
 
   /**
@@ -155,8 +129,8 @@ export class DrizzleTaskReader implements TaskReader {
     const ids: string[] = rows.map((row: TaskRow): string => row.id);
     const assignees = await this.collections.assigneesOf(organizationId, ids);
     const labels = await this.collections.labelsOf(organizationId, ids);
-    const subtasks = await this.subtaskCounts(organizationId, ids);
-    const checklists = await this.checklistCounts(organizationId, ids);
+    const subtasks = await this.collections.subtaskCountsOf(organizationId, ids);
+    const checklists = await this.collections.checklistCountsOf(organizationId, ids);
     const parentKeyText: string = parentKey.format();
     return rows.map((row: TaskRow): TaskSummaryView =>
       toTaskSummary(
@@ -222,43 +196,6 @@ export class DrizzleTaskReader implements TaskReader {
       references.set(row.id, toTaskReference(row));
     }
     return references;
-  }
-
-  /**
-   * Method checklistCounts
-   *
-   * @description
-   * Counts the items of the checklists of tasks, and the ticked ones, in one grouped query through
-   * the unique constraint on `(organization_id, task_id, position)`.
-   *
-   * @param {string} organizationId - The organization of the transaction.
-   * @param {readonly string[]} taskIds - The tasks.
-   * @returns {Promise<ReadonlyMap<string, ChecklistCounts>>} The counts by task id; a task
-   * without item is left out.
-   */
-  private async checklistCounts(
-    organizationId: string,
-    taskIds: readonly string[],
-  ): Promise<ReadonlyMap<string, ChecklistCounts>> {
-    const counts = new Map<string, ChecklistCounts>();
-    const rows: { taskId: string; total: number; done: number }[] = await this.db
-      .select({
-        taskId: checklistItems.taskId,
-        total: sql<number>`count(*)::int`,
-        done: sql<number>`(count(*) filter (where ${checklistItems.done}))::int`,
-      })
-      .from(checklistItems)
-      .where(
-        and(
-          eq(checklistItems.organizationId, organizationId),
-          anyOf(checklistItems.taskId, taskIds, 'uuid'),
-        ),
-      )
-      .groupBy(checklistItems.taskId);
-    for (const row of rows) {
-      counts.set(row.taskId, { total: row.total, done: row.done });
-    }
-    return counts;
   }
   // #endregion
 }

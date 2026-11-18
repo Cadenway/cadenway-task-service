@@ -1,6 +1,9 @@
 import type { FactoryProvider } from '@nestjs/common';
 
 import { FindVisibleList } from '../../../../../spaces/public/list/find-visible-list.js';
+import { FindVisibleSpaceLists } from '../../../../../spaces/public/list/find-visible-space-lists.js';
+import { ListCurrentSprints } from '../../../../../spaces/public/list/list-current-sprints.js';
+import { ListSidebarLists } from '../../../../../spaces/public/list/list-sidebar-lists.js';
 import { AllocateTaskKeys } from '../../../../../spaces/public/space/allocate-task-keys.js';
 import { ListVisibleSpaceIds } from '../../../../../spaces/public/space/list-visible-space-ids.js';
 import type { SpaceDirectory } from '../../../../application/ports/outbound/spaces/space/space-directory.port.js';
@@ -12,18 +15,35 @@ import { SPACE_DIRECTORY } from '../../../tokens/space/space-directory.token.js'
  *
  * @description
  * Binds the `SpaceDirectory` port to the operations `SpacesModule` exports (`FindVisibleList`,
- * `ListVisibleSpaceIds` and `AllocateTaskKeys`), which join the tenant transaction of the calling
- * use case.
+ * `ListVisibleSpaceIds`, `FindVisibleSpaceLists`, `ListCurrentSprints`, `ListSidebarLists` and
+ * `AllocateTaskKeys`), which join the tenant transaction of the calling use case.
  *
  * @type {FactoryProvider<SpaceDirectory>}
  */
 export const spaceDirectoryProvider: FactoryProvider<SpaceDirectory> = {
   provide: SPACE_DIRECTORY,
-  inject: [FindVisibleList, ListVisibleSpaceIds, AllocateTaskKeys],
+  inject: [
+    FindVisibleList,
+    ListVisibleSpaceIds,
+    FindVisibleSpaceLists,
+    ListCurrentSprints,
+    ListSidebarLists,
+    AllocateTaskKeys,
+  ],
   useFactory: (
     findVisibleList: FindVisibleList,
     listVisibleSpaceIds: ListVisibleSpaceIds,
+    findVisibleSpaceLists: FindVisibleSpaceLists,
+    listCurrentSprints: ListCurrentSprints,
+    listSidebarLists: ListSidebarLists,
     allocateTaskKeys: AllocateTaskKeys,
   ): SpaceDirectory =>
-    new SpacesSpaceDirectory(findVisibleList, listVisibleSpaceIds, allocateTaskKeys),
+    new SpacesSpaceDirectory(
+      findVisibleList,
+      listVisibleSpaceIds,
+      findVisibleSpaceLists,
+      listCurrentSprints,
+      listSidebarLists,
+      allocateTaskKeys,
+    ),
 };

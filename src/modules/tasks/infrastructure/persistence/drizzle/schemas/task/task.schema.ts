@@ -53,7 +53,11 @@ function toSqlList(values: readonly string[]): string {
  * Indexes:
  * - `tasks_key_unique` resolves every route by key;
  * - `tasks_parent_created_index` serves the pages and counts of subtasks, the child count under
- *   lock, the counts of subtasks of a page and the recursive reads of the tree (3 levels at most).
+ *   lock, the counts of subtasks of a page and the recursive reads of the tree (3 levels at most);
+ * - `tasks_list_created_index` on `(organization_id, list_id, created_at, id)` serves every
+ *   statement on the tasks of one list (the page, the total, the groups and the counts) as one
+ *   range of the list, and the pages in the order of creation (`manual`, `createdAt`), in both
+ *   directions, as an ordered scan that stops at the limit.
  */
 export const tasks = pgTable(
   'tasks',
@@ -94,6 +98,12 @@ export const tasks = pgTable(
     index('tasks_parent_created_index').on(
       table.organizationId,
       table.parentId,
+      table.createdAt,
+      table.id,
+    ),
+    index('tasks_list_created_index').on(
+      table.organizationId,
+      table.listId,
       table.createdAt,
       table.id,
     ),

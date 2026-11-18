@@ -7,6 +7,35 @@ import type { TaskRow } from './task.mapper.js';
 import { toCancelReason, toPriorityKey, toStatusKey } from './task-values.mapper.js';
 
 /**
+ * Type TaskSummaryRow
+ *
+ * @description
+ * The columns of a row of `tasks` a summary reads: everything but the organization, the
+ * description, the note of the cancellation and the author. A page of tasks selects only these.
+ *
+ * @type {Pick<TaskRow, 'id' | 'keyPrefix' | ...>}
+ */
+export type TaskSummaryRow = Pick<
+  TaskRow,
+  | 'id'
+  | 'keyPrefix'
+  | 'keyNumber'
+  | 'name'
+  | 'status'
+  | 'cancelReason'
+  | 'priority'
+  | 'dueDate'
+  | 'startDate'
+  | 'estimateMinutes'
+  | 'completedAt'
+  | 'createdAt'
+  | 'listId'
+  | 'spaceId'
+  | 'parentId'
+  | 'version'
+>;
+
+/**
  * Function toTaskKeyText
  *
  * @description
@@ -28,7 +57,7 @@ export function toTaskKeyText(prefix: string, number: number): string {
  * Maps a row and what was loaded for it to the summary of a task: everything but the description,
  * the note of the cancellation and the items of the checklist.
  *
- * @param {TaskRow} row - The row.
+ * @param {TaskSummaryRow} row - The row.
  * @param {string | null} parentKey - The key of the parent, `null` for a top-level task.
  * @param {readonly string[]} assigneeIds - The assignees in the order of assignment.
  * @param {readonly string[]} labels - The labels in the order of addition.
@@ -38,7 +67,7 @@ export function toTaskKeyText(prefix: string, number: number): string {
  * @throws {Error} When a stored status, priority or reason is outside its set.
  */
 export function toTaskSummary(
-  row: TaskRow,
+  row: TaskSummaryRow,
   parentKey: string | null,
   assigneeIds: readonly string[],
   labels: readonly string[],
