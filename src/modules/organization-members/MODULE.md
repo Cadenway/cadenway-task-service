@@ -12,17 +12,18 @@ is a current member of the organization of a request and with which role, and wh
 It follows `member.joined.v1`, `member.role-changed.v1` and `member.removed.v1` and nothing else,
 through the member-lifecycle module, which consumes them. organization-service owns the
 organizations, the members and the invitations. This module owns no route and emits no event; the
-consequences of a removal (unassigning the member, handing its private spaces to the owner) belong
-to the modules that own those data, which member-lifecycle calls in the same transaction.
+consequences of a removal (handing its private spaces to the owner, unassigning the member)
+belong to the modules that own those data, which the clean-up job of member-lifecycle calls after
+the removal committed.
 
 ## Public entry points
 
-| Entry point                                  | Consumers                |
-| -------------------------------------------- | ------------------------ |
-| `organization-members.module`                | spaces, member-lifecycle |
-| `public/membership/apply-membership-change`  | member-lifecycle         |
-| `public/membership/find-organization-member` | spaces                   |
-| `public/membership/find-organization-owner`  | spaces                   |
+| Entry point                                  | Consumers                       |
+| -------------------------------------------- | ------------------------------- |
+| `organization-members.module`                | spaces, member-lifecycle, tasks |
+| `public/membership/apply-membership-change`  | member-lifecycle                |
+| `public/membership/find-organization-member` | spaces, tasks                   |
+| `public/membership/find-organization-owner`  | spaces                          |
 
 `OrganizationMembersModule` exports the `ApplyMembershipChange`, `FindOrganizationMember` and
 `FindOrganizationOwner` providers, each with its input type and, for the two readings, its output type.
@@ -33,7 +34,8 @@ to the modules that own those data, which member-lifecycle calls in the same tra
 - `FindOrganizationMember` (`{ organizationId, userId }` to `{ memberId, role }`, or `null` when
   the account is not a current member) and `FindOrganizationOwner` (`{ organizationId }` to
   `{ memberId, userId }`, or `null` until the join of the owner arrives) serve the access rules of
-  the spaces module.
+  the spaces module; the tasks module reads `FindOrganizationMember` for the role of the actor and
+  the eligibility of the people it assigns.
 
 All three run in the tenant transaction of their caller and join it, or open one for the
 organization of the context; they must not be called from a system transaction (the kit refuses

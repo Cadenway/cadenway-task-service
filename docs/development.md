@@ -14,8 +14,12 @@ the organization memberships (`src/modules/organization-members/MODULE.md`), whi
 consumers of `EVENTS` feed from the member events of organization-service
 (`src/modules/member-lifecycle/MODULE.md`), and the spaces, prefixes and lists
 (`src/modules/spaces/MODULE.md`), whose internal routes exist and whose `space.*` and `list.*`
-events leave through the outbox. Tasks and their queries arrive next. The target architecture in
-this guide is what the next modules must follow.
+events leave through the outbox, and the tasks with their subtasks, assignees, labels, checklist
+and activity log (`src/modules/tasks/MODULE.md`), whose internal routes exist and whose `task.*`
+events leave through the outbox; the removal of a member enqueues, in the transaction of
+`member.removed.v1`, a job of `@cadenway/nest-jobs` that hands their private spaces over, then
+unassigns them from their tasks, in batches. The task queries arrive next. The target architecture in this guide is what
+the next modules must follow.
 
 The commands below are the documented workflow. Inspect the repository's actual manifests and files before running them, and report unavailable checks rather than inventing replacements. Run Git, pnpm, build, and test commands with this repository as the working directory, never from the parent workspace.
 
@@ -134,7 +138,12 @@ security on a table with a policy but never forces it: add
 before it is merged, then never edit it again. `pnpm migration:run` builds and runs
 `dist/migrate.js`, the command the GitOps agent runs in a one-off container before it starts a new
 version; it connects as the migrator role of `MIGRATION_DATABASE_URL` and applies what the journal
-does not list yet.
+does not list yet, then provisions the jobs with `provisionJobs` of `@cadenway/nest-jobs`: the
+`pgboss` schema, created by `task_migrator` (which owns the database) and closed to every other
+role, the queues of `src/config/job-queues.ts` with their dead-letter queues, and the runtime
+grants of `task_app` on that schema. It is idempotent too, and the service refuses to start until
+it ran (`JobsNotProvisionedError`). A pull that adds or changes a queue needs `pnpm migration:run`
+again, like a new migration.
 
 The tables of the service kit reach the migrations through the platform module: the outbox,
 processed-ids and versions tables of `@cadenway/nest-messaging/outbox` and `idempotency_keys` of
@@ -148,8 +157,9 @@ in its changeset: upgrade the package, generate, review the new migration.
 and `nats-streams` from `compose.dev.yaml` as a throwaway Compose project on free ports (the data
 of the dev stack is never touched), applies the migrations with `src/migrate.ts` as the migrator
 role, and assembles the application as `main.ts` does, as `task_app` and the NATS user `task`. It
-checks the ownership and forced row-level security of the kit tables, that the application role
-reads and writes the rows of its organization only and runs no DDL, that the relay runs against an
+checks the ownership and forced row-level security of the kit tables, the `pgboss` schema and
+queues the migrator provisioned, that the application role reads and writes the rows of its
+organization only and runs no DDL, in `public` or in `pgboss`, that the relay runs against an
 empty outbox, that the broker enforces the permissions of cadenway-ops, the health routes (readiness
 503 while NATS or PostgreSQL is down and from the start of a shutdown, back to 200 once NATS
 returns) and the internal token. `tests/organization-members.int-spec.ts` starts its own throwaway
@@ -160,8 +170,15 @@ keeps two organizations apart under row-level security, and that the broker gran
 its three consumers by exact name only. `tests/spaces.int-spec.ts` does the same for the spaces and
 lists: every route against its contract validators, the visibility and role rules, the prefixes,
 `If-Match`, paging, `Idempotency-Key`, row-level security of the three tables, the events in the
-outbox, and the handover of private spaces on `member.removed.v1`, including that a failing
-handover rolls the removal of the copy back until a redelivery succeeds. They move to the fixtures
+outbox, and the handover of private spaces by the clean-up job of `member.removed.v1`: seen by
+nobody until the job reaches them, then the owner's or awaiting one, kept by a re-join, and a
+failing batch retried alone. `tests/tasks.int-spec.ts`
+does the same for the tasks: every route against its contract validators, the rules of a task,
+`If-Match`, `Idempotency-Key`, the activity log, row-level security of the five tables, the events in
+the outbox, and the clean-up job of a removed member: enqueued with the removal, emptying
+1,200 assignments in batches, enqueued once for a redelivered removal, stopped by a re-join,
+retrying only the batch a lock timeout failed, run for an organization in upper case, carrying the
+trace, and replayed from a dead letter with the SQL of the member-lifecycle `MODULE.md`. They move to the fixtures
 of `@cadenway/nest-testing` once that package exports them.
 
 ## Minimum checks by change

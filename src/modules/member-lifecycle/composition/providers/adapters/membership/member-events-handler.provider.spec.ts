@@ -1,5 +1,6 @@
 import { eventSchemas } from '@cadenway/contracts/events/organization-service';
 import { TenantTransactionRunner } from '@cadenway/nest-common/database';
+import { JobProducer, JobWorkerRegistry } from '@cadenway/nest-jobs/runtime';
 import { EventConsumers } from '@cadenway/nest-messaging';
 import type { EventRedelivery } from '@cadenway/nest-messaging';
 import { OutboxRelay, OutboxWriter } from '@cadenway/nest-messaging/outbox';
@@ -44,7 +45,9 @@ const subscribe: Mock<(registration: unknown) => Promise<void>> =
 /**
  * Stands for the global providers of the kit that `MemberLifecycleModule` and the modules it
  * imports inject: the durable consumers, which record the registrations instead of reaching a
- * broker, and the tenant runner, the outbox writer and the relay, which no registration uses.
+ * broker, the tenant runner, the outbox writer and the relay, which no registration uses, and the
+ * job producer and workers of `@cadenway/nest-jobs`, whose registration of the unassignment worker
+ * does nothing here.
  */
 @Global()
 @Module({
@@ -53,8 +56,17 @@ const subscribe: Mock<(registration: unknown) => Promise<void>> =
     { provide: TenantTransactionRunner, useValue: {} },
     { provide: OutboxWriter, useValue: {} },
     { provide: OutboxRelay, useValue: {} },
+    { provide: JobProducer, useValue: {} },
+    { provide: JobWorkerRegistry, useValue: { work: () => Promise.resolve() } },
   ],
-  exports: [EventConsumers, TenantTransactionRunner, OutboxWriter, OutboxRelay],
+  exports: [
+    EventConsumers,
+    TenantTransactionRunner,
+    OutboxWriter,
+    OutboxRelay,
+    JobProducer,
+    JobWorkerRegistry,
+  ],
 })
 class KitDoubles {}
 

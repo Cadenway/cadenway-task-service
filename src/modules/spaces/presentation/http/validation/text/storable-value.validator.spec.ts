@@ -55,24 +55,45 @@ describe('refuseUnstorableValues: a text with U+0000 is refused, PostgreSQL cann
   });
 });
 
-describe('refuseUnstorableValues: a date of the year 0000 is refused, PostgreSQL has no year 0', () => {
-  it('refuses a calendar date of the year 0000', () => {
-    expect(issuesOf('0000-11-03')).toEqual([{ path: [], message: YEAR_ZERO_MESSAGE }]);
+describe('refuseUnstorableValues: a sprint date of the year 0000 is refused, PostgreSQL has no year 0', () => {
+  it.each(['startDate', 'endDate'])(
+    'refuses a calendar date of the year 0000 in the %s of a sprint',
+    (member) => {
+      expect(issuesOf({ sprint: { [member]: '0000-11-03' } })).toEqual([
+        { path: ['sprint', member], message: YEAR_ZERO_MESSAGE },
+      ]);
+    },
+  );
+
+  it('accepts the year 0001 and a current date in a sprint date', () => {
+    expect(issuesOf({ sprint: { startDate: '0001-01-01', endDate: '2026-11-03' } })).toEqual([]);
   });
 
-  it('accepts the year 0001 and a current date', () => {
-    expect(issuesOf('0001-01-01')).toEqual([]);
-    expect(issuesOf('2026-11-03')).toEqual([]);
+  it('accepts a text that only looks like a date of the year 0000, in a date member', () => {
+    expect(issuesOf({ sprint: { startDate: '0000-11-03T08:00' } })).toEqual([]);
+    expect(issuesOf({ sprint: { startDate: '00000-11-03' } })).toEqual([]);
+    expect(issuesOf({ sprint: { endDate: 'sprint 0000-11-03' } })).toEqual([]);
   });
 
-  it('accepts a text that only looks like a date of the year 0000', () => {
-    expect(issuesOf('0000-11-03T08:00')).toEqual([]);
-    expect(issuesOf('00000-11-03')).toEqual([]);
-    expect(issuesOf('sprint 0000-11-03')).toEqual([]);
+  it('accepts a name, a description, a goal or a status name that reads 0000-11-03', () => {
+    expect(
+      issuesOf({
+        name: '0000-11-03',
+        description: '0000-11-03',
+        sprint: { goal: '0000-11-03' },
+        statuses: { review: { name: '0000-11-03' } },
+      }),
+    ).toEqual([]);
   });
 
-  it('raises one issue for a text that breaks both rules', () => {
-    expect(issuesOf('0000-11-03').length).toBe(1);
+  it('accepts a bare text that reads 0000-11-03, which is no date member', () => {
+    expect(issuesOf('0000-11-03')).toEqual([]);
+  });
+
+  it('still refuses U+0000 in a text that reads like a date, on any member', () => {
+    expect(issuesOf({ name: '0000-11-03\u0000' })).toEqual([
+      { path: ['name'], message: NUL_MESSAGE },
+    ]);
   });
 });
 
@@ -90,8 +111,8 @@ describe('refuseUnstorableValues: it walks nested objects and arrays', () => {
   });
 
   it('walks arrays of objects', () => {
-    expect(issuesOf([{ day: '0000-01-01' }, { day: '2026-11-03' }])).toEqual([
-      { path: [0, 'day'], message: YEAR_ZERO_MESSAGE },
+    expect(issuesOf({ sprint: [{ endDate: '0000-01-01' }, { endDate: '2026-11-03' }] })).toEqual([
+      { path: ['sprint', 0, 'endDate'], message: YEAR_ZERO_MESSAGE },
     ]);
   });
 

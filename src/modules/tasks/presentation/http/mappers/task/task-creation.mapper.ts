@@ -1,0 +1,80 @@
+import type { Caller } from '../../../../application/models/caller/caller.model.js';
+import type { CreateSubtaskInput } from '../../../../application/use-cases/commands/subtask/create-subtask/create-subtask.input.js';
+import type { CreateTaskInput } from '../../../../application/use-cases/commands/task/create-task/create-task.input.js';
+import type { CreateSubtaskBody } from '../../dto/input/subtask/create-subtask-body.dto.js';
+import type { CreateTaskBody } from '../../dto/input/task/create-task-body.dto.js';
+
+/**
+ * Function toCreateTaskInput
+ *
+ * @description
+ * Maps the body of a task creation to the input of the use case: the members the contract lets
+ * out or sends as `null` become `null`, the accounts to assign are lower-cased (the schema accepts
+ * a UUID in either case, the use case compares them as stored) and each subtask is reduced to its
+ * name, since it takes everything else from the task.
+ *
+ * @param {Caller} caller - The organization and the user of the verified token.
+ * @param {string} listId - The list of the path.
+ * @param {CreateTaskBody} body - The body, with the defaults of the contract applied.
+ * @returns {CreateTaskInput} The input of the use case.
+ */
+export function toCreateTaskInput(
+  caller: Caller,
+  listId: string,
+  body: CreateTaskBody,
+): CreateTaskInput {
+  return {
+    ...caller,
+    listId: listId.toLowerCase(),
+    name: body.name,
+    description: body.description ?? null,
+    status: body.status,
+    cancelReason: body.cancelReason ?? null,
+    cancelNote: body.cancelNote ?? null,
+    priority: body.priority,
+    assigneeIds: body.assigneeIds.map((userId: string): string => userId.toLowerCase()),
+    dueDate: body.dueDate ?? null,
+    startDate: body.startDate ?? null,
+    estimateMinutes: body.estimateMinutes ?? null,
+    labels: body.labels,
+    subtaskNames: body.subtasks.map((subtask: { name: string }): string => subtask.name),
+  };
+}
+
+/**
+ * Function toCreateSubtaskInput
+ *
+ * @description
+ * Maps the body of a subtask creation to the input of the use case. `assigneeIds` stays `null`
+ * when the body leaves it out, so that the subtask takes the first assignee of its parent, and
+ * stays a list, possibly empty, when the body gives one. The accounts are lower-cased.
+ *
+ * @param {Caller} caller - The organization and the user of the verified token.
+ * @param {string} taskKey - The key of the parent, from the path.
+ * @param {CreateSubtaskBody} body - The body, with the defaults of the contract applied.
+ * @returns {CreateSubtaskInput} The input of the use case.
+ */
+export function toCreateSubtaskInput(
+  caller: Caller,
+  taskKey: string,
+  body: CreateSubtaskBody,
+): CreateSubtaskInput {
+  return {
+    ...caller,
+    taskKey,
+    name: body.name,
+    description: body.description ?? null,
+    status: body.status,
+    cancelReason: body.cancelReason ?? null,
+    cancelNote: body.cancelNote ?? null,
+    priority: body.priority,
+    assigneeIds:
+      body.assigneeIds === undefined
+        ? null
+        : body.assigneeIds.map((userId: string): string => userId.toLowerCase()),
+    dueDate: body.dueDate ?? null,
+    startDate: body.startDate ?? null,
+    estimateMinutes: body.estimateMinutes ?? null,
+    labels: body.labels,
+  };
+}

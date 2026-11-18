@@ -11,8 +11,9 @@ import { SPACES_UNIT_OF_WORK } from '../../../tokens/space/spaces-unit-of-work.t
  *
  * @description
  * Builds the handover of the private spaces of a removed member to the owner of the organization,
- * on the tenant unit of work, which joins the transaction the deduplicator of the kit opened for
- * the member event, and the member directory, which reads the owner in that transaction.
+ * one batch per call, on the tenant unit of work, which opens one transaction per batch in the
+ * organization context of the clean-up job, and the member directory, which reads the copy and the
+ * owner in that transaction.
  *
  * @type {FactoryProvider<HandOverPrivateSpaces>}
  */

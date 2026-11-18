@@ -1,0 +1,40 @@
+import type { StatusKey } from '../../../domain/value-objects/task/status-key.value-object.js';
+
+/**
+ * Type TaskRefusalReason
+ *
+ * @description
+ * Why a use case of the tasks module refuses a request, with what the caller needs to answer it
+ * (`openapi/internal/task-service.yaml`): the presentation layer maps each reason to its problem.
+ *
+ * - `organization-not-found`: the copy of the memberships does not hold the actor as a member.
+ * - `task-not-found`, `list-not-found`, `checklist-item-not-found`: unknown, or not seen by the
+ *   actor.
+ * - `version-mismatch`: `If-Match` names another version than the stored one.
+ * - `status-hidden`: the status is hidden in the space the task is in after the operation.
+ * - `cancel-reason-required`, `cancel-reason-unexpected`: the cancellation rules.
+ * - `assignee-invalid`: an account is not a current member other than a guest.
+ * - `assignee-limit-reached`, `label-limit-reached`, `checklist-limit-reached`: 20, 20 and 100.
+ * - `start-date-invalid`: a start without a due date, or after it.
+ * - `list-invalid`: the target list is unknown, not seen, or not the one of the new parent.
+ * - `parent-invalid`: the parent is unknown, not seen, the task or one of its descendants.
+ * - `subtask-depth-exceeded`, `subtask-limit-reached`: 3 levels, 25 direct subtasks.
+ */
+export type TaskRefusalReason =
+  | { readonly reason: 'organization-not-found' }
+  | { readonly reason: 'task-not-found' }
+  | { readonly reason: 'list-not-found' }
+  | { readonly reason: 'checklist-item-not-found' }
+  | { readonly reason: 'version-mismatch'; readonly version: number }
+  | { readonly reason: 'status-hidden'; readonly status: StatusKey }
+  | { readonly reason: 'cancel-reason-required' }
+  | { readonly reason: 'cancel-reason-unexpected' }
+  | { readonly reason: 'assignee-invalid'; readonly userIds: readonly string[] }
+  | { readonly reason: 'assignee-limit-reached' }
+  | { readonly reason: 'label-limit-reached' }
+  | { readonly reason: 'checklist-limit-reached' }
+  | { readonly reason: 'start-date-invalid' }
+  | { readonly reason: 'list-invalid' }
+  | { readonly reason: 'parent-invalid'; readonly parentKey: string }
+  | { readonly reason: 'subtask-depth-exceeded' }
+  | { readonly reason: 'subtask-limit-reached' };

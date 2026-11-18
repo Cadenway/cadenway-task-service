@@ -17,16 +17,34 @@ and the activity log belong to the task modules of P3a.
 
 ## Public entry points
 
-| Entry point                              | Consumers        |
-| ---------------------------------------- | ---------------- |
-| `spaces.module`                          | member-lifecycle |
-| `public/space/hand-over-private-spaces`  | member-lifecycle |
-| `public/space/hand-over-awaiting-spaces` | member-lifecycle |
+| Entry point                              | Consumers               |
+| ---------------------------------------- | ----------------------- |
+| `spaces.module`                          | member-lifecycle, tasks |
+| `public/space/hand-over-private-spaces`  | member-lifecycle        |
+| `public/space/hand-over-awaiting-spaces` | member-lifecycle        |
+| `public/list/find-visible-list`          | tasks                   |
+| `public/space/list-visible-space-ids`    | tasks                   |
+| `public/space/allocate-task-keys`        | tasks                   |
 
 `SpacesModule` exports the `HandOverPrivateSpaces` (input and output) and
-`HandOverAwaitingSpaces` (input) providers. member-lifecycle calls the first on
-`member.removed.v1` and the second when the copy learns the owner of an organization, in the
-tenant transaction of the event, which both join.
+`HandOverAwaitingSpaces` (input) providers. `HandOverPrivateSpaces`
+(`{ organizationId, formerOwnerUserId }` to `{ outcome: 'none-left' }`,
+`{ outcome: 'member-again' }` or `{ outcome: 'handed-over', handedOver, awaitingOwner }`) is one batch of at most 100 private
+spaces, in a tenant transaction of its own: the clean-up job of member-lifecycle calls it after a
+removal committed, until `none-left` or `member-again`. member-lifecycle calls
+`HandOverAwaitingSpaces` when the copy learns the owner of an organization, in the tenant
+transaction of the event, which it joins.
+
+It also exports, for the tasks module:
+
+- `FindVisibleList` (`{ organizationId, viewerUserId, viewerRole, listId }`): the list and its space
+  (statuses, prefix, `nextKey`) as plain `VisibleList` and `VisibleSpace` projections, or `null`
+  when the list is unknown or the viewer does not see its space (a guest, a private space of
+  another member, a space awaiting an owner);
+- `ListVisibleSpaceIds` (`{ organizationId, viewerUserId, viewerRole }`): the ids of the spaces the
+  viewer sees, in creation order, with the filter of the space listing; empty for a guest;
+- `AllocateTaskKeys` (`{ organizationId, spaceId, count }`, `count` from 1 to 26): the prefix and
+  the first number of `count` consecutive numbers handed out under the current prefix.
 
 ## Owned tables
 
@@ -49,7 +67,10 @@ Created by `migrations/0002_spaces_and_lists.sql`, which forces the three polici
 - `lists` references its space by `(organization_id, space_id)`; a sprint has both dates (end on or
   after the start) and an optional goal, a list none of them (CHECK constraints).
 - Indexes: `spaces (organization_id, created_at, id)` for the listing, `spaces (organization_id,
-owner_user_id)` for the handover, `lists (organization_id, space_id, created_at, id)` for the
+owner_user_id)` for the handover (a batch reads the rows of one owner, sorts them by
+  `(created_at, id)` and keeps 100: a handed-over space leaves that range, an awaiting one stays in
+  it but is filtered out, so the index suffices for the number of spaces one member owns, and no
+  index is added), `lists (organization_id, space_id, created_at, id)` for the
   lists of a space; `space_prefixes` is read by its primary key only. No query plan was taken on
   representative data yet: the visibility filter of the listing (`visibility = 'organization' or
 owner_user_id = $viewer`) runs after the index, which costs one row read per private space of
@@ -94,8 +115,9 @@ not in the event, and the space is seen by nobody), its handover later does.
 
 ## Events consumed
 
-None directly; member-lifecycle calls `HandOverPrivateSpaces` on `member.removed.v1` and
-`HandOverAwaitingSpaces` on the join or role change that gives an organization its owner.
+None directly; the clean-up job of member-lifecycle calls `HandOverPrivateSpaces` batch after
+batch after a `member.removed.v1`, and member-lifecycle calls `HandOverAwaitingSpaces` on the join
+or role change that gives an organization its owner.
 
 ## Invariants
 
@@ -111,39 +133,73 @@ None directly; member-lifecycle calls `HandOverPrivateSpaces` on `member.removed
   number, reserving nothing.
 - `todo` and `done` are never hidden (`422 space.status-required`); a status name has at most 24
   characters.
+- A task number is handed out once, by `AllocateTaskKeys`, in the transaction that creates the
+  task, and never again: the counter of a prefix only moves forward, a rollback gives the numbers
+  back, and no number is given twice nor above 999,999,999 (a counter past it is a defect that
+  answers 500 and rolls back). `nextKey` and `FindVisibleList` only preview the next number and
+  reserve nothing; the allocation emits nothing and leaves the version of the space unchanged.
 - A sprint ends on or after its start (`422 list.sprint-dates-invalid`).
-- A private space always has an owner who is a member, so that someone sees it. When the owner of a
-  private space leaves the organization, the owner of the organization becomes its owner, unless
-  the account is still a member under another membership. While the copy does not hold the owner
-  of the organization, the removal still commits and the space awaits an owner: seen by nobody, the
-  former owner included, until the copy learns the owner and the space passes to them (decision
-  revised by the coordinating session for P3a). A space of the whole organization keeps
+- A list never changes space, and a space or a list is never deleted in this version: the tasks
+  module copies `space_id` and `list_id` onto its rows without a foreign key (the strict layout
+  forbids importing these schemas), and what it stores stays right only while both hold. A change
+  that moves a list to another space, or deletes a space or a list, has to migrate the tasks first.
+- A private space is seen by its owner only. When the owner of a private space leaves the
+  organization, the removal commits without touching the space, and the clean-up job of the removal
+  then makes the owner of the organization its owner (`space.updated.v1`, system actor), unless the
+  copy holds the account as a member again when the batch runs: the person then keeps the spaces
+  the job had not reached. Until the job reaches the space, it stays owned by a person who is no
+  longer a member, so nobody sees it, the owner and the admins of the organization included (fail
+  closed). While the copy does not hold the owner of the organization, the job marks the space
+  awaiting an owner: seen by nobody, the former owner included, until the copy learns the owner and
+  the space passes to them (decision revised by the coordinating session for P3a, then again in
+  PR 2: the removal itself no longer hands over). A space of the whole organization keeps
   a former member as owner; made private, it passes to the owner of the organization in the same
   change (`changed` gains `ownerUserId`), or the change is refused
   (`403 space.visibility-forbidden`) while the copy holds no owner of the organization.
 - The organization and the actor come from the verified token only, lower-cased; an actor id that
   is not a UUID answers `403 auth.actor-not-allowed`.
-- A text holding U+0000, or a calendar date of the year 0000, answers `400 request.invalid`: the
-  contract validators accept them, PostgreSQL cannot store them.
+- A text holding U+0000, in any member, or a calendar date of the year 0000 in the `startDate` or
+  `endDate` of a sprint, answers `400 request.invalid`: the contract validators accept them,
+  PostgreSQL cannot store them. A name or a goal that reads `0000-11-03` is only a text.
 
 ## Transactions
 
 Every use case runs in one tenant transaction of the organization of the context
 (`TenantSpacesUnitOfWork`), joined to the one the `Idempotency-Key` interceptor opened for a
-creation, or to the one the deduplicator opened for the handover: the space, its prefix, its first
-list and their outbox rows commit together, or nothing does. A refusal rolls it back. The readings
-of the copy join the same transaction; a write reads the membership of the actor `FOR SHARE`, so
-that a concurrent removal of the actor waits for the write, and its handover sees a private space
-the write just created or made private. Locks are always taken membership first, then space, and
-a change locks its space or list `FOR NO KEY UPDATE`.
+creation, or to the one the deduplicator opened for the handover of the awaiting spaces: the space,
+its prefix, its first list and their outbox rows commit together, or nothing does. A refusal rolls
+it back. The readings of the copy join the same transaction; a write reads the membership of the
+actor `FOR SHARE`, so that a concurrent removal of the actor waits for the write, and the clean-up
+job of the removal, which runs after it, sees a private space the write just created or made
+private. Locks are always taken membership first, then space, and a change locks its space or list
+`FOR NO KEY UPDATE`. A batch of `HandOverPrivateSpaces` opens its own transaction in the
+organization context of the job: it locks up to 100 spaces in `(created_at, id)` order, then reads
+the copy without lock, then writes each space and its event (about 200 round trips for a full
+batch, under the 10 s statement timeout and the 5 s lock timeout of the application role); a
+request that writes a space the batch holds waits for it at most 5 s. A failed batch rolls back
+alone, the batches before it stay committed.
+
+`FindVisibleList`, `ListVisibleSpaceIds` and `AllocateTaskKeys` join the tenant transaction of the
+tasks module the same way. The two readings take no lock and append no event. The allocation is one
+`UPDATE space_prefixes SET last_number = last_number + count ... RETURNING`, scoped by organization,
+prefix and space, which locks the prefix row until the caller commits: creations under one prefix
+are serialized, so the caller allocates last, after every validation, and takes no space lock.
 
 The unit of work wakes the relay once its `run` resolved when an event was appended: after the
 commit when it opened the transaction; inside a joined one (a creation with `Idempotency-Key`, the
-handover) before the outer commit, so that the rows then leave at the next poll of the relay,
-within a second.
+handover of the awaiting spaces) before the outer commit, so that the rows then leave at the next
+poll of the relay, within a second.
 
 ## Decisions
 
+- The handover of the private spaces of a removed member is a batch operation that the clean-up
+  job of member-lifecycle runs after the removal committed (decision revised again by the
+  coordinating session in PR 2 of P3a): the removal loaded and updated every private space of the
+  member in its own transaction, one outbox append per space and no limit, so a member with very
+  many private spaces could not be removed. Batches of 100, first-N without a cursor: the spaces a
+  batch processed leave its filter. The copy is read after the lock, so a re-join committed before
+  the batch keeps the spaces; a re-join that commits after the read loses the spaces of that batch
+  to the owner of the organization (accepted race, as for an inline handover).
 - Lists live in this module: a space is created with its first list in one transaction, and a
   separate lists module would form a cycle with this one.
 - Primary keys start with `organization_id`, as every index a tenant query uses, and the foreign
@@ -153,5 +209,11 @@ within a second.
 - The overview and the counts of a list moved from PR 1 to PR 3 (task queries), with the agreement
   of the coordinating session: they count tasks, which exist from PR 2, and serving them from the
   task query module avoids a cycle between spaces and tasks.
+- The tasks module passes the role of the viewer to `FindVisibleList` and `ListVisibleSpaceIds`: it
+  reads it from the copy of the memberships (`FindOrganizationMember`) in the same transaction,
+  never from the token, and these operations apply `canSeeSpace` to it without a second reading.
 - `tests/spaces.int-spec.ts` proves the routes, the visibility rules, the prefixes, idempotency,
-  row-level security and the handover on real PostgreSQL and NATS.
+  row-level security and the handover by the clean-up job on real PostgreSQL, NATS and pg-boss,
+  the window before it included. The batches of 100 and a failed batch that rolls back alone are
+  proven by the unit spec of `HandOverPrivateSpaces` only: no integration test seeds more than 100
+  private spaces.

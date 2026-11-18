@@ -8,14 +8,17 @@ import type { HandOverPrivateSpacesInput } from './hand-over-private-spaces.inpu
 import type { HandOverPrivateSpacesOutput } from './hand-over-private-spaces.output.js';
 
 /**
- * Constant NOTHING_AWAITS
+ * Constant HAND_OVER_BATCH_SIZE
  *
  * @description
- * The answer when no private space of the former member awaits an owner.
+ * How many private spaces one batch locks and hands over, in one tenant transaction: each costs
+ * one update and, when handed over, one outbox append, so a full batch is about 200 round trips,
+ * far under the 10 s statement timeout of the application role, and a request waits for a space
+ * of a batch at most its 5 s lock timeout.
  *
- * @type {HandOverPrivateSpacesOutput}
+ * @type {number}
  */
-const NOTHING_AWAITS: HandOverPrivateSpacesOutput = Object.freeze({ awaitingOwner: 0 });
+const HAND_OVER_BATCH_SIZE: number = 100;
 
 /**
  * Constant SYSTEM_ACTOR
@@ -32,19 +35,27 @@ const SYSTEM_ACTOR: EventActor = { type: 'system', id: 'task-service' };
  * Class HandOverPrivateSpaces
  *
  * @description
- * Passes the private spaces a member owned to the owner of the organization when the member leaves
- * it ("Members" of `openapi/internal/task-service.yaml`: reaction to `member.removed.v1`). Each
- * space is locked, changed (`Space.handOver`) and written, and `space.updated.v1` (field
- * `ownerUserId`, actor `{ type: 'system', id: 'task-service' }`) is appended, all in the tenant
- * transaction of the event, which the deduplicator of the caller opened and `run` joins: the
- * handover and its events commit together, or the event is redelivered. Idempotent: once the
- * spaces have passed, the former member owns none and a second run finds nothing. It hands nothing
- * over while the copy still holds the account as a member, under another membership of the same
- * person (a removal of an old membership that arrives after a new join). When the former member owns
- * no private space it returns without asking for the owner of the organization; when it owns some
- * and the copy does not hold the owner yet, the removal still commits: the spaces are left awaiting
- * an owner, seen by nobody, and `HandOverAwaitingSpaces` gives them to the owner once the copy learns
- * it (decision revised by the coordinating session for P3a).
+ * One batch of the passing of the private spaces a member owned to the owner of the organization
+ * once the member left it ("Members" of `openapi/internal/task-service.yaml`: reaction to
+ * `member.removed.v1`). The clean-up job of member-lifecycle calls it in the organization context
+ * of the job, after the removal committed, until it answers `none-left` or `member-again`; each
+ * call runs in one tenant transaction, which `run` opens:
+ *
+ * 1. it locks up to 100 private spaces still owned by the former member and not awaiting an owner,
+ *    in the order of their creation, `FOR NO KEY UPDATE`;
+ * 2. then it reads the copy of the memberships: when the copy holds the account as a member again,
+ *    it changes nothing (`member-again`), so a person who joined again keeps their spaces;
+ * 3. otherwise it gives each space to the owner of the organization (`Space.handOver`) and appends
+ *    `space.updated.v1` (field `ownerUserId`, actor `{ type: 'system', id: 'task-service' }`); while
+ *    the copy does not hold that owner, it marks the spaces awaiting one, seen by nobody, without
+ *    event, and `HandOverAwaitingSpaces` gives them to the owner once the copy learns it.
+ *
+ * The spaces of a batch, their versions and their events commit together, or the batch rolls back
+ * alone. A handed-over or awaiting space leaves the filter of step 1, so the next call goes on with
+ * the next spaces, and a call once none is left changes nothing: the handover is idempotent. Until
+ * the job reaches a space, the space stays owned by a person who is no longer a member, so nobody
+ * sees it (fail closed). The removal itself hands nothing over (decision revised again by the
+ * coordinating session in PR 2 of P3a).
  */
 export class HandOverPrivateSpaces {
   // #region Properties
@@ -52,7 +63,7 @@ export class HandOverPrivateSpaces {
    * Property unitOfWork
    *
    * @description
-   * The tenant transaction of the event.
+   * The tenant transaction of each batch.
    *
    * @type {SpacesUnitOfWork}
    * @readonly
@@ -93,46 +104,53 @@ export class HandOverPrivateSpaces {
    * Method execute
    *
    * @description
-   * Hands the private spaces of the former member over to the owner of the organization.
+   * Hands one batch of the private spaces of the former member over to the owner of the
+   * organization, or marks it awaiting one.
    *
    * @param {HandOverPrivateSpacesInput} input - The organization and the member who left.
-   * @returns {Promise<HandOverPrivateSpacesOutput>} How many spaces now await an owner.
+   * @returns {Promise<HandOverPrivateSpacesOutput>} What the batch did.
+   * @throws {Error} When the database fails, a lock or statement timeout included: the batch rolls
+   * back alone, and the job retries it.
    */
   public async execute(input: HandOverPrivateSpacesInput): Promise<HandOverPrivateSpacesOutput> {
     return this.unitOfWork.run(async (store: SpacesStore): Promise<HandOverPrivateSpacesOutput> => {
-      // The removal of an old membership may reach the copy after the same person joined again
-      // under a new one: the account is still a member, and its spaces stay its own.
-      if ((await this.members.roleOf(input.organizationId, input.formerOwnerUserId)) !== null) {
-        return NOTHING_AWAITS;
-      }
       const spaces: Space[] = await store.spaces.lockPrivateOwnedBy(
         input.organizationId,
         input.formerOwnerUserId,
+        HAND_OVER_BATCH_SIZE,
       );
-      // Nothing to hand over: the removal must not wait for an owner it does not need.
       if (spaces.length === 0) {
-        return NOTHING_AWAITS;
+        return { outcome: 'none-left' };
+      }
+      // Read after the lock, so that a re-join committed before it is seen. The removal of an old
+      // membership may also come after the same person joined again under a new one.
+      if ((await this.members.roleOf(input.organizationId, input.formerOwnerUserId)) !== null) {
+        return { outcome: 'member-again' };
       }
       const ownerUserId: string | null = await this.members.ownerOf(input.organizationId);
       if (ownerUserId === null) {
-        // Not a transient failure: the removal commits, the spaces fail closed (seen by nobody)
-        // and pass to the owner as soon as the copy learns it (HandOverAwaitingSpaces).
+        // Not a failure: the spaces fail closed (seen by nobody) and pass to the owner as soon as
+        // the copy learns it (HandOverAwaitingSpaces).
         for (const stored of spaces) {
           await store.spaces.update(stored.awaitOwner());
         }
-        return { awaitingOwner: spaces.length };
+        return { outcome: 'handed-over', handedOver: 0, awaitingOwner: spaces.length };
       }
+      // The copy names the former member the owner of the organization: it still holds them, and
+      // no space would leave the filter, so the job stops as for a re-join.
       if (ownerUserId === input.formerOwnerUserId) {
-        return NOTHING_AWAITS;
+        return { outcome: 'member-again' };
       }
+      let handedOver: number = 0;
       for (const stored of spaces) {
         const { space, changed }: SpaceUpdate = stored.handOver(ownerUserId);
         if (changed.length > 0) {
           await store.spaces.update(space);
           await store.events.spaceUpdated(space, changed, SYSTEM_ACTOR);
+          handedOver += 1;
         }
       }
-      return NOTHING_AWAITS;
+      return { outcome: 'handed-over', handedOver, awaitingOwner: 0 };
     });
   }
   // #endregion

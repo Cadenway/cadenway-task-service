@@ -4,12 +4,11 @@ import type {
   MemberRemovedV1,
   MemberRoleChangedV1,
 } from '@cadenway/contracts/events/organization-service';
-import type { EventConsumers, EventRedelivery } from '@cadenway/nest-messaging';
+import type { EventConsumers, EventContext, EventRedelivery } from '@cadenway/nest-messaging';
 import { Logger } from '@nestjs/common';
 import type { OnApplicationBootstrap } from '@nestjs/common';
 
 import type { ApplyMemberEventInput } from '../../../../application/use-cases/commands/membership/apply-member-event/apply-member-event.input.js';
-import type { ApplyMemberEventOutput } from '../../../../application/use-cases/commands/membership/apply-member-event/apply-member-event.output.js';
 import type { ApplyMemberEvent } from '../../../../application/use-cases/commands/membership/apply-member-event/apply-member-event.use-case.js';
 
 /**
@@ -56,12 +55,13 @@ function toChange(
  * read the whole history of the events, not only those published after it subscribed: `'new'`
  * would miss every member who joined before the first deployment. Reading again is harmless: every
  * effect stays in this service's database and is idempotent (the copy orders the three subjects by
- * the version of the membership, a hand-over repeated finds nothing left to hand over), and each
- * event id is applied once by the deduplicator of the kit.
+ * the version of the membership, a removal enqueues its clean-up job once per membership and
+ * version), and each event id is applied once by the deduplicator of the kit.
  *
  * The deduplicator runs each delivery in the tenant transaction of the organization of its
- * envelope and records its event id there; `ApplyMemberEvent` joins it, so the copy, the
- * handed-over spaces with their outbox rows and the processed id commit together. The ordering is
+ * envelope and records its event id there; `ApplyMemberEvent` joins it, so the copy, the clean-up
+ * job of a removal (or the spaces an arriving owner takes, with their outbox rows) and the
+ * processed id commit together. The ordering is
  * the copy's, not `claimVersion`'s, which keys versions per consumer while the three events travel
  * on separate consumers. A failure is retried on the schedule `MemberLifecycleModule` gives the
  * three consumers (about 25 h 43 min, `memberEventsRedeliveryProvider`), then kept as a dead
@@ -73,7 +73,7 @@ export class MemberEventsHandler implements OnApplicationBootstrap {
    * Property logger
    *
    * @description
-   * The logger of the handler, for the spaces left awaiting an owner.
+   * The logger of the handler, for the removals that fail.
    *
    * @type {Logger}
    * @readonly
@@ -176,8 +176,8 @@ export class MemberEventsHandler implements OnApplicationBootstrap {
       schemas: eventSchemas,
       event: 'member.removed.v1',
       redelivery: this.redelivery,
-      handle: (payload: MemberRemovedV1): Promise<void> =>
-        this.applyRemoval(toChange('removed', payload)),
+      handle: (payload: MemberRemovedV1, context: EventContext): Promise<void> =>
+        this.applyRemoval(toChange('removed', payload), context.deliveryCount),
     });
   }
 
@@ -185,19 +185,24 @@ export class MemberEventsHandler implements OnApplicationBootstrap {
    * Method applyRemoval
    *
    * @description
-   * Applies a removal and reports, once and without personal data, private spaces left awaiting an
-   * owner because the copy does not hold the owner of the organization: the warning runs in the
-   * context of the event, so the kit adds its organization and trace.
+   * Applies a removal: the copy and its clean-up job. A removal that fails is logged once per delivery, at `warn` (the kit redelivers it), with the
+   * error under `err` (its message and its SQLSTATE or code survive the masking of the kit) and
+   * the one-based number of the delivery, so an operator can tell a lock wait, a statement timeout
+   * or a database error from the others and see how many times it came back. The error is then
+   * thrown again unchanged: the transaction has rolled back and the kit retries on its schedule.
+   * A delivery abandoned at the deadline of the handler never reaches the catch; the kit logs it.
    *
    * @param {ApplyMemberEventInput} change - The removal.
+   * @param {number} deliveryCount - The one-based number of this delivery, from the kit.
    * @returns {Promise<void>} Resolves once applied.
+   * @throws {Error} What the use case threw, after it was logged.
    */
-  private async applyRemoval(change: ApplyMemberEventInput): Promise<void> {
-    const outcome: ApplyMemberEventOutput = await this.applyMemberEvent.execute(change);
-    if (outcome.privateSpacesAwaitingOwner > 0) {
-      this.logger.warn(
-        'A removed member owned private spaces while the owner of the organization is unknown: they await an owner.',
-      );
+  private async applyRemoval(change: ApplyMemberEventInput, deliveryCount: number): Promise<void> {
+    try {
+      await this.applyMemberEvent.execute(change);
+    } catch (error: unknown) {
+      this.logger.warn({ err: error, deliveryCount }, 'The removal of a member failed.');
+      throw error;
     }
   }
   // #endregion

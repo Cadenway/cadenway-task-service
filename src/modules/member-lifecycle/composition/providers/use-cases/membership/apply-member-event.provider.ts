@@ -12,9 +12,10 @@ import { PRIVATE_SPACE_HANDOVER } from '../../../tokens/space/private-space-hand
  * Constant applyMemberEventProvider
  *
  * @description
- * Builds the use case of the member event handlers on the copy of the memberships and the
- * hand-over of the private spaces, which both join the tenant transaction the deduplicator of the
- * kit opened for the organization of the event.
+ * Builds the use case of the member event handlers on the copy of the memberships, the handover
+ * of the spaces awaiting an owner and the unit of work that enqueues the clean-up job of a removed
+ * member, which all join the tenant transaction the deduplicator of the kit opened for the
+ * organization of the event.
  *
  * @type {FactoryProvider<ApplyMemberEvent>}
  */

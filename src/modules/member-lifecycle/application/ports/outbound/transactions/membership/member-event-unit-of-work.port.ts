@@ -1,3 +1,5 @@
+import type { MemberEventStore } from '../../../../models/transactions/member-event-store.model.js';
+
 /**
  * Interface MemberEventUnitOfWork
  *
@@ -13,12 +15,13 @@ export interface MemberEventUnitOfWork {
    * Method run
    *
    * @description
-   * Runs `work` in one tenant transaction; commits when it resolves, rolls back when it rejects,
-   * unless it joined the transaction of its caller, whose outcome it then shares.
+   * Runs `work` in one tenant transaction with a store bound to it; commits when it resolves, rolls
+   * back when it rejects, unless it joined the transaction of its caller, whose outcome it then
+   * shares.
    *
-   * @param {() => Promise<TResult>} work - The unit of work.
+   * @param {(store: MemberEventStore) => Promise<TResult>} work - The unit of work.
    * @returns {Promise<TResult>} What the work resolved with.
    */
-  run<TResult>(work: () => Promise<TResult>): Promise<TResult>;
+  run<TResult>(work: (store: MemberEventStore) => Promise<TResult>): Promise<TResult>;
   // #endregion
 }

@@ -79,17 +79,35 @@ export interface SpaceRepository {
   ): Promise<Space[]>;
 
   /**
+   * Method listVisibleIds
+   *
+   * @description
+   * The ids of every space a member who is not a guest sees, in the order of their creation (id as
+   * tie-breaker), with the same filter as `listVisible`: those of the whole organization and the
+   * private ones the member owns, never one awaiting an owner. Not paged: it is read to filter
+   * other collections by space, and the number of spaces of an organization is small.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} viewerUserId - The account of the member.
+   * @returns {Promise<readonly string[]>} The ids of the spaces.
+   */
+  listVisibleIds(organizationId: string, viewerUserId: string): Promise<readonly string[]>;
+
+  /**
    * Method lockPrivateOwnedBy
    *
    * @description
-   * Loads and locks the private spaces an account owns and that do not await an owner already, in
-   * the order of their creation.
+   * Loads and locks the first private spaces an account owns and that do not await an owner
+   * already, in the order of their creation (id as tie-breaker), at most `limit`. A space handed
+   * over or marked awaiting leaves this filter, so asking again after the commit returns the next
+   * ones.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} ownerUserId - The account.
-   * @returns {Promise<Space[]>} Its private spaces.
+   * @param {number} limit - Most spaces to lock.
+   * @returns {Promise<Space[]>} Its private spaces, at most `limit`.
    */
-  lockPrivateOwnedBy(organizationId: string, ownerUserId: string): Promise<Space[]>;
+  lockPrivateOwnedBy(organizationId: string, ownerUserId: string, limit: number): Promise<Space[]>;
 
   /**
    * Method lockAwaitingOwner

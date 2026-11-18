@@ -1,0 +1,138 @@
+import { ProblemException } from '@cadenway/nest-common';
+import type { ProblemStatus } from '@cadenway/nest-common';
+
+import { TaskRefusal } from '../../../../application/models/task/task-refusal.model.js';
+import type { TaskRefusalReason } from '../../../../application/models/task/task-refusal-reason.model.js';
+
+/**
+ * Interface ProblemShape
+ *
+ * @description
+ * The status, code and details a refusal answers, as `openapi/internal/task-service.yaml` declares
+ * them. The titles stay the English reason phrases of the statuses: the gateway answers the French
+ * titles of the public specs.
+ */
+interface ProblemShape {
+  // #region Properties
+  /**
+   * Property status
+   *
+   * @description
+   * HTTP status of the problem.
+   *
+   * @type {ProblemStatus}
+   * @readonly
+   */
+  readonly status: ProblemStatus;
+
+  /**
+   * Property code
+   *
+   * @description
+   * Stable machine code of the contract.
+   *
+   * @type {string}
+   * @readonly
+   */
+  readonly code: string;
+
+  /**
+   * Property details
+   *
+   * @description
+   * The values the gateway forwards.
+   *
+   * @type {Readonly<Record<string, unknown>> | undefined}
+   * @readonly
+   */
+  readonly details?: Readonly<Record<string, unknown>>;
+  // #endregion
+}
+
+/**
+ * Function shapeOf
+ *
+ * @description
+ * Maps a refusal of a use case to its problem. What the actor does not see answers `404`, like
+ * what does not exist, as "Visibility" of the contract says.
+ *
+ * @param {TaskRefusalReason} refusal - The refusal.
+ * @returns {ProblemShape} The problem of the contract.
+ */
+function shapeOf(refusal: TaskRefusalReason): ProblemShape {
+  switch (refusal.reason) {
+    case 'organization-not-found':
+      return { status: 404, code: 'organization.not-found' };
+    case 'task-not-found':
+      return { status: 404, code: 'task.not-found' };
+    case 'list-not-found':
+      return { status: 404, code: 'list.not-found' };
+    case 'checklist-item-not-found':
+      return { status: 404, code: 'checklist-item.not-found' };
+    case 'version-mismatch':
+      return {
+        status: 412,
+        code: 'request.version-mismatch',
+        details: { version: refusal.version },
+      };
+    case 'status-hidden':
+      return { status: 422, code: 'task.status-hidden', details: { status: refusal.status } };
+    case 'cancel-reason-required':
+      return { status: 422, code: 'task.cancel-reason-required' };
+    case 'cancel-reason-unexpected':
+      return { status: 422, code: 'task.cancel-reason-unexpected' };
+    case 'assignee-invalid':
+      return {
+        status: 422,
+        code: 'task.assignee-invalid',
+        details: { userIds: [...refusal.userIds] },
+      };
+    case 'assignee-limit-reached':
+      return { status: 422, code: 'task.assignee-limit-reached' };
+    case 'label-limit-reached':
+      return { status: 422, code: 'task.label-limit-reached' };
+    case 'checklist-limit-reached':
+      return { status: 422, code: 'task.checklist-limit-reached' };
+    case 'start-date-invalid':
+      return { status: 422, code: 'task.start-date-invalid' };
+    case 'list-invalid':
+      return { status: 422, code: 'task.list-invalid' };
+    case 'parent-invalid':
+      return {
+        status: 422,
+        code: 'task.parent-invalid',
+        details: { parentKey: refusal.parentKey },
+      };
+    case 'subtask-depth-exceeded':
+      return { status: 422, code: 'task.subtask-depth-exceeded' };
+    case 'subtask-limit-reached':
+      return { status: 422, code: 'task.subtask-limit-reached' };
+  }
+}
+
+/**
+ * Function answerRefusals
+ *
+ * @description
+ * Runs a use case and turns its `TaskRefusal` into the problem of the contract; any other error
+ * passes through to the `ProblemFilter` of the kit.
+ *
+ * @param {() => Promise<TResult>} work - The call of the use case.
+ * @returns {Promise<TResult>} What the use case resolved with.
+ * @throws {ProblemException} For a refusal of the use case.
+ */
+export async function answerRefusals<TResult>(work: () => Promise<TResult>): Promise<TResult> {
+  try {
+    return await work();
+  } catch (error) {
+    if (!(error instanceof TaskRefusal)) {
+      throw error;
+    }
+    const shape: ProblemShape = shapeOf(error.refusal);
+    throw new ProblemException({
+      status: shape.status,
+      code: shape.code,
+      ...(shape.details === undefined ? {} : { details: shape.details }),
+    });
+  }
+}

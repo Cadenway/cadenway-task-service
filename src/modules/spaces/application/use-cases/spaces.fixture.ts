@@ -375,15 +375,45 @@ export class InMemorySpaces implements SpacesUnitOfWork {
   public runs: number = 0;
 
   /**
+   * Property allocateCalls
+   *
+   * @description
+   * The arguments of each `allocate` call, committed or not.
+   *
+   * @type {{ organizationId: string; prefix: string; spaceId: string; count: number }[]}
+   * @readonly
+   */
+  public readonly allocateCalls: {
+    readonly organizationId: string;
+    readonly prefix: string;
+    readonly spaceId: string;
+    readonly count: number;
+  }[] = [];
+
+  /**
+   * Property listVisibleIdsCalls
+   *
+   * @description
+   * The arguments of each `listVisibleIds` call.
+   *
+   * @type {{ organizationId: string; viewerUserId: string }[]}
+   * @readonly
+   */
+  public readonly listVisibleIdsCalls: {
+    readonly organizationId: string;
+    readonly viewerUserId: string;
+  }[] = [];
+
+  /**
    * Property lastNumbers
    *
    * @description
-   * The last task number given for each prefix of Atelier Nord.
+   * The last task number given for each prefix of Atelier Nord; replaced when a unit of work
+   * commits, so that a rollback gives the numbers back.
    *
    * @type {Map<string, number>}
-   * @readonly
    */
-  private readonly lastNumbers: Map<string, number>;
+  private lastNumbers: Map<string, number>;
 
   /**
    * Property sequence
@@ -447,6 +477,20 @@ export class InMemorySpaces implements SpacesUnitOfWork {
   }
 
   /**
+   * Method lastNumberOf
+   *
+   * @description
+   * The last task number committed for a prefix, 0 when none was given.
+   *
+   * @param {string} organizationId - The organization.
+   * @param {string} prefix - The prefix.
+   * @returns {number} The counter.
+   */
+  public lastNumberOf(organizationId: string, prefix: string): number {
+    return this.lastNumbers.get(InMemorySpaces.prefixKey(organizationId, prefix)) ?? 0;
+  }
+
+  /**
    * Method page
    *
    * @description
@@ -491,6 +535,7 @@ export class InMemorySpaces implements SpacesUnitOfWork {
     const spaces = new Map<string, SpaceState>(this.spaces);
     const lists = new Map<string, TaskListState>(this.lists);
     const prefixOwners = new Map<string, string>(this.prefixOwners);
+    const lastNumbers = new Map<string, number>(this.lastNumbers);
     const events: RecordedEvent[] = [...this.events];
     const store: SpacesStore = {
       spaces: {
@@ -539,18 +584,43 @@ export class InMemorySpaces implements SpacesUnitOfWork {
             ),
           );
         },
-        lockPrivateOwnedBy: (organizationId: string, ownerUserId: string): Promise<Space[]> =>
-          Promise.resolve(
-            [...spaces.values()]
-              .filter(
+        listVisibleIds: (
+          organizationId: string,
+          viewerUserId: string,
+        ): Promise<readonly string[]> => {
+          this.listVisibleIdsCalls.push({ organizationId, viewerUserId });
+          return Promise.resolve(
+            InMemorySpaces.page(
+              [...spaces.values()].filter(
+                (row: SpaceState): boolean =>
+                  row.organizationId === organizationId &&
+                  !row.awaitingOwner &&
+                  (row.visibility === 'organization' || row.ownerUserId === viewerUserId),
+              ),
+              null,
+              Number.MAX_SAFE_INTEGER,
+            ).map((row: SpaceState): string => row.id),
+          );
+        },
+        lockPrivateOwnedBy: (
+          organizationId: string,
+          ownerUserId: string,
+          limit: number,
+        ): Promise<Space[]> => {
+          return Promise.resolve(
+            InMemorySpaces.page(
+              [...spaces.values()].filter(
                 (row: SpaceState): boolean =>
                   row.organizationId === organizationId &&
                   row.visibility === 'private' &&
                   row.ownerUserId === ownerUserId &&
                   !row.awaitingOwner,
-              )
-              .map((row: SpaceState): Space => Space.restore(row)),
-          ),
+              ),
+              null,
+              limit,
+            ).map((row: SpaceState): Space => Space.restore(row)),
+          );
+        },
         lockAwaitingOwner: (organizationId: string): Promise<Space[]> =>
           Promise.resolve(
             [...spaces.values()]
@@ -580,10 +650,25 @@ export class InMemorySpaces implements SpacesUnitOfWork {
             new Map(
               prefixes.map((prefix: string): [string, number] => [
                 prefix,
-                (this.lastNumbers.get(InMemorySpaces.prefixKey(organizationId, prefix)) ?? 0) + 1,
+                (lastNumbers.get(InMemorySpaces.prefixKey(organizationId, prefix)) ?? 0) + 1,
               ]),
             ),
           );
+        },
+        allocate: (
+          organizationId: string,
+          prefix: string,
+          spaceId: string,
+          count: number,
+        ): Promise<number | null> => {
+          this.allocateCalls.push({ organizationId, prefix, spaceId, count });
+          const key: string = InMemorySpaces.prefixKey(organizationId, prefix);
+          if (prefixOwners.get(key) !== spaceId) {
+            return Promise.resolve(null);
+          }
+          const last: number = (lastNumbers.get(key) ?? 0) + count;
+          lastNumbers.set(key, last);
+          return Promise.resolve(last);
         },
       },
       lists: {
@@ -684,6 +769,7 @@ export class InMemorySpaces implements SpacesUnitOfWork {
     this.spaces = spaces;
     this.lists = lists;
     this.prefixOwners = prefixOwners;
+    this.lastNumbers = lastNumbers;
     this.events = events;
     return result;
   }

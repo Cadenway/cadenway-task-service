@@ -3,6 +3,7 @@ import type {
   HandOverPrivateSpaces,
   HandOverPrivateSpacesOutput,
 } from '../../../../spaces/public/space/hand-over-private-spaces.js';
+import type { SpaceHandoverBatch } from '../../../application/models/clean-up/space-handover-batch.model.js';
 import type { PrivateSpaceHandover } from '../../../application/ports/outbound/spaces/space/private-space-handover.port.js';
 
 /**
@@ -10,7 +11,8 @@ import type { PrivateSpaceHandover } from '../../../application/ports/outbound/s
  *
  * @description
  * `PrivateSpaceHandover` on the public operations `HandOverPrivateSpaces` and
- * `HandOverAwaitingSpaces` of the spaces module, which join the tenant transaction of the event.
+ * `HandOverAwaitingSpaces` of the spaces module: the first opens one tenant transaction per batch
+ * in the organization context of the clean-up job, the second joins the transaction of the event.
  */
 export class SpacesPrivateSpaceHandover implements PrivateSpaceHandover {
   // #region Properties
@@ -59,21 +61,24 @@ export class SpacesPrivateSpaceHandover implements PrivateSpaceHandover {
 
   // #region Methods
   /**
-   * Method handOver
+   * Method handOverBatch
    *
    * @description
-   * Runs `HandOverPrivateSpaces` for the member who left.
+   * Runs one batch of `HandOverPrivateSpaces` for the member who left.
    *
-   * @param {string} organizationId - The organization of the event.
+   * @param {string} organizationId - The organization of the context.
    * @param {string} formerOwnerUserId - The account of the member who left.
-   * @returns {Promise<number>} How many private spaces now await an owner.
+   * @returns {Promise<SpaceHandoverBatch>} What the batch did.
    */
-  public async handOver(organizationId: string, formerOwnerUserId: string): Promise<number> {
+  public async handOverBatch(
+    organizationId: string,
+    formerOwnerUserId: string,
+  ): Promise<SpaceHandoverBatch> {
     const outcome: HandOverPrivateSpacesOutput = await this.handOverPrivateSpaces.execute({
       organizationId,
       formerOwnerUserId,
     });
-    return outcome.awaitingOwner;
+    return outcome;
   }
 
   /**
