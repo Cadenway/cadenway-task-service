@@ -17,14 +17,16 @@ and the activity log belong to the task modules of P3a.
 
 ## Public entry points
 
-| Entry point                             | Consumers        |
-| --------------------------------------- | ---------------- |
-| `spaces.module`                         | member-lifecycle |
-| `public/space/hand-over-private-spaces` | member-lifecycle |
+| Entry point                              | Consumers        |
+| ---------------------------------------- | ---------------- |
+| `spaces.module`                          | member-lifecycle |
+| `public/space/hand-over-private-spaces`  | member-lifecycle |
+| `public/space/hand-over-awaiting-spaces` | member-lifecycle |
 
-`SpacesModule` exports the `HandOverPrivateSpaces` provider with its input type: on
-`member.removed.v1`, member-lifecycle calls it in the tenant transaction of the event, which it
-joins.
+`SpacesModule` exports the `HandOverPrivateSpaces` (input and output) and
+`HandOverAwaitingSpaces` (input) providers. member-lifecycle calls the first on
+`member.removed.v1` and the second when the copy learns the owner of an organization, in the
+tenant transaction of the event, which both join.
 
 ## Owned tables
 
@@ -39,6 +41,8 @@ Created by `migrations/0002_spaces_and_lists.sql`, which forces the three polici
 - `spaces.id` and `lists.id` come from `uuidv7()`; `created_at` is `timestamptz(3)`, so that the
   position of a page round-trips exactly through the cursor. `statuses` is a `jsonb` of the ten
   keys, `{ name, hidden }` each. `owner_user_id` names an account, without a foreign key.
+  `awaiting_owner` marks a private space whose owner left while the owner of the organization was
+  unknown to the copy (CHECK: only a private space awaits an owner).
 - `space_prefixes` holds one row per prefix a space of the organization ever took, with
   `last_number`, the last task number given under it (decisions 1 and 2): a prefix never passes to
   another space, and its numbers never go back.
@@ -88,11 +92,14 @@ owner_user_id = $viewer`) runs after the index, which costs one row read per pri
 `changed`) of `asyncapi/task-service.yaml`, appended to the outbox in the transaction of the
 change. A space creation emits `space.created.v1` then the `list.created.v1` of its "Première
 liste". A patch that changes nothing emits nothing. The handover emits `space.updated.v1` with
-`changed: ['ownerUserId']` and the actor `{ type: 'system', id: 'task-service' }`.
+`changed: ['ownerUserId']` and the actor `{ type: 'system', id: 'task-service' }`, when a space
+passes to the owner of the organization; a space left awaiting an owner emits nothing (the field is
+not in the event, and the space is seen by nobody), its handover later does.
 
 ## Events consumed
 
-None directly; member-lifecycle calls `HandOverPrivateSpaces` on `member.removed.v1`.
+None directly; member-lifecycle calls `HandOverPrivateSpaces` on `member.removed.v1` and
+`HandOverAwaitingSpaces` on the join or role change that gives an organization its owner.
 
 ## Invariants
 
@@ -111,7 +118,10 @@ None directly; member-lifecycle calls `HandOverPrivateSpaces` on `member.removed
 - A sprint ends on or after its start (`422 list.sprint-dates-invalid`).
 - A private space always has an owner who is a member, so that someone sees it. When the owner of a
   private space leaves the organization, the owner of the organization becomes its owner, unless
-  the account is still a member under another membership. A space of the whole organization keeps
+  the account is still a member under another membership. While the copy does not hold the owner
+  of the organization, the removal still commits and the space awaits an owner: seen by nobody, the
+  former owner included, until the copy learns the owner and the space passes to them (decision
+  revised by the coordinating session for P3a). A space of the whole organization keeps
   a former member as owner; made private, it passes to the owner of the organization in the same
   change (`changed` gains `ownerUserId`), or the change is refused
   (`403 space.visibility-forbidden`) while the copy holds no owner of the organization.

@@ -749,3 +749,98 @@ describe('Space.handOver: a space that is not private keeps its owner', () => {
     expect(() => produit().handOver('')).toThrow(InvalidSpaceError);
   });
 });
+
+describe('Space.create: a new space never awaits an owner', () => {
+  it('starts with awaitingOwner false, whatever its visibility', () => {
+    expect(Space.create(newSpace()).awaitingOwner).toBe(false);
+    expect(Space.create(newSpace({ visibility: 'private' })).awaitingOwner).toBe(false);
+  });
+});
+
+describe('Space.restore: only a private space can await an owner', () => {
+  it('restores a private space that awaits an owner unchanged', () => {
+    const stored: SpaceState = designState({ awaitingOwner: true });
+
+    expect(Space.restore(stored).snapshot).toEqual(stored);
+  });
+
+  it('refuses a space of the whole organization that awaits an owner', () => {
+    expect(() => produit({ awaitingOwner: true })).toThrow(InvalidSpaceError);
+  });
+});
+
+describe('Space.awaitOwner: the space of a leaver fails closed while the owner is unknown', () => {
+  it('marks a private space, keeping its owner and its version', () => {
+    const space: Space = Space.restore(designState({ version: 4 }));
+
+    const awaiting: Space = space.awaitOwner();
+
+    expect(awaiting.snapshot).toEqual(designState({ version: 4, awaitingOwner: true }));
+  });
+
+  it('does not change the space it was called on', () => {
+    const space: Space = Space.restore(designState());
+
+    space.awaitOwner();
+
+    expect(space.snapshot).toEqual(designState());
+  });
+
+  it('returns the same space when it is already awaiting an owner', () => {
+    const awaiting: Space = Space.restore(designState()).awaitOwner();
+
+    expect(awaiting.awaitOwner()).toBe(awaiting);
+  });
+
+  it('returns the same space for a space of the whole organization', () => {
+    const space: Space = produit({ ownerUserId: HUGO });
+
+    expect(space.awaitOwner()).toBe(space);
+  });
+
+  it('hides the space from everyone, the former owner and the owner of the organization included', () => {
+    const awaiting: Space = Space.restore(designState()).awaitOwner();
+
+    for (const viewer of [HUGO_VIEWER, CAMILLE_VIEWER, INES_VIEWER, LEA_VIEWER, NADIA_VIEWER]) {
+      expect(awaiting.isVisibleTo(viewer)).toBe(false);
+    }
+  });
+});
+
+describe('Space.handOver: a space that awaits an owner stops awaiting', () => {
+  it('gives the space to the owner of the organization at the next version, no longer awaiting', () => {
+    const awaiting: Space = Space.restore(designState({ awaitingOwner: true }));
+
+    const { space, changed }: SpaceUpdate = awaiting.handOver(CAMILLE);
+
+    expect(changed).toEqual(['ownerUserId']);
+    expect(space.snapshot).toEqual(
+      designState({ ownerUserId: CAMILLE, version: 2, awaitingOwner: false }),
+    );
+    expect(space.isVisibleTo(CAMILLE_VIEWER)).toBe(true);
+  });
+
+  it('clears the wait with the same version and no change when that owner already owns the space', () => {
+    const awaiting: Space = Space.restore(
+      designState({ ownerUserId: CAMILLE, awaitingOwner: true, version: 3 }),
+    );
+
+    const { space, changed }: SpaceUpdate = awaiting.handOver(CAMILLE);
+
+    expect(changed).toEqual([]);
+    expect(space.snapshot).toEqual(designState({ ownerUserId: CAMILLE, version: 3 }));
+    expect(space).not.toBe(awaiting);
+  });
+
+  it('keeps the same space when a private space that does not await an owner already has that owner', () => {
+    const space: Space = Space.restore(designState({ ownerUserId: CAMILLE }));
+
+    expect(space.handOver(CAMILLE).space).toBe(space);
+  });
+
+  it('does not clear the wait of a space for an empty account', () => {
+    expect(() => Space.restore(designState({ awaitingOwner: true })).handOver('')).toThrow(
+      InvalidSpaceError,
+    );
+  });
+});

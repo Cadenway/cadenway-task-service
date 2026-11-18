@@ -2,6 +2,7 @@ import type { MembershipCopy } from '../../../../ports/outbound/members/membersh
 import type { PrivateSpaceHandover } from '../../../../ports/outbound/spaces/space/private-space-handover.port.js';
 import type { MemberEventUnitOfWork } from '../../../../ports/outbound/transactions/membership/member-event-unit-of-work.port.js';
 import type { ApplyMemberEventInput } from './apply-member-event.input.js';
+import type { ApplyMemberEventOutput } from './apply-member-event.output.js';
 
 /**
  * Class ApplyMemberEvent
@@ -82,21 +83,32 @@ export class ApplyMemberEvent {
    * Method execute
    *
    * @description
-   * Applies the event to the copy, then, for a removal, hands the private spaces of the former
-   * member over. The copy comes first, so the hand-over runs once the copy no longer holds the
-   * removed membership.
+   * Applies the event to the copy, then:
+   *
+   * - for a removal, hands the private spaces of the former member over, or, while the copy does
+   *   not hold the owner of the organization, leaves them awaiting one (seen by nobody): the removal
+   *   always commits (decision of the coordinating session for P3a);
+   * - for a join or a role change that gives the role `owner`, hands the spaces awaiting an owner
+   *   over to that owner, in the same transaction.
+   *
+   * The copy comes first, so the hand-over reads it after the event.
    *
    * @param {ApplyMemberEventInput} input - The member event.
-   * @returns {Promise<void>} Resolves once every effect is applied.
-   * @throws {Error} When the copy or the hand-over fails: the transaction rolls back and the kit
-   * redelivers the event on the schedule of the module.
+   * @returns {Promise<ApplyMemberEventOutput>} How many private spaces now await an owner.
+   * @throws {Error} When the copy or a hand-over fails (the database, a lock timeout): the
+   * transaction rolls back and the kit redelivers the event on the schedule of the module.
    */
-  public async execute(input: ApplyMemberEventInput): Promise<void> {
-    await this.unitOfWork.run(async (): Promise<void> => {
+  public async execute(input: ApplyMemberEventInput): Promise<ApplyMemberEventOutput> {
+    return this.unitOfWork.run(async (): Promise<ApplyMemberEventOutput> => {
       await this.memberships.apply(input);
       if (input.kind === 'removed') {
-        await this.spaces.handOver(input.organizationId, input.userId);
+        const awaiting: number = await this.spaces.handOver(input.organizationId, input.userId);
+        return { privateSpacesAwaitingOwner: awaiting };
       }
+      if (input.role === 'owner') {
+        await this.spaces.handOverAwaiting(input.organizationId);
+      }
+      return { privateSpacesAwaitingOwner: 0 };
     });
   }
   // #endregion

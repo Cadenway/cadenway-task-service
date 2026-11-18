@@ -146,3 +146,36 @@ describe('canChangeVisibility: the owner of the space, or the owner or an admin 
     },
   );
 });
+
+describe('canSeeSpace: a private space that awaits an owner is seen by nobody', () => {
+  it.each([
+    ['its former owner', HUGO_VIEWER],
+    ['the owner of the organization', CAMILLE_VIEWER],
+    ['an admin', INES_VIEWER],
+    ['another member', LEA_VIEWER],
+    ['a guest', NADIA_VIEWER],
+  ])('hides it from %s', (_who: string, viewer: Viewer) => {
+    expect(canSeeSpace(designState({ awaitingOwner: true }), viewer)).toBe(false);
+  });
+
+  it('shows the same space again once it no longer awaits', () => {
+    expect(canSeeSpace(designState({ awaitingOwner: false }), HUGO_VIEWER)).toBe(true);
+  });
+
+  test.prop([roleArbitrary, accountArbitrary, accountArbitrary])(
+    'is visible if and only if the viewer owns it, is not a guest and the space does not await an owner',
+    (role: MemberRole, viewerUserId: string, ownerUserId: string) => {
+      for (const awaitingOwner of [false, true]) {
+        const space: SpaceState = spaceState({
+          visibility: 'private',
+          ownerUserId,
+          awaitingOwner,
+        });
+
+        expect(canSeeSpace(space, { userId: viewerUserId, role })).toBe(
+          viewerUserId === ownerUserId && role !== 'guest' && !awaitingOwner,
+        );
+      }
+    },
+  );
+});

@@ -112,6 +112,7 @@ export function toSpace(row: SpaceRow): Space {
     color: toLookColor(row.color),
     visibility: toVisibility(row.visibility),
     ownerUserId: row.ownerUserId,
+    awaitingOwner: row.awaitingOwner,
     statuses: toSpaceStatuses(row.statuses),
     createdAt: row.createdAt,
     version: row.version,

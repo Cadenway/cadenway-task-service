@@ -5,6 +5,17 @@ import type { SpacesStore } from '../../../../models/transactions/spaces-store.m
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpacesUnitOfWork } from '../../../../ports/outbound/transactions/space/spaces-unit-of-work.port.js';
 import type { HandOverPrivateSpacesInput } from './hand-over-private-spaces.input.js';
+import type { HandOverPrivateSpacesOutput } from './hand-over-private-spaces.output.js';
+
+/**
+ * Constant NOTHING_AWAITS
+ *
+ * @description
+ * The answer when no private space of the former member awaits an owner.
+ *
+ * @type {HandOverPrivateSpacesOutput}
+ */
+const NOTHING_AWAITS: HandOverPrivateSpacesOutput = Object.freeze({ awaitingOwner: 0 });
 
 /**
  * Constant SYSTEM_ACTOR
@@ -12,6 +23,8 @@ import type { HandOverPrivateSpacesInput } from './hand-over-private-spaces.inpu
  * @description
  * The actor of the handover: nobody acts through the API, task-service itself changes the owner
  * (`Actor` of `asyncapi/task-service.yaml`).
+ *
+ * @type {EventActor}
  */
 const SYSTEM_ACTOR: EventActor = { type: 'system', id: 'task-service' };
 
@@ -29,8 +42,9 @@ const SYSTEM_ACTOR: EventActor = { type: 'system', id: 'task-service' };
  * over while the copy still holds the account as a member, under another membership of the same
  * person (a removal of an old membership that arrives after a new join). When the former member owns
  * no private space it returns without asking for the owner of the organization; when it owns some
- * and the copy does not hold the owner yet, it throws, so the event is redelivered on its schedule
- * rather than leaving the spaces with an owner who is gone.
+ * and the copy does not hold the owner yet, the removal still commits: the spaces are left awaiting
+ * an owner, seen by nobody, and `HandOverAwaitingSpaces` gives them to the owner once the copy learns
+ * it (decision revised by the coordinating session for P3a).
  */
 export class HandOverPrivateSpaces {
   // #region Properties
@@ -82,15 +96,14 @@ export class HandOverPrivateSpaces {
    * Hands the private spaces of the former member over to the owner of the organization.
    *
    * @param {HandOverPrivateSpacesInput} input - The organization and the member who left.
-   * @returns {Promise<void>} Resolves once handed over, or at once when there is nothing to hand.
-   * @throws {Error} When the owner of the organization is not known yet.
+   * @returns {Promise<HandOverPrivateSpacesOutput>} How many spaces now await an owner.
    */
-  public async execute(input: HandOverPrivateSpacesInput): Promise<void> {
-    await this.unitOfWork.run(async (store: SpacesStore): Promise<void> => {
+  public async execute(input: HandOverPrivateSpacesInput): Promise<HandOverPrivateSpacesOutput> {
+    return this.unitOfWork.run(async (store: SpacesStore): Promise<HandOverPrivateSpacesOutput> => {
       // The removal of an old membership may reach the copy after the same person joined again
       // under a new one: the account is still a member, and its spaces stay its own.
       if ((await this.members.roleOf(input.organizationId, input.formerOwnerUserId)) !== null) {
-        return;
+        return NOTHING_AWAITS;
       }
       const spaces: Space[] = await store.spaces.lockPrivateOwnedBy(
         input.organizationId,
@@ -98,14 +111,19 @@ export class HandOverPrivateSpaces {
       );
       // Nothing to hand over: the removal must not wait for an owner it does not need.
       if (spaces.length === 0) {
-        return;
+        return NOTHING_AWAITS;
       }
       const ownerUserId: string | null = await this.members.ownerOf(input.organizationId);
       if (ownerUserId === null) {
-        throw new Error('The owner of the organization is not known yet.');
+        // Not a transient failure: the removal commits, the spaces fail closed (seen by nobody)
+        // and pass to the owner as soon as the copy learns it (HandOverAwaitingSpaces).
+        for (const stored of spaces) {
+          await store.spaces.update(stored.awaitOwner());
+        }
+        return { awaitingOwner: spaces.length };
       }
       if (ownerUserId === input.formerOwnerUserId) {
-        return;
+        return NOTHING_AWAITS;
       }
       for (const stored of spaces) {
         const { space, changed }: SpaceUpdate = stored.handOver(ownerUserId);
@@ -114,6 +132,7 @@ export class HandOverPrivateSpaces {
           await store.events.spaceUpdated(space, changed, SYSTEM_ACTOR);
         }
       }
+      return NOTHING_AWAITS;
     });
   }
   // #endregion

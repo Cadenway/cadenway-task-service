@@ -103,6 +103,21 @@ export interface SpaceDraft {
   readonly ownerUserId: string;
 
   /**
+   * Property awaitingOwner
+   *
+   * @description
+   * Whether the space is private and its owner left the organization while the copy of the
+   * memberships did not hold the owner of the organization yet (decision of the coordinating session
+   * for P3a: the removal always commits). Such a space is seen by nobody, `ownerUserId` still names
+   * the former owner, and it passes to the owner of the organization as soon as the copy learns it.
+   * `false` at the creation.
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  readonly awaitingOwner: boolean;
+
+  /**
    * Property statuses
    *
    * @description

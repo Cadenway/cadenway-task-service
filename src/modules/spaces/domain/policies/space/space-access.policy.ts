@@ -10,17 +10,21 @@ import type { SpaceState } from '../../value-objects/space/space-state.value-obj
  * of the whole organization is seen by every other member; a private space by its owner only, not
  * even by the owner or the admins of the organization. A space the caller does not see answers as
  * an unknown one does, and is left out of every collection and count. Any visibility other than
- * `organization` is treated as private, so an unexpected value fails closed.
+ * `organization` is treated as private, so an unexpected value fails closed. A private space
+ * awaiting an owner (its owner left while the owner of the organization was unknown) is seen by
+ * nobody, not even its former owner should they join again.
  *
- * @param {Pick<SpaceState, 'visibility' | 'ownerUserId'>} space - The space.
+ * @param {Pick<SpaceState, 'visibility' | 'ownerUserId'> & Partial<Pick<SpaceState, 'awaitingOwner'>>} space
+ * - The space.
  * @param {Viewer} viewer - The member who asks.
  * @returns {boolean} Whether the member sees the space.
  */
 export function canSeeSpace(
-  space: Pick<SpaceState, 'visibility' | 'ownerUserId'>,
+  space: Pick<SpaceState, 'visibility' | 'ownerUserId'> &
+    Partial<Pick<SpaceState, 'awaitingOwner'>>,
   viewer: Viewer,
 ): boolean {
-  if (viewer.role === 'guest') {
+  if (viewer.role === 'guest' || space.awaitingOwner === true) {
     return false;
   }
   return space.visibility === 'organization' || space.ownerUserId === viewer.userId;

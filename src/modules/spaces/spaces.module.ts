@@ -10,12 +10,14 @@ import { listListsProvider } from './composition/providers/use-cases/list/list-l
 import { updateListProvider } from './composition/providers/use-cases/list/update-list.provider.js';
 import { createSpaceProvider } from './composition/providers/use-cases/space/create-space.provider.js';
 import { getSpaceProvider } from './composition/providers/use-cases/space/get-space.provider.js';
+import { handOverAwaitingSpacesProvider } from './composition/providers/use-cases/space/hand-over-awaiting-spaces.provider.js';
 import { handOverPrivateSpacesProvider } from './composition/providers/use-cases/space/hand-over-private-spaces.provider.js';
 import { listSpacesProvider } from './composition/providers/use-cases/space/list-spaces.provider.js';
 import { updateSpaceProvider } from './composition/providers/use-cases/space/update-space.provider.js';
 import { ListsController } from './presentation/http/controllers/list/lists.controller.js';
 import { SpaceListsController } from './presentation/http/controllers/list/space-lists.controller.js';
 import { SpacesController } from './presentation/http/controllers/space/spaces.controller.js';
+import { HandOverAwaitingSpaces } from './public/space/hand-over-awaiting-spaces.js';
 import { HandOverPrivateSpaces } from './public/space/hand-over-private-spaces.js';
 
 /**
@@ -69,11 +71,12 @@ markIdempotent(SpaceListsController.prototype, 'create');
     getSpaceProvider,
     updateSpaceProvider,
     handOverPrivateSpacesProvider,
+    handOverAwaitingSpacesProvider,
     createListProvider,
     listListsProvider,
     getListProvider,
     updateListProvider,
   ],
-  exports: [HandOverPrivateSpaces],
+  exports: [HandOverPrivateSpaces, HandOverAwaitingSpaces],
 })
 export class SpacesModule {}

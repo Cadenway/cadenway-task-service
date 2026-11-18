@@ -6,6 +6,7 @@ import { eventSchemas as taskEventSchemas } from '@cadenway/contracts/events/tas
 import type {
   MemberJoinedV1,
   MemberRemovedV1,
+  MemberRoleChangedV1,
 } from '@cadenway/contracts/events/organization-service';
 import {
   CreateListInternalResponse,
@@ -133,8 +134,35 @@ const elise: Person = {
   memberId: '01938f6e-9000-7000-8000-0000000000cb',
 };
 
+/** Chloé Girard, member of the third organization, who never owns a private space. */
+const chloe: Person = {
+  userId: '01938f6e-8a42-7d5b-b2c9-5e1f3a6d9c2d',
+  memberId: '01938f6e-9000-7000-8000-0000000000cc',
+};
+
+/** Noé Perrin, member of the third organization, whose removal is held back by a lock. */
+const noe: Person = {
+  userId: '01938f6e-8a42-7d5b-b2c9-5e1f3a6d9c2e',
+  memberId: '01938f6e-9000-7000-8000-0000000000cd',
+};
+
+/** Théo Garnier, member of the fourth organization, who owns a private space. */
+const theo: Person = {
+  userId: '01938f6e-8a42-7d5b-b2c9-5e1f3a6d9c2f',
+  memberId: '01938f6e-9000-7000-8000-0000000000ce',
+};
+
+/** Jeanne Moreau, admin of the fourth organization, whom a role change makes its owner. */
+const jeanne: Person = {
+  userId: '01938f6e-8a42-7d5b-b2c9-5e1f3a6d9c30',
+  memberId: '01938f6e-9000-7000-8000-0000000000cf',
+};
+
+/** The new membership Mathis Roux gets when he joins the third organization again. */
+const mathisNewMemberId = '01938f6e-9000-7000-8000-0000000000d0';
+
 /** Which member event. */
-type MemberEventKind = 'joined' | 'removed';
+type MemberEventKind = 'joined' | 'role-changed' | 'removed';
 
 /** A member event after its publication. */
 interface PublishedEvent {
@@ -255,6 +283,7 @@ function consumerInfo(handler: string): ConsumerInfo {
  * @param person - The membership and its account.
  * @param role - Role of the membership.
  * @param version - Version of the membership after the event.
+ * @param previousRole - For a role change, the role before it.
  * @returns Its id and its JSON body.
  */
 function toPublishedEvent(
@@ -263,6 +292,7 @@ function toPublishedEvent(
   person: Person,
   role: MemberJoinedV1['role'],
   version: number,
+  previousRole: MemberJoinedV1['role'] = 'member',
 ): PublishedEvent {
   const id = randomUUID();
   const common = {
@@ -274,10 +304,18 @@ function toPublishedEvent(
     userId: person.userId,
     role,
   };
-  const payload: MemberJoinedV1 | MemberRemovedV1 =
-    kind === 'joined'
-      ? { ...common, actor: { type: 'user', id: person.userId }, invitationId: null }
-      : { ...common, actor: { type: 'user', id: camille.userId } };
+  let payload: MemberJoinedV1 | MemberRoleChangedV1 | MemberRemovedV1;
+  switch (kind) {
+    case 'joined':
+      payload = { ...common, actor: { type: 'user', id: person.userId }, invitationId: null };
+      break;
+    case 'role-changed':
+      payload = { ...common, actor: { type: 'user', id: camille.userId }, previousRole };
+      break;
+    case 'removed':
+      payload = { ...common, actor: { type: 'user', id: camille.userId } };
+      break;
+  }
   return { id, kind, body: JSON.stringify(payload) };
 }
 
@@ -1763,79 +1801,345 @@ describe('spaces and lists', () => {
     });
   });
 
-  // Last: the removal of this test is delivered again and again until the owner is known, so its
-  // consumer keeps one message waiting, which no later `deliver` may wait on.
-  describe('a removal whose handover cannot run yet is applied again, whole, once it can', () => {
-    it('keeps the member, the space and no processed id after a failed delivery, then applies the removal and the handover together', async () => {
+  /**
+   * Reads who owns a space and whether it awaits an owner, whoever may see it.
+   *
+   * @param organizationId - Organization of the space.
+   * @param spaceId - The space.
+   * @returns The owner, the version and the awaiting flag.
+   */
+  async function storedSpaceOf(
+    organizationId: string,
+    spaceId: string,
+  ): Promise<{ readonly owner: string; readonly version: number; readonly awaiting: boolean }> {
+    const [row] = await asSystem<{
+      readonly owner: string;
+      readonly version: number;
+      readonly awaiting: boolean;
+    }>(
+      `select owner_user_id::text as owner, version, awaiting_owner as awaiting
+         from spaces where organization_id = $1 and id = $2`,
+      [organizationId, spaceId],
+    );
+    if (row === undefined) {
+      throw new Error('The space could not be read.');
+    }
+    return row;
+  }
+
+  /**
+   * Reads what the database holds of a removal and of the space it concerns, whoever may see them.
+   *
+   * @param organizationId - Organization of the rows.
+   * @param memberId - Membership of the leaver.
+   * @param spaceId - A private space the leaver owned.
+   * @param eventId - Id of the removal event.
+   * @returns Whether the membership ended, the space, and how many times the event is recorded.
+   */
+  async function removalState(
+    organizationId: string,
+    memberId: string,
+    spaceId: string,
+    eventId: string,
+  ): Promise<{
+    readonly ended: boolean;
+    readonly owner: string;
+    readonly version: number;
+    readonly awaiting: boolean;
+    readonly processed: number;
+  }> {
+    const [row] = await asSystem<{
+      readonly ended: boolean;
+      readonly owner: string;
+      readonly version: number;
+      readonly awaiting: boolean;
+      readonly processed: number;
+    }>(
+      `select
+         (select removed_at is not null from organization_members
+           where organization_id = $1 and id = $2) as ended,
+         (select owner_user_id::text from spaces where organization_id = $1 and id = $3) as owner,
+         (select version from spaces where organization_id = $1 and id = $3) as version,
+         (select awaiting_owner from spaces where organization_id = $1 and id = $3) as awaiting,
+         (select count(*)::int from processed_events
+           where consumer = 'task-service__project-member-removed' and event_id = $4) as processed`,
+      [organizationId, memberId, spaceId, eventId],
+    );
+    if (row === undefined) {
+      throw new Error('The state of the removal could not be read.');
+    }
+    return row;
+  }
+
+  describe('a removal always commits, also when the owner of the organization is not known yet', () => {
+    let brouillon: SpaceBody;
+    let brouillonFirstListId = '';
+
+    it('applies the removal on its first delivery and keeps the private spaces of the leaver out of sight of everybody', async () => {
       await deliver(toPublishedEvent('joined', studioLumenId, mathis, 'member', 1));
-      const brouillon = (
+      await deliver(toPublishedEvent('joined', studioLumenId, chloe, 'member', 1));
+      const created = await createSpace(
+        mathis,
+        { name: 'Brouillon', prefix: 'BRL', visibility: 'private' },
+        studioLumenId,
+      );
+      brouillon = created.space;
+      brouillonFirstListId = created.firstList.id;
+      const removal = toPublishedEvent('removed', studioLumenId, mathis, 'member', 2);
+      const redelivered = consumerInfo('project-member-removed').num_redelivered;
+
+      // `deliver` returns once the consumer acknowledged everything it delivered.
+      await deliver(removal);
+
+      expect(consumerInfo('project-member-removed').num_redelivered).toBe(redelivered);
+      expect(await removalState(studioLumenId, mathis.memberId, brouillon.id, removal.id)).toEqual({
+        ended: true,
+        owner: mathis.userId,
+        version: 1,
+        awaiting: true,
+        processed: 1,
+      });
+      expect((await outboxOf('spaceId', brouillon.id)).map((event) => event.event_name)).toEqual([
+        'space.created.v1',
+        'list.created.v1',
+      ]);
+    });
+
+    it('shows a space that awaits its owner to nobody, not even to the former owner who joins again', async () => {
+      const asMember = { organizationId: studioLumenId };
+      expectProblem(
+        await send('get', `/internal/v1/spaces/${brouillon.id}`, mathis, asMember),
+        404,
+        'organization.not-found',
+      );
+      await deliver(
+        toPublishedEvent(
+          'joined',
+          studioLumenId,
+          { userId: mathis.userId, memberId: mathisNewMemberId },
+          'member',
+          1,
+        ),
+      );
+
+      for (const viewer of [chloe, mathis]) {
+        expectProblem(
+          await send('get', `/internal/v1/spaces/${brouillon.id}`, viewer, asMember),
+          404,
+          'space.not-found',
+        );
+        expectProblem(
+          await send('get', `/internal/v1/spaces/${brouillon.id}/lists`, viewer, asMember),
+          404,
+          'space.not-found',
+        );
+        expectProblem(
+          await send('get', `/internal/v1/lists/${brouillonFirstListId}`, viewer, asMember),
+          404,
+          'list.not-found',
+        );
+      }
+      // The former owner joined again as a member while the owner of the organization is unknown:
+      // the space is still left out of the list, though the account is recorded as its owner.
+      for (const viewer of [chloe, mathis]) {
+        const listed = await send('get', '/internal/v1/spaces?limit=100', viewer, asMember);
+        expect(listed.status).toBe(200);
+        expect(
+          conforms(ListSpacesInternalResponse, bodyOf(listed)).items.map((space) => space.id),
+        ).not.toContain(brouillon.id);
+      }
+      expect(await storedSpaceOf(studioLumenId, brouillon.id)).toMatchObject({
+        owner: mathis.userId,
+        awaiting: true,
+      });
+    });
+
+    it('passes every space that awaits an owner to him in the transaction of the event that makes him the owner', async () => {
+      await deliver(toPublishedEvent('joined', studioLumenId, anais, 'owner', 1));
+
+      expect(await storedSpaceOf(studioLumenId, brouillon.id)).toEqual({
+        owner: anais.userId,
+        version: 2,
+        awaiting: false,
+      });
+      const handed = await send('get', `/internal/v1/spaces/${brouillon.id}`, anais, {
+        organizationId: studioLumenId,
+      });
+      expect(handed.status).toBe(200);
+      expect(conforms(GetSpaceInternalResponse, bodyOf(handed))).toMatchObject({
+        owner: { userId: anais.userId },
+        visibility: 'private',
+        version: 2,
+      });
+      for (const viewer of [chloe, mathis]) {
+        expectProblem(
+          await send('get', `/internal/v1/spaces/${brouillon.id}`, viewer, {
+            organizationId: studioLumenId,
+          }),
+          404,
+          'space.not-found',
+        );
+      }
+      await vi.waitFor(async () => {
+        expect((await outboxOf('spaceId', brouillon.id)).at(-1)?.status).toBe('sent');
+      }, waitOptions);
+      const events = await outboxOf('spaceId', brouillon.id);
+      expect(events.map((event) => event.event_name)).toEqual([
+        'space.created.v1',
+        'list.created.v1',
+        'space.updated.v1',
+      ]);
+      expect(conforms(taskEventSchemas['space.updated.v1'], events[2]?.payload)).toMatchObject({
+        organizationId: studioLumenId,
+        actor: { type: 'system', id: 'task-service' },
+        spaceId: brouillon.id,
+        ownerUserId: anais.userId,
+        changed: ['ownerUserId'],
+        version: 2,
+      });
+    });
+
+    it('passes the spaces that await an owner to the member whom a role change makes the owner', async () => {
+      await deliver(toPublishedEvent('joined', maisonVerteId, theo, 'member', 1));
+      await deliver(toPublishedEvent('joined', maisonVerteId, jeanne, 'admin', 1));
+      const atelier = (
         await createSpace(
-          mathis,
-          { name: 'Brouillon', prefix: 'BRL', visibility: 'private' },
+          theo,
+          { name: 'Atelier', prefix: 'ATL', visibility: 'private' },
+          maisonVerteId,
+        )
+      ).space;
+      const removal = toPublishedEvent('removed', maisonVerteId, theo, 'member', 2);
+
+      await deliver(removal);
+
+      expect(await removalState(maisonVerteId, theo.memberId, atelier.id, removal.id)).toEqual({
+        ended: true,
+        owner: theo.userId,
+        version: 1,
+        awaiting: true,
+        processed: 1,
+      });
+      expectProblem(
+        await send('get', `/internal/v1/spaces/${atelier.id}`, jeanne, {
+          organizationId: maisonVerteId,
+        }),
+        404,
+        'space.not-found',
+      );
+
+      await deliver(toPublishedEvent('role-changed', maisonVerteId, jeanne, 'owner', 2, 'admin'));
+
+      expect(await storedSpaceOf(maisonVerteId, atelier.id)).toEqual({
+        owner: jeanne.userId,
+        version: 2,
+        awaiting: false,
+      });
+      const handed = await send('get', `/internal/v1/spaces/${atelier.id}`, jeanne, {
+        organizationId: maisonVerteId,
+      });
+      expect(handed.status).toBe(200);
+      expect(conforms(GetSpaceInternalResponse, bodyOf(handed)).owner).toEqual({
+        userId: jeanne.userId,
+      });
+      await vi.waitFor(async () => {
+        expect((await outboxOf('spaceId', atelier.id)).at(-1)?.status).toBe('sent');
+      }, waitOptions);
+      expect(
+        conforms(
+          taskEventSchemas['space.updated.v1'],
+          (await outboxOf('spaceId', atelier.id)).at(-1)?.payload,
+        ),
+      ).toMatchObject({
+        actor: { type: 'system', id: 'task-service' },
+        ownerUserId: jeanne.userId,
+        changed: ['ownerUserId'],
+        version: 2,
+      });
+    });
+  });
+
+  // Last: the removal of this test fails on a lock and is delivered again, so its consumer keeps
+  // one message waiting until the lock is released, which no later `deliver` may wait on.
+  describe('a removal that fails on a transient error is applied again, whole, with the handover', () => {
+    it('keeps the member, the space and no processed id while a lock holds the handover, then applies the removal and the handover together', async () => {
+      await deliver(toPublishedEvent('joined', studioLumenId, noe, 'member', 1));
+      const carnet = (
+        await createSpace(
+          noe,
+          { name: 'Carnet de route', prefix: 'CDR', visibility: 'private' },
           studioLumenId,
         )
       ).space;
-      const removal = toPublishedEvent('removed', studioLumenId, mathis, 'member', 2);
-      const delivered = consumerInfo('project-member-removed').delivered.consumer_seq;
+      const removal = toPublishedEvent('removed', studioLumenId, noe, 'member', 2);
+      const blocker = await migrator.connect();
+      let holding = false;
 
-      publish(removal);
-
-      // Delivered, refused for want of an owner to hand the space to, and delivered again.
-      await vi.waitFor(() => {
-        const info = consumerInfo('project-member-removed');
-        expect(info.delivered.consumer_seq).toBeGreaterThan(delivered);
-        expect(info.num_redelivered).toBeGreaterThanOrEqual(1);
-        expect(info.num_ack_pending).toBe(1);
-      }, waitOptions);
-
-      const state = async (): Promise<{
-        readonly ended: boolean;
-        readonly owner: string;
-        readonly processed: number;
-      }> => {
-        const [row] = await asSystem<{
-          readonly ended: boolean;
-          readonly owner: string;
-          readonly processed: number;
-        }>(
-          `select
-               (select removed_at is not null from organization_members
-                 where organization_id = $1 and id = $2) as ended,
-               (select owner_user_id::text from spaces
-                 where organization_id = $1 and id = $3) as owner,
-               (select count(*)::int from processed_events
-                 where consumer = 'task-service__project-member-removed' and event_id = $4) as processed`,
-          [studioLumenId, mathis.memberId, brouillon.id, removal.id],
+      try {
+        // The row of the private space is held, as a concurrent change would hold it.
+        await blocker.query('begin');
+        holding = true;
+        await blocker.query(`select set_config('app.system_access', 'on', true)`);
+        await blocker.query(
+          `select 1 from spaces where organization_id = $1 and id = $2 for update`,
+          [studioLumenId, carnet.id],
         );
-        if (row === undefined) {
-          throw new Error('The state of the removal could not be read.');
+        const before = consumerInfo('project-member-removed');
+
+        publish(removal);
+
+        // The handover waits for the lock until the application role gives up (lock_timeout),
+        // the whole unit rolls back, and the removal is delivered again.
+        await vi.waitFor(
+          () => {
+            const info = consumerInfo('project-member-removed');
+            expect(info.delivered.consumer_seq).toBeGreaterThan(before.delivered.consumer_seq);
+            expect(info.num_redelivered).toBeGreaterThan(before.num_redelivered);
+            expect(info.num_ack_pending).toBe(1);
+          },
+          { timeout: 45_000, interval: 500 },
+        );
+        expect(await removalState(studioLumenId, noe.memberId, carnet.id, removal.id)).toEqual({
+          ended: false,
+          owner: noe.userId,
+          version: 1,
+          awaiting: false,
+          processed: 0,
+        });
+        expect((await outboxOf('spaceId', carnet.id)).map((event) => event.event_name)).toEqual([
+          'space.created.v1',
+          'list.created.v1',
+        ]);
+
+        await blocker.query('rollback');
+        holding = false;
+      } finally {
+        if (holding) {
+          await blocker.query('rollback');
         }
-        return row;
-      };
-      expect(await state()).toEqual({ ended: false, owner: mathis.userId, processed: 0 });
-      expect(
-        await send('get', `/internal/v1/spaces/${brouillon.id}`, mathis, {
-          organizationId: studioLumenId,
-        }),
-      ).toMatchObject({ status: 200 });
+        blocker.release();
+      }
 
-      // The owner of the organization joins: the next delivery of the removal can hand over.
-      await deliver(toPublishedEvent('joined', studioLumenId, anais, 'owner', 1));
-
-      // Every read is one snapshot of the three facts: the removal never shows without the handover.
+      // Every read is one snapshot: the removal never shows without the handover.
       const observed: { readonly ended: boolean; readonly owner: string }[] = [];
       await vi.waitFor(
         async () => {
-          const current = await state();
+          const current = await removalState(studioLumenId, noe.memberId, carnet.id, removal.id);
           observed.push({ ended: current.ended, owner: current.owner });
-          expect(current).toEqual({ ended: true, owner: anais.userId, processed: 1 });
+          expect(current).toEqual({
+            ended: true,
+            owner: anais.userId,
+            version: 2,
+            awaiting: false,
+            processed: 1,
+          });
         },
         { timeout: 90_000, interval: 500 },
       );
       expect(observed.filter((seen) => seen.ended && seen.owner !== anais.userId)).toEqual([]);
-      expect(observed.filter((seen) => !seen.ended && seen.owner !== mathis.userId)).toEqual([]);
+      expect(observed.filter((seen) => !seen.ended && seen.owner !== noe.userId)).toEqual([]);
 
-      const handed = await send('get', `/internal/v1/spaces/${brouillon.id}`, anais, {
+      const handed = await send('get', `/internal/v1/spaces/${carnet.id}`, anais, {
         organizationId: studioLumenId,
       });
       expect(handed.status).toBe(200);
@@ -1843,15 +2147,19 @@ describe('spaces and lists', () => {
         userId: anais.userId,
       });
       await vi.waitFor(async () => {
-        const events = await outboxOf('spaceId', brouillon.id);
-        expect(events.at(-1)).toMatchObject({ event_name: 'space.updated.v1', status: 'sent' });
+        expect((await outboxOf('spaceId', carnet.id)).at(-1)?.status).toBe('sent');
       }, waitOptions);
-      const handover = (await outboxOf('spaceId', brouillon.id)).at(-1);
-      expect(conforms(taskEventSchemas['space.updated.v1'], handover?.payload)).toMatchObject({
+      expect(
+        conforms(
+          taskEventSchemas['space.updated.v1'],
+          (await outboxOf('spaceId', carnet.id)).at(-1)?.payload,
+        ),
+      ).toMatchObject({
         organizationId: studioLumenId,
         actor: { type: 'system', id: 'task-service' },
         changed: ['ownerUserId'],
         ownerUserId: anais.userId,
+        version: 2,
       });
     }, 240_000);
   });

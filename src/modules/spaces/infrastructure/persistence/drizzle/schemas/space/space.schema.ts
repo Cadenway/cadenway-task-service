@@ -1,6 +1,7 @@
 import { organizationPolicy } from '@cadenway/nest-common/database';
 import { sql } from 'drizzle-orm';
 import {
+  boolean,
   check,
   index,
   integer,
@@ -64,6 +65,9 @@ export const spaces = pgTable(
     color: text('color').notNull(),
     visibility: text('visibility').notNull(),
     ownerUserId: uuid('owner_user_id').notNull(),
+    // A private space whose owner left while the owner of the organization was unknown to the copy
+    // of the memberships: seen by nobody until it passes to that owner.
+    awaitingOwner: boolean('awaiting_owner').notNull().default(false),
     statuses: jsonb('statuses').$type<SpaceStatuses>().notNull(),
     createdAt: timestamp('created_at', { withTimezone: true, precision: 3 }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -76,6 +80,10 @@ export const spaces = pgTable(
     check('spaces_visibility_check', sql`${table.visibility} in ('organization', 'private')`),
     check('spaces_prefix_check', sql`${table.prefix} ~ '^[A-Z]{2,5}$'`),
     check('spaces_version_check', sql`${table.version} >= 1`),
+    check(
+      'spaces_awaiting_owner_check',
+      sql`not ${table.awaitingOwner} or ${table.visibility} = 'private'`,
+    ),
     check(
       'spaces_icon_check',
       sql`${table.icon} is null or ${table.icon} in (${sql.raw(LOOK_ICON_VALUES)})`,

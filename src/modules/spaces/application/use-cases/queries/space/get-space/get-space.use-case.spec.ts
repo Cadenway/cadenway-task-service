@@ -131,3 +131,20 @@ describe('GetSpace: a read does not lock the membership of the caller', () => {
     expect(members.roleCalls).toEqual([{ organizationId: ATELIER_NORD, userId: LEA, lock: false }]);
   });
 });
+
+describe('GetSpace: a private space that awaits an owner is unknown to everyone', () => {
+  it.each([
+    ['its former owner', HUGO],
+    ['the owner of the organization', CAMILLE],
+  ])('hides it from %s', async (_who: string, actorUserId: string) => {
+    const spaces = new InMemorySpaces({ spaces: [designState({ awaitingOwner: true })] });
+
+    const refusal = await refusalOf(
+      new GetSpace(spaces, atelierNordMembers()).execute(
+        getProduit({ actorUserId, spaceId: DESIGN }),
+      ),
+    );
+
+    expect(refusal).toEqual({ reason: 'space-not-found' });
+  });
+});

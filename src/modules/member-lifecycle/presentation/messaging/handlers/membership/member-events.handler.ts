@@ -5,9 +5,11 @@ import type {
   MemberRoleChangedV1,
 } from '@cadenway/contracts/events/organization-service';
 import type { EventConsumers, EventRedelivery } from '@cadenway/nest-messaging';
+import { Logger } from '@nestjs/common';
 import type { OnApplicationBootstrap } from '@nestjs/common';
 
 import type { ApplyMemberEventInput } from '../../../../application/use-cases/commands/membership/apply-member-event/apply-member-event.input.js';
+import type { ApplyMemberEventOutput } from '../../../../application/use-cases/commands/membership/apply-member-event/apply-member-event.output.js';
 import type { ApplyMemberEvent } from '../../../../application/use-cases/commands/membership/apply-member-event/apply-member-event.use-case.js';
 
 /**
@@ -67,6 +69,17 @@ function toChange(
  */
 export class MemberEventsHandler implements OnApplicationBootstrap {
   // #region Properties
+  /**
+   * Property logger
+   *
+   * @description
+   * The logger of the handler, for the spaces left awaiting an owner.
+   *
+   * @type {Logger}
+   * @readonly
+   */
+  private readonly logger: Logger = new Logger(MemberEventsHandler.name);
+
   /**
    * Property consumers
    *
@@ -146,7 +159,7 @@ export class MemberEventsHandler implements OnApplicationBootstrap {
       event: 'member.joined.v1',
       redelivery: this.redelivery,
       handle: (payload: MemberJoinedV1): Promise<void> =>
-        this.applyMemberEvent.execute(toChange('joined', payload)),
+        this.applyMemberEvent.execute(toChange('joined', payload)).then((): void => undefined),
     });
     await this.consumers.subscribe({
       handler: 'project-member-role-changed',
@@ -154,7 +167,9 @@ export class MemberEventsHandler implements OnApplicationBootstrap {
       event: 'member.role-changed.v1',
       redelivery: this.redelivery,
       handle: (payload: MemberRoleChangedV1): Promise<void> =>
-        this.applyMemberEvent.execute(toChange('role-changed', payload)),
+        this.applyMemberEvent
+          .execute(toChange('role-changed', payload))
+          .then((): void => undefined),
     });
     await this.consumers.subscribe({
       handler: 'project-member-removed',
@@ -162,8 +177,28 @@ export class MemberEventsHandler implements OnApplicationBootstrap {
       event: 'member.removed.v1',
       redelivery: this.redelivery,
       handle: (payload: MemberRemovedV1): Promise<void> =>
-        this.applyMemberEvent.execute(toChange('removed', payload)),
+        this.applyRemoval(toChange('removed', payload)),
     });
+  }
+
+  /**
+   * Method applyRemoval
+   *
+   * @description
+   * Applies a removal and reports, once and without personal data, private spaces left awaiting an
+   * owner because the copy does not hold the owner of the organization: the warning runs in the
+   * context of the event, so the kit adds its organization and trace.
+   *
+   * @param {ApplyMemberEventInput} change - The removal.
+   * @returns {Promise<void>} Resolves once applied.
+   */
+  private async applyRemoval(change: ApplyMemberEventInput): Promise<void> {
+    const outcome: ApplyMemberEventOutput = await this.applyMemberEvent.execute(change);
+    if (outcome.privateSpacesAwaitingOwner > 0) {
+      this.logger.warn(
+        'A removed member owned private spaces while the owner of the organization is unknown: they await an owner.',
+      );
+    }
   }
   // #endregion
 }

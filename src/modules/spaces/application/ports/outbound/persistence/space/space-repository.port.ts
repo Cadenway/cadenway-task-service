@@ -63,6 +63,7 @@ export interface SpaceRepository {
    * @description
    * The spaces a member who is not a guest sees, in the order of their creation (id as
    * tie-breaker), after `after`: those of the whole organization, and the private ones it owns.
+   * A space awaiting an owner is never among them, the account recorded as its owner included.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} viewerUserId - The account of the member.
@@ -81,12 +82,25 @@ export interface SpaceRepository {
    * Method lockPrivateOwnedBy
    *
    * @description
-   * Loads and locks the private spaces an account owns, in the order of their creation.
+   * Loads and locks the private spaces an account owns and that do not await an owner already, in
+   * the order of their creation.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} ownerUserId - The account.
    * @returns {Promise<Space[]>} Its private spaces.
    */
   lockPrivateOwnedBy(organizationId: string, ownerUserId: string): Promise<Space[]>;
+
+  /**
+   * Method lockAwaitingOwner
+   *
+   * @description
+   * Loads and locks the spaces of the organization that await an owner (`awaitingOwner`), in the
+   * order of their creation.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @returns {Promise<Space[]>} The spaces awaiting an owner.
+   */
+  lockAwaitingOwner(organizationId: string): Promise<Space[]>;
   // #endregion
 }

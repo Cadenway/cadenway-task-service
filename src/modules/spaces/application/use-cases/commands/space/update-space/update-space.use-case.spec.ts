@@ -572,3 +572,25 @@ describe('UpdateSpace: the membership of the caller is locked, so a removal cann
     });
   });
 });
+
+describe('UpdateSpace: a private space that awaits an owner is unknown to everyone', () => {
+  it.each([
+    ['its former owner', HUGO],
+    ['the owner of the organization', CAMILLE],
+  ])(
+    'refuses %s with space-not-found and changes nothing',
+    async (_who: string, actorUserId: string) => {
+      const spaces = new InMemorySpaces({ spaces: [designState({ awaitingOwner: true })] });
+
+      const refusal = await refusalOf(
+        new UpdateSpace(spaces, atelierNordMembers()).execute(
+          updateProduit({ actorUserId, spaceId: DESIGN, patch: { visibility: 'organization' } }),
+        ),
+      );
+
+      expect(refusal).toEqual({ reason: 'space-not-found' });
+      expect(spaces.spaces.get(DESIGN)).toEqual(designState({ awaitingOwner: true }));
+      expect(spaces.events).toEqual([]);
+    },
+  );
+});

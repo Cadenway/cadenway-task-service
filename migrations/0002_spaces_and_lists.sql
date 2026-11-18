@@ -43,6 +43,7 @@ CREATE TABLE "spaces" (
 	"color" text NOT NULL,
 	"visibility" text NOT NULL,
 	"owner_user_id" uuid NOT NULL,
+	"awaiting_owner" boolean DEFAULT false NOT NULL,
 	"statuses" jsonb NOT NULL,
 	"created_at" timestamp (3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -51,6 +52,7 @@ CREATE TABLE "spaces" (
 	CONSTRAINT "spaces_visibility_check" CHECK ("spaces"."visibility" in ('organization', 'private')),
 	CONSTRAINT "spaces_prefix_check" CHECK ("spaces"."prefix" ~ '^[A-Z]{2,5}$'),
 	CONSTRAINT "spaces_version_check" CHECK ("spaces"."version" >= 1),
+	CONSTRAINT "spaces_awaiting_owner_check" CHECK (not "spaces"."awaiting_owner" or "spaces"."visibility" = 'private'),
 	CONSTRAINT "spaces_icon_check" CHECK ("spaces"."icon" is null or "spaces"."icon" in ('rocket', 'paint', 'megaphone', 'gear', 'code', 'bug', 'lightning', 'target', 'flag', 'briefcase', 'chart', 'users', 'book', 'cube', 'headset', 'globe', 'star')),
 	CONSTRAINT "spaces_color_check" CHECK ("spaces"."color" in ('gris', 'violet', 'indigo', 'azur', 'lagon', 'vert', 'olive', 'jaune', 'orange', 'rouge', 'rose', 'fuchsia', 'ardoise'))
 );

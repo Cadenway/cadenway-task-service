@@ -142,22 +142,126 @@ describe('HandOverPrivateSpaces: the same member event can be delivered again', 
   });
 });
 
-describe('HandOverPrivateSpaces: the owner of the organization must be known', () => {
-  it('throws, so the delivery is retried, while the copy does not know the owner', async () => {
+describe('HandOverPrivateSpaces: the removal always commits, whether or not the owner is known', () => {
+  /** The leaver Hugo Dubois, while the copy does not hold the owner of the organization. */
+  const ownerUnknown = (): ReturnType<typeof atelierNordMembers> =>
+    atelierNordMembers({ removed: [HUGO], ownerKnown: false });
+
+  it('does not throw while the copy does not know the owner, and counts the space awaiting one', async () => {
     const spaces = new InMemorySpaces({ spaces: [designState()] });
 
-    await expect(
-      new HandOverPrivateSpaces(
-        spaces,
-        atelierNordMembers({ removed: [HUGO], ownerKnown: false }),
-      ).execute({
-        organizationId: ATELIER_NORD,
-        formerOwnerUserId: HUGO,
-      }),
-    ).rejects.toThrow('The owner of the organization is not known yet.');
+    const output = await new HandOverPrivateSpaces(spaces, ownerUnknown()).execute({
+      organizationId: ATELIER_NORD,
+      formerOwnerUserId: HUGO,
+    });
 
-    expect(spaces.spaces.get(DESIGN)).toEqual(designState());
+    expect(output).toEqual({ awaitingOwner: 1 });
+  });
+
+  it('marks the private space as awaiting an owner, keeping its owner and its version', async () => {
+    const spaces = new InMemorySpaces({ spaces: [designState()] });
+
+    await new HandOverPrivateSpaces(spaces, ownerUnknown()).execute({
+      organizationId: ATELIER_NORD,
+      formerOwnerUserId: HUGO,
+    });
+
+    expect(spaces.spaces.get(DESIGN)).toEqual(designState({ awaitingOwner: true }));
+  });
+
+  it('appends no event for a space that awaits an owner', async () => {
+    const spaces = new InMemorySpaces({ spaces: [designState()] });
+
+    await new HandOverPrivateSpaces(spaces, ownerUnknown()).execute({
+      organizationId: ATELIER_NORD,
+      formerOwnerUserId: HUGO,
+    });
+
     expect(spaces.events).toEqual([]);
+  });
+
+  it('counts every private space of the leaver and marks each one', async () => {
+    const second = designState({
+      id: '019a7000-0000-7000-8000-000000000004',
+      name: 'Recherche',
+      prefix: 'RCH',
+    });
+    const spaces = new InMemorySpaces({ spaces: [designState(), second, spaceState()] });
+
+    const output = await new HandOverPrivateSpaces(spaces, ownerUnknown()).execute({
+      organizationId: ATELIER_NORD,
+      formerOwnerUserId: HUGO,
+    });
+
+    expect(output).toEqual({ awaitingOwner: 2 });
+    expect([...spaces.spaces.values()].map((space) => space.awaitingOwner)).toEqual([
+      true,
+      true,
+      false,
+    ]);
+  });
+
+  it('keeps the space of the whole organization of the leaver as it is', async () => {
+    const shared = marketingState({ ownerUserId: HUGO });
+    const spaces = new InMemorySpaces({ spaces: [shared, designState()] });
+
+    await new HandOverPrivateSpaces(spaces, ownerUnknown()).execute({
+      organizationId: ATELIER_NORD,
+      formerOwnerUserId: HUGO,
+    });
+
+    expect(spaces.spaces.get(MARKETING)).toEqual(shared);
+  });
+
+  it('sees nobody the space that awaits an owner, not even the former owner', async () => {
+    const spaces = new InMemorySpaces({ spaces: [designState()] });
+    await new HandOverPrivateSpaces(spaces, ownerUnknown()).execute({
+      organizationId: ATELIER_NORD,
+      formerOwnerUserId: HUGO,
+    });
+
+    const visible = await spaces.run((store) =>
+      Promise.all(
+        [HUGO, CAMILLE, INES].map((userId) =>
+          store.spaces.listVisible(ATELIER_NORD, userId, null, 10),
+        ),
+      ),
+    );
+
+    expect(visible).toEqual([[], [], []]);
+  });
+
+  it('is repeatable while the owner is unknown: the second delivery counts nothing more', async () => {
+    const spaces = new InMemorySpaces({ spaces: [designState()] });
+    const handOver = new HandOverPrivateSpaces(spaces, ownerUnknown());
+    const input = { organizationId: ATELIER_NORD, formerOwnerUserId: HUGO };
+    await handOver.execute(input);
+
+    const second = await handOver.execute(input);
+
+    expect(second).toEqual({ awaitingOwner: 0 });
+    expect(spaces.spaces.get(DESIGN)).toEqual(designState({ awaitingOwner: true }));
+    expect(spaces.events).toEqual([]);
+  });
+
+  it('answers that no space awaits an owner once every private space was handed over', async () => {
+    const spaces = new InMemorySpaces({ spaces: [designState()] });
+
+    const output = await new HandOverPrivateSpaces(
+      spaces,
+      atelierNordMembers({ removed: [HUGO] }),
+    ).execute({ organizationId: ATELIER_NORD, formerOwnerUserId: HUGO });
+
+    expect(output).toEqual({ awaitingOwner: 0 });
+  });
+
+  it('answers that no space awaits an owner while the account is still a member', async () => {
+    const output = await new HandOverPrivateSpaces(
+      new InMemorySpaces({ spaces: [designState()] }),
+      atelierNordMembers({ ownerKnown: false }),
+    ).execute({ organizationId: ATELIER_NORD, formerOwnerUserId: HUGO });
+
+    expect(output).toEqual({ awaitingOwner: 0 });
   });
 
   it('touches nothing when the leaver is the owner of the organization', async () => {
@@ -198,7 +302,7 @@ describe('HandOverPrivateSpaces: the owner of the organization is asked only whe
         organizationId: ATELIER_NORD,
         formerOwnerUserId: HUGO,
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ awaitingOwner: 0 });
 
     expect(members.ownerCalls).toEqual([]);
     expect(spaces.events).toEqual([]);
@@ -228,18 +332,29 @@ describe('HandOverPrivateSpaces: the owner of the organization is asked only whe
     expect(members.ownerCalls).toEqual([ATELIER_NORD]);
   });
 
-  it('throws only when there are private spaces and the owner is unknown, handing nothing over', async () => {
+  it('asks for the owner once when there are private spaces and it is unknown, without failing', async () => {
     const spaces = new InMemorySpaces({ spaces: [designState()] });
     const members = atelierNordMembers({ removed: [HUGO], ownerKnown: false });
 
-    await expect(
-      new HandOverPrivateSpaces(spaces, members).execute({
-        organizationId: ATELIER_NORD,
-        formerOwnerUserId: HUGO,
-      }),
-    ).rejects.toThrow('The owner of the organization is not known yet.');
+    const output = await new HandOverPrivateSpaces(spaces, members).execute({
+      organizationId: ATELIER_NORD,
+      formerOwnerUserId: HUGO,
+    });
 
     expect(members.ownerCalls).toEqual([ATELIER_NORD]);
-    expect(spaces.spaces.get(DESIGN)).toEqual(designState());
+    expect(output).toEqual({ awaitingOwner: 1 });
+  });
+
+  it('does not ask for the owner for a space that already awaits one', async () => {
+    const spaces = new InMemorySpaces({ spaces: [designState({ awaitingOwner: true })] });
+    const members = atelierNordMembers({ removed: [HUGO], ownerKnown: false });
+
+    const output = await new HandOverPrivateSpaces(spaces, members).execute({
+      organizationId: ATELIER_NORD,
+      formerOwnerUserId: HUGO,
+    });
+
+    expect(members.ownerCalls).toEqual([]);
+    expect(output).toEqual({ awaitingOwner: 0 });
   });
 });

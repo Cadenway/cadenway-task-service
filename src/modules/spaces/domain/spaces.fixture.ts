@@ -75,6 +75,7 @@ export function spaceState(overrides: Partial<SpaceState> = {}): SpaceState {
     color: 'violet',
     visibility: 'organization',
     ownerUserId: CAMILLE,
+    awaitingOwner: false,
     statuses: DEFAULT_SPACE_STATUSES,
     createdAt: CREATED_AT,
     version: 1,

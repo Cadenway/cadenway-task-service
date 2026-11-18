@@ -530,6 +530,7 @@ export class InMemorySpaces implements SpacesUnitOfWork {
           const visible: SpaceState[] = [...spaces.values()].filter(
             (row: SpaceState): boolean =>
               row.organizationId === organizationId &&
+              !row.awaitingOwner &&
               (row.visibility === 'organization' || row.ownerUserId === viewerUserId),
           );
           return Promise.resolve(
@@ -545,7 +546,17 @@ export class InMemorySpaces implements SpacesUnitOfWork {
                 (row: SpaceState): boolean =>
                   row.organizationId === organizationId &&
                   row.visibility === 'private' &&
-                  row.ownerUserId === ownerUserId,
+                  row.ownerUserId === ownerUserId &&
+                  !row.awaitingOwner,
+              )
+              .map((row: SpaceState): Space => Space.restore(row)),
+          ),
+        lockAwaitingOwner: (organizationId: string): Promise<Space[]> =>
+          Promise.resolve(
+            [...spaces.values()]
+              .filter(
+                (row: SpaceState): boolean =>
+                  row.organizationId === organizationId && row.awaitingOwner,
               )
               .map((row: SpaceState): Space => Space.restore(row)),
           ),

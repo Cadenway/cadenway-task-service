@@ -308,3 +308,23 @@ describe('UpdateList: the membership of the caller is locked, so a removal canno
     expect(members.roleCalls).toEqual([{ organizationId: ATELIER_NORD, userId: LEA, lock: true }]);
   });
 });
+
+describe('UpdateList: the lists of a private space that awaits an owner are unknown to everyone', () => {
+  it.each([
+    ['its former owner', HUGO],
+    ['the owner of the organization', CAMILLE],
+  ])('hides them from %s', async (_who: string, actorUserId: string) => {
+    const spaces = new InMemorySpaces({
+      spaces: [designState({ awaitingOwner: true })],
+      lists: [backlogState({ id: MAQUETTES, spaceId: DESIGN })],
+    });
+
+    const refusal = await refusalOf(
+      new UpdateList(spaces, atelierNordMembers()).execute(
+        updateSprint({ actorUserId, listId: MAQUETTES }),
+      ),
+    );
+
+    expect(refusal).toEqual({ reason: 'list-not-found' });
+  });
+});

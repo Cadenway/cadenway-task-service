@@ -1,5 +1,5 @@
 {
-  "id": "8f0d1ca3-8d55-4d9e-9739-bbc461e7f986",
+  "id": "388260ce-5403-4175-8ac1-cd923205b2e7",
   "prevId": "964264ab-be98-4da2-9a6a-48880c9adf02",
   "version": "7",
   "dialect": "postgresql",
@@ -824,6 +824,13 @@
           "primaryKey": false,
           "notNull": true
         },
+        "awaiting_owner": {
+          "name": "awaiting_owner",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "statuses": {
           "name": "statuses",
           "type": "jsonb",
@@ -937,6 +944,10 @@
         "spaces_version_check": {
           "name": "spaces_version_check",
           "value": "\"spaces\".\"version\" >= 1"
+        },
+        "spaces_awaiting_owner_check": {
+          "name": "spaces_awaiting_owner_check",
+          "value": "not \"spaces\".\"awaiting_owner\" or \"spaces\".\"visibility\" = 'private'"
         },
         "spaces_icon_check": {
           "name": "spaces_icon_check",

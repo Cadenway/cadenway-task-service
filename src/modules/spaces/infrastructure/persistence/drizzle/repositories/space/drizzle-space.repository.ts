@@ -73,6 +73,7 @@ export class DrizzleSpaceRepository implements SpaceRepository {
         color: draft.color,
         visibility: draft.visibility,
         ownerUserId: draft.ownerUserId,
+        awaitingOwner: draft.awaitingOwner,
         statuses: draft.statuses,
       })
       .returning();
@@ -138,7 +139,7 @@ export class DrizzleSpaceRepository implements SpaceRepository {
   public async update(space: Space): Promise<void> {
     const { id, organizationId, name, prefix, description, icon, color, visibility } =
       space.snapshot;
-    const { ownerUserId, statuses, version } = space.snapshot;
+    const { ownerUserId, awaitingOwner, statuses, version } = space.snapshot;
     const updated: { id: string }[] = await this.db
       .update(spaces)
       .set({
@@ -149,6 +150,7 @@ export class DrizzleSpaceRepository implements SpaceRepository {
         color,
         visibility,
         ownerUserId,
+        awaitingOwner,
         statuses,
         version,
         updatedAt: sql`now()`,
@@ -165,7 +167,8 @@ export class DrizzleSpaceRepository implements SpaceRepository {
    *
    * @description
    * Loads a page of the spaces a viewer sees: those of the whole organization and the private
-   * ones the viewer owns, in the order `(created_at, id)`, after `after`.
+   * ones the viewer owns, except those awaiting an owner, in the order `(created_at, id)`, after
+   * `after`.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} viewerUserId - The account of the member.
@@ -186,6 +189,7 @@ export class DrizzleSpaceRepository implements SpaceRepository {
         and(
           eq(spaces.organizationId, organizationId),
           or(eq(spaces.visibility, 'organization'), eq(spaces.ownerUserId, viewerUserId)),
+          eq(spaces.awaitingOwner, false),
           keysetAfter(spaces.createdAt, spaces.id, after),
         ),
       )
@@ -215,8 +219,31 @@ export class DrizzleSpaceRepository implements SpaceRepository {
           eq(spaces.organizationId, organizationId),
           eq(spaces.visibility, 'private'),
           eq(spaces.ownerUserId, ownerUserId),
+          eq(spaces.awaitingOwner, false),
         ),
       )
+      .orderBy(asc(spaces.createdAt), asc(spaces.id))
+      .for('no key update');
+    return rows.map(toSpace);
+  }
+
+  /**
+   * Method lockAwaitingOwner
+   *
+   * @description
+   * Loads and locks the spaces of an organization that await an owner, in the order
+   * `(created_at, id)`. Read when the copy of the memberships learns the owner of the
+   * organization, which is rare: no index of its own, the organization prefix of the listing index
+   * bounds it.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @returns {Promise<Space[]>} The spaces awaiting an owner.
+   */
+  public async lockAwaitingOwner(organizationId: string): Promise<Space[]> {
+    const rows: SpaceRow[] = await this.db
+      .select()
+      .from(spaces)
+      .where(and(eq(spaces.organizationId, organizationId), eq(spaces.awaitingOwner, true)))
       .orderBy(asc(spaces.createdAt), asc(spaces.id))
       .for('no key update');
     return rows.map(toSpace);

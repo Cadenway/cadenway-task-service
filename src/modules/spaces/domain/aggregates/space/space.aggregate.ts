@@ -389,6 +389,7 @@ export class Space {
       color: checkColor(input.color),
       visibility: checkVisibility(input.visibility),
       ownerUserId: requireId(input.ownerUserId),
+      awaitingOwner: false,
       statuses: DEFAULT_SPACE_STATUSES,
     };
   }
@@ -422,6 +423,9 @@ export class Space {
     checkColor(state.color);
     checkVisibility(state.visibility);
     checkStoredStatuses(state.statuses);
+    if (state.awaitingOwner && state.visibility !== 'private') {
+      throw new InvalidSpaceError('only a private space awaits an owner');
+    }
     return new Space(state);
   }
 
@@ -515,22 +519,52 @@ export class Space {
    * Makes the owner of the organization the owner of a private space whose owner is no longer a
    * member ("Who changes what" of `openapi/public/spaces.yaml`). A space of the whole organization
    * keeps a former member as owner (`UserRef` of `openapi/internal/task-service.yaml`): for it,
-   * nothing changes.
+   * nothing changes. A space awaiting an owner stops awaiting.
    *
    * @param {string} ownerUserId - Account of the owner of the organization.
-   * @returns {SpaceUpdate} The space at the next version with `changed: ['ownerUserId']`, or this
-   * same space and `changed: []` when that account already owns it or the space is not private.
+   * @returns {SpaceUpdate} The space at the next version with `changed: ['ownerUserId']`, or with
+   * `changed: []` when that account already owns it (no longer awaiting, same version) or the space
+   * is not private (this same space).
    * @throws {InvalidSpaceError} When the account is empty.
    */
   public handOver(ownerUserId: string): SpaceUpdate {
     requireId(ownerUserId);
-    if (ownerUserId === this.state.ownerUserId || this.state.visibility !== 'private') {
+    if (this.state.visibility !== 'private') {
       return { space: this, changed: [] };
     }
+    if (ownerUserId === this.state.ownerUserId) {
+      return this.state.awaitingOwner
+        ? { space: new Space({ ...this.state, awaitingOwner: false }), changed: [] }
+        : { space: this, changed: [] };
+    }
     return {
-      space: new Space({ ...this.state, ownerUserId, version: this.state.version + 1 }),
+      space: new Space({
+        ...this.state,
+        ownerUserId,
+        awaitingOwner: false,
+        version: this.state.version + 1,
+      }),
       changed: ['ownerUserId'],
     };
+  }
+
+  /**
+   * Method awaitOwner
+   *
+   * @description
+   * Marks a private space whose owner left the organization while the copy of the memberships does
+   * not hold the owner of the organization yet: nobody sees it until `handOver` gives it to that
+   * owner (decision of the coordinating session for P3a: the removal always commits, the space fails
+   * closed). Not an event field and not seen through any route, so the version stays.
+   *
+   * @returns {Space} The space awaiting an owner, or this same space when it is not private or
+   * already awaits one.
+   */
+  public awaitOwner(): Space {
+    if (this.state.visibility !== 'private' || this.state.awaitingOwner) {
+      return this;
+    }
+    return new Space({ ...this.state, awaitingOwner: true });
   }
 
   /**

@@ -209,3 +209,20 @@ describe('ListSpaces: a read does not lock the membership of the caller', () => 
     expect(members.roleCalls).toEqual([{ organizationId: ATELIER_NORD, userId: LEA, lock: false }]);
   });
 });
+
+describe('ListSpaces: a private space that awaits an owner is left out for everyone', () => {
+  it.each([
+    ['its former owner', HUGO],
+    ['the owner of the organization', CAMILLE],
+  ])('leaves it out of the page of %s', async (_who: string, actorUserId: string) => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState(), designState({ awaitingOwner: true })],
+    });
+
+    const page = await new ListSpaces(spaces, atelierNordMembers()).execute(
+      listSpaces({ actorUserId }),
+    );
+
+    expect(page.items.map((view) => view.space.prefix)).toEqual(['CAD']);
+  });
+});

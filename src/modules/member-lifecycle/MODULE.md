@@ -8,8 +8,10 @@ tenant transaction:
 
 - applies it to the copy of the memberships (`ApplyMembershipChange` of organization-members);
 - for a removal, hands the private spaces the former member owned to the owner of the organization
-  (`HandOverPrivateSpaces` of spaces), and, from the tasks module of P3a, removes the member from
-  the assignees of every task.
+  (`HandOverPrivateSpaces` of spaces), or leaves them awaiting an owner while the copy does not hold
+  that owner, and, from the tasks module of P3a, removes the member from the assignees of every task;
+- for a join or a role change that gives the role `owner`, hands the spaces awaiting an owner to
+  that owner (`HandOverAwaitingSpaces` of spaces).
 
 It owns no data, no route and no event of its own. A module of its own rather than a part of
 organization-members: the spaces (and later tasks) modules read the copy, so the copy cannot call
@@ -36,11 +38,11 @@ in the transaction of the event.
 
 ## Events consumed
 
-| Event                    | Durable consumer                            | Effect                                                  |
-| ------------------------ | ------------------------------------------- | ------------------------------------------------------- |
-| `member.joined.v1`       | `task-service__project-member-joined`       | Applies the join to the copy                            |
-| `member.role-changed.v1` | `task-service__project-member-role-changed` | Applies the role change to the copy                     |
-| `member.removed.v1`      | `task-service__project-member-removed`      | Applies the removal, then hands the private spaces over |
+| Event                    | Durable consumer                            | Effect                                                      |
+| ------------------------ | ------------------------------------------- | ----------------------------------------------------------- |
+| `member.joined.v1`       | `task-service__project-member-joined`       | Applies the join; an owner receives the spaces awaiting one |
+| `member.role-changed.v1` | `task-service__project-member-role-changed` | Applies the role change; the same for the role `owner`      |
+| `member.removed.v1`      | `task-service__project-member-removed`      | Applies the removal, then hands the private spaces over     |
 
 - One durable pull consumer of `EVENTS` per event, filtered on its `evt.` subject, registered by
   `MemberEventsHandler`. The names, the filters and `service: 'task-service'` are the ones
@@ -60,17 +62,21 @@ in the transaction of the event.
 - One unit: the deduplicator of `OutboxModule` runs each delivery in the tenant transaction of the
   organization of its envelope and records `(consumer, event id)` in `processed_events` there;
   `ApplyMemberEvent` runs in its own `MemberEventUnitOfWork`, which joins that transaction, and the
-  copy, the handover, their outbox rows and the processed id commit together. A failure of the handover (the owner of the organization
-  not in the copy yet, the database unavailable) rolls the change of the copy back too, and the
-  whole removal is redelivered on the schedule below (the condition the coordinating session set
-  for P3a). The price: while the handover fails, the removed person is still a member in the copy,
-  for every route of this service, until a redelivery succeeds or the event becomes a dead letter.
-- Owner unknown: the handover throws when the copy holds no active owner of the organization (its
-  `member.joined.v1` has not arrived, or the copy is incomplete). The delivery warnings repeat
-  while PostgreSQL answers. Check: `organization_members` of that organization has no row with the
-  role `owner` and no `removed_at`. Remedy: have organization-service requeue the `member.joined.v1`
-  of the owner (`requeueOutboxEvents`); the next redelivery of the removal then applies the copy and
-  the handover together.
+  copy, the handover, their outbox rows and the processed id commit together. A transient failure
+  (the database unavailable, a lock timeout) rolls the whole unit back, the change of the copy
+  included, and the event is redelivered on the schedule below.
+- A removal always commits (decision revised by the coordinating session for P3a: a revocation
+  must never wait). An owner of the organization unknown to the copy (its `member.joined.v1` has
+  not arrived, or the copy is incomplete) is not a transient failure: the removal commits, the
+  private spaces of the former member are left awaiting an owner (`spaces.awaiting_owner`), seen by
+  nobody, the former owner included, and the handler logs once the warning "A removed member owned
+  private spaces while the owner of the organization is unknown: they await an owner." (no personal
+  data; the kit adds the organization and the trace). The `member.joined.v1` or
+  `member.role-changed.v1` that makes someone owner hands them over in its own transaction
+  (`space.updated.v1`, `changed: ['ownerUserId']`, actor `system`). Check:
+  `organization_members` of that organization has no row with the role `owner` and no
+  `removed_at`. Remedy: have organization-service requeue the `member.joined.v1` of the owner
+  (`requeueOutboxEvents`).
 - Order: the three events travel on three subjects and arrive in any order; the copy applies them
   by the version of the membership (organization-members). The handover reads the copy after the
   removal: it hands nothing over while the account is still a member under another membership (a
@@ -92,8 +98,7 @@ in the transaction of the event.
   kit logs each failed delivery as a warning naming the consumer, and its `errorClass` is a fixed
   category (`Error` for every failure of the modules or of PostgreSQL), so a warning does not tell
   a defect from an outage: warnings that go on once PostgreSQL answers point at a defect of the
-  events or at an owner unknown to the copy (above). The warning carries no organization: the kit
-  writes it outside the context of the event.
+  events. The warning carries no organization: the kit writes it outside the context of the event.
 - Signals for operators, outside this service: the warnings `event handler failed: will retry` of
   these three consumers; any message on `dlq.task-service__project-member-*`; and, on the broker,
   `num_ack_pending`, `num_redelivered` and `num_pending` of the three durable consumers. No metric
@@ -126,14 +131,16 @@ unapplied, with no later correction.
   cadenway-ops first.
 - A removal is applied to the copy before anything that depends on it, in the same transaction.
 - A private space passes to the owner of the organization only when its owner is no longer a
-  member of the organization.
+  member of the organization; it awaits that owner, seen by nobody, while the copy does not hold
+  one.
+- A removal of the copy commits whatever the spaces need; only a transient failure redelivers it.
 
 ## Transactions
 
 `ApplyMemberEvent` runs in its `MemberEventUnitOfWork`, which joins the tenant transaction the
-deduplicator of the kit opened for the organization of the event; `ApplyMembershipChange` and
-`HandOverPrivateSpaces` join it too through their tenant runners. Nothing is committed unless all of
-them resolve.
+deduplicator of the kit opened for the organization of the event; `ApplyMembershipChange`,
+`HandOverPrivateSpaces` and `HandOverAwaitingSpaces` join it too through their tenant runners.
+Nothing is committed unless all of them resolve; an owner unknown to the copy is not a failure.
 
 ## Decisions
 
@@ -146,7 +153,12 @@ them resolve.
 - The handover locks the private spaces of the former member first and asks for the owner of the
   organization only when there is one to hand over: a removal never waits for an owner it does not
   need.
+- The first version of PR 1 rolled the removal back while the owner of the organization was
+  unknown, so the removed member stayed a member for up to about 25 h 43 min; the coordinating
+  session revised it: the removal commits and the spaces fail closed, awaiting an owner.
 - `tests/organization-members.int-spec.ts` proves the copy and the broker grants on real
-  PostgreSQL and NATS; `tests/spaces.int-spec.ts` proves the handover and that a failing handover
-  rolls the removal of the copy back. `member-events-handler.provider.spec.ts` pins the production
+  PostgreSQL and NATS; `tests/spaces.int-spec.ts` proves the handover, the removal committed while
+  the owner is unknown with its spaces seen by nobody, their handover on the later owner event, and
+  that a transient failure (a lock timeout) rolls the removal of the copy back until a redelivery
+  succeeds. `member-events-handler.provider.spec.ts` pins the production
   schedule and the three handler names.
