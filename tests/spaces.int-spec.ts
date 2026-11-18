@@ -1417,21 +1417,86 @@ describe('spaces and lists', () => {
       expect(await countRows('spaces', `name = 'Marketing et ventes'`)).toBe(0);
     });
 
-    it("replays a space creation with the weak content ETag of Express instead of its version, which is the kit's current behavior", async () => {
+    it('replays a space creation with the ETag of the version of the space and its Location', async () => {
       const body = { name: 'Logistique', prefix: 'LOG' };
       const headers = { 'Idempotency-Key': 'creer-logistique-1' };
 
       const first = await send('post', '/internal/v1/spaces', camille, { body, headers });
       const again = await send('post', '/internal/v1/spaces', camille, { body, headers });
 
+      const created = conforms(CreateSpaceInternalResponse, bodyOf(first));
       expect(first.status).toBe(201);
-      expect(first.headers.etag).toBe('"1"');
+      expect(first.headers.etag).toBe(`"${String(created.space.version)}"`);
+      expect(first.headers.location).toBe(`/internal/v1/spaces/${created.space.id}`);
       expect(again.status).toBe(201);
       expect(again.headers['idempotent-replayed']).toBe('true');
-      expect(again.headers.etag).toMatch(/^W\//u);
-      expect(again.headers.etag).not.toBe(first.headers.etag);
+      expect(again.headers.etag).toBe(`"${String(created.space.version)}"`);
+      expect(again.headers.location).toBe(first.headers.location);
       expect(bodyOf(again)).toEqual(bodyOf(first));
       expect(await countRows('spaces', `name = 'Logistique'`)).toBe(1);
+    });
+
+    it('refuses a malformed key with 400 request.invalid and one issue on the header, and creates nothing', async () => {
+      const response = await send('post', '/internal/v1/spaces', camille, {
+        body: { name: 'Achats', prefix: 'ACH' },
+        headers: { 'Idempotency-Key': 'creer achats 1' },
+      });
+
+      expectProblem(response, 400, 'request.invalid');
+      expect(bodyOf(response)).toMatchObject({
+        details: { issues: [{ in: 'header', path: 'Idempotency-Key', code: 'invalid_format' }] },
+      });
+      expect(await countRows('spaces', `name = 'Achats'`)).toBe(0);
+    });
+
+    it('answers 409 idempotency.request-in-progress while the first request with the key runs, then creates one space', async () => {
+      const body = { name: 'Achats', prefix: 'ACH' };
+      const headers = { 'Idempotency-Key': 'creer-achats-1' };
+      const blocker = await migrator.connect();
+      let holding = false;
+      let first: Promise<request.Response> | undefined;
+
+      try {
+        // The membership of Camille is held, so the creation waits on its read `FOR SHARE`, inside
+        // the transaction that holds the lock of the key. The release comes well before the
+        // `lock_timeout` of the application role (5 s).
+        await blocker.query('begin');
+        holding = true;
+        await blocker.query(`select set_config('app.system_access', 'on', true)`);
+        await blocker.query(
+          `select 1 from organization_members where organization_id = $1 and id = $2 for update`,
+          [atelierNordId, camille.memberId],
+        );
+        first = send('post', '/internal/v1/spaces', camille, { body, headers });
+        await vi.waitFor(
+          async () => {
+            const waiting = await blocker.query<{ readonly total: number }>(
+              'select count(*)::int as total from pg_locks where not granted',
+            );
+            expect(waiting.rows[0]?.total).toBeGreaterThan(0);
+          },
+          { timeout: 3_000, interval: 50 },
+        );
+
+        const during = await send('post', '/internal/v1/spaces', camille, { body, headers });
+
+        expectProblem(during, 409, 'idempotency.request-in-progress');
+        await blocker.query('rollback');
+        holding = false;
+      } finally {
+        if (holding) {
+          await blocker.query('rollback');
+        }
+        blocker.release();
+      }
+
+      const created = await first;
+      const again = await send('post', '/internal/v1/spaces', camille, { body, headers });
+      expect(created.status).toBe(201);
+      expect(again.status).toBe(201);
+      expect(again.headers['idempotent-replayed']).toBe('true');
+      expect(bodyOf(again)).toEqual(bodyOf(created));
+      expect(await countRows('spaces', `name = 'Achats'`)).toBe(1);
     });
 
     it('replays a list creation with the same status and body, and creates one list', async () => {

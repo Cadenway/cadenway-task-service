@@ -75,14 +75,10 @@ owner_user_id = $viewer`) runs after the index, which costs one row read per pri
 
 - The two creations honour `Idempotency-Key` (`@Idempotent()`, applied by `spaces.module.ts`: the
   decorator lives in `@cadenway/nest-common/database`, which the strict layout keeps out of
-  `presentation/`). Known deviations of `@cadenway/nest-common` 0.6.2 from the contract, accepted
-  for P3a PR 1 by the coordinating session until the kit fixes them: a request still running
-  answers `409 idempotency.in-progress` where the contract declares
-  `idempotency.request-in-progress`; a replayed space creation carries the weak entity tag Express
-  computes from the body (`W/"…"`) instead of the version of the space, since the kit replays only
-  `Location` and its body has no top-level `version` (a replayed list creation carries its
-  version); a malformed key answers `400 idempotency.key-invalid`, a code the contract does not
-  declare.
+  `presentation/`). A replay answers the recorded `Location` and `ETag`: the version of the space
+  or the list at its creation. A request still running with the same key answers
+  `409 idempotency.request-in-progress`; a malformed key, `400 request.invalid` with one issue on
+  the `Idempotency-Key` header.
 - `GET /internal/v1/spaces/{spaceId}/overview` and `GET /internal/v1/lists/{listId}/counts` count
   tasks: the task query module serves them from PR 3.
 
