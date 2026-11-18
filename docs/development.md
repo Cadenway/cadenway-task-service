@@ -11,9 +11,11 @@ the internal token on every route but the health probes, connects to NATS as the
 the outbox relay, and its readiness checks PostgreSQL and NATS. The migrations create the tables
 of the service kit, owned by the platform module (`src/modules/platform/MODULE.md`), and the copy of
 the organization memberships (`src/modules/organization-members/MODULE.md`), which three durable
-consumers of `EVENTS` feed from the member events of organization-service. No route exists yet, and
-`@cadenway/contracts` defines no event of this service, so nothing is published. The target
-architecture in this guide is what the next modules must follow.
+consumers of `EVENTS` feed from the member events of organization-service
+(`src/modules/member-lifecycle/MODULE.md`), and the spaces, prefixes and lists
+(`src/modules/spaces/MODULE.md`), whose internal routes exist and whose `space.*` and `list.*`
+events leave through the outbox. Tasks and their queries arrive next. The target architecture in
+this guide is what the next modules must follow.
 
 The commands below are the documented workflow. Inspect the repository's actual manifests and files before running them, and report unavailable checks rather than inventing replacements. Run Git, pnpm, build, and test commands with this repository as the working directory, never from the parent workspace.
 
@@ -155,8 +157,12 @@ project the same way and publishes member events with the `admin` user, as organ
 would: it checks that the copy of the memberships reads the events published before the service
 started, applies joins, role changes and removals by version, ignores a redelivered or older event,
 keeps two organizations apart under row-level security, and that the broker grants the `task` user
-its three consumers by exact name only. Both move to the fixtures of `@cadenway/nest-testing` once
-that package exports them.
+its three consumers by exact name only. `tests/spaces.int-spec.ts` does the same for the spaces and
+lists: every route against its contract validators, the visibility and role rules, the prefixes,
+`If-Match`, paging, `Idempotency-Key`, row-level security of the three tables, the events in the
+outbox, and the handover of private spaces on `member.removed.v1`, including that a failing
+handover rolls the removal of the copy back until a redelivery succeeds. They move to the fixtures
+of `@cadenway/nest-testing` once that package exports them.
 
 ## Minimum checks by change
 

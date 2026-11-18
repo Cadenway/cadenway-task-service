@@ -61,17 +61,23 @@ const platformTables = [
   'processed_events',
 ] as const;
 
-/** Every table the migrations create, by name: the kit tables and `organization_members`. */
+/** Every table the migrations create, by name: the kit tables, the memberships, the spaces. */
 const publicTables = [
   'event_versions',
   'idempotency_keys',
+  'lists',
   'organization_members',
   'outbox_events',
   'processed_events',
+  'space_prefixes',
+  'spaces',
 ] as const;
 
-/** Migrations of the journal: the platform tables, then the copy of the memberships. */
-const appliedMigrations = 2;
+/**
+ * Migrations of the journal: the platform tables, the copy of the memberships, then the spaces and
+ * their lists.
+ */
+const appliedMigrations = 3;
 
 /**
  * Runs `docker compose` on the throwaway project.
@@ -352,18 +358,24 @@ describe('task-service wiring', () => {
     expect(tables.rows).toEqual([
       { relname: 'event_versions', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'idempotency_keys', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'lists', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'organization_members', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'outbox_events', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'processed_events', relrowsecurity: false, relforcerowsecurity: false },
+      { relname: 'space_prefixes', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'spaces', relrowsecurity: true, relforcerowsecurity: true },
     ]);
     expect(policies.rows).toEqual([
       { tablename: 'event_versions', policyname: 'event_versions_organization_isolation' },
       { tablename: 'idempotency_keys', policyname: 'idempotency_keys_organization_isolation' },
+      { tablename: 'lists', policyname: 'lists_organization_isolation' },
       {
         tablename: 'organization_members',
         policyname: 'organization_members_organization_isolation',
       },
       { tablename: 'outbox_events', policyname: 'outbox_events_organization_isolation' },
+      { tablename: 'space_prefixes', policyname: 'space_prefixes_organization_isolation' },
+      { tablename: 'spaces', policyname: 'spaces_organization_isolation' },
     ]);
   });
 

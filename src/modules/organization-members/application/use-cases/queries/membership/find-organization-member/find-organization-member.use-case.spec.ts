@@ -103,3 +103,61 @@ describe('FindOrganizationMember: an account is a member from the copy, with its
     expect(store.activeByUserCalls).toEqual([{ organizationId: ATELIER_NORD, userId: INES }]);
   });
 });
+
+describe('FindOrganizationMember: a write asks for the membership under a lock, a read does not', () => {
+  it('reads without a lock when the input does not say', async () => {
+    const store = new InMemoryMemberships([membershipState()]);
+
+    await new FindOrganizationMember(store).execute({ organizationId: ATELIER_NORD, userId: HUGO });
+
+    expect(store.activeByUserLocks).toEqual([false]);
+  });
+
+  it('reads without a lock when the input says so', async () => {
+    const store = new InMemoryMemberships([membershipState()]);
+
+    await new FindOrganizationMember(store).execute({
+      organizationId: ATELIER_NORD,
+      userId: HUGO,
+      lock: false,
+    });
+
+    expect(store.activeByUserLocks).toEqual([false]);
+  });
+
+  it('passes the lock to the repository', async () => {
+    const store = new InMemoryMemberships([membershipState()]);
+
+    await new FindOrganizationMember(store).execute({
+      organizationId: ATELIER_NORD,
+      userId: HUGO,
+      lock: true,
+    });
+
+    expect(store.activeByUserLocks).toEqual([true]);
+  });
+
+  it('answers the same member whether or not the read is locked', async () => {
+    const store = new InMemoryMemberships([membershipState({ role: 'admin', version: 2 })]);
+    const find = new FindOrganizationMember(store);
+
+    const unlocked = await find.execute({ organizationId: ATELIER_NORD, userId: HUGO });
+    const locked = await find.execute({ organizationId: ATELIER_NORD, userId: HUGO, lock: true });
+
+    expect(locked).toEqual(unlocked);
+    expect(locked).toEqual({ memberId: HUGO_MEMBERSHIP, role: 'admin' });
+  });
+
+  it('locks the read of an account that is not a member, and answers null', async () => {
+    const store = new InMemoryMemberships();
+
+    const member = await new FindOrganizationMember(store).execute({
+      organizationId: ATELIER_NORD,
+      userId: LEA,
+      lock: true,
+    });
+
+    expect(member).toBeNull();
+    expect(store.activeByUserLocks).toEqual([true]);
+  });
+});

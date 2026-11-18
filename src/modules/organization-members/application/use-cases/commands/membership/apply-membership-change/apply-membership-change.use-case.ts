@@ -54,8 +54,9 @@ export class ApplyMembershipChange {
    *
    * @param {ApplyMembershipChangeInput} input - The member event.
    * @returns {Promise<void>} Resolves once applied, or at once when it changes nothing.
-   * @throws {MembershipMismatchError} When the event names another account than the stored
-   * membership: the kit redelivers it on the schedule of the module, then keeps it as a dead letter.
+   * @throws {MembershipMismatchError} When a join or a role change names another account than the
+   * stored membership: the kit redelivers it on the schedule of the member-lifecycle module, then
+   * keeps it as a dead letter.
    * @throws {InvalidMembershipStateError} When the version is not a positive integer.
    */
   public async execute(input: ApplyMembershipChangeInput): Promise<void> {

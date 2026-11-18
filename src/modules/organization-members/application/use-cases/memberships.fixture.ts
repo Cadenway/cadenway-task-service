@@ -143,6 +143,18 @@ export class InMemoryMemberships implements MembershipsUnitOfWork {
    * @type {{ organizationId: string; userId: string }[]}
    * @readonly
    */
+  public readonly activeByUserLocks: boolean[] = [];
+
+  /**
+   * Property activeByUserCalls
+   *
+   * @description
+   * The `listActiveByUser` calls, as organization and account (their `lock` is in
+   * `activeByUserLocks`).
+   *
+   * @type {{ organizationId: string; userId: string }[]}
+   * @readonly
+   */
   public readonly activeByUserCalls: {
     readonly organizationId: string;
     readonly userId: string;
@@ -239,7 +251,12 @@ export class InMemoryMemberships implements MembershipsUnitOfWork {
         rows.set(membership.snapshot.id, membership.snapshot);
         return Promise.resolve();
       },
-      listActiveByUser: (organizationId: string, userId: string): Promise<Membership[]> => {
+      listActiveByUser: (
+        organizationId: string,
+        userId: string,
+        lock: boolean,
+      ): Promise<Membership[]> => {
+        this.activeByUserLocks.push(lock);
         this.activeByUserCalls.push({ organizationId, userId });
         const states: MembershipState[] = [...rows.values()]
           .filter(

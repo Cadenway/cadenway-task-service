@@ -137,10 +137,16 @@ export class DrizzleMembershipRepository implements MembershipRepository {
    *
    * @param {string} organizationId - The organization.
    * @param {string} userId - The account.
+   * @param {boolean} lock - `FOR SHARE` until the end of the transaction: a removal, which locks
+   * the row `FOR UPDATE`, waits for the write of the caller.
    * @returns {Promise<Membership[]>} The memberships, empty when there is none.
    */
-  public async listActiveByUser(organizationId: string, userId: string): Promise<Membership[]> {
-    const rows: OrganizationMemberRow[] = await this.db
+  public async listActiveByUser(
+    organizationId: string,
+    userId: string,
+    lock: boolean,
+  ): Promise<Membership[]> {
+    const query = this.db
       .select()
       .from(organizationMembers)
       .where(
@@ -152,6 +158,7 @@ export class DrizzleMembershipRepository implements MembershipRepository {
       )
       .orderBy(desc(organizationMembers.createdAt), desc(organizationMembers.id))
       .limit(activeMembershipsCap);
+    const rows: OrganizationMemberRow[] = lock ? await query.for('share') : await query;
     return rows.map(toMembership);
   }
 

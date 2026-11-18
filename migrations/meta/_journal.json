@@ -15,6 +15,13 @@
       "when": 1794998398795,
       "tag": "0001_organization_members",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795002596658,
+      "tag": "0002_spaces_and_lists",
+      "breakpoints": true
     }
   ]
 }

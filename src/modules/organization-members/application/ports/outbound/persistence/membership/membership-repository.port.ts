@@ -55,9 +55,10 @@ export interface MembershipRepository {
    *
    * @param {string} organizationId - The organization.
    * @param {string} userId - The account.
+   * @param {boolean} lock - Whether to lock them `FOR SHARE` until the end of the transaction.
    * @returns {Promise<Membership[]>} The memberships, empty when the account is not a member.
    */
-  listActiveByUser(organizationId: string, userId: string): Promise<Membership[]>;
+  listActiveByUser(organizationId: string, userId: string, lock: boolean): Promise<Membership[]>;
 
   /**
    * Method findActiveOwner
