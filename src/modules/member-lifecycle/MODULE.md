@@ -9,8 +9,8 @@ tenant transaction:
 - applies it to the copy of the memberships (`ApplyMembershipChange` of organization-members);
 - for a removal, hands the private spaces the former member owned to the owner of the organization
   (`HandOverPrivateSpaces` of spaces), or leaves them awaiting an owner while the copy does not hold
-  that owner, then removes the member from the assignees of every task (`UnassignRemovedMember`
-  of tasks), closed tasks included;
+  that owner, then enqueues the job that removes the member from the assignees of every task,
+  closed tasks included (`ScheduleMemberUnassignment` of tasks); the job runs after the commit;
 - for a join or a role change that gives the role `owner`, hands the spaces awaiting an owner to
   that owner (`HandOverAwaitingSpaces` of spaces).
 
@@ -35,17 +35,17 @@ None.
 ## Events emitted
 
 None of its own: the handover appends `space.updated.v1` through the outbox of the spaces module,
-and the unassignment one `task.updated.v1` per task (`changed: ['assigneeIds']`, actor
-`{ type: 'system', id: 'task-service' }`) through the outbox of the tasks module, in the
-transaction of the event.
+in the transaction of the event. The unassignment job the removal enqueues appends one
+`task.updated.v1` per task (`changed: ['assigneeIds']`, actor `{ type: 'system', id: 'task-service' }`)
+through the outbox of the tasks module, in the transaction of each of its batches, after the event.
 
 ## Events consumed
 
-| Event                    | Durable consumer                            | Effect                                                      |
-| ------------------------ | ------------------------------------------- | ----------------------------------------------------------- |
-| `member.joined.v1`       | `task-service__project-member-joined`       | Applies the join; an owner receives the spaces awaiting one |
-| `member.role-changed.v1` | `task-service__project-member-role-changed` | Applies the role change; the same for the role `owner`      |
-| `member.removed.v1`      | `task-service__project-member-removed`      | Applies the removal, hands the spaces over, unassigns       |
+| Event                    | Durable consumer                            | Effect                                                       |
+| ------------------------ | ------------------------------------------- | ------------------------------------------------------------ |
+| `member.joined.v1`       | `task-service__project-member-joined`       | Applies the join; an owner receives the spaces awaiting one  |
+| `member.role-changed.v1` | `task-service__project-member-role-changed` | Applies the role change; the same for the role `owner`       |
+| `member.removed.v1`      | `task-service__project-member-removed`      | Applies the removal, hands the spaces over, enqueues the job |
 
 - One durable pull consumer of `EVENTS` per event, filtered on its `evt.` subject, registered by
   `MemberEventsHandler`. The names, the filters and `service: 'task-service'` are the ones
@@ -65,12 +65,15 @@ transaction of the event.
 - One unit: the deduplicator of `OutboxModule` runs each delivery in the tenant transaction of the
   organization of its envelope and records `(consumer, event id)` in `processed_events` there;
   `ApplyMemberEvent` runs in its own `MemberEventUnitOfWork`, which joins that transaction, and the
-  copy, the handover, the unassignment, their activity entries and outbox rows and the processed id
-  commit together. A transient failure
-  (the database unavailable, a lock timeout) rolls the whole unit back, the change of the copy
-  included, and the event is redelivered on the schedule below.
+  copy, the handover with its outbox rows, the unassignment job and the processed id commit
+  together. A transient failure (the database unavailable, a lock timeout) rolls the whole unit
+  back, the change of the copy and the job included, and the event is redelivered on the schedule
+  below.
 - A removal always commits (decision revised by the coordinating session for P3a: a revocation
-  must never wait). An owner of the organization unknown to the copy (its `member.joined.v1` has
+  must never wait for cleanup). It touches no task: the unassignment is one job row inserted in its
+  transaction, so its cost does not grow with the assignments of the member, and the job does the
+  work afterwards in batches (the tasks module documents its bound, its retries and its dead
+  letter). An owner of the organization unknown to the copy (its `member.joined.v1` has
   not arrived, or the copy is incomplete) is not a transient failure: the removal commits, the
   private spaces of the former member are left awaiting an owner (`spaces.awaiting_owner`), seen by
   nobody, the former owner included, and the handler logs once the warning "A removed member owned
@@ -111,7 +114,10 @@ transaction of the event.
   lock wait or a statement timeout from another database error; any message on
   `dlq.task-service__project-member-*`; and, on the broker,
   `num_ack_pending`, `num_redelivered` and `num_pending` of the three durable consumers. No metric
-  of this service counts the events waiting.
+  of this service counts the events waiting. Once the removal committed, its unassignment has the
+  signals of its job (the failed attempts logged by the kit, the dead-letter queue
+  `task.unassign-removed-member.dead-letter` and its watch), listed in the MODULE.md of tasks with
+  what an operator does about them.
 - Rollout: a later change of the schedule is rolled out with a deployment that replaces every
   replica: a replica on another limit treats its own last delivery as final.
 - After the last delivery the event becomes a dead letter in `EVENTS_DLQ`
@@ -142,17 +148,21 @@ unapplied, with no later correction.
 - A private space passes to the owner of the organization only when its owner is no longer a
   member of the organization; it awaits that owner, seen by nobody, while the copy does not hold
   one.
-- A removal of the copy commits whatever the spaces need; only a transient failure redelivers it.
-- A removed member is assigned to no task once the removal commits; a join or a role change never
-  unassigns, so a member who becomes a guest keeps the tasks they hold.
+- A removal of the copy commits whatever the spaces or the tasks need; only a transient failure
+  redelivers it.
+- A removal enqueues exactly one unassignment job per membership and version, in its transaction;
+  the job removes the former member from every task after the commit, unless the copy holds them
+  as a member again by then. A join or a role change enqueues nothing, so a member who becomes a
+  guest keeps the tasks they hold.
 
 ## Transactions
 
 `ApplyMemberEvent` runs in its `MemberEventUnitOfWork`, which joins the tenant transaction the
 deduplicator of the kit opened for the organization of the event; `ApplyMembershipChange`,
-`HandOverPrivateSpaces`, `HandOverAwaitingSpaces` and `UnassignRemovedMember` join it too through
-their tenant runners.
-Nothing is committed unless all of them resolve; an owner unknown to the copy is not a failure.
+`HandOverPrivateSpaces`, `HandOverAwaitingSpaces` and `ScheduleMemberUnassignment` join it too
+through their tenant runners, the last one inserting its job through the connection of that
+transaction. Nothing is committed unless all of them resolve; an owner unknown to the copy is not
+a failure. The unassignment job runs later, in transactions of its own.
 
 ## Decisions
 
@@ -165,9 +175,11 @@ Nothing is committed unless all of them resolve; an owner unknown to the copy is
 - The handover locks the private spaces of the former member first and asks for the owner of the
   organization only when there is one to hand over: a removal never waits for an owner it does not
   need.
-- The unassignment runs in the transaction of the removal, in batches of 500 tasks (PR 2 of P3a).
-  TODO: unassignment job (PR 2 follow-up change) replaces this inline unassignment; the bound it
-  puts on "a removal always commits" and the operator action are written then.
+- The unassignment of a removed member is a job of the tasks module enqueued in the transaction
+  of the removal (decision of the coordinating session for PR 2 of P3a, one code path): the first
+  version of PR 2 unassigned inline, in batches of 500 tasks, which bounded "a removal always
+  commits" by the 25 s handler budget of the kit. The job is keyed by the membership and its
+  version, so a redelivery enqueues nothing new.
 - The first version of PR 1 rolled the removal back while the owner of the organization was
   unknown, so the removed member stayed a member for up to about 25 h 43 min; the coordinating
   session revised it: the removal commits and the spaces fail closed, awaiting an owner.
@@ -175,5 +187,6 @@ Nothing is committed unless all of them resolve; an owner unknown to the copy is
   PostgreSQL and NATS; `tests/spaces.int-spec.ts` proves the handover, the removal committed while
   the owner is unknown with its spaces seen by nobody, their handover on the later owner event, and
   that a transient failure (a lock timeout) rolls the removal of the copy back until a redelivery
-  succeeds. `member-events-handler.provider.spec.ts` pins the production
-  schedule and the three handler names.
+  succeeds. `tests/tasks.int-spec.ts` proves that a removal commits with its unassignment job and
+  that a redelivered one enqueues nothing. `member-events-handler.provider.spec.ts` pins the
+  production schedule and the three handler names.

@@ -11,15 +11,17 @@ import type { ApplyMemberEventOutput } from './apply-member-event.output.js';
  * @description
  * Applies a member event of organization-service to every module of this service it concerns:
  * the copy of the memberships for the three events, then, for `member.removed.v1`, the hand-over
- * of the private spaces of the former member to the owner of the organization and the removal of
- * the former member from the tasks they are assigned to ("Members" of
+ * of the private spaces of the former member to the owner of the organization and the enqueuing
+ * of the job that removes the former member from the tasks they are assigned to ("Members" of
  * `openapi/internal/task-service.yaml`).
  *
  * It owns its tenant transaction through `MemberEventUnitOfWork`, which joins the one the
- * deduplicator of the kit opened for the organization of the event, as both ports do. The copy, the handed-over
- * spaces with their outbox rows and the processed event id commit together, or none does and the
- * kit redelivers the event. Both effects are idempotent, so a redelivery the deduplicator did not
- * catch is harmless.
+ * deduplicator of the kit opened for the organization of the event, as the three ports do. The
+ * copy, the handed-over spaces with their outbox rows, the unassignment job and the processed
+ * event id commit together, or none does and the kit redelivers the event. The removal touches no
+ * task, so its cost does not grow with the assignments of the member. Every effect is idempotent
+ * (the job has one occurrence per membership and version), so a redelivery the deduplicator did
+ * not catch is harmless.
  */
 export class ApplyMemberEvent {
   // #region Properties
@@ -60,7 +62,7 @@ export class ApplyMemberEvent {
    * Property assignments
    *
    * @description
-   * The removal of a former member from the tasks they are assigned to.
+   * The enqueuing of the job that removes a former member from the tasks they are assigned to.
    *
    * @type {TaskAssignments}
    * @readonly
@@ -78,7 +80,7 @@ export class ApplyMemberEvent {
    * @param {MemberEventUnitOfWork} unitOfWork - The tenant transaction of the event.
    * @param {MembershipCopy} memberships - The copy of the memberships.
    * @param {PrivateSpaceHandover} spaces - The hand-over of the private spaces.
-   * @param {TaskAssignments} assignments - The removal from the assigned tasks.
+   * @param {TaskAssignments} assignments - The unassignment job of a removed member.
    * @constructor
    */
   public constructor(
@@ -103,25 +105,32 @@ export class ApplyMemberEvent {
    *
    * - for a removal, hands the private spaces of the former member over, or, while the copy does
    *   not hold the owner of the organization, leaves them awaiting one (seen by nobody): the removal
-   *   always commits (decision of the coordinating session for P3a), then removes the former
-   *   member from every task they are assigned to (system actor, one `task.updated.v1` per task);
+   *   always commits (decision of the coordinating session for P3a), then enqueues the job that
+   *   removes the former member from every task they are assigned to, after the commit and in
+   *   batches (system actor, one `task.updated.v1` per task);
    * - for a join or a role change that gives the role `owner`, hands the spaces awaiting an owner
    *   over to that owner, in the same transaction.
    *
-   * The copy comes first, so the hand-over and the unassignment read it after the event. A join or
-   * a role change never unassigns: a member who becomes a guest keeps the tasks they hold.
+   * The copy comes first, so the hand-over and the job read it after the event. A join or a role
+   * change enqueues nothing: a member who becomes a guest keeps the tasks they hold.
    *
    * @param {ApplyMemberEventInput} input - The member event.
    * @returns {Promise<ApplyMemberEventOutput>} How many private spaces now await an owner.
-   * @throws {Error} When the copy, a hand-over or the unassignment fails (the database, a lock timeout): the
-   * transaction rolls back and the kit redelivers the event on the schedule of the module.
+   * @throws {Error} When the copy, a hand-over or the enqueuing fails (the database, a lock
+   * timeout): the transaction rolls back and the kit redelivers the event on the schedule of the
+   * module.
    */
   public async execute(input: ApplyMemberEventInput): Promise<ApplyMemberEventOutput> {
     return this.unitOfWork.run(async (): Promise<ApplyMemberEventOutput> => {
       await this.memberships.apply(input);
       if (input.kind === 'removed') {
         const awaiting: number = await this.spaces.handOver(input.organizationId, input.userId);
-        await this.assignments.unassignRemovedMember(input.organizationId, input.userId);
+        await this.assignments.scheduleUnassignment(
+          input.organizationId,
+          input.userId,
+          input.memberId,
+          input.version,
+        );
         return { privateSpacesAwaitingOwner: awaiting };
       }
       if (input.role === 'owner') {

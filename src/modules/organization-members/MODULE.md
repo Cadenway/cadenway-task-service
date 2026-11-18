@@ -12,8 +12,9 @@ is a current member of the organization of a request and with which role, and wh
 It follows `member.joined.v1`, `member.role-changed.v1` and `member.removed.v1` and nothing else,
 through the member-lifecycle module, which consumes them. organization-service owns the
 organizations, the members and the invitations. This module owns no route and emits no event; the
-consequences of a removal (unassigning the member, handing its private spaces to the owner) belong
-to the modules that own those data, which member-lifecycle calls in the same transaction.
+consequences of a removal (handing its private spaces to the owner, enqueuing the job that
+unassigns the member) belong to the modules that own those data, which member-lifecycle calls in
+the same transaction.
 
 ## Public entry points
 

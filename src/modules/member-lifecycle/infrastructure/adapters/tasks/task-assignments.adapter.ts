@@ -1,28 +1,28 @@
 import type {
-  UnassignRemovedMember,
-  UnassignRemovedMemberOutput,
-} from '../../../../tasks/public/assignee/unassign-removed-member.js';
+  ScheduleMemberUnassignment,
+  ScheduleMemberUnassignmentOutput,
+} from '../../../../tasks/public/assignee/schedule-member-unassignment.js';
 import type { TaskAssignments } from '../../../application/ports/outbound/tasks/assignee/task-assignments.port.js';
 
 /**
  * Class TasksTaskAssignments
  *
  * @description
- * `TaskAssignments` on the public operation `UnassignRemovedMember` of the tasks module, which
- * joins the tenant transaction of the event.
+ * `TaskAssignments` on the public operation `ScheduleMemberUnassignment` of the tasks module,
+ * which joins the tenant transaction of the event.
  */
 export class TasksTaskAssignments implements TaskAssignments {
   // #region Properties
   /**
-   * Property unassignRemovedMemberOperation
+   * Property scheduleMemberUnassignment
    *
    * @description
-   * The removal of a former member from the assignees of every task.
+   * The enqueuing of the unassignment job of a former member.
    *
-   * @type {UnassignRemovedMember}
+   * @type {ScheduleMemberUnassignment}
    * @readonly
    */
-  private readonly unassignRemovedMemberOperation: UnassignRemovedMember;
+  private readonly scheduleMemberUnassignment: ScheduleMemberUnassignment;
   // #endregion
 
   // #region Constructor
@@ -32,31 +32,42 @@ export class TasksTaskAssignments implements TaskAssignments {
    * @description
    * Takes the public operation of the tasks module.
    *
-   * @param {UnassignRemovedMember} unassignRemovedMember - The unassignment of a former member.
+   * @param {ScheduleMemberUnassignment} scheduleMemberUnassignment - The enqueuing of the job.
    * @constructor
    */
-  public constructor(unassignRemovedMember: UnassignRemovedMember) {
-    this.unassignRemovedMemberOperation = unassignRemovedMember;
+  public constructor(scheduleMemberUnassignment: ScheduleMemberUnassignment) {
+    this.scheduleMemberUnassignment = scheduleMemberUnassignment;
   }
   // #endregion
 
   // #region Methods
   /**
-   * Method unassignRemovedMember
+   * Method scheduleUnassignment
    *
    * @description
-   * Runs `UnassignRemovedMember` for the member who left.
+   * Runs `ScheduleMemberUnassignment` for the removal.
    *
    * @param {string} organizationId - The organization of the event.
    * @param {string} userId - The account of the member who left.
-   * @returns {Promise<number>} How many tasks the account was removed from.
+   * @param {string} memberId - The membership that ended.
+   * @param {number} membershipVersion - Its version after the removal.
+   * @returns {Promise<boolean>} `true` when a job was enqueued, `false` for a duplicate.
    */
-  public async unassignRemovedMember(organizationId: string, userId: string): Promise<number> {
-    const outcome: UnassignRemovedMemberOutput = await this.unassignRemovedMemberOperation.execute({
-      organizationId,
-      userId,
-    });
-    return outcome.unassigned;
+  public async scheduleUnassignment(
+    organizationId: string,
+    userId: string,
+    memberId: string,
+    membershipVersion: number,
+  ): Promise<boolean> {
+    const outcome: ScheduleMemberUnassignmentOutput = await this.scheduleMemberUnassignment.execute(
+      {
+        organizationId,
+        userId,
+        memberId,
+        membershipVersion,
+      },
+    );
+    return outcome.scheduled;
   }
   // #endregion
 }

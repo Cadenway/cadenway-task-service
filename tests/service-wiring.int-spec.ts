@@ -348,6 +348,42 @@ describe('task-service wiring', () => {
     expect(journal.rows).toEqual([{ applied: appliedMigrations }]);
   });
 
+  it('provisions the pg-boss schema as the migrator role, with the unassignment queue and its dead-letter queue', async () => {
+    const schema = await migrator.query<{ owner: string }>(
+      `select pg_get_userbyid(nspowner) as owner from pg_namespace where nspname = 'pgboss'`,
+    );
+    // The queues of the service; pg-boss keeps internal ones whose names start with `__pgboss__`.
+    const queues = await migrator.query<{ name: string; dead_letter: string | null }>(
+      `select name, dead_letter from pgboss.queue where left(name, 10) <> '__pgboss__' order by name`,
+    );
+
+    expect(schema.rows).toEqual([{ owner: 'task_migrator' }]);
+    expect(queues.rows).toEqual([
+      {
+        name: 'task.unassign-removed-member',
+        dead_letter: 'task.unassign-removed-member.dead-letter',
+      },
+      { name: 'task.unassign-removed-member.dead-letter', dead_letter: null },
+    ]);
+  });
+
+  it('lets the application role use the jobs but change no structure of the pg-boss schema', async () => {
+    const system = service().get(SystemTransactionRunner);
+
+    await expect(
+      system.run((tx) => tx.client.query('select count(*) from pgboss.job')),
+    ).resolves.toBeDefined();
+    for (const statement of [
+      'create table pgboss.wiring_probe (id integer)',
+      'alter table pgboss.job add column wiring_probe integer',
+      'truncate pgboss.job',
+    ]) {
+      await expect(system.run((tx) => tx.client.query(statement))).rejects.toMatchObject({
+        code: '42501',
+      });
+    }
+  });
+
   it('forces row-level security on the tables that carry an organization', async () => {
     const tables = await migrator.query<{
       relname: string;

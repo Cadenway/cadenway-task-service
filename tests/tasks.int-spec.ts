@@ -143,6 +143,15 @@ const theo: Person = {
   memberId: '01938f6e-9000-7000-8000-0000000000ce',
 };
 
+/** Rose Lambert, member of Atelier Nord, who joins again while the job of her removal waits. */
+const rose: Person = {
+  userId: '01938f6e-8a42-7d5b-b2c9-5e1f3a6d9c31',
+  memberId: '01938f6e-9000-7000-8000-0000000000cf',
+};
+
+/** The new membership Rose Lambert gets when she joins Atelier Nord again. */
+const roseNewMemberId = '01938f6e-9000-7000-8000-0000000000d2';
+
 /** The new membership Chloé Girard gets when she joins Atelier Nord again. */
 const chloeNewMemberId = '01938f6e-9000-7000-8000-0000000000d1';
 
@@ -917,6 +926,7 @@ describe('tasks', () => {
       [chloe, 'member'],
       [noe, 'member'],
       [theo, 'member'],
+      [rose, 'member'],
       ...crowd.map((person): readonly [Person, MemberJoinedV1['role']] => [person, 'member']),
     ];
     for (const [person, role] of people) {
@@ -3264,7 +3274,185 @@ describe('tasks', () => {
     return rows[0]?.total ?? 0;
   }
 
-  describe('when a member leaves, they are unassigned from every task in the transaction of the removal', () => {
+  /** A row of the unassignment queue of pg-boss, as the specs read it. */
+  interface UnassignmentJob {
+    readonly id: string;
+    readonly state: string;
+    readonly retry_count: number;
+    readonly organization_id: string;
+    readonly created_on: Date;
+    readonly completed_on: Date | null;
+  }
+
+  /**
+   * Reads the unassignment jobs of an account, oldest first, as the migrator role, which owns the
+   * `pgboss` schema.
+   *
+   * @param person - The account.
+   * @returns The jobs of the queue whose payload names it.
+   */
+  async function unassignmentJobsOf(person: Person): Promise<UnassignmentJob[]> {
+    const result = await migrator.query<UnassignmentJob>(
+      `select id, state, retry_count, data ->> 'organizationId' as organization_id, created_on, completed_on
+         from pgboss.job
+        where name = 'task.unassign-removed-member' and data -> 'payload' ->> 'userId' = $1
+        order by created_on, id`,
+      [person.userId],
+    );
+    return result.rows;
+  }
+
+  /**
+   * Waits until the unassignment jobs of an account are all completed.
+   *
+   * @param person - The account.
+   * @param count - How many jobs it must have.
+   * @returns The jobs.
+   */
+  async function jobsCompleted(person: Person, count: number): Promise<UnassignmentJob[]> {
+    let jobs: UnassignmentJob[] = [];
+    await vi.waitFor(
+      async () => {
+        jobs = await unassignmentJobsOf(person);
+        expect(jobs.map((job) => job.state)).toEqual(
+          Array.from({ length: count }, () => 'completed'),
+        );
+      },
+      { timeout: 120_000, interval: 250 },
+    );
+    return jobs;
+  }
+
+  /**
+   * Waits until the only unassignment job of an account failed an attempt and waits for its retry.
+   *
+   * @param person - The account.
+   * @returns The job.
+   */
+  async function jobWaitingForRetry(person: Person): Promise<UnassignmentJob> {
+    let job: UnassignmentJob | undefined;
+    await vi.waitFor(
+      async () => {
+        [job] = await unassignmentJobsOf(person);
+        expect(job).toMatchObject({ state: 'retry' });
+        expect(job?.retry_count).toBeGreaterThanOrEqual(1);
+      },
+      { timeout: 60_000, interval: 250 },
+    );
+    if (job === undefined) {
+      throw new Error('The job was not found.');
+    }
+    return job;
+  }
+
+  /**
+   * Reads when the deduplicator recorded an event of the removals, the instant its transaction
+   * started (`now()`).
+   *
+   * @param eventId - Id of the event.
+   * @returns The instant.
+   */
+  async function processedAt(eventId: string): Promise<Date> {
+    const [row] = await asSystem<{ readonly processed_at: Date }>(
+      `select processed_at from processed_events
+        where consumer = 'task-service__project-member-removed' and event_id = $1`,
+      [eventId],
+    );
+    if (row === undefined) {
+      throw new Error('The removal was not processed.');
+    }
+    return row.processed_at;
+  }
+
+  /**
+   * Creates a space and, by SQL as an import would, `count` tasks in its first list, all assigned
+   * to one person, with the counter of the prefix after them.
+   *
+   * @param name - Name of the space.
+   * @param prefix - Its prefix.
+   * @param person - The assignee.
+   * @param count - How many tasks.
+   */
+  async function seedAssignedTasks(
+    name: string,
+    prefix: string,
+    person: Person,
+    count: number,
+  ): Promise<void> {
+    const bulk = await createSpace(camille, { name, prefix });
+    await asSystem(
+      `insert into tasks (organization_id, space_id, list_id, key_prefix, key_number, name, status, priority, created_by_type, created_by_id)
+       select $1, $2, $3, $4, number, 'Tâche importée ' || number, 'todo', 'moyenne', 'user', $5
+         from generate_series(1, $6::int) as number`,
+      [atelierNordId, bulk.space.id, bulk.firstList.id, prefix, camille.userId, count],
+    );
+    await asSystem(
+      `insert into task_assignees (organization_id, task_id, user_id, position)
+       select organization_id, id, $3, 0 from tasks
+        where organization_id = $1 and key_prefix = $2`,
+      [atelierNordId, prefix, person.userId],
+    );
+    await asSystem(
+      `update space_prefixes set last_number = $3 where organization_id = $1 and prefix = $2`,
+      [atelierNordId, prefix, count],
+    );
+  }
+
+  /**
+   * Reads what the database holds of the unassignment of an account, in one statement.
+   *
+   * @param person - The account.
+   * @param prefix - The prefix of the seeded tasks of the account.
+   * @returns The assignments left, the system entries by batch instant, the versions of the seeded
+   * tasks and the system `task.updated.v1` of them.
+   */
+  async function unassignmentState(
+    person: Person,
+    prefix: string,
+  ): Promise<{
+    readonly assignments: number;
+    readonly batches: readonly { readonly occurredAt: Date; readonly entries: number }[];
+    readonly entries: number;
+    readonly versions: readonly number[];
+    readonly events: number;
+  }> {
+    const [row] = await asSystem<{
+      readonly assignments: number;
+      readonly batches: readonly { readonly occurredAt: string; readonly entries: number }[] | null;
+      readonly versions: readonly number[];
+      readonly events: number;
+    }>(
+      `select
+         (select count(*)::int from task_assignees where organization_id = $1 and user_id = $2) as assignments,
+         (select json_agg(json_build_object('occurredAt', occurred_at, 'entries', entries) order by occurred_at)
+            from (select occurred_at, count(*)::int as entries from activity_entries
+                   where organization_id = $1 and kind = 'assign' and assignee_user_id = $2
+                     and assignee_added = false and actor_type = 'system' and actor_id = 'task-service'
+                   group by occurred_at) as batch) as batches,
+         (select array_agg(distinct version order by version) from tasks
+           where organization_id = $1 and key_prefix = $3) as versions,
+         (select count(*)::int from outbox_events
+           where organization_id = $1 and event_name = 'task.updated.v1'
+             and payload -> 'actor' ->> 'type' = 'system' and payload ->> 'key' like $3 || '-%') as events`,
+      [atelierNordId, person.userId, prefix],
+    );
+    if (row === undefined) {
+      throw new Error('The state of the unassignment could not be read.');
+    }
+    const batches = (row.batches ?? []).map((batch) => ({
+      occurredAt: new Date(batch.occurredAt),
+      entries: batch.entries,
+    }));
+    return {
+      assignments: row.assignments,
+      batches,
+      entries: batches.reduce((total, batch) => total + batch.entries, 0),
+      versions: row.versions,
+      events: row.events,
+    };
+  }
+
+  describe('when a member leaves, the removal commits with one job that unassigns them from every task', () => {
     it('removes Mathis from every task, closed ones and private ones included, with an assign entry and a task.updated.v1 by the system for each', async () => {
       const carnet = (
         await createSpace(mathis, {
@@ -3296,6 +3484,8 @@ describe('tasks', () => {
       await deliver(removal);
 
       expect(await processedCount(removal.id)).toBe(1);
+      const [job] = await jobsCompleted(mathis, 1);
+      expect(job?.organization_id).toBe(atelierNordId);
       expect(await countRows('task_assignees', 'user_id = $2', mathis.userId)).toBe(0);
       const expected: readonly (readonly [TaskBody, readonly string[]])[] = [
         [open, [camille.userId]],
@@ -3344,11 +3534,12 @@ describe('tasks', () => {
       );
     });
 
-    it('does nothing for a second removal of the same account', async () => {
+    it('enqueues nothing new and changes nothing for a second removal of the same membership at the same version', async () => {
       const [task] = await asSystem<{ readonly version: number }>(
         `select version from tasks where organization_id = $1 and name = 'Auditer le tunnel d’achat'`,
         [atelierNordId],
       );
+      const [first] = await unassignmentJobsOf(mathis);
       const events = await countTaskEvents();
       const entries = await countRows('activity_entries', 'true');
       const again = toPublishedEvent('removed', atelierNordId, mathis, 'member', 2);
@@ -3356,6 +3547,7 @@ describe('tasks', () => {
       await deliver(again);
 
       expect(await processedCount(again.id)).toBe(1);
+      expect(await unassignmentJobsOf(mathis)).toEqual([first]);
       expect(await countTaskEvents()).toBe(events);
       expect(await countRows('activity_entries', 'true')).toBe(entries);
       const [after] = await asSystem<{ readonly version: number }>(
@@ -3386,10 +3578,13 @@ describe('tasks', () => {
       await deliver(oldRemoval);
 
       expect(await processedCount(oldRemoval.id)).toBe(1);
+      await jobsCompleted(chloe, 1);
       expect(await readTask(camille, task.key)).toEqual(task);
       expect(await countTaskEvents()).toBe(events);
       expect(await countRows('activity_entries', 'true')).toBe(entries);
 
+      // The new membership ends at the same version as the old one: its removal is another
+      // occurrence, keyed by its own membership.
       const newRemoval = toPublishedEvent(
         'removed',
         atelierNordId,
@@ -3399,6 +3594,7 @@ describe('tasks', () => {
       );
       await deliver(newRemoval);
 
+      await jobsCompleted(chloe, 2);
       expect(await readTask(camille, task.key)).toMatchObject({
         assignees: [{ userId: camille.userId }],
         version: 2,
@@ -3407,26 +3603,10 @@ describe('tasks', () => {
     });
   });
 
-  describe('a removal that unassigns a thousand tasks commits on its first delivery', () => {
-    it('unassigns Théo from 1,000 tasks in one delivery, with 1,000 entries and 1,000 task.updated.v1, within the budget of the handler', async () => {
-      const bulk = await createSpace(camille, { name: 'Import massif', prefix: 'BLK' });
-      await asSystem(
-        `insert into tasks (organization_id, space_id, list_id, key_prefix, key_number, name, status, priority, created_by_type, created_by_id)
-         select $1, $2, $3, 'BLK', number, 'Tâche importée ' || number, 'todo', 'moyenne', 'user', $4
-           from generate_series(1, 1000) as number`,
-        [atelierNordId, bulk.space.id, bulk.firstList.id, camille.userId],
-      );
-      await asSystem(
-        `insert into task_assignees (organization_id, task_id, user_id, position)
-         select organization_id, id, $2, 0 from tasks
-          where organization_id = $1 and key_prefix = 'BLK'`,
-        [atelierNordId, theo.userId],
-      );
-      await asSystem(
-        `update space_prefixes set last_number = 1000 where organization_id = $1 and prefix = 'BLK'`,
-        [atelierNordId],
-      );
-      expect(await readTask(camille, 'BLK-1000')).toMatchObject({
+  describe('a removal of a member assigned to 1,200 tasks commits at once, and its job empties them in batches', () => {
+    it('commits the removal of Théo with its job on the first delivery, then unassigns 1,200 tasks in three transactions of 500, 500 and 200', async () => {
+      await seedAssignedTasks('Import massif', 'BLK', theo, 1200);
+      expect(await readTask(camille, 'BLK-1200')).toMatchObject({
         assignees: [{ userId: theo.userId }],
         version: 1,
       });
@@ -3441,7 +3621,7 @@ describe('tasks', () => {
         },
         { timeout: 60_000, interval: 25 },
       );
-      const durationMs = performance.now() - startedAt;
+      const removalMs = performance.now() - startedAt;
       await vi.waitFor(() => {
         const info = consumerInfo('project-member-removed');
         expect(info.num_ack_pending).toBe(0);
@@ -3449,30 +3629,102 @@ describe('tasks', () => {
         expect(info.num_redelivered).toBe(redeliveredBefore);
       }, waitOptions);
 
+      // The job row and the processed id were written by the same transaction: both carry the
+      // instant it started.
+      const committedAt = await processedAt(removal.id);
+      const [enqueued] = await unassignmentJobsOf(theo);
+      expect(enqueued?.created_on).toEqual(committedAt);
+
+      const [job] = await jobsCompleted(theo, 1);
+      const state = await unassignmentState(theo, 'BLK');
       console.info(
-        `Removal of a member assigned to 1,000 tasks: committed on its first delivery in ${String(Math.round(durationMs))} ms.`,
+        `Removal of a member assigned to 1,200 tasks: committed in ${String(Math.round(removalMs))} ms; its job took ${String(
+          (job?.completed_on?.getTime() ?? 0) - committedAt.getTime(),
+        )} ms from the commit for ${String(state.batches.length)} batches.`,
       );
-      expect(durationMs).toBeLessThan(handlerBudgetMs);
-      const [state] = await asSystem<{
-        readonly assignments: number;
-        readonly versioned: number;
-        readonly entries: number;
-        readonly events: number;
-      }>(
-        `select
-           (select count(*)::int from task_assignees where organization_id = $1 and user_id = $2) as assignments,
-           (select count(*)::int from tasks where organization_id = $1 and key_prefix = 'BLK' and version = 2) as versioned,
-           (select count(*)::int from activity_entries
-             where organization_id = $1 and kind = 'assign' and assignee_user_id = $2
-               and assignee_added = false and actor_type = 'system' and actor_id = 'task-service') as entries,
-           (select count(*)::int from outbox_events
-             where organization_id = $1 and event_name = 'task.updated.v1'
-               and payload -> 'actor' ->> 'type' = 'system' and payload ->> 'key' like 'BLK-%') as events`,
-        [atelierNordId, theo.userId],
-      );
-      expect(state).toEqual({ assignments: 0, versioned: 1000, entries: 1000, events: 1000 });
+      expect(removalMs).toBeLessThan(handlerBudgetMs);
+      expect(state.assignments).toBe(0);
+      expect(state.batches.map((batch) => batch.entries)).toEqual([500, 500, 200]);
+      expect(
+        state.batches.every((batch) => batch.occurredAt.getTime() > committedAt.getTime()),
+      ).toBe(true);
+      expect(state.versions).toEqual([2]);
+      expect(state.events).toBe(1200);
       expect(await readTask(camille, 'BLK-1')).toMatchObject({ assignees: [], version: 2 });
     });
+  });
+
+  describe('a re-join stops the job of the removal before it, and a new assignment stays', () => {
+    it('leaves Rose on her tasks and on the task assigned after she joined again, while her removal waited on a lock', async () => {
+      const first = await createTask(camille, produitList.id, {
+        name: 'Préparer la rétrospective',
+        assigneeIds: [rose.userId],
+      });
+      const second = await createTask(camille, produitList.id, {
+        name: 'Animer la rétrospective',
+        assigneeIds: [rose.userId, camille.userId],
+      });
+      const [locked] = await asSystem<{ readonly task_id: string }>(
+        `select task_id from task_assignees where organization_id = $1 and user_id = $2
+          order by task_id limit 1`,
+        [atelierNordId, rose.userId],
+      );
+      const blocker = await migrator.connect();
+      let holding = false;
+      let third: TaskBody | undefined;
+      try {
+        // The first task of Rose is held, as a concurrent change would hold it, so the first batch
+        // of the job waits past the lock timeout of the application role (5 s) and fails.
+        await blocker.query('begin');
+        holding = true;
+        await blocker.query(`select set_config('app.system_access', 'on', true)`);
+        await blocker.query(
+          `select 1 from tasks where organization_id = $1 and id = $2 for update`,
+          [atelierNordId, locked?.task_id],
+        );
+
+        const removal = toPublishedEvent('removed', atelierNordId, rose, 'member', 2);
+        await deliver(removal);
+        expect(await processedCount(removal.id)).toBe(1);
+        await jobWaitingForRetry(rose);
+
+        // Rose joins again under a new membership and is given a new task.
+        await deliver(
+          toPublishedEvent(
+            'joined',
+            atelierNordId,
+            { userId: rose.userId, memberId: roseNewMemberId },
+            'member',
+            1,
+          ),
+        );
+        third = await createTask(camille, produitList.id, {
+          name: 'Partager le compte rendu',
+          assigneeIds: [rose.userId],
+        });
+
+        await blocker.query('rollback');
+        holding = false;
+      } finally {
+        if (holding) {
+          await blocker.query('rollback');
+        }
+        blocker.release();
+      }
+
+      const [job] = await jobsCompleted(rose, 1);
+      expect(job?.retry_count).toBeGreaterThanOrEqual(1);
+      for (const task of [first, second, third]) {
+        expect(await readTask(camille, task.key)).toEqual(task);
+      }
+      expect(
+        await countRows(
+          'activity_entries',
+          `kind = 'assign' and assignee_user_id = $2 and actor_type = 'system'`,
+          rose.userId,
+        ),
+      ).toBe(0);
+    }, 240_000);
   });
 
   describe('every event the tasks appended is valid and leaves out what must not travel', () => {
@@ -3510,95 +3762,47 @@ describe('tasks', () => {
     });
   });
 
-  // Last: the removal of this test fails on a lock and is delivered again, so its consumer keeps
-  // one message waiting until the lock is released, which no later `deliver` may wait on.
-  describe('a removal that fails on a transient error is applied again, whole, with its unassignments', () => {
-    it('keeps the member, the assignments and no processed id while a lock holds a task, then applies the removal and the unassignments together', async () => {
-      const held = await createTask(camille, produitList.id, {
-        name: 'Rédiger le guide d’accueil',
-        assigneeIds: [noe.userId, camille.userId],
-      });
-      const other = await createTask(camille, produitList.id, {
-        name: 'Accueillir les nouveaux',
-        assigneeIds: [noe.userId],
-      });
+  // Last: the job of this test fails on a lock and is retried by pg-boss after its backoff.
+  describe('a batch that fails on a transient error is retried alone, and the batches before it stay', () => {
+    it('commits the removal of Noé at once, keeps the first 500 unassignments while a lock fails the second batch, then finishes on the retry', async () => {
+      await seedAssignedTasks('Import de Noé', 'NOE', noe, 1200);
+      const [held] = await asSystem<{ readonly task_id: string }>(
+        `select task_id from task_assignees where organization_id = $1 and user_id = $2
+          order by task_id offset 700 limit 1`,
+        [atelierNordId, noe.userId],
+      );
       const removal = toPublishedEvent('removed', atelierNordId, noe, 'member', 2);
-      const [prefix, number] = held.key.split('-');
       const blocker = await migrator.connect();
       let holding = false;
-
-      /**
-       * Reads, in one snapshot, what the database holds of the removal and of the assignments.
-       *
-       * @returns Whether the membership ended, the assignments left, the entries and the events.
-       */
-      const removalState = async (): Promise<{
-        readonly ended: boolean;
-        readonly assignments: number;
-        readonly entries: number;
-        readonly events: number;
-        readonly processed: number;
-      }> => {
-        const [row] = await asSystem<{
-          readonly ended: boolean;
-          readonly assignments: number;
-          readonly entries: number;
-          readonly events: number;
-          readonly processed: number;
-        }>(
-          `select
-             (select removed_at is not null from organization_members
-               where organization_id = $1 and id = $2) as ended,
-             (select count(*)::int from task_assignees where organization_id = $1 and user_id = $3) as assignments,
-             (select count(*)::int from activity_entries
-               where organization_id = $1 and kind = 'assign' and assignee_user_id = $3
-                 and assignee_added = false) as entries,
-             (select count(*)::int from outbox_events
-               where organization_id = $1 and event_name = 'task.updated.v1'
-                 and payload -> 'actor' ->> 'type' = 'system' and payload ->> 'key' = any($4::text[])) as events,
-             (select count(*)::int from processed_events
-               where consumer = 'task-service__project-member-removed' and event_id = $5) as processed`,
-          [atelierNordId, noe.memberId, noe.userId, [held.key, other.key], removal.id],
-        );
-        if (row === undefined) {
-          throw new Error('The state of the removal could not be read.');
-        }
-        return row;
-      };
-
       try {
-        // The row of a task of Noé is held, as a concurrent change would hold it, for longer than
-        // the lock timeout of the application role (5 s).
+        // The 701st task of Noé is held, as a concurrent change would hold it, for longer than the
+        // lock timeout of the application role (5 s): the second batch of the job waits for it and
+        // fails, the first one is committed.
         await blocker.query('begin');
         holding = true;
         await blocker.query(`select set_config('app.system_access', 'on', true)`);
         await blocker.query(
-          `select 1 from tasks where organization_id = $1 and key_prefix = $2 and key_number = $3::int for update`,
-          [atelierNordId, prefix, number],
+          `select 1 from tasks where organization_id = $1 and id = $2 for update`,
+          [atelierNordId, held?.task_id],
         );
-        const before = consumerInfo('project-member-removed');
 
-        publish(removal);
+        await deliver(removal);
 
-        // The unassignment waits for the lock until the application role gives up (lock_timeout),
-        // the whole unit rolls back, and the removal is delivered again.
-        await vi.waitFor(
-          () => {
-            const info = consumerInfo('project-member-removed');
-            expect(info.delivered.consumer_seq).toBeGreaterThan(before.delivered.consumer_seq);
-            expect(info.num_redelivered).toBeGreaterThan(before.num_redelivered);
-            expect(info.num_ack_pending).toBe(1);
-          },
-          { timeout: 45_000, interval: 500 },
+        // The removal committed whatever the tasks hold: the copy ended the membership.
+        expect(await processedCount(removal.id)).toBe(1);
+        const [membership] = await asSystem<{ readonly ended: boolean }>(
+          `select removed_at is not null as ended from organization_members
+            where organization_id = $1 and id = $2`,
+          [atelierNordId, noe.memberId],
         );
-        expect(await removalState()).toEqual({
-          ended: false,
-          assignments: 2,
-          entries: 0,
-          events: 0,
-          processed: 0,
-        });
-        expect(await readTask(camille, held.key)).toMatchObject({ version: 1 });
+        expect(membership).toEqual({ ended: true });
+
+        await jobWaitingForRetry(noe);
+        const during = await unassignmentState(noe, 'NOE');
+        expect(during.assignments).toBe(700);
+        expect(during.batches.map((batch) => batch.entries)).toEqual([500]);
+        expect(during.events).toBe(500);
+        expect(during.versions).toEqual([1, 2]);
 
         await blocker.query('rollback');
         holding = false;
@@ -3609,29 +3813,16 @@ describe('tasks', () => {
         blocker.release();
       }
 
-      // Every read is one snapshot: the removal of the copy never shows without the unassignments.
-      const observed: { readonly ended: boolean; readonly assignments: number }[] = [];
-      await vi.waitFor(
-        async () => {
-          const current = await removalState();
-          observed.push({ ended: current.ended, assignments: current.assignments });
-          expect(current).toEqual({
-            ended: true,
-            assignments: 0,
-            entries: 2,
-            events: 2,
-            processed: 1,
-          });
-        },
-        { timeout: 90_000, interval: 500 },
-      );
-      expect(observed.filter((seen) => seen.ended && seen.assignments > 0)).toEqual([]);
-      expect(observed.filter((seen) => !seen.ended && seen.assignments === 0)).toEqual([]);
-      expect(await readTask(camille, held.key)).toMatchObject({
-        assignees: [{ userId: camille.userId }],
-        version: 2,
-      });
-      expect(await readTask(camille, other.key)).toMatchObject({ assignees: [], version: 2 });
+      const [job] = await jobsCompleted(noe, 1);
+      expect(job?.retry_count).toBeGreaterThanOrEqual(1);
+      const after = await unassignmentState(noe, 'NOE');
+      expect(after.assignments).toBe(0);
+      // Each task was written once: the retry started from the 700 tasks still assigned.
+      expect(after.entries).toBe(1200);
+      expect(after.batches[0]?.entries).toBe(500);
+      expect(after.batches.slice(1).map((batch) => batch.entries)).toEqual([500, 200]);
+      expect(after.versions).toEqual([2]);
+      expect(after.events).toBe(1200);
     }, 240_000);
   });
 });

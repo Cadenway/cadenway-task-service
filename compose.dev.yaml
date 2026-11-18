@@ -4,10 +4,13 @@
 #
 # The credentials below are local development values, matching .env.example. PostgreSQL has the two
 # roles of cadenway-ops (docs/database.md there): task_migrator owns the database and runs the DDL;
-# task_app runs the service, owns nothing, reads and writes the rows of the `public` schema only
-# (never the journal of drizzle-kit, in `drizzle`) and is subject to row-level security. The roles
-# are created when the data volume is empty: after pulling this change, recreate an older volume
-# once with `docker compose -f compose.dev.yaml down --volumes`.
+# task_app runs the service, owns nothing, reads and writes the rows of the `public` schema (never
+# the journal of drizzle-kit, in `drizzle`) and is subject to row-level security. The `pgboss`
+# schema of the jobs is created by task_migrator when `pnpm migration:run` provisions it, which
+# grants task_app its runtime access there itself (`provisionJobs` of @cadenway/nest-jobs): nothing
+# below is specific to it, as in cadenway-ops. The roles are created when the data volume is empty:
+# after pulling this change, recreate an older volume once with
+# `docker compose -f compose.dev.yaml down --volumes`.
 #
 # NATS runs with the authorization of the broker of cadenway-ops (docs/messaging.md and
 # compose/nats/nats-server.conf there): a connection without a user is refused, and the `task` user

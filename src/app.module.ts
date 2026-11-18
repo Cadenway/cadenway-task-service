@@ -1,6 +1,13 @@
-import { CONFIG, ConfigModule, HealthModule, postgresIndicator } from '@cadenway/nest-common';
+import {
+  CONFIG,
+  ConfigModule,
+  HealthModule,
+  postgresIndicator,
+  runWithOrganizationContext,
+} from '@cadenway/nest-common';
 import type { PostgresProbe } from '@cadenway/nest-common';
 import { DATABASE_POOL, DatabaseModule } from '@cadenway/nest-common/database';
+import { JobsRuntimeModule } from '@cadenway/nest-jobs/runtime';
 import {
   MessagingConnection,
   MessagingModule,
@@ -11,11 +18,39 @@ import { Module } from '@nestjs/common';
 
 import { appConfigSchema } from './config/app-config.js';
 import type { AppConfig } from './config/app-config.js';
+import { jobQueues } from './config/job-queues.js';
 import { MemberLifecycleModule } from './modules/member-lifecycle/member-lifecycle.module.js';
 import { OrganizationMembersModule } from './modules/organization-members/organization-members.module.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
 import { SpacesModule } from './modules/spaces/spaces.module.js';
 import { TasksModule } from './modules/tasks/tasks.module.js';
+
+/**
+ * Function runJobInOrganization
+ *
+ * @description
+ * Runs the handler of a job in the organization context of the transaction that enqueued it, as
+ * the kit of messaging does for an event: the tenant transaction runner of the handler reads that
+ * organization, and row-level security limits it to it. The actor is the system: a job acts for
+ * nobody. A job without organization (a scheduled one) runs without context, so a tenant
+ * transaction it would open is refused.
+ *
+ * @param {string | null} organizationId - Organization of the job.
+ * @param {() => Promise<void>} work - The handler call.
+ * @returns {Promise<void>} Settles with the handler.
+ */
+function runJobInOrganization(
+  organizationId: string | null,
+  work: () => Promise<void>,
+): Promise<void> {
+  if (organizationId === null) {
+    return work();
+  }
+  return runWithOrganizationContext(
+    { organizationId, actor: { type: 'system', id: null }, role: null, scopes: [] },
+    work,
+  );
+}
 
 /**
  * Class AppModule
@@ -50,6 +85,14 @@ import { TasksModule } from './modules/tasks/tasks.module.js';
  *   agent only waits for the new container to be healthy before it stops the old one. A delay would
  *   lengthen every stop, under the 10 second default grace period of Docker, without moving any
  *   request away; set it above the probe interval of a proxy if one ever routes on readiness.
+ * - `JobsRuntimeModule`: the durable jobs of `@cadenway/nest-jobs`, on pg-boss in the `pgboss`
+ *   schema of this service's own database, as the application role of `DATABASE_URL`, with a pool
+ *   of two connections of its own (the producer enqueues through the transaction of the use case).
+ *   Every replica is producer, worker and scheduler: the scheduler supervises expired attempts and
+ *   watches the dead-letter queues. Each handler runs in the organization context of its job
+ *   (`runJobInOrganization`). `src/migrate.ts` provisions the schema and the queues of
+ *   `src/config/job-queues.ts` as the migrator role; the start-up fails while they are missing.
+ *   Running jobs get 30 seconds to finish at shutdown.
  * - `PlatformModule`: the owner of the kit tables in the migrations of the service.
  * - `OrganizationMembersModule`: the copy of the memberships of organization-service, the source of
  *   the members and roles of the service.
@@ -58,12 +101,14 @@ import { TasksModule } from './modules/tasks/tasks.module.js';
  * - `TasksModule`: the tasks, their subtasks, assignees, labels and checklist, and the activity log
  *   of a task and of a list, with the internal routes of `/internal/v1/tasks` and the task
  *   creation and activity routes of `/internal/v1/lists/{listId}`. It reads the members from
- *   `OrganizationMembersModule` and the lists, spaces and task keys from `SpacesModule`.
+ *   `OrganizationMembersModule` and the lists, spaces and task keys from `SpacesModule`, and runs
+ *   the worker of the `task.unassign-removed-member` jobs.
  * - `MemberLifecycleModule`: the three durable consumers (`task-service__project-member-*`) of
  *   `member.joined.v1`, `member.role-changed.v1` and `member.removed.v1`, which the deduplicator of
  *   `OutboxModule` runs in the tenant transaction of each event. Each event updates the copy of
  *   `OrganizationMembersModule`; a removal then hands the private spaces of the former member over
- *   to the owner through `SpacesModule`, which it imports.
+ *   to the owner through `SpacesModule` and enqueues the job that unassigns them from their tasks
+ *   through `TasksModule`, which it imports.
  *
  * Business modules under `src/modules/` are registered here as they are created.
  */
@@ -90,6 +135,16 @@ import { TasksModule } from './modules/tasks/tasks.module.js';
       }),
     }),
     OutboxModule.forRoot(),
+    JobsRuntimeModule.forRootAsync({
+      inject: [CONFIG],
+      useFactory: (config: AppConfig) => ({
+        connection: { connectionString: config.DATABASE_URL },
+        queues: jobQueues,
+        capabilities: ['producer', 'worker', 'scheduler'],
+        poolSize: 2,
+        runInOrganization: runJobInOrganization,
+      }),
+    }),
     HealthModule.forRootAsync({
       inject: [DATABASE_POOL, MessagingConnection],
       useFactory: (pool: PostgresProbe, connection: MessagingConnection) => ({

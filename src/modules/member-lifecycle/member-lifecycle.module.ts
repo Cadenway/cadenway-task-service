@@ -20,7 +20,8 @@ import { applyMemberEventProvider } from './composition/providers/use-cases/memb
  * redelivery schedule, and the use case that applies each event to the copy of the memberships
  * (`ApplyMembershipChange` of `OrganizationMembersModule`) and, for a removal, hands the private
  * spaces of the former member over to the owner (`HandOverPrivateSpaces` of `SpacesModule`) and
- * removes them from the assignees of every task (`UnassignRemovedMember` of `TasksModule`). It
+ * enqueues the job that removes them from the assignees of every task
+ * (`ScheduleMemberUnassignment` of `TasksModule`). It
  * orchestrates these modules so that none calls another: `SpacesModule` and `TasksModule` already
  * read the copy, so the copy calling them would close a module cycle. It owns no table, no route and
  * no export.

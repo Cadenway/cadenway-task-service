@@ -75,14 +75,14 @@ class RecordingPorts implements MembershipCopy, PrivateSpaceHandover, TaskAssign
   public awaiting: number = 0;
 
   /**
-   * Property unassigned
+   * Property scheduled
    *
    * @description
-   * How many tasks the unassignment reports.
+   * Whether the enqueuing reports a new job (`false` for a duplicate occurrence).
    *
-   * @type {number}
+   * @type {boolean}
    */
-  public unassigned: number = 0;
+  public scheduled: boolean = true;
   // #endregion
 
   // #region Methods
@@ -133,18 +133,27 @@ class RecordingPorts implements MembershipCopy, PrivateSpaceHandover, TaskAssign
   }
 
   /**
-   * Method unassignRemovedMember
+   * Method scheduleUnassignment
    *
    * @description
-   * Records the unassignment and reports how many tasks it touched.
+   * Records the enqueuing of the unassignment job and reports whether it was new.
    *
    * @param {string} organizationId - The organization.
    * @param {string} userId - The account of the former member.
-   * @returns {Promise<number>} The configured count.
+   * @param {string} memberId - The membership that ended.
+   * @param {number} membershipVersion - Its version after the removal.
+   * @returns {Promise<boolean>} The configured answer.
    */
-  public unassignRemovedMember(organizationId: string, userId: string): Promise<number> {
-    this.calls.push(`unassign:${organizationId}:${userId}`);
-    return Promise.resolve(this.unassigned);
+  public scheduleUnassignment(
+    organizationId: string,
+    userId: string,
+    memberId: string,
+    membershipVersion: number,
+  ): Promise<boolean> {
+    this.calls.push(
+      `schedule:${organizationId}:${userId}:${memberId}:${String(membershipVersion)}`,
+    );
+    return Promise.resolve(this.scheduled);
   }
   // #endregion
 }
@@ -177,17 +186,17 @@ describe('ApplyMemberEvent: the member events drive the copy, then the private s
     expect(output).toEqual({ privateSpacesAwaitingOwner: 0 });
   });
 
-  it('applies a removal to the copy first, then hands the private spaces of the member over', async () => {
+  it('applies a removal to the copy first, hands the private spaces over, then enqueues the unassignment of that membership at that version', async () => {
     await useCase.execute(memberEvent('removed', 3));
 
     expect(ports.calls).toEqual([
       'apply:removed:3',
       `handOver:${ATELIER_NORD}:${HUGO}`,
-      `unassign:${ATELIER_NORD}:${HUGO}`,
+      `schedule:${ATELIER_NORD}:${HUGO}:${HUGO_MEMBERSHIP}:3`,
     ]);
   });
 
-  it('hands nothing over and unassigns nothing when the copy refuses the removal, so the event is redelivered', async () => {
+  it('hands nothing over and enqueues nothing when the copy refuses the removal, so the event is redelivered', async () => {
     ports.failure = new Error('The membership names another account.');
 
     await expect(useCase.execute(memberEvent('removed', 3))).rejects.toThrow(ports.failure);
@@ -217,9 +226,9 @@ describe('ApplyMemberEvent: a removal always commits, and says how many private 
     expect(output).toEqual({ privateSpacesAwaitingOwner: 2 });
   });
 
-  it('keeps the count of the private spaces whatever number of tasks the unassignment touched', async () => {
+  it('commits the removal the same way when its unassignment job was already enqueued by an earlier delivery', async () => {
     ports.awaiting = 1;
-    ports.unassigned = 4_000;
+    ports.scheduled = false;
 
     const output = await useCase.execute(memberEvent('removed', 3));
 
@@ -242,19 +251,19 @@ describe('ApplyMemberEvent: a removal always commits, and says how many private 
     expect(ports.calls).toEqual([
       'apply:removed:3',
       `handOver:${ATELIER_NORD}:${HUGO}`,
-      `unassign:${ATELIER_NORD}:${HUGO}`,
+      `schedule:${ATELIER_NORD}:${HUGO}:${HUGO_MEMBERSHIP}:3`,
     ]);
     expect(output).toEqual({ privateSpacesAwaitingOwner: 1 });
   });
 });
 
-describe('ApplyMemberEvent: only a removal unassigns the member from the tasks', () => {
+describe('ApplyMemberEvent: only a removal enqueues the unassignment of the member', () => {
   it.each([
     ['joined', 'owner'],
     ['joined', 'guest'],
     ['role-changed', 'guest'],
     ['role-changed', 'owner'],
-  ] as const)('does not unassign on a %s event with the role %s', async (kind, role) => {
+  ] as const)('enqueues nothing on a %s event with the role %s', async (kind, role) => {
     const ports: RecordingPorts = new RecordingPorts();
     const useCase: ApplyMemberEvent = new ApplyMemberEvent(
       { run: <TResult>(work: () => Promise<TResult>): Promise<TResult> => work() },
@@ -265,7 +274,7 @@ describe('ApplyMemberEvent: only a removal unassigns the member from the tasks',
 
     await useCase.execute(memberEvent(kind, 2, role));
 
-    expect(ports.calls.some((call: string): boolean => call.startsWith('unassign'))).toBe(false);
+    expect(ports.calls.some((call: string): boolean => call.startsWith('schedule'))).toBe(false);
   });
 });
 
@@ -360,7 +369,7 @@ interface TracedPorts {
  */
 function traced(
   failures: Readonly<
-    Partial<Record<'apply' | 'handOver' | 'handOverAwaiting' | 'unassign', Error>>
+    Partial<Record<'apply' | 'handOver' | 'handOverAwaiting' | 'schedule', Error>>
   > = {},
   awaiting: number = 0,
 ): TracedPorts {
@@ -395,17 +404,17 @@ function traced(
         ? Promise.resolve()
         : Promise.reject(failures.handOverAwaiting);
     },
-    unassignRemovedMember: (): Promise<number> => {
-      steps.push('unassign');
-      return failures.unassign === undefined
-        ? Promise.resolve(0)
-        : Promise.reject(failures.unassign);
+    scheduleUnassignment: (): Promise<boolean> => {
+      steps.push('schedule');
+      return failures.schedule === undefined
+        ? Promise.resolve(true)
+        : Promise.reject(failures.schedule);
     },
   };
   return { steps, useCase: new ApplyMemberEvent(unitOfWork, ports, ports, ports) };
 }
 
-describe('ApplyMemberEvent: the copy and the hand-over of the private spaces are one unit of work', () => {
+describe('ApplyMemberEvent: the copy, the hand-over and the unassignment job are one unit of work', () => {
   it('runs a join inside the unit of work, which commits it', async () => {
     const { steps, useCase } = traced();
 
@@ -414,29 +423,29 @@ describe('ApplyMemberEvent: the copy and the hand-over of the private spaces are
     expect(steps).toEqual(['begin', 'apply:joined', 'commit']);
   });
 
-  it('runs the copy and the hand-over of a removal inside the same unit of work', async () => {
+  it('enqueues the unassignment job of a removal inside the unit of work of the copy and the hand-over', async () => {
     const { steps, useCase } = traced();
 
     await useCase.execute(memberEvent('removed', 3));
 
-    expect(steps).toEqual(['begin', 'apply:removed', 'handOver', 'unassign', 'commit']);
+    expect(steps).toEqual(['begin', 'apply:removed', 'handOver', 'schedule', 'commit']);
   });
 
-  it('rejects the run when the unassignment fails, and rolls the copy and the hand-over back', async () => {
-    const failure = new Error('The unassignment failed.');
-    const { steps, useCase } = traced({ unassign: failure });
+  it('rejects the run when the enqueuing fails, and rolls the copy and the hand-over back', async () => {
+    const failure = new Error('The job could not be enqueued.');
+    const { steps, useCase } = traced({ schedule: failure });
 
     await expect(useCase.execute(memberEvent('removed', 3))).rejects.toBe(failure);
 
-    expect(steps).toEqual(['begin', 'apply:removed', 'handOver', 'unassign', 'rollback']);
+    expect(steps).toEqual(['begin', 'apply:removed', 'handOver', 'schedule', 'rollback']);
   });
 
-  it('does not unassign when the hand-over fails', async () => {
+  it('enqueues nothing when the hand-over fails', async () => {
     const { steps, useCase } = traced({ handOver: new Error('The hand-over failed.') });
 
     await expect(useCase.execute(memberEvent('removed', 3))).rejects.toThrow();
 
-    expect(steps).not.toContain('unassign');
+    expect(steps).not.toContain('schedule');
   });
 
   it('runs the copy and the hand-over of the awaiting spaces of an owner inside one unit of work', async () => {
@@ -487,7 +496,7 @@ describe('ApplyMemberEvent: the copy and the hand-over of the private spaces are
     const { steps, useCase } = traced({
       handOver: new Error('never called'),
       handOverAwaiting: new Error('never called'),
-      unassign: new Error('never called'),
+      schedule: new Error('never called'),
     });
 
     await useCase.execute(memberEvent('role-changed', 2));
