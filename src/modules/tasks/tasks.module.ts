@@ -5,12 +5,10 @@ import { OrganizationMembersModule } from '../organization-members/organization-
 import { SpacesModule } from '../spaces/spaces.module.js';
 import { memberDirectoryProvider } from './composition/providers/adapters/membership/member-directory.provider.js';
 import { spaceDirectoryProvider } from './composition/providers/adapters/space/space-directory.provider.js';
-import { unassignRemovedMemberHandlerProvider } from './composition/providers/adapters/assignee/unassign-removed-member-handler.provider.js';
 import { tasksUnitOfWorkProvider } from './composition/providers/adapters/task/tasks-unit-of-work.provider.js';
 import { listListActivityProvider } from './composition/providers/use-cases/activity/list-list-activity.provider.js';
 import { listTaskActivityProvider } from './composition/providers/use-cases/activity/list-task-activity.provider.js';
 import { assignTaskProvider } from './composition/providers/use-cases/assignee/assign-task.provider.js';
-import { scheduleMemberUnassignmentProvider } from './composition/providers/use-cases/assignee/schedule-member-unassignment.provider.js';
 import { unassignRemovedMemberProvider } from './composition/providers/use-cases/assignee/unassign-removed-member.provider.js';
 import { unassignTaskProvider } from './composition/providers/use-cases/assignee/unassign-task.provider.js';
 import { addChecklistItemProvider } from './composition/providers/use-cases/checklist/add-checklist-item.provider.js';
@@ -31,7 +29,7 @@ import { TaskLabelsController } from './presentation/http/controllers/label/task
 import { SubtasksController } from './presentation/http/controllers/subtask/subtasks.controller.js';
 import { ListTasksController } from './presentation/http/controllers/task/list-tasks.controller.js';
 import { TasksController } from './presentation/http/controllers/task/tasks.controller.js';
-import { ScheduleMemberUnassignment } from './public/assignee/schedule-member-unassignment.js';
+import { UnassignRemovedMember } from './public/assignee/unassign-removed-member.js';
 
 /**
  * Function markIdempotent
@@ -74,9 +72,9 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
  * people to assign, from `OrganizationMembersModule` through the `MemberDirectory` port, never from
  * the `role` claim of the internal token (decision 4 of the P3a plan), and the lists, the spaces
  * and the task keys from `SpacesModule` through the `SpaceDirectory` port. It exports
- * `ScheduleMemberUnassignment`, which the member-lifecycle module runs in the transaction of the
- * removal of a member to enqueue the job that unassigns them, and registers the worker of that job
- * (`UnassignRemovedMemberHandler`), which runs `UnassignRemovedMember` in batches.
+ * `UnassignRemovedMember`, one batch of the removal of a former member from their tasks, which the
+ * clean-up job of the member-lifecycle module runs batch after batch once the member left the
+ * organization.
  */
 @Module({
   imports: [OrganizationMembersModule, SpacesModule],
@@ -102,9 +100,7 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
     listSubtasksProvider,
     assignTaskProvider,
     unassignTaskProvider,
-    scheduleMemberUnassignmentProvider,
     unassignRemovedMemberProvider,
-    unassignRemovedMemberHandlerProvider,
     addTaskLabelProvider,
     removeTaskLabelProvider,
     addChecklistItemProvider,
@@ -112,6 +108,6 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
     listTaskActivityProvider,
     listListActivityProvider,
   ],
-  exports: [ScheduleMemberUnassignment],
+  exports: [UnassignRemovedMember],
 })
 export class TasksModule {}

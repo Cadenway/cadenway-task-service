@@ -3,14 +3,12 @@ import type {
   TransactionOptions,
   TransactionScope,
 } from '@cadenway/nest-common/database';
-import type { JobProducer } from '@cadenway/nest-jobs/runtime';
 import type { OutboxRelay, OutboxWriter } from '@cadenway/nest-messaging/outbox';
 
 import type { ReadOptions } from '../../../../../application/models/transactions/read-options.model.js';
 import type { TasksStore } from '../../../../../application/models/transactions/tasks-store.model.js';
 import type { TasksUnitOfWork } from '../../../../../application/ports/outbound/transactions/task/tasks-unit-of-work.port.js';
 import { PostgresqlTransactionClock } from '../../../../adapters/postgresql/transaction-clock.adapter.js';
-import { JobsMemberUnassignmentQueue } from '../../../../jobs/pg-boss/assignee/jobs-member-unassignment-queue.adapter.js';
 import { OutboxTaskEvents } from '../../../../messaging/outbox/task/outbox-task-events.adapter.js';
 import { DrizzleActivityRepository } from '../../repositories/activity/drizzle-activity.repository.js';
 import { DrizzleTaskReader } from '../../repositories/task/drizzle-task-reader.repository.js';
@@ -22,11 +20,10 @@ import { DrizzleTaskRepository } from '../../repositories/task/drizzle-task.repo
  * @description
  * `TasksUnitOfWork` on the tenant transaction runner: the work runs in the organization context
  * of the caller, and row-level security limits it to that organization. A route marked
- * `@Idempotent()` and the handler of a member event run in the transaction a kit interceptor
- * opened: `run` joins it. The store of each run is bound to that run's transaction, the clock
+ * `@Idempotent()` runs in the transaction a kit interceptor opened: `run` joins it. A batch of the
+ * clean-up job of a removed member opens its own. The store of each run is bound to that run's transaction, the clock
  * included (the instant of the transaction is read once per run). The events appended go to the
- * outbox of the same transaction, and the jobs enqueued to the pg-boss tables through its
- * connection.
+ * outbox of the same transaction.
  *
  * Once a run that appended events resolves, the relay is woken so they leave now instead of at
  * its next poll. A run joined to an outer transaction resolves before that one commits: the pass
@@ -71,17 +68,6 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
    * @readonly
    */
   private readonly relay: OutboxRelay;
-
-  /**
-   * Property jobs
-   *
-   * @description
-   * The job producer of `@cadenway/nest-jobs`, which enqueues through the transaction of a run.
-   *
-   * @type {JobProducer}
-   * @readonly
-   */
-  private readonly jobs: JobProducer;
   // #endregion
 
   // #region Constructor
@@ -89,24 +75,17 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
    * Constructor
    *
    * @description
-   * Takes the runner, the outbox writer and the relay of the kit, and the job producer.
+   * Takes the runner, the outbox writer and the relay of the kit.
    *
    * @param {TenantTransactionRunner} runner - The tenant transaction runner.
    * @param {OutboxWriter} outbox - The outbox writer.
    * @param {OutboxRelay} relay - The outbox relay.
-   * @param {JobProducer} jobs - The job producer.
    * @constructor
    */
-  public constructor(
-    runner: TenantTransactionRunner,
-    outbox: OutboxWriter,
-    relay: OutboxRelay,
-    jobs: JobProducer,
-  ) {
+  public constructor(runner: TenantTransactionRunner, outbox: OutboxWriter, relay: OutboxRelay) {
     this.runner = runner;
     this.outbox = outbox;
     this.relay = relay;
-    this.jobs = jobs;
   }
   // #endregion
 
@@ -173,7 +152,6 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
           events: new OutboxTaskEvents(transaction, this.outbox, (): void => {
             appends.count += 1;
           }),
-          unassignments: new JobsMemberUnassignmentQueue(transaction, this.jobs),
           clock: new PostgresqlTransactionClock(transaction.db),
         }),
       options,

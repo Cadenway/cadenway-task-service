@@ -1,33 +1,33 @@
+import type { TaskUnassignmentBatch } from '../../../../models/clean-up/task-unassignment-batch.model.js';
+
 /**
  * Interface TaskAssignments
  *
  * @description
- * What a member removal does to the tasks of the tasks module, owned by this module and bound to
- * the public operation of tasks. It joins the tenant transaction of the event, so the job that
- * unassigns the former member commits with the copy of the memberships and the hand-over of the
- * private spaces, or none does. The removal itself touches no task.
+ * What the clean-up after a member removal does to the tasks of the tasks module, owned by this
+ * module and bound to the public operation of tasks.
  */
 export interface TaskAssignments {
   // #region Methods
   /**
-   * Method scheduleUnassignment
+   * Method unassignBatch
    *
    * @description
-   * Enqueues the job that removes a former member from every task they are assigned to, closed
-   * ones included, once per removal: the same membership at the same version enqueues nothing
-   * more. The job stops without unassigning while the copy holds the account as a member again.
+   * Removes a former member from one batch of the tasks they are assigned to, closed ones
+   * included, in its own tenant transaction of the organization of the context, after
+   * `afterTaskId`. Nothing changes while the copy holds the account as a member again.
    *
-   * @param {string} organizationId - The organization of the event.
+   * @param {string} organizationId - The organization of the context, in lower case.
    * @param {string} userId - The account of the member who left.
-   * @param {string} memberId - The membership that ended.
-   * @param {number} membershipVersion - Its version after the removal.
-   * @returns {Promise<boolean>} `true` when a job was enqueued, `false` for a duplicate.
+   * @param {string | null} afterTaskId - The last task id of the previous batch of the attempt,
+   * `null` for the first.
+   * @returns {Promise<TaskUnassignmentBatch>} What the batch did.
+   * @throws {Error} When the batch fails: it rolls back alone.
    */
-  scheduleUnassignment(
+  unassignBatch(
     organizationId: string,
     userId: string,
-    memberId: string,
-    membershipVersion: number,
-  ): Promise<boolean>;
+    afterTaskId: string | null,
+  ): Promise<TaskUnassignmentBatch>;
   // #endregion
 }

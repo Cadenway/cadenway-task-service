@@ -98,29 +98,19 @@ describe('MemberEventsHandler: a removal that fails is logged once with its caus
     expect(fields).not.toContain(removed.memberId.toLowerCase());
   });
 
-  it('logs nothing when the removal succeeds without private spaces awaiting an owner', async () => {
-    const handle = await removedHandlerOver(() =>
-      Promise.resolve({ privateSpacesAwaitingOwner: 0 }),
-    );
+  it('logs nothing when the removal succeeds, whether its job is new or not', async () => {
+    for (const cleanUpEnqueued of [true, false]) {
+      const handle = await removedHandlerOver(() => Promise.resolve({ cleanUpEnqueued }));
 
-    await handle(removed, deliveryOf(1));
+      await handle(removed, deliveryOf(1));
+    }
 
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it('still reports once the private spaces left awaiting an owner', async () => {
-    const handle = await removedHandlerOver(() =>
-      Promise.resolve({ privateSpacesAwaitingOwner: 2 }),
-    );
-
-    await handle(removed, deliveryOf(1));
-
-    expect(warn).toHaveBeenCalledTimes(1);
-  });
-
   it('passes the lower-cased ids of the event to the use case', async () => {
     const execute = vi.fn<(input: ApplyMemberEventInput) => Promise<ApplyMemberEventOutput>>(() =>
-      Promise.resolve({ privateSpacesAwaitingOwner: 0 }),
+      Promise.resolve({ cleanUpEnqueued: true }),
     );
     const handle = await removedHandlerOver(execute);
 

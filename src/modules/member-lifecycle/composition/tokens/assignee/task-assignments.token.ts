@@ -3,7 +3,7 @@
  *
  * @description
  * Identifies the `TaskAssignments` port of the module, bound to the public
- * `ScheduleMemberUnassignment` of the tasks module.
+ * `UnassignRemovedMember` of the tasks module.
  *
  * @type {unique symbol}
  */

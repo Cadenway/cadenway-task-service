@@ -2,7 +2,8 @@
  * Interface HandOverPrivateSpacesInput
  *
  * @description
- * A member who left the organization, whose private spaces pass to the owner of the organization (`member.removed.v1`).
+ * A member who left the organization, whose private spaces pass to the owner of the organization
+ * (`member.removed.v1`), as the clean-up job of member-lifecycle carries them.
  */
 export interface HandOverPrivateSpacesInput {
   // #region Properties
@@ -10,7 +11,7 @@ export interface HandOverPrivateSpacesInput {
    * Property organizationId
    *
    * @description
-   * The organization of the event, the one of its tenant transaction.
+   * The organization of the job, in lower case, the one of its organization context.
    *
    * @type {string}
    * @readonly

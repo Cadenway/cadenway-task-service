@@ -232,15 +232,23 @@ export class DrizzleSpaceRepository implements SpaceRepository {
    * Method lockPrivateOwnedBy
    *
    * @description
-   * Loads and locks the private spaces an account owns, in the order `(created_at, id)`. The
-   * count is the number of private spaces of one member; the locks come in that order so that
-   * two handovers cannot wait on each other.
+   * Loads and locks the first `limit` private spaces an account owns and that do not await an
+   * owner, in the order `(created_at, id)`, so that two batches cannot wait on each other. The
+   * candidates come from `spaces_organization_owner_index` (`organization_id, owner_user_id`):
+   * the rows of one owner in one organization, sorted in memory and cut at `limit`. A handed-over
+   * space leaves that range, and a space marked awaiting stays in it but is filtered out, so each
+   * batch reads at most the private spaces the account still has plus those awaiting an owner.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} ownerUserId - The account.
-   * @returns {Promise<Space[]>} Its private spaces.
+   * @param {number} limit - Most spaces to lock.
+   * @returns {Promise<Space[]>} Its private spaces, at most `limit`.
    */
-  public async lockPrivateOwnedBy(organizationId: string, ownerUserId: string): Promise<Space[]> {
+  public async lockPrivateOwnedBy(
+    organizationId: string,
+    ownerUserId: string,
+    limit: number,
+  ): Promise<Space[]> {
     const rows: SpaceRow[] = await this.db
       .select()
       .from(spaces)
@@ -253,6 +261,7 @@ export class DrizzleSpaceRepository implements SpaceRepository {
         ),
       )
       .orderBy(asc(spaces.createdAt), asc(spaces.id))
+      .limit(limit)
       .for('no key update');
     return rows.map(toSpace);
   }

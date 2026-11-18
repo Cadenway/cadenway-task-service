@@ -1,12 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
-import type { MemberRole } from '../../../../../domain/value-objects/member/member-role.value-object.js';
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import type { TaskField } from '../../../../../domain/value-objects/task/task-field.value-object.js';
 import type { TaskState } from '../../../../../domain/value-objects/task/task-state.value-object.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
-import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
 import {
   ATELIER_NORD,
@@ -22,9 +20,13 @@ import {
   cad490State,
   taskState,
 } from '../../../tasks.fixture.js';
+import type { UnassignRemovedMemberOutput } from './unassign-removed-member.output.js';
 import { UnassignRemovedMember } from './unassign-removed-member.use-case.js';
 
 const system = { type: 'system', id: 'task-service' } as const;
+
+/** The first batch of the unassignment of Hugo Dubois in Atelier Nord. */
+const first = { organizationId: ATELIER_NORD, userId: HUGO, afterTaskId: null } as const;
 
 /**
  * Builds a task of Atelier Nord assigned to Hugo Dubois; the ids follow the index, so the keyset
@@ -55,53 +57,44 @@ function manyAssignedToHugo(count: number): TaskState[] {
 }
 
 /**
- * A copy of the memberships that answers from a list of answers, one per reading, the last one
- * repeated: what the copy would say while a re-join commits between two batches.
+ * Calls the batch as the clean-up job does: from the first batch, after the last task id of the
+ * previous one, until a batch answers `none-left` or `member-again`.
  *
- * @param answers - The role of Hugo Dubois at each reading.
- * @returns The directory and the number of readings.
+ * @param useCase - The batch operation.
+ * @returns Every answer, the last one included.
  */
-function changingCopy(answers: readonly (MemberRole | null)[]): {
-  readonly members: MemberDirectory;
-  readonly readings: () => number;
-} {
-  let readings = 0;
-  return {
-    members: {
-      roleOf: (): Promise<MemberRole | null> => {
-        const answer = answers[Math.min(readings, answers.length - 1)] ?? null;
-        readings += 1;
-        return Promise.resolve(answer);
-      },
-    },
-    readings: () => readings,
-  };
+async function drain(useCase: UnassignRemovedMember): Promise<UnassignRemovedMemberOutput[]> {
+  const outputs: UnassignRemovedMemberOutput[] = [];
+  let afterTaskId: string | null = null;
+  for (;;) {
+    const output: UnassignRemovedMemberOutput = await useCase.execute({ ...first, afterTaskId });
+    outputs.push(output);
+    if (output.outcome !== 'unassigned') {
+      return outputs;
+    }
+    afterTaskId = output.lastTaskId;
+  }
 }
 
 /**
  * Wraps the unit of work of the fake with a change of the store of each run.
  *
  * @param tasks - The fake.
- * @param change - What replaces parts of the store, given the run number from 1.
+ * @param change - What replaces parts of the store.
  * @returns A unit of work over the same rows.
  */
 function wrapped(
   tasks: InMemoryTasks,
-  change: (store: Parameters<Parameters<InMemoryTasks['run']>[0]>[0], run: number) => object,
+  change: (store: Parameters<Parameters<InMemoryTasks['run']>[0]>[0]) => object,
 ): TasksUnitOfWork {
-  let runs = 0;
   return {
-    run: (work) => {
-      runs += 1;
-      const run = runs;
-      return tasks.run((store) => work({ ...store, ...change(store, run) }));
-    },
+    run: (work) => tasks.run((store) => work({ ...store, ...change(store) })),
     runReadOnly: (work, options) => tasks.runReadOnly(work, options),
   };
 }
 
-describe('UnassignRemovedMember: a member who left is removed from every task they are assigned to', () => {
-  it('removes the account from open and closed tasks and answers how many, in one batch', async () => {
+describe('UnassignRemovedMember: one batch removes a member who left from the tasks they are assigned to', () => {
+  it('removes the account from open and closed tasks and answers how many, with the last task id', async () => {
     const tasks = new InMemoryTasks({
       tasks: [
         assignedToHugo(1),
@@ -112,12 +105,17 @@ describe('UnassignRemovedMember: a member who left is removed from every task th
       ],
     });
 
-    const output = await new UnassignRemovedMember(tasks, atelierNordMembers([HUGO])).execute({
-      organizationId: ATELIER_NORD,
-      userId: HUGO,
-    });
+    const output = await new UnassignRemovedMember(tasks, atelierNordMembers([HUGO])).execute(
+      first,
+    );
 
-    expect(output).toEqual({ outcome: 'completed', unassigned: 4, batches: 1 });
+    expect(output).toEqual({
+      outcome: 'unassigned',
+      locked: 4,
+      unassigned: 4,
+      lastTaskId: assignedToHugo(3).id,
+    });
+    expect(tasks.runs).toBe(1);
     expect([...tasks.tasks.values()].filter((row) => row.assigneeIds.includes(HUGO))).toEqual([]);
     expect(tasks.stored(CAD_482)).toMatchObject({
       assigneeIds: [CAMILLE],
@@ -131,10 +129,7 @@ describe('UnassignRemovedMember: a member who left is removed from every task th
   it('records one assign entry with added false by the system actor per task', async () => {
     const tasks = new InMemoryTasks({ tasks: [assignedToHugo(1), assignedToHugo(2)] });
 
-    await new UnassignRemovedMember(tasks, atelierNordMembers([HUGO])).execute({
-      organizationId: ATELIER_NORD,
-      userId: HUGO,
-    });
+    await new UnassignRemovedMember(tasks, atelierNordMembers([HUGO])).execute(first);
 
     expect([...tasks.activity.values()]).toEqual([
       expect.objectContaining({
@@ -150,10 +145,7 @@ describe('UnassignRemovedMember: a member who left is removed from every task th
   it('appends one task.updated.v1 for assigneeIds per task, by the system actor, and no other event', async () => {
     const tasks = new InMemoryTasks({ tasks: [assignedToHugo(1), assignedToHugo(2)] });
 
-    await new UnassignRemovedMember(tasks, atelierNordMembers([HUGO])).execute({
-      organizationId: ATELIER_NORD,
-      userId: HUGO,
-    });
+    await new UnassignRemovedMember(tasks, atelierNordMembers([HUGO])).execute(first);
 
     expect(tasks.events).toEqual([
       { kind: 'updated', key: 'CAD-1001', version: 4, changed: ['assigneeIds'], actor: system },
@@ -166,12 +158,11 @@ describe('UnassignRemovedMember: a member who left is removed from every task th
       tasks: [assignedToHugo(1, { organizationId: OTHER_ORGANIZATION })],
     });
 
-    const output = await new UnassignRemovedMember(tasks, atelierNordMembers([HUGO])).execute({
-      organizationId: ATELIER_NORD,
-      userId: HUGO,
-    });
+    const output = await new UnassignRemovedMember(tasks, atelierNordMembers([HUGO])).execute(
+      first,
+    );
 
-    expect(output).toEqual({ outcome: 'completed', unassigned: 0, batches: 0 });
+    expect(output).toEqual({ outcome: 'none-left' });
     expect(tasks.stored(assignedToHugo(1).id).assigneeIds).toEqual([HUGO]);
   });
 
@@ -180,71 +171,48 @@ describe('UnassignRemovedMember: a member who left is removed from every task th
       tasks: [assignedToHugo(1, { assigneeIds: [INES, HUGO, CAMILLE] })],
     });
 
-    await new UnassignRemovedMember(tasks, atelierNordMembers([HUGO])).execute({
-      organizationId: ATELIER_NORD,
-      userId: HUGO,
-    });
+    await new UnassignRemovedMember(tasks, atelierNordMembers([HUGO])).execute(first);
 
     expect(tasks.stored(assignedToHugo(1).id).assigneeIds).toEqual([INES, CAMILLE]);
   });
 
-  it('finds nothing to do the second time, so a job run again is harmless', async () => {
+  it('answers none-left from the first batch once nothing is left, so a job run again is harmless', async () => {
     const tasks = new InMemoryTasks({ tasks: [assignedToHugo(1)] });
     const useCase = new UnassignRemovedMember(tasks, atelierNordMembers([HUGO]));
 
-    await useCase.execute({ organizationId: ATELIER_NORD, userId: HUGO });
-    const second = await useCase.execute({ organizationId: ATELIER_NORD, userId: HUGO });
+    await drain(useCase);
+    const again = await useCase.execute(first);
 
-    expect(second).toEqual({ outcome: 'completed', unassigned: 0, batches: 0 });
+    expect(again).toEqual({ outcome: 'none-left' });
     expect(tasks.events).toHaveLength(1);
   });
 });
 
-describe('UnassignRemovedMember: the job stops for good once the person is a member again', () => {
+describe('UnassignRemovedMember: a batch writes nothing once the person is a member again', () => {
   it('locks the batch before it reads the copy, and writes nothing when the copy holds the account again', async () => {
     const trace: string[] = [];
     const tasks = new InMemoryTasks({ tasks: [assignedToHugo(1)], trace });
 
-    const output = await new UnassignRemovedMember(tasks, atelierNordMembers([], trace)).execute({
-      organizationId: ATELIER_NORD,
-      userId: HUGO,
-    });
+    const output = await new UnassignRemovedMember(tasks, atelierNordMembers([], trace)).execute(
+      first,
+    );
 
-    expect(output).toEqual({ outcome: 'member-again', unassigned: 0, batches: 0 });
+    expect(output).toEqual({ outcome: 'member-again' });
     expect(trace).toEqual(['tasks.lockAssignedTo', `members.roleOf:${HUGO}:read`]);
     expect(tasks.stored(assignedToHugo(1).id).assigneeIds).toEqual([HUGO]);
     expect(tasks.events).toEqual([]);
     expect(tasks.activity.size).toBe(0);
   });
 
-  it('keeps the batches committed before a re-join and leaves every later task, a new assignment included, as it is', async () => {
-    const tasks = new InMemoryTasks({ tasks: manyAssignedToHugo(1200) });
-    const copy = changingCopy([null, 'member']);
-
-    const output = await new UnassignRemovedMember(tasks, copy.members).execute({
-      organizationId: ATELIER_NORD,
-      userId: HUGO,
-    });
-
-    expect(output).toEqual({ outcome: 'member-again', unassigned: 500, batches: 1 });
-    expect(copy.readings()).toBe(2);
-    const stillAssigned = [...tasks.tasks.values()].filter((row) => row.assigneeIds.includes(HUGO));
-    expect(stillAssigned).toHaveLength(700);
-    expect(stillAssigned.every((row) => row.version === 3)).toBe(true);
-    expect(tasks.events).toHaveLength(500);
-    expect(tasks.activity.size).toBe(500);
-  });
-
   it('does not read the copy when nothing is left to unassign', async () => {
     const trace: string[] = [];
     const tasks = new InMemoryTasks({ tasks: [cad490State({ assigneeIds: [CAMILLE] })], trace });
 
-    const output = await new UnassignRemovedMember(tasks, atelierNordMembers([], trace)).execute({
-      organizationId: ATELIER_NORD,
-      userId: HUGO,
-    });
+    const output = await new UnassignRemovedMember(tasks, atelierNordMembers([], trace)).execute(
+      first,
+    );
 
-    expect(output).toEqual({ outcome: 'completed', unassigned: 0, batches: 0 });
+    expect(output).toEqual({ outcome: 'none-left' });
     expect(trace).toEqual(['tasks.lockAssignedTo']);
   });
 });
@@ -280,12 +248,16 @@ describe('UnassignRemovedMember: a task that lost the account before it was lock
       },
     }));
 
-    const output = await new UnassignRemovedMember(racing, atelierNordMembers([HUGO])).execute({
-      organizationId: ATELIER_NORD,
-      userId: HUGO,
-    });
+    const output = await new UnassignRemovedMember(racing, atelierNordMembers([HUGO])).execute(
+      first,
+    );
 
-    expect(output).toEqual({ outcome: 'completed', unassigned: 1, batches: 1 });
+    expect(output).toEqual({
+      outcome: 'unassigned',
+      locked: 2,
+      unassigned: 1,
+      lastTaskId: assignedToHugo(2).id,
+    });
     expect(written).toEqual([[assignedToHugo(1).id]]);
     expect(tasks.events).toEqual([
       { kind: 'updated', key: 'CAD-1001', version: 4, changed: ['assigneeIds'], actor: system },
@@ -295,7 +267,7 @@ describe('UnassignRemovedMember: a task that lost the account before it was lock
     ]);
   });
 
-  it('writes nothing when no task of the batch changed', async () => {
+  it('writes nothing when no task of the batch changed, and still moves past it', async () => {
     const tasks = new InMemoryTasks({ tasks: [assignedToHugo(1)] });
     const racing = wrapped(tasks, (store) => ({
       tasks: {
@@ -312,12 +284,16 @@ describe('UnassignRemovedMember: a task that lost the account before it was lock
       },
     }));
 
-    const output = await new UnassignRemovedMember(racing, atelierNordMembers([HUGO])).execute({
-      organizationId: ATELIER_NORD,
-      userId: HUGO,
-    });
+    const output = await new UnassignRemovedMember(racing, atelierNordMembers([HUGO])).execute(
+      first,
+    );
 
-    expect(output).toEqual({ outcome: 'completed', unassigned: 0, batches: 1 });
+    expect(output).toEqual({
+      outcome: 'unassigned',
+      locked: 1,
+      unassigned: 0,
+      lastTaskId: assignedToHugo(1).id,
+    });
     expect(tasks.events).toEqual([]);
     expect(tasks.activity.size).toBe(0);
   });
@@ -332,33 +308,31 @@ describe('UnassignRemovedMember: the batches come without checklist', () => {
     });
     const tasks = new InMemoryTasks({ tasks: [withChecklist] });
 
-    await new UnassignRemovedMember(tasks, atelierNordMembers([HUGO])).execute({
-      organizationId: ATELIER_NORD,
-      userId: HUGO,
-    });
+    await new UnassignRemovedMember(tasks, atelierNordMembers([HUGO])).execute(first);
 
     expect(tasks.stored(withChecklist.id).checklist).toEqual(withChecklist.checklist);
   });
 });
 
 describe('UnassignRemovedMember: batches of 500, each in its own transaction, after the last id of the previous one', () => {
-  it('walks 1,200 tasks in three transactions, each written in one set-based call', async () => {
+  it('walks 1,200 tasks in three transactions written in one set-based call each, then a fourth that finds none', async () => {
     const tasks = new InMemoryTasks({ tasks: manyAssignedToHugo(1200) });
 
-    const output = await new UnassignRemovedMember(tasks, atelierNordMembers([HUGO])).execute({
-      organizationId: ATELIER_NORD,
-      userId: HUGO,
-    });
+    const outputs = await drain(new UnassignRemovedMember(tasks, atelierNordMembers([HUGO])));
 
-    expect(output).toEqual({ outcome: 'completed', unassigned: 1200, batches: 3 });
-    expect(tasks.runs).toBe(3);
-    expect(tasks.trace.filter((call) => call === 'tasks.lockAssignedTo')).toHaveLength(3);
+    expect(outputs).toEqual([
+      { outcome: 'unassigned', locked: 500, unassigned: 500, lastTaskId: assignedToHugo(499).id },
+      { outcome: 'unassigned', locked: 500, unassigned: 500, lastTaskId: assignedToHugo(999).id },
+      { outcome: 'unassigned', locked: 200, unassigned: 200, lastTaskId: assignedToHugo(1199).id },
+      { outcome: 'none-left' },
+    ]);
+    expect(tasks.runs).toBe(4);
     expect(tasks.trace.filter((call) => call === 'tasks.unassignBatch')).toHaveLength(3);
     expect(tasks.events).toHaveLength(1200);
     expect(tasks.activity.size).toBe(1200);
   });
 
-  it('starts each batch after the last task id of the one before', async () => {
+  it('starts a batch after the task id it is given, 500 at most', async () => {
     const tasks = new InMemoryTasks({ tasks: manyAssignedToHugo(1200) });
     const afterIds: (string | null)[] = [];
     const spied = wrapped(tasks, (store) => ({
@@ -377,29 +351,19 @@ describe('UnassignRemovedMember: batches of 500, each in its own transaction, af
       },
     }));
 
-    await new UnassignRemovedMember(spied, atelierNordMembers([HUGO])).execute({
-      organizationId: ATELIER_NORD,
-      userId: HUGO,
-    });
+    await drain(new UnassignRemovedMember(spied, atelierNordMembers([HUGO])));
 
-    expect(afterIds).toEqual([null, assignedToHugo(499).id, assignedToHugo(999).id]);
-  });
-
-  it('asks for one more batch, found empty, when the count is a multiple of 500', async () => {
-    const tasks = new InMemoryTasks({ tasks: manyAssignedToHugo(1000) });
-
-    const output = await new UnassignRemovedMember(tasks, atelierNordMembers([HUGO])).execute({
-      organizationId: ATELIER_NORD,
-      userId: HUGO,
-    });
-
-    expect(output).toEqual({ outcome: 'completed', unassigned: 1000, batches: 2 });
-    expect(tasks.trace.filter((call) => call === 'tasks.lockAssignedTo')).toHaveLength(3);
+    expect(afterIds).toEqual([
+      null,
+      assignedToHugo(499).id,
+      assignedToHugo(999).id,
+      assignedToHugo(1199).id,
+    ]);
   });
 });
 
-describe('UnassignRemovedMember: a failed batch rolls back alone, and the next attempt resumes', () => {
-  it('keeps the first batch when the second fails, then writes each remaining task once on the retry', async () => {
+describe('UnassignRemovedMember: a failed batch rolls back alone, and a new attempt resumes', () => {
+  it('keeps the first batch when the second fails, then writes each remaining task once from the first batch again', async () => {
     const tasks = new InMemoryTasks({ tasks: manyAssignedToHugo(1200) });
     const failing = wrapped(tasks, (store) => ({
       events: {
@@ -416,10 +380,7 @@ describe('UnassignRemovedMember: a failed batch rolls back alone, and the next a
     }));
 
     await expect(
-      new UnassignRemovedMember(failing, atelierNordMembers([HUGO])).execute({
-        organizationId: ATELIER_NORD,
-        userId: HUGO,
-      }),
+      drain(new UnassignRemovedMember(failing, atelierNordMembers([HUGO]))),
     ).rejects.toThrow('The outbox is unavailable.');
 
     const assigned = (): TaskState[] =>
@@ -429,42 +390,17 @@ describe('UnassignRemovedMember: a failed batch rolls back alone, and the next a
     expect(tasks.events).toHaveLength(500);
     expect(tasks.activity.size).toBe(500);
 
-    const retry = await new UnassignRemovedMember(tasks, atelierNordMembers([HUGO])).execute({
-      organizationId: ATELIER_NORD,
-      userId: HUGO,
-    });
+    const retry = await drain(new UnassignRemovedMember(tasks, atelierNordMembers([HUGO])));
 
-    expect(retry).toEqual({ outcome: 'completed', unassigned: 700, batches: 2 });
+    expect(retry.map((output) => output.outcome)).toEqual([
+      'unassigned',
+      'unassigned',
+      'none-left',
+    ]);
     expect(assigned()).toEqual([]);
     expect(new Set(tasks.events.map((event) => event.key)).size).toBe(1200);
     expect(tasks.events).toHaveLength(1200);
     expect(tasks.activity.size).toBe(1200);
     expect([...tasks.tasks.values()].every((row) => row.version === 4)).toBe(true);
-  });
-
-  it('starts no batch once the signal of the attempt aborted, and keeps the batches committed before', async () => {
-    const tasks = new InMemoryTasks({ tasks: manyAssignedToHugo(1200) });
-    const attempt = new AbortController();
-    const expiring = wrapped(tasks, (store, run) => ({
-      clock: {
-        now: (): Promise<Date> => {
-          if (run === 1) {
-            attempt.abort(new Error('The attempt expired.'));
-          }
-          return store.clock.now();
-        },
-      },
-    }));
-
-    await expect(
-      new UnassignRemovedMember(expiring, atelierNordMembers([HUGO])).execute({
-        organizationId: ATELIER_NORD,
-        userId: HUGO,
-        signal: attempt.signal,
-      }),
-    ).rejects.toThrow('The attempt expired.');
-
-    expect(tasks.runs).toBe(1);
-    expect(tasks.events).toHaveLength(500);
   });
 });

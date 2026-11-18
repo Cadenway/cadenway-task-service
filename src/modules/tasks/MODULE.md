@@ -10,8 +10,8 @@ The tasks of each organization (P3a, "Tâches") and what hangs from a task:
   `version` of the task;
 - the activity log of the tasks (creation, status, priority, due date, assignment), read by task
   and by list;
-- the job that unassigns a member who left the organization from their tasks, enqueued with the
-  removal.
+- the unassignment of a member who left the organization from their tasks, one batch per call,
+  which the clean-up job of member-lifecycle runs after the removal.
 
 It decides who sees a task: whoever sees the space of its list, with the visibility rules of the
 spaces module, from the copy of the memberships of the organization-members module, never from the
@@ -22,17 +22,18 @@ the overview, the counts and the home, which the task query module serves from P
 
 ## Public entry points
 
-| Entry point                                    | Consumers        |
-| ---------------------------------------------- | ---------------- |
-| `tasks.module`                                 | member-lifecycle |
-| `public/assignee/schedule-member-unassignment` | member-lifecycle |
+| Entry point                               | Consumers        |
+| ----------------------------------------- | ---------------- |
+| `tasks.module`                            | member-lifecycle |
+| `public/assignee/unassign-removed-member` | member-lifecycle |
 
-`TasksModule` exports the `ScheduleMemberUnassignment` provider
-(`{ organizationId, userId, memberId, membershipVersion }` to `{ scheduled }`). member-lifecycle
-calls it on `member.removed.v1`, after the copy of the memberships and the handover of the private
-spaces, in the tenant transaction of the event, which it joins: it enqueues the unassignment job
-of the removal and touches no task. `scheduled` is `false` when the same removal had already
-enqueued its job.
+`TasksModule` exports the `UnassignRemovedMember` provider
+(`{ organizationId, userId, afterTaskId }` to `{ outcome: 'none-left' }`,
+`{ outcome: 'member-again' }` or `{ outcome: 'unassigned', locked, unassigned, lastTaskId }`): one batch of the removal of a former
+member from their tasks, in a tenant transaction of its own of the organization of the context.
+The clean-up job of member-lifecycle calls it once the private spaces of the former member were
+handed over, from `afterTaskId: null`, then after each `lastTaskId`, until `none-left` or
+`member-again`. The module owns no job and no queue.
 
 ## Owned tables
 
@@ -66,7 +67,7 @@ Created by `migrations/0003_tasks.sql`, which forces the five policies by hand.
   `checklist_items` is unique on `(organization_id, task_id, position)`.
 - Indexes: `tasks_key_unique` (every route by key); `tasks (organization_id, parent_id,
 created_at, id)` (subtasks, counts, the subtree and the ancestors);
-  `task_assignees (organization_id, user_id, task_id)` (the unassignment job of a removed member,
+  `task_assignees (organization_id, user_id, task_id)` (the unassignment of a removed member,
   which pages by `task_id` so that every batch is one range scan starting where the last one
   ended);
   `activity_entries (organization_id, task_id, occurred_at, id)` and
@@ -74,10 +75,6 @@ created_at, id)` (subtasks, counts, the subtree and the ancestors);
   counts and the merge candidate). The assignees, labels and checklist are read through their
   primary or unique key prefix. No query plan was taken on representative data yet. PR 3 adds the
   indexes the list queries need.
-- The unassignment jobs live in the `pgboss` schema of `@cadenway/nest-jobs`, provisioned by
-  `src/migrate.ts` (queue `task.unassign-removed-member` and its dead-letter queue
-  `task.unassign-removed-member.dead-letter`, declared in `src/config/job-queues.ts`); their
-  payload holds the account id only, the organization travels in the envelope of the kit.
 
 ## API
 
@@ -140,20 +137,22 @@ the change. Their payload carries neither the description, the checklist nor, ou
   `task.status-changed.v1` when the status changed, then `task.assigned.v1` for each person added.
   A move or an attachment emits one `task.updated.v1` per subtask that follows, with its own version.
   A patch that changes nothing writes, records and emits nothing and answers the same version.
-- The unassignment job of a removed member emits one `task.updated.v1` (`changed: ['assigneeIds']`)
+- The unassignment of a removed member emits one `task.updated.v1` (`changed: ['assigneeIds']`)
   per task it changes, by the actor `{ type: 'system', id: 'task-service' }`, in the transaction of
-  its batch.
+  its batch. A batch runs in the span of the clean-up job, child of the delivery of the removal, so
+  these rows carry the `traceparent` of that trace when the process traces.
+- Note for cadenway-api-contracts, reported to the contract owner: until the clean-up job reaches
+  a task, the former member stays in its `assigneeIds`, in the task and in every event the task
+  emits meanwhile (a rename, a cancel note). An assignee may briefly be a former member: consumers
+  check the membership, and clients show « Ancien membre ».
 - A parent emits nothing when a subtask is created, attached or detached: its subtask counts are
   derived.
 
 ## Events consumed
 
-None directly: member-lifecycle consumes `member.removed.v1` and calls `ScheduleMemberUnassignment`
-in the same tenant transaction. `member.role-changed.v1` never changes the assignees.
-
-The module consumes one job queue of its own, `task.unassign-removed-member`, whose worker
-(`UnassignRemovedMemberHandler`) runs `UnassignRemovedMember` in the organization context of the
-job. See [Transactions](#transactions) for its batches and retries.
+None, and no job queue: member-lifecycle consumes `member.removed.v1`, enqueues its clean-up
+job and runs `UnassignRemovedMember` from that job, batch after batch. `member.role-changed.v1`
+never changes the assignees.
 
 ## Invariants
 
@@ -195,12 +194,14 @@ job. See [Transactions](#transactions) for its batches and retries.
   another visible list stay.
 - The organization and the actor come from the verified token only, lower-cased; an actor id that is
   not a UUID answers `403 auth.actor-not-allowed`.
-- A removed member is unassigned from every task they hold, closed ones included, by the job their
-  removal enqueued, unless the copy holds them as a member again when a batch runs: the job then
-  stops for good and the tasks it had not reached keep them. An assignment made after a re-join is
-  never undone by the job of an earlier removal. Until the job reaches a task, the task still lists
-  the former member among its assignees; the former member sees nothing (the copy answers
-  `404 organization.not-found`) and cannot be assigned again.
+- A removed member is unassigned from every task they hold, closed ones included, by the clean-up
+  job their removal enqueued (member-lifecycle), unless the copy holds them as a member again when
+  a batch runs: the job then stops for good and the tasks it had not reached keep them. An
+  assignment made after a re-join is never undone by the job of an earlier removal. Until the job
+  reaches a task, the task still lists the former member among its assignees; the former member
+  sees nothing (the copy answers `404 organization.not-found`) and is not assigned again: a `PUT`
+  of the assignee on a task that still lists them answers `200` with the same version and changes
+  nothing (a person already assigned), and on any other task `422 task.assignee-invalid`.
 - A text holding U+0000, in any member, or a calendar date of the year 0000 in `dueDate` or
   `startDate`, answers `400 request.invalid`: the contract validators accept them, PostgreSQL cannot
   store them. A name, a label or a note that reads `0000-11-03` is only a text.
@@ -243,57 +244,28 @@ before the parent; no membership is locked once the parent is, so the order cann
 removal. If the parent was reassigned in between, the subtask keeps the account that was read while
 it is still one of the parent's assignees, and is created without assignee otherwise (accepted
 race). A task write takes no space lock. The removal of a member locks its membership exclusively,
-then the private spaces, and no task; each batch of its unassignment job locks up to 500 tasks in
-ascending id order in one statement, then reads the copy without lock. A sequential task lock that
-is not globally ordered could still meet another writer that holds several: PostgreSQL then aborts
-one transaction, and the request answers an error or the batch of the unassignment job is
-retried. The 412 is checked
-inside the transaction, after the visibility of the task and before the domain rules.
+and no space and no task; each task batch of its clean-up job locks up to 500 tasks in ascending
+id order in one statement, then reads the copy without lock. A sequential task lock that is not
+globally ordered could still meet another writer that holds several: PostgreSQL then aborts one
+transaction, and the request answers an error or the batch of the clean-up job is retried. The
+412 is checked inside the transaction, after the visibility of the task and before the domain
+rules.
 
 Reads (`GET` routes) run in read-only transactions without locks (see above).
 
-The removal of a member (`ScheduleMemberUnassignment`) inserts one row in the job table of the kit,
-through the connection of the tenant transaction of the event: the job exists if and only if the
-copy, the handover and the processed id commit with it, and a worker cannot see it before. Its
-occurrence key is `<memberId>:<membership version after the removal>`, scoped by the kit to the
-organization of the transaction: a removal delivered again, or requeued by organization-service
-while the job row is kept (7 days after it finished), enqueues nothing; the removal of a later
-membership of the same account is a new occurrence.
-
-The job (`UnassignRemovedMember`) runs outside that transaction, one batch per tenant transaction
-of the organization of the job: the locking read of up to 500 tasks (a range scan of
-`task_assignees_user_index` after the last `task_id` of the previous batch, without the
-checklists, which the job never reads), the reading of the copy, the loads of the assignees, the
-labels and the parent keys, one delete of the assignee rows, one update of the versions and one
-insert of the activity entries, that is eight statements (seven when no task has a parent); each
-task also costs one outbox append, two round trips, and the statements run under the 10 s
-statement timeout and the 5 s lock timeout of the application role. A task is rewritten only when
-the domain changed it. The job loops until a batch comes back short, and starts no batch once the
-signal of its attempt aborted (the 15-minute expiration of the queue, or a shutdown past the 30 s
-grace of the kit). A request that writes a task a batch has locked waits for it at most its 5 s
-`lock_timeout`, then answers 500 (SQLSTATE 55P03); a batch holds its locks for one transaction
-only.
-
-A failed batch (the database, a lock or statement timeout) rolls back alone: the batches before it
-stay committed, the attempt fails, and pg-boss retries the job 8 times with backoff from 10 s,
-capped at 30 min (the last attempt starts 42 to 72 minutes after the first failure when the
-attempts fail fast). A retry starts again from the tasks still assigned, so no task is written
-twice. After the last attempt the job becomes a dead letter of
-`task.unassign-removed-member.dead-letter`, kept 14 days.
-
-Signals for operators: the kit logs each failed attempt (`JobsService`, a warning while it will be
-retried, an error on the last attempt, naming the dead-letter queue), with the job id, the queue,
-the attempt and the error, never the payload; a crashed attempt is retried silently after its
-expiration. The dead-letter watch of every replica logs an error with the count of retained dead
-letters every 60 s while the queue holds one. A finished job logs `removed member unassignment job
-handled` (`UnassignRemovedMemberHandler`) with the job id, the attempt, the outcome (`completed`
-or `member-again`) and the numbers of tasks changed and batches committed, no account. No metric
-counts the waiting jobs yet. Every dead letter is an incident: an operator reads its error
-(`source_output`, the job in `source_id`), fixes the cause and runs the job again from the pg-boss
-tooling (the kit exposes no replay yet); the job is idempotent and resumes from what is left.
-Check: rows of `task_assignees` for the account in that organization while `organization_members`
-holds no active membership of it. A requeued removal does not help: the deduplicator skips its
-event id, and while the job row is kept, its occurrence key does too.
+A batch of the unassignment of a removed member (`UnassignRemovedMember`) runs in its own tenant
+transaction of the organization of the clean-up job: the locking read of up to 500 tasks (a range
+scan of `task_assignees_user_index` after `afterTaskId`, without the checklists, which it never
+reads), the reading of the copy, the read of the clock, the loads of the assignees, the labels and
+the parent keys, one delete of the assignee rows, one update of the versions and one insert of the
+activity entries, that is nine statements (eight when no task has a parent); each task also costs
+one outbox append, two round trips, and the statements run under the 10 s statement timeout and
+the 5 s lock timeout of the application role. A task is rewritten only when the domain changed it.
+A request that writes a task a batch has locked waits for it at most its 5 s `lock_timeout`, then
+answers 500 (SQLSTATE 55P03); a batch holds its locks for one transaction only. A failed batch
+rolls back alone; the batches before it stay committed. The loop, the stop on an empty batch, the
+retries, the dead letters and what an operator does about them belong to the clean-up job of
+member-lifecycle (its MODULE.md).
 
 ## Decisions
 
@@ -327,25 +299,25 @@ event id, and while the job row is kept, its occurrence key does too.
   count, are the options.
 - A `PATCH` that names `description` without `If-Match` answers `400` before the `404` of a task
   that does not exist: the header is validated at the boundary.
-- The unassignment of a removed member is a durable job (`@cadenway/nest-jobs` 0.3.1) enqueued in
-  the transaction of the removal, with one code path (decision of the coordinating session for PR 2
-  of P3a): the removal, like the revocation of PR 1, never waits for cleanup, and its cost no
-  longer grows with the assignments of the member. The first version of PR 2 unassigned inline in
-  that transaction, in batches of 500, which bounded a removal by the 25 s handler budget of the
-  kit.
-- The job, not the removal, decides: it reads the copy after locking each batch and stops for good
-  when the account is a member again, so a re-join followed by a new assignment is never undone,
-  and the old assignments left by that stop stay with the person who came back.
+- The unassignment of a removed member is a batch operation called by the clean-up job of
+  member-lifecycle (decision of the coordinating session for PR 2 of P3a, revised again in PR 2:
+  the job orchestrates the spaces and the tasks, so it belongs to the orchestrator). The removal,
+  like the revocation of PR 1, never waits for cleanup, and its cost does not grow with the
+  assignments of the member. The first version of PR 2 unassigned inline in that transaction, in
+  batches of 500, which bounded a removal by the 25 s handler budget of the kit; the second one
+  owned the job in this module.
+- The job, not the removal, decides: each batch reads the copy after locking, so a re-join followed
+  by a new assignment is never undone, and the old assignments left by that stop stay with the
+  person who came back.
 - Batches of 500 tasks, each in its own transaction: a failure costs one batch, and a request waits
   for one batch at most. The job loops within its attempt rather than enqueuing a continuation: the
-  remaining assignments in `task_assignees` are the cursor, so a retry resumes without carrying
-  state, and no extra occurrence key is needed per step. The 15-minute expiration of an attempt
-  bounds a member with very many assignments (an expired attempt keeps its batches and the retry
-  goes on).
-- The occurrence key is the membership and its version, not the account and the version: versions
-  count per membership, so two successive memberships of one account can both end at version 2.
+  remaining assignments in `task_assignees` are the cursor, so a retry resumes from `null` without
+  carrying state.
 - `tests/tasks.int-spec.ts` is the integration test of the routes, the rules, idempotency, row-level
   security and the removal of a member on real PostgreSQL, NATS and pg-boss: the removal commits
-  with its job, the job empties 1,200 assignments in three batches, a redelivered removal enqueues
-  nothing, a re-join stops the job, and a lock timeout in a batch retries only that batch. The dead
-  letter is not provoked there: it takes the whole retry schedule, about an hour.
+  with its clean-up job, the job empties 1,200 assignments in three batches, a redelivered removal
+  enqueues nothing, a re-join stops the job and keeps the private space and the tasks, a lock
+  timeout in a batch retries only that batch, a removal in upper case commits at once and its job
+  writes lower-case events, the rows of the job carry the trace of the removal, and the dead-letter
+  SQL of the member-lifecycle MODULE.md reads, replays and deletes a dead letter. The dead letter
+  itself is seeded by SQL there: provoking it takes the whole retry schedule, about an hour.

@@ -39,6 +39,8 @@ import type {
 } from '@cadenway/nest-common';
 import { TenantTransactionRunner } from '@cadenway/nest-common/database';
 import type { TransactionClient } from '@cadenway/nest-common/database';
+import { startTelemetry } from '@cadenway/nest-common/telemetry';
+import type { TelemetryHandle } from '@cadenway/nest-common/telemetry';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import pg from 'pg';
 import request from 'supertest';
@@ -57,7 +59,9 @@ import { appConfigSchema } from '../src/config/app-config.js';
 // their answers are checked against the validators generated from
 // `openapi/internal/task-service.yaml`; the outbox rows are checked against the schemas of
 // `asyncapi/task-service.yaml`. Rows are read, aged and seeded as the migrator role, which sets the
-// system access of the policies, since row-level security is forced on every table.
+// system access of the policies, since row-level security is forced on every table. The
+// OpenTelemetry SDK of the kit runs as `src/telemetry.ts` starts it, without an exporter, so that a
+// delivery has a span and the rows of the clean-up job carry its `traceparent`.
 
 /** Compose file of the development dependencies. */
 const composeFile: string = fileURLToPath(new URL('../compose.dev.yaml', import.meta.url));
@@ -151,6 +155,24 @@ const rose: Person = {
 
 /** The new membership Rose Lambert gets when she joins Atelier Nord again. */
 const roseNewMemberId = '01938f6e-9000-7000-8000-0000000000d2';
+
+/** Lucie Fabre, member of Atelier Nord, whose removal names her and the organization in upper case. */
+const lucie: Person = {
+  userId: '01938f6e-8a42-7d5b-b2c9-5e1f3a6d9c32',
+  memberId: '01938f6e-9000-7000-8000-0000000000d3',
+};
+
+/** Two former members of Atelier Nord, never in the copy, whose clean-up ends as a dead letter. */
+const formerMembers: readonly Person[] = [
+  {
+    userId: '01938f6e-8a42-7d5b-b2c9-5e1f3a6d9c40',
+    memberId: '01938f6e-9000-7000-8000-0000000000e0',
+  },
+  {
+    userId: '01938f6e-8a42-7d5b-b2c9-5e1f3a6d9c41',
+    memberId: '01938f6e-9000-7000-8000-0000000000e1',
+  },
+];
 
 /** The new membership Chloé Girard gets when she joins Atelier Nord again. */
 const chloeNewMemberId = '01938f6e-9000-7000-8000-0000000000d1';
@@ -505,6 +527,7 @@ describe('tasks', () => {
   let app: NestExpressApplication | undefined;
   let signer: InternalTokenSigner;
   let migrator: pg.Pool;
+  let telemetry: TelemetryHandle | undefined;
 
   // The spaces and lists of Atelier Nord the scenarios work in.
   let produit: SpaceBody;
@@ -895,6 +918,7 @@ describe('tasks', () => {
       JSON.stringify({ 'api-gateway': [gateway.publicJwk] }),
     );
 
+    telemetry = startTelemetry({ service: 'task-service', version: '0.0.0-test' });
     // As main.ts: the configuration is read inside the start-up, never when a module is imported.
     const config = loadConfig(appConfigSchema);
     app = await createApplication(AppModule, {
@@ -927,6 +951,7 @@ describe('tasks', () => {
       [noe, 'member'],
       [theo, 'member'],
       [rose, 'member'],
+      [lucie, 'member'],
       ...crowd.map((person): readonly [Person, MemberJoinedV1['role']] => [person, 'member']),
     ];
     for (const [person, role] of people) {
@@ -996,6 +1021,7 @@ describe('tasks', () => {
     try {
       await app?.close();
       await migrator.end();
+      await telemetry?.shutdown();
     } finally {
       vi.unstubAllEnvs();
       compose('down', '--volumes', '--remove-orphans');
@@ -3274,28 +3300,31 @@ describe('tasks', () => {
     return rows[0]?.total ?? 0;
   }
 
-  /** A row of the unassignment queue of pg-boss, as the specs read it. */
-  interface UnassignmentJob {
+  /** A row of the clean-up queue of pg-boss, as the specs read it. */
+  interface CleanUpJob {
     readonly id: string;
     readonly state: string;
     readonly retry_count: number;
     readonly organization_id: string;
+    readonly traceparent: string | null;
     readonly created_on: Date;
     readonly completed_on: Date | null;
   }
 
   /**
-   * Reads the unassignment jobs of an account, oldest first, as the migrator role, which owns the
-   * `pgboss` schema.
+   * Reads the clean-up jobs of an account, oldest first, as the migrator role, which owns the
+   * `pgboss` schema. The account is compared ignoring case, as a removal may spell it in upper case.
    *
    * @param person - The account.
    * @returns The jobs of the queue whose payload names it.
    */
-  async function unassignmentJobsOf(person: Person): Promise<UnassignmentJob[]> {
-    const result = await migrator.query<UnassignmentJob>(
-      `select id, state, retry_count, data ->> 'organizationId' as organization_id, created_on, completed_on
+  async function cleanUpJobsOf(person: Person): Promise<CleanUpJob[]> {
+    const result = await migrator.query<CleanUpJob>(
+      `select id, state, retry_count, data ->> 'organizationId' as organization_id,
+              data -> 'payload' ->> 'traceparent' as traceparent, created_on, completed_on
          from pgboss.job
-        where name = 'task.unassign-removed-member' and data -> 'payload' ->> 'userId' = $1
+        where name = 'task.clean-up-removed-member'
+          and lower(data -> 'payload' ->> 'userId') = lower($1)
         order by created_on, id`,
       [person.userId],
     );
@@ -3303,17 +3332,17 @@ describe('tasks', () => {
   }
 
   /**
-   * Waits until the unassignment jobs of an account are all completed.
+   * Waits until the clean-up jobs of an account are all completed.
    *
    * @param person - The account.
    * @param count - How many jobs it must have.
    * @returns The jobs.
    */
-  async function jobsCompleted(person: Person, count: number): Promise<UnassignmentJob[]> {
-    let jobs: UnassignmentJob[] = [];
+  async function jobsCompleted(person: Person, count: number): Promise<CleanUpJob[]> {
+    let jobs: CleanUpJob[] = [];
     await vi.waitFor(
       async () => {
-        jobs = await unassignmentJobsOf(person);
+        jobs = await cleanUpJobsOf(person);
         expect(jobs.map((job) => job.state)).toEqual(
           Array.from({ length: count }, () => 'completed'),
         );
@@ -3324,16 +3353,16 @@ describe('tasks', () => {
   }
 
   /**
-   * Waits until the only unassignment job of an account failed an attempt and waits for its retry.
+   * Waits until the only clean-up job of an account failed an attempt and waits for its retry.
    *
    * @param person - The account.
    * @returns The job.
    */
-  async function jobWaitingForRetry(person: Person): Promise<UnassignmentJob> {
-    let job: UnassignmentJob | undefined;
+  async function jobWaitingForRetry(person: Person): Promise<CleanUpJob> {
+    let job: CleanUpJob | undefined;
     await vi.waitFor(
       async () => {
-        [job] = await unassignmentJobsOf(person);
+        [job] = await cleanUpJobsOf(person);
         expect(job).toMatchObject({ state: 'retry' });
         expect(job?.retry_count).toBeGreaterThanOrEqual(1);
       },
@@ -3487,6 +3516,28 @@ describe('tasks', () => {
       const [job] = await jobsCompleted(mathis, 1);
       expect(job?.organization_id).toBe(atelierNordId);
       expect(await countRows('task_assignees', 'user_id = $2', mathis.userId)).toBe(0);
+
+      // The job stored the traceparent of the delivery, and the rows it appended continue that
+      // trace: the same trace id, another span.
+      const stored = job?.traceparent ?? '';
+      expect(stored).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/u);
+      const traced = await asSystem<{ readonly traceparent: string | null }>(
+        `select traceparent from outbox_events
+          where organization_id = $1 and event_name = 'task.updated.v1'
+            and payload -> 'actor' ->> 'type' = 'system' and payload ->> 'key' = any($2::text[])`,
+        [atelierNordId, [open.key, closed.key, inPrivate.key]],
+      );
+      expect(traced).toHaveLength(3);
+      for (const row of traced) {
+        expect(row.traceparent?.split('-')[1]).toBe(stored.split('-')[1]);
+        expect(row.traceparent).not.toBe(stored);
+      }
+      const [handedOver] = await asSystem<{ readonly traceparent: string | null }>(
+        `select traceparent from outbox_events
+          where event_name = 'space.updated.v1' and payload ->> 'spaceId' = $1`,
+        [carnet.id],
+      );
+      expect(handedOver?.traceparent?.split('-')[1]).toBe(stored.split('-')[1]);
       const expected: readonly (readonly [TaskBody, readonly string[]])[] = [
         [open, [camille.userId]],
         [closedAtDone, []],
@@ -3539,7 +3590,7 @@ describe('tasks', () => {
         `select version from tasks where organization_id = $1 and name = 'Auditer le tunnel d’achat'`,
         [atelierNordId],
       );
-      const [first] = await unassignmentJobsOf(mathis);
+      const [first] = await cleanUpJobsOf(mathis);
       const events = await countTaskEvents();
       const entries = await countRows('activity_entries', 'true');
       const again = toPublishedEvent('removed', atelierNordId, mathis, 'member', 2);
@@ -3547,7 +3598,7 @@ describe('tasks', () => {
       await deliver(again);
 
       expect(await processedCount(again.id)).toBe(1);
-      expect(await unassignmentJobsOf(mathis)).toEqual([first]);
+      expect(await cleanUpJobsOf(mathis)).toEqual([first]);
       expect(await countTaskEvents()).toBe(events);
       expect(await countRows('activity_entries', 'true')).toBe(entries);
       const [after] = await asSystem<{ readonly version: number }>(
@@ -3632,7 +3683,7 @@ describe('tasks', () => {
       // The job row and the processed id were written by the same transaction: both carry the
       // instant it started.
       const committedAt = await processedAt(removal.id);
-      const [enqueued] = await unassignmentJobsOf(theo);
+      const [enqueued] = await cleanUpJobsOf(theo);
       expect(enqueued?.created_on).toEqual(committedAt);
 
       const [job] = await jobsCompleted(theo, 1);
@@ -3654,8 +3705,11 @@ describe('tasks', () => {
     });
   });
 
-  describe('a re-join stops the job of the removal before it, and a new assignment stays', () => {
-    it('leaves Rose on her tasks and on the task assigned after she joined again, while her removal waited on a lock', async () => {
+  describe('a re-join stops the job of the removal before it, and her spaces and tasks stay', () => {
+    it('leaves Rose her private space, her tasks and the task assigned after she joined again, while the job of her removal waited on a lock', async () => {
+      const atelier = (
+        await createSpace(rose, { name: 'Atelier de Rose', prefix: 'ROS', visibility: 'private' })
+      ).space;
       const first = await createTask(camille, produitList.id, {
         name: 'Préparer la rétrospective',
         assigneeIds: [rose.userId],
@@ -3664,23 +3718,19 @@ describe('tasks', () => {
         name: 'Animer la rétrospective',
         assigneeIds: [rose.userId, camille.userId],
       });
-      const [locked] = await asSystem<{ readonly task_id: string }>(
-        `select task_id from task_assignees where organization_id = $1 and user_id = $2
-          order by task_id limit 1`,
-        [atelierNordId, rose.userId],
-      );
       const blocker = await migrator.connect();
       let holding = false;
       let third: TaskBody | undefined;
       try {
-        // The first task of Rose is held, as a concurrent change would hold it, so the first batch
-        // of the job waits past the lock timeout of the application role (5 s) and fails.
+        // The private space of Rose is held, as a concurrent change would hold it, so the first
+        // batch of the job, the handover of her spaces, waits past the lock timeout of the
+        // application role (5 s) and fails.
         await blocker.query('begin');
         holding = true;
         await blocker.query(`select set_config('app.system_access', 'on', true)`);
         await blocker.query(
-          `select 1 from tasks where organization_id = $1 and id = $2 for update`,
-          [atelierNordId, locked?.task_id],
+          `select 1 from spaces where organization_id = $1 and id = $2 for update`,
+          [atelierNordId, atelier.id],
         );
 
         const removal = toPublishedEvent('removed', atelierNordId, rose, 'member', 2);
@@ -3724,7 +3774,51 @@ describe('tasks', () => {
           rose.userId,
         ),
       ).toBe(0);
+      const kept = await send('get', `/internal/v1/spaces/${atelier.id}`, rose);
+      expectStatus(kept, 200);
+      expect(bodyOf(kept)).toMatchObject({ owner: { userId: rose.userId }, version: 1 });
     }, 240_000);
+  });
+
+  describe('a removal that spells the organization and the account in upper case commits at once, and its job cleans up', () => {
+    it('commits the removal of Lucie on its first delivery with its job, which hands her private space over and unassigns her in lower case', async () => {
+      const carnet = (
+        await createSpace(lucie, { name: 'Carnet de Lucie', prefix: 'LUC', visibility: 'private' })
+      ).space;
+      const task = await createTask(camille, produitList.id, {
+        name: 'Relire la charte graphique',
+        assigneeIds: [lucie.userId, camille.userId],
+      });
+      const redeliveredBefore = consumerInfo('project-member-removed').num_redelivered;
+      const removal = toPublishedEvent(
+        'removed',
+        atelierNordId.toUpperCase(),
+        { userId: lucie.userId.toUpperCase(), memberId: lucie.memberId.toUpperCase() },
+        'member',
+        2,
+      );
+
+      await deliver(removal);
+
+      expect(await processedCount(removal.id)).toBe(1);
+      expect(consumerInfo('project-member-removed').num_redelivered).toBe(redeliveredBefore);
+      expect(await activeMembers(atelierNordId)).not.toContain(lucie.userId);
+      const [job] = await jobsCompleted(lucie, 1);
+      expect(job?.organization_id).toBe(atelierNordId.toUpperCase());
+      expect(await readTask(camille, task.key)).toMatchObject({
+        assignees: [{ userId: camille.userId }],
+        version: task.version + 1,
+      });
+      const [event] = (await outboxOfKeys(task.key)).slice(-1);
+      expect(conforms(taskEventSchemas['task.updated.v1'], event?.payload)).toMatchObject({
+        organizationId: atelierNordId,
+        actor: { type: 'system', id: 'task-service' },
+        assigneeIds: [camille.userId],
+      });
+      const handed = await send('get', `/internal/v1/spaces/${carnet.id}`, camille);
+      expectStatus(handed, 200);
+      expect(bodyOf(handed)).toMatchObject({ owner: { userId: camille.userId }, version: 2 });
+    });
   });
 
   describe('every event the tasks appended is valid and leaves out what must not travel', () => {
@@ -3760,6 +3854,153 @@ describe('tasks', () => {
         }
       }
     });
+  });
+
+  /**
+   * Inserts, as the migrator role, a clean-up job of a former member that exhausted its attempts,
+   * and its copy in the dead-letter queue, as pg-boss leaves them: the original `failed`, the copy
+   * waiting in `task.clean-up-removed-member.dead-letter` with `source_id` naming it.
+   *
+   * @param person - The former member.
+   * @returns The id of the failed original and of its dead letter.
+   */
+  async function seedDeadLetter(
+    person: Person,
+  ): Promise<{ readonly sourceId: string; readonly deadLetterId: string }> {
+    const sourceId = randomUUID();
+    const data = { organizationId: atelierNordId, payload: { userId: person.userId } };
+    await migrator.query(
+      `insert into pgboss.job (id, name, data, state, policy, retry_limit, retry_count, retry_delay,
+              retry_backoff, retry_delay_max, expire_seconds, deletion_seconds, started_on,
+              completed_on, keep_until, output, dead_letter)
+       select $1, q.name, $2::jsonb, 'failed', q.policy, q.retry_limit, q.retry_limit, q.retry_delay,
+              q.retry_backoff, q.retry_delay_max, q.expire_seconds, q.deletion_seconds, now(), now(),
+              now() + interval '14 days', '{"name":"Error","message":"canceling statement due to lock timeout"}'::jsonb,
+              q.dead_letter
+         from pgboss.queue q where q.name = 'task.clean-up-removed-member'`,
+      [sourceId, JSON.stringify(data)],
+    );
+    const deadLetter = await migrator.query<{ readonly id: string }>(
+      `insert into pgboss.job (name, data, policy, retry_limit, retry_delay, retry_backoff,
+              expire_seconds, deletion_seconds, keep_until, source_name, source_id,
+              source_created_on, source_retry_count, source_output, source_root_id)
+       select q.name, o.data, q.policy, q.retry_limit, q.retry_delay, q.retry_backoff,
+              q.expire_seconds, q.deletion_seconds, now() + q.retention_seconds * interval '1 second',
+              o.name, o.id, o.created_on, o.retry_count, o.output, o.id
+         from pgboss.job o join pgboss.queue q on q.name = 'task.clean-up-removed-member.dead-letter'
+        where o.name = 'task.clean-up-removed-member' and o.id = $1
+       returning id`,
+      [sourceId],
+    );
+    const [row] = deadLetter.rows;
+    if (row === undefined) {
+      throw new Error('The dead letter was not inserted.');
+    }
+    return { sourceId, deadLetterId: row.id };
+  }
+
+  /**
+   * Reads the dead letters of the clean-up queue with the query of the member-lifecycle MODULE.md.
+   *
+   * @returns Their ids, the failed original, the organization and the account.
+   */
+  async function deadLetters(): Promise<
+    readonly {
+      readonly id: string;
+      readonly source_id: string;
+      readonly source_output: unknown;
+      readonly organization_id: string;
+      readonly user_id: string;
+    }[]
+  > {
+    const result = await migrator.query<{
+      readonly id: string;
+      readonly source_id: string;
+      readonly source_output: unknown;
+      readonly organization_id: string;
+      readonly user_id: string;
+    }>(
+      `select id, source_id, created_on, source_retry_count, source_output,
+              data ->> 'organizationId' as organization_id,
+              data -> 'payload' ->> 'userId' as user_id
+         from pgboss.job
+        where name = 'task.clean-up-removed-member.dead-letter'
+        order by created_on`,
+    );
+    return result.rows;
+  }
+
+  describe('a dead letter is read, replayed and deleted with the SQL of the runbook', () => {
+    it('replays the failed original within its retention, then the dead letter itself once the original is gone, and each replay unassigns the former member', async () => {
+      const [fromOriginal, fromCopy] = formerMembers;
+      if (fromOriginal === undefined || fromCopy === undefined) {
+        throw new Error('The former members are missing.');
+      }
+      await seedAssignedTasks('Lettres mortes', 'DLQ', fromOriginal, 3);
+      await seedAssignedTasks('Lettres mortes bis', 'DLR', fromCopy, 3);
+      const first = await seedDeadLetter(fromOriginal);
+      const second = await seedDeadLetter(fromCopy);
+
+      expect(await deadLetters()).toEqual([
+        expect.objectContaining({
+          id: first.deadLetterId,
+          source_id: first.sourceId,
+          source_output: { name: 'Error', message: 'canceling statement due to lock timeout' },
+          organization_id: atelierNordId,
+          user_id: fromOriginal.userId,
+        }),
+        expect.objectContaining({
+          id: second.deadLetterId,
+          source_id: second.sourceId,
+          organization_id: atelierNordId,
+          user_id: fromCopy.userId,
+        }),
+      ]);
+
+      // The failed original is still kept: one more attempt for it.
+      const retried = await migrator.query(
+        `update pgboss.job
+            set state = 'retry', retry_limit = retry_limit + 1, completed_on = null,
+                start_after = pgboss.job_now(), keep_until = pgboss.job_now() + interval '14 days'
+          where name = 'task.clean-up-removed-member' and id = $1 and state = 'failed'`,
+        [first.sourceId],
+      );
+      expect(retried.rowCount).toBe(1);
+
+      // The original of the second one is gone (past its 7 days): the dead letter is enqueued
+      // again under the id of the original, with the settings of the queue. While the original
+      // exists, the same insert inserts nothing.
+      const reenqueue = `insert into pgboss.job (id, name, data, policy, retry_limit, retry_delay, retry_backoff,
+              retry_delay_max, expire_seconds, deletion_seconds, keep_until, dead_letter)
+       select d.source_id, q.name, d.data, q.policy, q.retry_limit, q.retry_delay, q.retry_backoff,
+              q.retry_delay_max, q.expire_seconds, q.deletion_seconds,
+              pgboss.job_now() + q.retention_seconds * interval '1 second', q.dead_letter
+         from pgboss.job d join pgboss.queue q on q.name = 'task.clean-up-removed-member'
+        where d.name = 'task.clean-up-removed-member.dead-letter' and d.id = $1
+       on conflict do nothing`;
+      expect((await migrator.query(reenqueue, [second.deadLetterId])).rowCount).toBe(0);
+      await migrator.query(
+        `delete from pgboss.job where name = 'task.clean-up-removed-member' and id = $1`,
+        [second.sourceId],
+      );
+      expect((await migrator.query(reenqueue, [second.deadLetterId])).rowCount).toBe(1);
+
+      for (const person of [fromOriginal, fromCopy]) {
+        await jobsCompleted(person, 1);
+        expect(await countRows('task_assignees', 'user_id = $2', person.userId)).toBe(0);
+      }
+      expect((await unassignmentState(fromOriginal, 'DLQ')).events).toBe(3);
+      expect((await unassignmentState(fromCopy, 'DLR')).events).toBe(3);
+
+      for (const handled of [first, second]) {
+        await migrator.query(
+          `delete from pgboss.job
+            where name = 'task.clean-up-removed-member.dead-letter' and id = $1`,
+          [handled.deadLetterId],
+        );
+      }
+      expect(await deadLetters()).toEqual([]);
+    }, 120_000);
   });
 
   // Last: the job of this test fails on a lock and is retried by pg-boss after its backoff.

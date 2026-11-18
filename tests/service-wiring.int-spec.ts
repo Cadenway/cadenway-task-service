@@ -348,7 +348,7 @@ describe('task-service wiring', () => {
     expect(journal.rows).toEqual([{ applied: appliedMigrations }]);
   });
 
-  it('provisions the pg-boss schema as the migrator role, with the unassignment queue and its dead-letter queue', async () => {
+  it('provisions the pg-boss schema as the migrator role, with the clean-up queue and its dead-letter queue', async () => {
     const schema = await migrator.query<{ owner: string }>(
       `select pg_get_userbyid(nspowner) as owner from pg_namespace where nspname = 'pgboss'`,
     );
@@ -360,10 +360,10 @@ describe('task-service wiring', () => {
     expect(schema.rows).toEqual([{ owner: 'task_migrator' }]);
     expect(queues.rows).toEqual([
       {
-        name: 'task.unassign-removed-member',
-        dead_letter: 'task.unassign-removed-member.dead-letter',
+        name: 'task.clean-up-removed-member',
+        dead_letter: 'task.clean-up-removed-member.dead-letter',
       },
-      { name: 'task.unassign-removed-member.dead-letter', dead_letter: null },
+      { name: 'task.clean-up-removed-member.dead-letter', dead_letter: null },
     ]);
   });
 
@@ -382,6 +382,72 @@ describe('task-service wiring', () => {
         code: '42501',
       });
     }
+  });
+
+  // The narrowings of `grantRuntimeAccess` (`@cadenway/nest-jobs/provisioning`): the migrator role
+  // acts on what `bam` and `version` hold, so the application role must not write them.
+  it('gives the application role no right on pgboss.bam, and on pgboss.version only the update of the claim columns', async () => {
+    const privileges = await migrator.query<{
+      readonly bam: readonly boolean[];
+      readonly version: readonly boolean[];
+      readonly version_column: boolean;
+      readonly index_claim: boolean;
+      readonly cron_claim: boolean;
+    }>(
+      `select
+         array[has_table_privilege('task_app', 'pgboss.bam', 'select'),
+               has_table_privilege('task_app', 'pgboss.bam', 'insert'),
+               has_table_privilege('task_app', 'pgboss.bam', 'update'),
+               has_table_privilege('task_app', 'pgboss.bam', 'delete')] as bam,
+         array[has_table_privilege('task_app', 'pgboss.version', 'select'),
+               has_table_privilege('task_app', 'pgboss.version', 'insert'),
+               has_table_privilege('task_app', 'pgboss.version', 'delete')] as version,
+         has_column_privilege('task_app', 'pgboss.version', 'version', 'update') as version_column,
+         has_column_privilege('task_app', 'pgboss.version', 'bam_on', 'update') as index_claim,
+         has_column_privilege('task_app', 'pgboss.version', 'cron_on', 'update') as cron_claim`,
+    );
+    const system = service().get(SystemTransactionRunner);
+
+    expect(privileges.rows).toEqual([
+      {
+        bam: [false, false, false, false],
+        version: [true, false, false],
+        version_column: false,
+        index_claim: false,
+        cron_claim: true,
+      },
+    ]);
+    for (const statement of [
+      'select count(*) from pgboss.bam',
+      'update pgboss.version set version = version',
+      'update pgboss.version set bam_on = bam_on',
+      'delete from pgboss.version',
+    ]) {
+      await expect(system.run((tx) => tx.client.query(statement))).rejects.toMatchObject({
+        code: '42501',
+      });
+    }
+    await expect(
+      system.run((tx) => tx.client.query('update pgboss.version set cron_on = cron_on')),
+    ).resolves.toBeDefined();
+  });
+
+  it('lets the application role own no object of the pg-boss schema', async () => {
+    const owned = await migrator.query<{ readonly kind: string; readonly name: string }>(
+      `select 'relation' as kind, c.relname::text as name from pg_class c
+         join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'pgboss' and pg_get_userbyid(c.relowner) = 'task_app'
+       union all
+       select 'function', p.proname::text from pg_proc p
+         join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'pgboss' and pg_get_userbyid(p.proowner) = 'task_app'
+       union all
+       select 'type', t.typname::text from pg_type t
+         join pg_namespace n on n.oid = t.typnamespace
+        where n.nspname = 'pgboss' and pg_get_userbyid(t.typowner) = 'task_app'`,
+    );
+
+    expect(owned.rows).toEqual([]);
   });
 
   it('forces row-level security on the tables that carry an organization', async () => {

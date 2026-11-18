@@ -7,16 +7,15 @@
 export interface ApplyMemberEventOutput {
   // #region Properties
   /**
-   * Property privateSpacesAwaitingOwner
+   * Property cleanUpEnqueued
    *
    * @description
-   * For a removal: how many private spaces of the former member now await an owner, because the
-   * copy does not hold the owner of the organization yet; 0 otherwise. The handler reports a
-   * positive count once.
+   * For a removal: `true` when it enqueued the clean-up job of the former member, `false` when the
+   * same removal had already enqueued it; `false` for the other events.
    *
-   * @type {number}
+   * @type {boolean}
    * @readonly
    */
-  readonly privateSpacesAwaitingOwner: number;
+  readonly cleanUpEnqueued: boolean;
   // #endregion
 }

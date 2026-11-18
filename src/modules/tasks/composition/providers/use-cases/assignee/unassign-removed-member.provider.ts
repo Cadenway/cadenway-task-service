@@ -10,9 +10,9 @@ import { TASKS_UNIT_OF_WORK } from '../../../tokens/task/tasks-unit-of-work.toke
  * Constant unassignRemovedMemberProvider
  *
  * @description
- * Builds the work of the unassignment job of a removed member on the tenant unit of work of the
- * module, one transaction per batch, and the member directory, which reads the copy of the
- * memberships in each of them.
+ * Builds one batch of the unassignment of a removed member, which the clean-up job of
+ * member-lifecycle runs, on the tenant unit of work of the module, one transaction per batch, and
+ * the member directory, which reads the copy of the memberships in that transaction.
  *
  * @type {FactoryProvider<UnassignRemovedMember>}
  */

@@ -602,18 +602,25 @@ export class InMemorySpaces implements SpacesUnitOfWork {
             ).map((row: SpaceState): string => row.id),
           );
         },
-        lockPrivateOwnedBy: (organizationId: string, ownerUserId: string): Promise<Space[]> =>
-          Promise.resolve(
-            [...spaces.values()]
-              .filter(
+        lockPrivateOwnedBy: (
+          organizationId: string,
+          ownerUserId: string,
+          limit: number,
+        ): Promise<Space[]> => {
+          return Promise.resolve(
+            InMemorySpaces.page(
+              [...spaces.values()].filter(
                 (row: SpaceState): boolean =>
                   row.organizationId === organizationId &&
                   row.visibility === 'private' &&
                   row.ownerUserId === ownerUserId &&
                   !row.awaitingOwner,
-              )
-              .map((row: SpaceState): Space => Space.restore(row)),
-          ),
+              ),
+              null,
+              limit,
+            ).map((row: SpaceState): Space => Space.restore(row)),
+          );
+        },
         lockAwaitingOwner: (organizationId: string): Promise<Space[]> =>
           Promise.resolve(
             [...spaces.values()]

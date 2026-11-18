@@ -17,8 +17,8 @@ consumers of `EVENTS` feed from the member events of organization-service
 events leave through the outbox, and the tasks with their subtasks, assignees, labels, checklist
 and activity log (`src/modules/tasks/MODULE.md`), whose internal routes exist and whose `task.*`
 events leave through the outbox; the removal of a member enqueues, in the transaction of
-`member.removed.v1`, a job of `@cadenway/nest-jobs` that unassigns them from their tasks in
-batches. The task queries arrive next. The target architecture in this guide is what
+`member.removed.v1`, a job of `@cadenway/nest-jobs` that hands their private spaces over, then
+unassigns them from their tasks, in batches. The task queries arrive next. The target architecture in this guide is what
 the next modules must follow.
 
 The commands below are the documented workflow. Inspect the repository's actual manifests and files before running them, and report unavailable checks rather than inventing replacements. Run Git, pnpm, build, and test commands with this repository as the working directory, never from the parent workspace.
@@ -170,13 +170,15 @@ keeps two organizations apart under row-level security, and that the broker gran
 its three consumers by exact name only. `tests/spaces.int-spec.ts` does the same for the spaces and
 lists: every route against its contract validators, the visibility and role rules, the prefixes,
 `If-Match`, paging, `Idempotency-Key`, row-level security of the three tables, the events in the
-outbox, and the handover of private spaces on `member.removed.v1`, including that a failing
-handover rolls the removal of the copy back until a redelivery succeeds. `tests/tasks.int-spec.ts`
+outbox, and the handover of private spaces by the clean-up job of `member.removed.v1`: seen by
+nobody until the job reaches them, then the owner's or awaiting one, kept by a re-join, and a
+failing batch retried alone. `tests/tasks.int-spec.ts`
 does the same for the tasks: every route against its contract validators, the rules of a task,
 `If-Match`, `Idempotency-Key`, the activity log, row-level security of the five tables, the events in
-the outbox, and the unassignment job of a removed member: enqueued with the removal, emptying
-1,200 assignments in batches, enqueued once for a redelivered removal, stopped by a re-join, and
-retrying only the batch a lock timeout failed. They move to the fixtures
+the outbox, and the clean-up job of a removed member: enqueued with the removal, emptying
+1,200 assignments in batches, enqueued once for a redelivered removal, stopped by a re-join,
+retrying only the batch a lock timeout failed, run for an organization in upper case, carrying the
+trace, and replayed from a dead letter with the SQL of the member-lifecycle `MODULE.md`. They move to the fixtures
 of `@cadenway/nest-testing` once that package exports them.
 
 ## Minimum checks by change

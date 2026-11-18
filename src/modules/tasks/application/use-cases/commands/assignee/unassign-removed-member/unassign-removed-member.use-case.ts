@@ -13,10 +13,11 @@ import type { UnassignRemovedMemberInput } from './unassign-removed-member.input
 import type { UnassignRemovedMemberOutput } from './unassign-removed-member.output.js';
 
 /**
- * How many tasks one batch locks and rewrites, in one transaction of set-based statements (eight
- * statements, plus one outbox append per changed task): 1,200 tasks in three batches finished
- * within 2 seconds in `tests/tasks.int-spec.ts`, far under the 10 s statement timeout of the
- * application role, and a request waits for a task of a batch at most its 5 s lock timeout.
+ * How many tasks one batch locks and rewrites, in one transaction of set-based statements (nine
+ * statements with the clock, eight without a parent, plus one outbox append per changed task):
+ * 1,200 tasks in three batches finished within 2 seconds in `tests/tasks.int-spec.ts`, far under
+ * the 10 s statement timeout of the application role, and a request waits for a task of a batch at
+ * most its 5 s lock timeout.
  */
 const BATCH_SIZE: number = 500;
 
@@ -31,33 +32,21 @@ interface Change {
   // #endregion
 }
 
-/** How one batch ended. */
-type BatchResult =
-  | { readonly kind: 'empty' }
-  | { readonly kind: 'member-again' }
-  | {
-      readonly kind: 'unassigned';
-      readonly locked: number;
-      readonly unassigned: number;
-      readonly lastId: string;
-    };
-
 /**
  * Class UnassignRemovedMember
  *
  * @description
- * Removes a member who left the organization from every task they are assigned to, closed ones
- * included (`member.removed.v1`; `openapi/internal/task-service.yaml`, "Members"). It is the work
- * of the unassignment job that `ScheduleMemberUnassignment` enqueued with the removal, and runs in
- * the organization context of that job, outside the transaction of the removal.
- *
- * It works in batches of 500 tasks, each in its own tenant transaction, after the last task id of
+ * One batch of the removal of a member who left the organization from the tasks they are assigned
+ * to, closed ones included (`member.removed.v1`; `openapi/internal/task-service.yaml`, "Members").
+ * The clean-up job of member-lifecycle calls it in the organization context of the job, after the
+ * removal committed and the private spaces were handed over, batch after batch until it answers
+ * `none-left` or `member-again`. Each call is one tenant transaction, after the last task id of
  * the previous batch (a keyset on `task_assignees.task_id`):
  *
- * 1. it locks the batch `FOR NO KEY UPDATE` (the tasks come without checklist, which it never
+ * 1. it locks up to 500 tasks `FOR NO KEY UPDATE` (they come without checklist, which it never
  *    reads);
  * 2. then it reads the copy of the memberships: when it holds the account as a member again (a new
- *    membership joined after the removal), it writes nothing and stops for good. Reading after the
+ *    membership joined after the removal), it writes nothing (`member-again`). Reading after the
  *    lock means that an assignment made after the re-join either committed before the lock, and
  *    the copy read after it shows the re-join, or waits for the lock and comes after the batch: a
  *    new assignment is never undone;
@@ -67,10 +56,9 @@ type BatchResult =
  *    (`added: false`) and appends one `task.updated.v1` (`changed: ['assigneeIds']`) per changed
  *    task, all by the system actor `task-service`, and commits.
  *
- * It goes on until a batch comes back short, within the attempt of the job, and starts no batch
- * once the signal of the attempt aborted. A failed batch rolls back alone: the batches before it
- * stay committed, and the next attempt starts again from the tasks still assigned, so it never
- * writes a task twice. A run that finds nothing left does nothing, which makes the job idempotent.
+ * A failed batch rolls back alone: the batches before it stay committed, and a new attempt that
+ * starts again from `null` finds only the tasks still assigned, so it never writes a task twice. A
+ * batch that finds nothing changes nothing, which makes the job idempotent.
  */
 export class UnassignRemovedMember {
   // #region Properties
@@ -107,39 +95,18 @@ export class UnassignRemovedMember {
    * Method execute
    *
    * @description
-   * Removes the account from its tasks, one committed batch after another.
+   * Removes the account from the next batch of its tasks, in one tenant transaction.
    *
-   * @param {UnassignRemovedMemberInput} input - The organization, the former member and the
-   * signal of the attempt.
-   * @returns {Promise<UnassignRemovedMemberOutput>} How the run ended, the tasks it changed and the
-   * batches it committed; a task that no longer had the account when it was locked is not counted.
-   * @throws {Error} When a batch fails (the database, a lock or statement timeout): that batch
-   * rolls back, the earlier ones stay, and the job is retried. Also the reason of the signal once
-   * it aborted.
+   * @param {UnassignRemovedMemberInput} input - The organization, the former member and where the
+   * batch starts.
+   * @returns {Promise<UnassignRemovedMemberOutput>} What the batch did.
+   * @throws {Error} When the batch fails (the database, a lock or statement timeout): it rolls
+   * back alone, and the job retries.
    */
   public async execute(input: UnassignRemovedMemberInput): Promise<UnassignRemovedMemberOutput> {
-    let unassigned: number = 0;
-    let batches: number = 0;
-    let afterId: string | null = null;
-    for (;;) {
-      input.signal?.throwIfAborted();
-      const after: string | null = afterId;
-      const result: BatchResult = await this.unitOfWork.run(
-        (store: TasksStore): Promise<BatchResult> => this.unassignBatch(store, input, after),
-      );
-      if (result.kind === 'member-again') {
-        return { outcome: 'member-again', unassigned, batches };
-      }
-      if (result.kind === 'empty') {
-        return { outcome: 'completed', unassigned, batches };
-      }
-      batches += 1;
-      unassigned += result.unassigned;
-      afterId = result.lastId;
-      if (result.locked < BATCH_SIZE) {
-        return { outcome: 'completed', unassigned, batches };
-      }
-    }
+    return this.unitOfWork.run((store: TasksStore): Promise<UnassignRemovedMemberOutput> =>
+      this.unassignBatch(store, input),
+    );
   }
 
   /**
@@ -150,28 +117,27 @@ export class UnassignRemovedMember {
    * the account, in the transaction of `store`.
    *
    * @param {TasksStore} store - The store of the transaction of the batch.
-   * @param {UnassignRemovedMemberInput} input - The organization and the former member.
-   * @param {string | null} afterId - The last task id of the previous batch, `null` for the first.
-   * @returns {Promise<BatchResult>} How the batch ended.
+   * @param {UnassignRemovedMemberInput} input - The organization, the former member and where the
+   * batch starts.
+   * @returns {Promise<UnassignRemovedMemberOutput>} How the batch ended.
    */
   private async unassignBatch(
     store: TasksStore,
     input: UnassignRemovedMemberInput,
-    afterId: string | null,
-  ): Promise<BatchResult> {
+  ): Promise<UnassignRemovedMemberOutput> {
     const batch: readonly Task[] = await store.tasks.lockAssignedTo(
       input.organizationId,
       input.userId,
-      afterId,
+      input.afterTaskId,
       BATCH_SIZE,
     );
     const last: Task | undefined = batch.at(-1);
     if (last === undefined) {
-      return { kind: 'empty' };
+      return { outcome: 'none-left' };
     }
     const role: MemberRole | null = await this.members.roleOf(input.organizationId, input.userId);
     if (role !== null) {
-      return { kind: 'member-again' };
+      return { outcome: 'member-again' };
     }
     const now: Date = await store.clock.now();
     const actor: EventActor = { type: 'system', id: TASK_SERVICE_ACTOR.id };
@@ -192,10 +158,10 @@ export class UnassignRemovedMember {
       await store.events.taskUpdated(update.task, update.changed, actor);
     }
     return {
-      kind: 'unassigned',
+      outcome: 'unassigned',
       locked: batch.length,
       unassigned: changes.length,
-      lastId: last.snapshot.id,
+      lastTaskId: last.snapshot.id,
     };
   }
   // #endregion

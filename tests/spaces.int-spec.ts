@@ -48,7 +48,9 @@ import { appConfigSchema } from '../src/config/app-config.js';
 // with internal tokens signed as the API gateway, and their answers are checked against the
 // validators generated from `openapi/internal/task-service.yaml`; the outbox rows are checked
 // against the schemas of `asyncapi/task-service.yaml`. Rows are read as the migrator role, which
-// sets the system access of the policies, since row-level security is forced on every table.
+// sets the system access of the policies, since row-level security is forced on every table. A
+// removal enqueues the clean-up job of member-lifecycle, which hands the private spaces over after
+// the commit: the scenarios wait for it in `pgboss.job`, and hold it with a lock on a space.
 
 /** Compose file of the development dependencies. */
 const composeFile: string = fileURLToPath(new URL('../compose.dev.yaml', import.meta.url));
@@ -636,6 +638,102 @@ describe('spaces and lists', () => {
       [organizationId],
     );
     return rows.map((row) => row.user_id);
+  }
+
+  /** A row of the clean-up queue of pg-boss, as the specs read it. */
+  interface CleanUpJob {
+    readonly state: string;
+    readonly retry_count: number;
+  }
+
+  /**
+   * Reads the clean-up jobs of an account in an organization, oldest first, as the migrator role,
+   * which owns the `pgboss` schema.
+   *
+   * @param organizationId - The organization of the removal.
+   * @param person - The account.
+   * @returns The jobs.
+   */
+  async function cleanUpJobsOf(organizationId: string, person: Person): Promise<CleanUpJob[]> {
+    const result = await migrator.query<CleanUpJob>(
+      `select state, retry_count from pgboss.job
+        where name = 'task.clean-up-removed-member'
+          and data ->> 'organizationId' = $1 and data -> 'payload' ->> 'userId' = $2
+        order by created_on, id`,
+      [organizationId, person.userId],
+    );
+    return result.rows;
+  }
+
+  /**
+   * Waits until the clean-up jobs of an account in an organization are all completed.
+   *
+   * @param organizationId - The organization of the removal.
+   * @param person - The account.
+   * @param count - How many jobs it must have.
+   * @returns The jobs.
+   */
+  async function cleanUpsCompleted(
+    organizationId: string,
+    person: Person,
+    count: number,
+  ): Promise<CleanUpJob[]> {
+    let jobs: CleanUpJob[] = [];
+    await vi.waitFor(
+      async () => {
+        jobs = await cleanUpJobsOf(organizationId, person);
+        expect(jobs.map((job) => job.state)).toEqual(
+          Array.from({ length: count }, () => 'completed'),
+        );
+      },
+      { timeout: 120_000, interval: 250 },
+    );
+    return jobs;
+  }
+
+  /**
+   * Waits until the only clean-up job of an account failed an attempt and waits for its retry.
+   *
+   * @param organizationId - The organization of the removal.
+   * @param person - The account.
+   */
+  async function cleanUpWaitingForRetry(organizationId: string, person: Person): Promise<void> {
+    await vi.waitFor(
+      async () => {
+        const [job] = await cleanUpJobsOf(organizationId, person);
+        expect(job).toMatchObject({ state: 'retry' });
+        expect(job?.retry_count).toBeGreaterThanOrEqual(1);
+      },
+      { timeout: 60_000, interval: 250 },
+    );
+  }
+
+  /**
+   * Holds a row of `spaces` locked by a transaction of the migrator role, as a concurrent change
+   * would hold it, while `work` runs; the lock is released after it, whatever happens.
+   *
+   * @param organizationId - Organization of the space.
+   * @param spaceId - The space.
+   * @param work - What runs while the row is held.
+   */
+  async function whileSpaceHeld(
+    organizationId: string,
+    spaceId: string,
+    work: () => Promise<void>,
+  ): Promise<void> {
+    const blocker = await migrator.connect();
+    try {
+      await blocker.query('begin');
+      await blocker.query(`select set_config('app.system_access', 'on', true)`);
+      await blocker.query(
+        `select 1 from spaces where organization_id = $1 and id = $2 for update`,
+        [organizationId, spaceId],
+      );
+      await work();
+    } finally {
+      await blocker.query('rollback');
+      blocker.release();
+    }
   }
 
   beforeAll(async () => {
@@ -1628,15 +1726,49 @@ describe('spaces and lists', () => {
   });
 
   describe('when a member leaves, the private spaces they owned pass to the owner of the organization', () => {
-    it('hands the private spaces of Hugo to Camille in the transaction of the removal, and keeps him owner of an organization space', async () => {
+    it('commits the removal of Hugo with the copy and the job only, shows his private spaces to nobody until the job runs, then hands them to Camille', async () => {
       studio = (await createSpace(hugo, { name: 'Studio', prefix: 'STU' })).space;
       maquettes = (await createSpace(hugo, { name: 'Maquettes', prefix: 'MAQ' })).space;
       const studioEvents = await outboxOf('spaceId', studio.id);
       const designVersion = (await readSpace(hugo, design.id)).version;
       const rechercheVersion = recherche.version;
+      const rechercheEvents = await outboxOf('spaceId', recherche.id);
+      const removal = toPublishedEvent('removed', atelierNordId, hugo, 'member', 2);
 
-      await deliver(toPublishedEvent('removed', atelierNordId, hugo, 'member', 2));
+      // The first batch of the job waits on the held space past the lock timeout (5 s) and fails:
+      // the window between the removal and the handover stays open while the row is held.
+      await whileSpaceHeld(atelierNordId, recherche.id, async () => {
+        await deliver(removal);
 
+        expect(await removalState(atelierNordId, hugo.memberId, recherche.id, removal.id)).toEqual({
+          ended: true,
+          owner: hugo.userId,
+          version: rechercheVersion,
+          awaiting: false,
+          processed: 1,
+        });
+        expect(await cleanUpJobsOf(atelierNordId, hugo)).toHaveLength(1);
+        expect(await outboxOf('spaceId', recherche.id)).toHaveLength(rechercheEvents.length);
+        for (const viewer of [camille, ines]) {
+          for (const space of [recherche, design]) {
+            expectProblem(
+              await send('get', `/internal/v1/spaces/${space.id}`, viewer),
+              404,
+              'space.not-found',
+            );
+          }
+          const listed = conforms(
+            ListSpacesInternalResponse,
+            bodyOf(await send('get', '/internal/v1/spaces?limit=100', viewer)),
+          );
+          expect(listed.items.map((space) => space.id)).not.toContain(recherche.id);
+          expect(listed.items.map((space) => space.id)).not.toContain(design.id);
+        }
+        await cleanUpWaitingForRetry(atelierNordId, hugo);
+        expect((await storedSpaceOf(atelierNordId, design.id)).owner).toBe(hugo.userId);
+      });
+
+      await cleanUpsCompleted(atelierNordId, hugo, 1);
       for (const handed of [recherche, design]) {
         const space = await readSpace(camille, handed.id);
         expect(space.owner).toEqual({ userId: camille.userId });
@@ -1669,7 +1801,7 @@ describe('spaces and lists', () => {
         version: rechercheVersion + 1,
       });
       expect((await readSpace(camille, design.id)).version).toBe(designVersion + 1);
-    });
+    }, 240_000);
 
     it('answers a removed member as a stranger to the organization', async () => {
       expectProblem(await send('get', '/internal/v1/spaces', hugo), 404, 'organization.not-found');
@@ -1744,6 +1876,7 @@ describe('spaces and lists', () => {
         ),
       );
       await deliver(toPublishedEvent('removed', atelierNordId, lea, 'member', 2));
+      await cleanUpsCompleted(atelierNordId, lea, 1);
 
       const oldMembership = await asSystem<{ readonly ended: boolean }>(
         `select removed_at is not null as ended from organization_members
@@ -1772,6 +1905,7 @@ describe('spaces and lists', () => {
       const redelivered = consumerInfo('project-member-removed').num_redelivered;
 
       await deliver(removal);
+      await cleanUpsCompleted(maisonVerteId, elise, 1);
 
       const [membership] = await asSystem<{ readonly ended: boolean }>(
         `select removed_at is not null as ended from organization_members
@@ -1953,8 +2087,10 @@ describe('spaces and lists', () => {
       const removal = toPublishedEvent('removed', studioLumenId, mathis, 'member', 2);
       const redelivered = consumerInfo('project-member-removed').num_redelivered;
 
-      // `deliver` returns once the consumer acknowledged everything it delivered.
+      // `deliver` returns once the consumer acknowledged everything it delivered; the job marks
+      // the space awaiting an owner afterwards.
       await deliver(removal);
+      await cleanUpsCompleted(studioLumenId, mathis, 1);
 
       expect(consumerInfo('project-member-removed').num_redelivered).toBe(redelivered);
       expect(await removalState(studioLumenId, mathis.memberId, brouillon.id, removal.id)).toEqual({
@@ -2077,6 +2213,7 @@ describe('spaces and lists', () => {
       const removal = toPublishedEvent('removed', maisonVerteId, theo, 'member', 2);
 
       await deliver(removal);
+      await cleanUpsCompleted(maisonVerteId, theo, 1);
 
       expect(await removalState(maisonVerteId, theo.memberId, atelier.id, removal.id)).toEqual({
         ended: true,
@@ -2124,10 +2261,9 @@ describe('spaces and lists', () => {
     });
   });
 
-  // Last: the removal of this test fails on a lock and is delivered again, so its consumer keeps
-  // one message waiting until the lock is released, which no later `deliver` may wait on.
-  describe('a removal that fails on a transient error is applied again, whole, with the handover', () => {
-    it('keeps the member, the space and no processed id while a lock holds the handover, then applies the removal and the handover together', async () => {
+  // Last: the job of this test fails on a lock and is retried by pg-boss after its backoff.
+  describe('a removal commits at once while a lock holds a private space, and only the failed batch of its job is retried', () => {
+    it('ends the membership of Noé on the first delivery, keeps his space as it was while the job fails, then hands it to Anaïs on the retry', async () => {
       await deliver(toPublishedEvent('joined', studioLumenId, noe, 'member', 1));
       const carnet = (
         await createSpace(
@@ -2137,73 +2273,42 @@ describe('spaces and lists', () => {
         )
       ).space;
       const removal = toPublishedEvent('removed', studioLumenId, noe, 'member', 2);
-      const blocker = await migrator.connect();
-      let holding = false;
+      const redelivered = consumerInfo('project-member-removed').num_redelivered;
 
-      try {
-        // The row of the private space is held, as a concurrent change would hold it.
-        await blocker.query('begin');
-        holding = true;
-        await blocker.query(`select set_config('app.system_access', 'on', true)`);
-        await blocker.query(
-          `select 1 from spaces where organization_id = $1 and id = $2 for update`,
-          [studioLumenId, carnet.id],
-        );
-        const before = consumerInfo('project-member-removed');
+      await whileSpaceHeld(studioLumenId, carnet.id, async () => {
+        await deliver(removal);
 
-        publish(removal);
-
-        // The handover waits for the lock until the application role gives up (lock_timeout),
-        // the whole unit rolls back, and the removal is delivered again.
-        await vi.waitFor(
-          () => {
-            const info = consumerInfo('project-member-removed');
-            expect(info.delivered.consumer_seq).toBeGreaterThan(before.delivered.consumer_seq);
-            expect(info.num_redelivered).toBeGreaterThan(before.num_redelivered);
-            expect(info.num_ack_pending).toBe(1);
-          },
-          { timeout: 45_000, interval: 500 },
-        );
+        expect(consumerInfo('project-member-removed').num_redelivered).toBe(redelivered);
         expect(await removalState(studioLumenId, noe.memberId, carnet.id, removal.id)).toEqual({
-          ended: false,
+          ended: true,
           owner: noe.userId,
           version: 1,
           awaiting: false,
-          processed: 0,
+          processed: 1,
         });
+        await cleanUpWaitingForRetry(studioLumenId, noe);
         expect((await outboxOf('spaceId', carnet.id)).map((event) => event.event_name)).toEqual([
           'space.created.v1',
           'list.created.v1',
         ]);
+        expectProblem(
+          await send('get', `/internal/v1/spaces/${carnet.id}`, anais, {
+            organizationId: studioLumenId,
+          }),
+          404,
+          'space.not-found',
+        );
+      });
 
-        await blocker.query('rollback');
-        holding = false;
-      } finally {
-        if (holding) {
-          await blocker.query('rollback');
-        }
-        blocker.release();
-      }
-
-      // Every read is one snapshot: the removal never shows without the handover.
-      const observed: { readonly ended: boolean; readonly owner: string }[] = [];
-      await vi.waitFor(
-        async () => {
-          const current = await removalState(studioLumenId, noe.memberId, carnet.id, removal.id);
-          observed.push({ ended: current.ended, owner: current.owner });
-          expect(current).toEqual({
-            ended: true,
-            owner: anais.userId,
-            version: 2,
-            awaiting: false,
-            processed: 1,
-          });
-        },
-        { timeout: 90_000, interval: 500 },
-      );
-      expect(observed.filter((seen) => seen.ended && seen.owner !== anais.userId)).toEqual([]);
-      expect(observed.filter((seen) => !seen.ended && seen.owner !== noe.userId)).toEqual([]);
-
+      const [job] = await cleanUpsCompleted(studioLumenId, noe, 1);
+      expect(job?.retry_count).toBeGreaterThanOrEqual(1);
+      expect(await removalState(studioLumenId, noe.memberId, carnet.id, removal.id)).toEqual({
+        ended: true,
+        owner: anais.userId,
+        version: 2,
+        awaiting: false,
+        processed: 1,
+      });
       const handed = await send('get', `/internal/v1/spaces/${carnet.id}`, anais, {
         organizationId: studioLumenId,
       });

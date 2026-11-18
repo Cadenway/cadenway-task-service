@@ -457,23 +457,6 @@ export function atelierNordMembers(
   );
 }
 
-/** An unassignment job the fake queue holds, as `MemberUnassignmentQueue.enqueue` received it. */
-export interface ScheduledUnassignment {
-  // #region Properties
-  /** The organization of the transaction. */
-  readonly organizationId: string;
-
-  /** The account of the member who left. */
-  readonly userId: string;
-
-  /** The membership that ended. */
-  readonly memberId: string;
-
-  /** Its version after the removal. */
-  readonly membershipVersion: number;
-  // #endregion
-}
-
 /** What a spec seeds in the fake store. */
 export interface InMemoryTasksSeed {
   // #region Properties
@@ -545,12 +528,6 @@ export class InMemoryTasks implements TasksUnitOfWork {
 
   /** The events of the committed work, in the order they were appended. */
   public events: RecordedEvent[] = [];
-
-  /**
-   * The unassignment jobs of the committed work, in the order they were enqueued: one per
-   * organization, membership and version, as the occurrence key of the queue keeps it.
-   */
-  public scheduled: ScheduledUnassignment[] = [];
 
   /** The instant of the transaction; change it between two runs to age the entries. */
   public now: Date;
@@ -658,12 +635,10 @@ export class InMemoryTasks implements TasksUnitOfWork {
     const tasks = new Map<string, TaskState>(this.tasks);
     const activity = new Map<string, ActivityEntryState>(this.activity);
     const events: RecordedEvent[] = [...this.events];
-    const scheduled: ScheduledUnassignment[] = [...this.scheduled];
-    const result: TResult = await work(this.store(tasks, activity, events, scheduled));
+    const result: TResult = await work(this.store(tasks, activity, events));
     this.tasks = tasks;
     this.activity = activity;
     this.events = events;
-    this.scheduled = scheduled;
     return result;
   }
 
@@ -692,7 +667,6 @@ export class InMemoryTasks implements TasksUnitOfWork {
         new Map<string, TaskState>(this.tasks),
         new Map<string, ActivityEntryState>(this.activity),
         [...this.events],
-        [...this.scheduled],
       ),
     );
   }
@@ -706,14 +680,12 @@ export class InMemoryTasks implements TasksUnitOfWork {
    * @param {Map<string, TaskState>} tasks - The working copy of the tasks.
    * @param {Map<string, ActivityEntryState>} activity - The working copy of the entries.
    * @param {RecordedEvent[]} events - The working copy of the outbox.
-   * @param {ScheduledUnassignment[]} scheduled - The working copy of the unassignment jobs.
    * @returns {TasksStore} The store.
    */
   private store(
     tasks: Map<string, TaskState>,
     activity: Map<string, ActivityEntryState>,
     events: RecordedEvent[],
-    scheduled: ScheduledUnassignment[],
   ): TasksStore {
     const inOrganization = (organizationId: string): TaskState[] =>
       [...tasks.values()].filter(
@@ -1064,26 +1036,6 @@ export class InMemoryTasks implements TasksUnitOfWork {
             actor,
           });
           return Promise.resolve();
-        },
-      },
-      unassignments: {
-        enqueue: (
-          organizationId: string,
-          userId: string,
-          memberId: string,
-          membershipVersion: number,
-        ): Promise<boolean> => {
-          this.trace.push('unassignments.enqueue');
-          const duplicate: boolean = scheduled.some(
-            (job: ScheduledUnassignment): boolean =>
-              job.organizationId === organizationId &&
-              job.memberId === memberId &&
-              job.membershipVersion === membershipVersion,
-          );
-          if (!duplicate) {
-            scheduled.push({ organizationId, userId, memberId, membershipVersion });
-          }
-          return Promise.resolve(!duplicate);
         },
       },
       clock: { now: (): Promise<Date> => Promise.resolve(this.now) },

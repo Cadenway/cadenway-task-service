@@ -63,9 +63,9 @@ markIdempotent(SpaceListsController.prototype, 'create');
  * sprints (P3a). The use cases run on one tenant unit of work that appends their events to the
  * outbox in the same transaction, and read the roles and the owner from `OrganizationMembersModule`
  * through the `MemberDirectory` port, never from the `role` claim of the internal token (decision 4
- * of the P3a plan). It exports `HandOverPrivateSpaces` and `HandOverAwaitingSpaces`, which the
- * member-lifecycle module runs when a member leaves the organization or the copy learns its owner,
- * and `FindVisibleList`, `ListVisibleSpaceIds` and `AllocateTaskKeys`, which the tasks module runs
+ * of the P3a plan). It exports `HandOverPrivateSpaces`, which the clean-up job of the
+ * member-lifecycle module runs batch after batch once a member left the organization, and
+ * `HandOverAwaitingSpaces`, which member-lifecycle runs when the copy learns the owner, and `FindVisibleList`, `ListVisibleSpaceIds` and `AllocateTaskKeys`, which the tasks module runs
  * in its own transaction.
  */
 @Module({
