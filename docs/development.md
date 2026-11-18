@@ -14,8 +14,11 @@ the organization memberships (`src/modules/organization-members/MODULE.md`), whi
 consumers of `EVENTS` feed from the member events of organization-service
 (`src/modules/member-lifecycle/MODULE.md`), and the spaces, prefixes and lists
 (`src/modules/spaces/MODULE.md`), whose internal routes exist and whose `space.*` and `list.*`
-events leave through the outbox. Tasks and their queries arrive next. The target architecture in
-this guide is what the next modules must follow.
+events leave through the outbox, and the tasks with their subtasks, assignees, labels, checklist
+and activity log (`src/modules/tasks/MODULE.md`), whose internal routes exist and whose `task.*`
+events leave through the outbox; a removed member is unassigned from its tasks in the transaction
+of `member.removed.v1`. The task queries arrive next. The target architecture in this guide is what
+the next modules must follow.
 
 The commands below are the documented workflow. Inspect the repository's actual manifests and files before running them, and report unavailable checks rather than inventing replacements. Run Git, pnpm, build, and test commands with this repository as the working directory, never from the parent workspace.
 
@@ -161,7 +164,10 @@ its three consumers by exact name only. `tests/spaces.int-spec.ts` does the same
 lists: every route against its contract validators, the visibility and role rules, the prefixes,
 `If-Match`, paging, `Idempotency-Key`, row-level security of the three tables, the events in the
 outbox, and the handover of private spaces on `member.removed.v1`, including that a failing
-handover rolls the removal of the copy back until a redelivery succeeds. They move to the fixtures
+handover rolls the removal of the copy back until a redelivery succeeds. `tests/tasks.int-spec.ts`
+does the same for the tasks: every route against its contract validators, the rules of a task,
+`If-Match`, `Idempotency-Key`, the activity log, row-level security of the five tables, the events in
+the outbox, and the unassignment of a removed member on `member.removed.v1`. They move to the fixtures
 of `@cadenway/nest-testing` once that package exports them.
 
 ## Minimum checks by change

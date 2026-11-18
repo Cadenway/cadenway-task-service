@@ -9,12 +9,13 @@ tenant transaction:
 - applies it to the copy of the memberships (`ApplyMembershipChange` of organization-members);
 - for a removal, hands the private spaces the former member owned to the owner of the organization
   (`HandOverPrivateSpaces` of spaces), or leaves them awaiting an owner while the copy does not hold
-  that owner, and, from the tasks module of P3a, removes the member from the assignees of every task;
+  that owner, then removes the member from the assignees of every task (`UnassignRemovedMember`
+  of tasks), closed tasks included;
 - for a join or a role change that gives the role `owner`, hands the spaces awaiting an owner to
   that owner (`HandOverAwaitingSpaces` of spaces).
 
 It owns no data, no route and no event of its own. A module of its own rather than a part of
-organization-members: the spaces (and later tasks) modules read the copy, so the copy cannot call
+organization-members: the spaces and tasks modules read the copy, so the copy cannot call
 them without a module cycle; this module depends on all of them and none depends on it.
 
 ## Public entry points
@@ -34,7 +35,9 @@ None.
 ## Events emitted
 
 None of its own: the handover appends `space.updated.v1` through the outbox of the spaces module,
-in the transaction of the event.
+and the unassignment one `task.updated.v1` per task (`changed: ['assigneeIds']`, actor
+`{ type: 'system', id: 'task-service' }`) through the outbox of the tasks module, in the
+transaction of the event.
 
 ## Events consumed
 
@@ -42,7 +45,7 @@ in the transaction of the event.
 | ------------------------ | ------------------------------------------- | ----------------------------------------------------------- |
 | `member.joined.v1`       | `task-service__project-member-joined`       | Applies the join; an owner receives the spaces awaiting one |
 | `member.role-changed.v1` | `task-service__project-member-role-changed` | Applies the role change; the same for the role `owner`      |
-| `member.removed.v1`      | `task-service__project-member-removed`      | Applies the removal, then hands the private spaces over     |
+| `member.removed.v1`      | `task-service__project-member-removed`      | Applies the removal, hands the spaces over, unassigns       |
 
 - One durable pull consumer of `EVENTS` per event, filtered on its `evt.` subject, registered by
   `MemberEventsHandler`. The names, the filters and `service: 'task-service'` are the ones
@@ -62,7 +65,8 @@ in the transaction of the event.
 - One unit: the deduplicator of `OutboxModule` runs each delivery in the tenant transaction of the
   organization of its envelope and records `(consumer, event id)` in `processed_events` there;
   `ApplyMemberEvent` runs in its own `MemberEventUnitOfWork`, which joins that transaction, and the
-  copy, the handover, their outbox rows and the processed id commit together. A transient failure
+  copy, the handover, the unassignment, their activity entries and outbox rows and the processed id
+  commit together. A transient failure
   (the database unavailable, a lock timeout) rolls the whole unit back, the change of the copy
   included, and the event is redelivered on the schedule below.
 - A removal always commits (decision revised by the coordinating session for P3a: a revocation
@@ -134,12 +138,15 @@ unapplied, with no later correction.
   member of the organization; it awaits that owner, seen by nobody, while the copy does not hold
   one.
 - A removal of the copy commits whatever the spaces need; only a transient failure redelivers it.
+- A removed member is assigned to no task once the removal commits; a join or a role change never
+  unassigns, so a member who becomes a guest keeps the tasks they hold.
 
 ## Transactions
 
 `ApplyMemberEvent` runs in its `MemberEventUnitOfWork`, which joins the tenant transaction the
 deduplicator of the kit opened for the organization of the event; `ApplyMembershipChange`,
-`HandOverPrivateSpaces` and `HandOverAwaitingSpaces` join it too through their tenant runners.
+`HandOverPrivateSpaces`, `HandOverAwaitingSpaces` and `UnassignRemovedMember` join it too through
+their tenant runners.
 Nothing is committed unless all of them resolve; an owner unknown to the copy is not a failure.
 
 ## Decisions
@@ -153,6 +160,11 @@ Nothing is committed unless all of them resolve; an owner unknown to the copy is
 - The handover locks the private spaces of the former member first and asks for the owner of the
   organization only when there is one to hand over: a removal never waits for an owner it does not
   need.
+- The unassignment runs in the transaction of the removal, in batches of 500 tasks (PR 2 of P3a).
+  The whole delivery must end within the 25 s `handlerTimeoutMs` of the kit, or every delivery is
+  abandoned and rolled back and the removal never commits: a member assigned to more tasks than one
+  delivery can unassign in that time would break "a removal always commits". Moving the rest to a
+  job enqueued in the same transaction waits for `@cadenway/nest-jobs` in this service.
 - The first version of PR 1 rolled the removal back while the owner of the organization was
   unknown, so the removed member stayed a member for up to about 25 h 43 min; the coordinating
   session revised it: the removal commits and the spaces fail closed, awaiting an owner.

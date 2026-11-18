@@ -17,12 +17,12 @@ to the modules that own those data, which member-lifecycle calls in the same tra
 
 ## Public entry points
 
-| Entry point                                  | Consumers                |
-| -------------------------------------------- | ------------------------ |
-| `organization-members.module`                | spaces, member-lifecycle |
-| `public/membership/apply-membership-change`  | member-lifecycle         |
-| `public/membership/find-organization-member` | spaces                   |
-| `public/membership/find-organization-owner`  | spaces                   |
+| Entry point                                  | Consumers                       |
+| -------------------------------------------- | ------------------------------- |
+| `organization-members.module`                | spaces, member-lifecycle, tasks |
+| `public/membership/apply-membership-change`  | member-lifecycle                |
+| `public/membership/find-organization-member` | spaces, tasks                   |
+| `public/membership/find-organization-owner`  | spaces                          |
 
 `OrganizationMembersModule` exports the `ApplyMembershipChange`, `FindOrganizationMember` and
 `FindOrganizationOwner` providers, each with its input type and, for the two readings, its output type.
@@ -33,7 +33,8 @@ to the modules that own those data, which member-lifecycle calls in the same tra
 - `FindOrganizationMember` (`{ organizationId, userId }` to `{ memberId, role }`, or `null` when
   the account is not a current member) and `FindOrganizationOwner` (`{ organizationId }` to
   `{ memberId, userId }`, or `null` until the join of the owner arrives) serve the access rules of
-  the spaces module.
+  the spaces module; the tasks module reads `FindOrganizationMember` for the role of the actor and
+  the eligibility of the people it assigns.
 
 All three run in the tenant transaction of their caller and join it, or open one for the
 organization of the context; they must not be called from a system transaction (the kit refuses

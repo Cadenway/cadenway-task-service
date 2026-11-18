@@ -15,6 +15,7 @@ import { MemberLifecycleModule } from './modules/member-lifecycle/member-lifecyc
 import { OrganizationMembersModule } from './modules/organization-members/organization-members.module.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
 import { SpacesModule } from './modules/spaces/spaces.module.js';
+import { TasksModule } from './modules/tasks/tasks.module.js';
 
 /**
  * Class AppModule
@@ -35,8 +36,8 @@ import { SpacesModule } from './modules/spaces/spaces.module.js';
  *   the broker requires. The creation waits for the first connection, then checks that the
  *   `EVENTS` stream exists: cadenway-ops creates the streams (`manageStreams: false`), and only
  *   notification-service runs the dead-letter worker. The service publishes the `space.*` and
- *   `list.*` events of `SpacesModule` through the outbox, and consumes the member events of
- *   organization-service (`MemberLifecycleModule`).
+ *   `list.*` events of `SpacesModule` and the `task.*` events of `TasksModule` through the outbox,
+ *   and consumes the member events of organization-service (`MemberLifecycleModule`).
  * - `OutboxModule`: the outbox writer, the PostgreSQL deduplicator and the relay, which polls
  *   `outbox_events` every second in a system transaction and publishes the pending rows. It runs in
  *   every replica; `for update skip locked` keeps two of them from publishing the same row.
@@ -54,6 +55,10 @@ import { SpacesModule } from './modules/spaces/spaces.module.js';
  *   the members and roles of the service.
  * - `SpacesModule`: the spaces, their statuses and prefixes, and their lists and sprints, with the
  *   internal routes of `/internal/v1/spaces` and `/internal/v1/lists`.
+ * - `TasksModule`: the tasks, their subtasks, assignees, labels and checklist, and the activity log
+ *   of a task and of a list, with the internal routes of `/internal/v1/tasks` and the task
+ *   creation and activity routes of `/internal/v1/lists/{listId}`. It reads the members from
+ *   `OrganizationMembersModule` and the lists, spaces and task keys from `SpacesModule`.
  * - `MemberLifecycleModule`: the three durable consumers (`task-service__project-member-*`) of
  *   `member.joined.v1`, `member.role-changed.v1` and `member.removed.v1`, which the deduplicator of
  *   `OutboxModule` runs in the tenant transaction of each event. Each event updates the copy of
@@ -95,6 +100,7 @@ import { SpacesModule } from './modules/spaces/spaces.module.js';
     PlatformModule,
     OrganizationMembersModule,
     SpacesModule,
+    TasksModule,
     MemberLifecycleModule,
   ],
 })
