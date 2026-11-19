@@ -1,14 +1,15 @@
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 
-import { toListWithGrants, visibleListCondition } from './visible-list.mapper.js';
+import {
+  toListWithGrants,
+  viewerListGrantJoin,
+  visibleListCondition,
+} from './visible-list.mapper.js';
 import type { VisibleListRow } from './visible-list.mapper.js';
 
 /** The organization of the transaction. */
 const ORGANIZATION = 'organization';
-
-/** The grant of the viewer on the list of the row, by the primary key of `list_grants`. */
-const LIST_GRANT = `(select "list_grants"."role" from "list_grants" where "list_grants"."organization_id" = $1 and "list_grants"."list_id" = "lists"."id" and "list_grants"."user_id" = $2) is not null`;
 
 /**
  * Builds a row of a collection of lists: Sprint 14 of Produit.
@@ -45,21 +46,32 @@ function sprint14Row(overrides: Partial<VisibleListRow> = {}): VisibleListRow {
 describe('visibleListCondition: the lists a member has a role on', () => {
   it('keeps for a member a grant of the list, the owner, the switch of a space of the organization and a grant of the space', () => {
     const { sql: text, params } = new PgDialect().sqlToQuery(
-      visibleListCondition(ORGANIZATION, { userId: 'viewer', role: 'member' }),
+      visibleListCondition({ userId: 'viewer', role: 'member' }),
     );
 
     expect(text).toBe(
-      `(not "spaces"."awaiting_owner" and (${LIST_GRANT} or "spaces"."owner_user_id" = $3 or ("spaces"."visibility" = 'organization' and "lists"."organization_access") or (select "space_grants"."role" from "space_grants" where "space_grants"."organization_id" = $4 and "space_grants"."space_id" = "spaces"."id" and "space_grants"."user_id" = $5) is not null))`,
+      `(not "spaces"."awaiting_owner" and ("viewer_list_grant"."role" is not null or "spaces"."owner_user_id" = $1 or ("spaces"."visibility" = 'organization' and "lists"."organization_access") or "viewer_space_grant"."role" is not null))`,
     );
-    expect(params).toEqual([ORGANIZATION, 'viewer', 'viewer', ORGANIZATION, 'viewer']);
+    expect(params).toEqual(['viewer']);
   });
 
   it('keeps for a guest the lists shared with them only', () => {
     const { sql: text, params } = new PgDialect().sqlToQuery(
-      visibleListCondition(ORGANIZATION, { userId: 'viewer', role: 'guest' }),
+      visibleListCondition({ userId: 'viewer', role: 'guest' }),
     );
 
-    expect(text).toBe(`(not "spaces"."awaiting_owner" and ${LIST_GRANT})`);
+    expect(text).toBe(`(not "spaces"."awaiting_owner" and "viewer_list_grant"."role" is not null)`);
+    expect(params).toEqual([]);
+  });
+
+  it('joins the grant of the list on the full primary key of list_grants', () => {
+    const { sql: text, params } = new PgDialect().sqlToQuery(
+      viewerListGrantJoin(ORGANIZATION, 'viewer'),
+    );
+
+    expect(text).toBe(
+      `"viewer_list_grant"."organization_id" = $1 and "viewer_list_grant"."list_id" = "lists"."id" and "viewer_list_grant"."user_id" = $2`,
+    );
     expect(params).toEqual([ORGANIZATION, 'viewer']);
   });
 });

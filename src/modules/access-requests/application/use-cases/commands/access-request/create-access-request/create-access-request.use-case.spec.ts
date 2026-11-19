@@ -285,22 +285,36 @@ describe('CreateAccessRequest: always the same answer, whatever the target', () 
     await expect(useCase.execute(askDirection({ actorUserId: HUGO }))).resolves.toBeUndefined();
   });
 
-  it('makes the same reads for a stored request and for an unknown space', async () => {
+  it('runs the same statements for a stored request, an asked one, a seen target and an unknown space, but the event', async () => {
     const stored = wire();
+    const asked = wire();
+    const seen = wire();
     const unknown = wire();
+    seen.targets.allow(CAMILLE, DIRECTION, 'view', false);
+    await asked.useCase.execute(askDirection());
+    asked.store.calls.length = 0;
+    asked.members.calls.length = 0;
+    asked.targets.calls.length = 0;
 
     await stored.useCase.execute(askDirection());
+    await asked.useCase.execute(askDirection());
+    await seen.useCase.execute(askDirection());
     await unknown.useCase.execute(
       askDirection({ target: { kind: 'space', spaceId: UNKNOWN_SPACE } }),
     );
 
-    expect(unknown.members.calls).toEqual(stored.members.calls);
-    expect(unknown.targets.calls.map((call) => call.split(':')[1])).toEqual(
-      stored.targets.calls.map((call) => call.split(':')[1]),
-    );
-    const reads = (calls: readonly string[]): string[] =>
-      calls.filter((call) => !call.startsWith('requests.') && !call.startsWith('events.'));
-    expect(reads(unknown.store.calls)).toEqual(reads(stored.store.calls));
+    const statements = (calls: readonly string[]): string[] =>
+      calls.filter((call) => !call.startsWith('events.'));
+    for (const other of [asked, seen, unknown]) {
+      expect(other.members.calls).toEqual(stored.members.calls);
+      expect(other.targets.calls.map((call) => call.split(':')[1])).toEqual(
+        stored.targets.calls.map((call) => call.split(':')[1]),
+      );
+      expect(statements(other.store.calls)).toEqual(statements(stored.store.calls));
+    }
+    expect(stored.store.calls).toContain('requests.insertPending');
+    expect(stored.store.calls.at(-1)).toBe('events.accessRequested');
+    expect(unknown.store.calls).not.toContain('events.accessRequested');
   });
 
   it('reads a task and a list for an unknown key as for a known one', async () => {

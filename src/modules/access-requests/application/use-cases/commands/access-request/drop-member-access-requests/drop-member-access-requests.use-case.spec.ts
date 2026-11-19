@@ -10,7 +10,6 @@ import {
   HUGO,
   InMemoryAccessRequests,
   LEA,
-  LIST_REQUEST,
   NOW,
   OTHER_ORGANIZATION,
   SPACE_REQUEST,
@@ -49,7 +48,7 @@ function pendingOfHugo(index: number): AccessRequestState {
   return listRequestState({ id, targetId: id, listId: id });
 }
 
-describe('DropMemberAccessRequests: one batch drops the pending requests of a former member', () => {
+describe('DropMemberAccessRequests: one batch drops the requests of a former member', () => {
   it('deletes the pending requests of Hugo Dubois and keeps those of the others', async () => {
     const store = new InMemoryAccessRequests([
       spaceRequestState(),
@@ -63,18 +62,19 @@ describe('DropMemberAccessRequests: one batch drops the pending requests of a fo
     expect([...store.requests.keys()]).toEqual([SPACE_REQUEST]);
   });
 
-  it('keeps the answered requests of the former member', async () => {
+  it('drops the answered requests of the former member too, with the message they wrote', async () => {
     const answered = listRequestState({
       status: 'refused',
+      message: 'Pour le chiffrage du budget.',
       decidedAt: DECIDED_AT,
       decidedBy: { type: 'user', id: LEA },
     });
-    const store = new InMemoryAccessRequests([answered, taskRequestState()]);
+    const store = new InMemoryAccessRequests([spaceRequestState(), answered, taskRequestState()]);
 
     const output = await wire(store).execute(input);
 
-    expect(output).toEqual({ outcome: 'dropped', dropped: 1 });
-    expect([...store.requests.keys()]).toEqual([LIST_REQUEST]);
+    expect(output).toEqual({ outcome: 'dropped', dropped: 2 });
+    expect([...store.requests.keys()]).toEqual([SPACE_REQUEST]);
   });
 
   it('deletes the attempts of the former member only', async () => {
@@ -148,7 +148,7 @@ describe('DropMemberAccessRequests: nothing changes while the copy holds the acc
     expect(output).toEqual({ outcome: 'member-again' });
     expect(store.requests.size).toBe(2);
     expect(store.attemptsOf(HUGO)).toEqual([NOW]);
-    expect(store.calls).toEqual(['requests.lockPendingOf']);
+    expect(store.calls).toEqual(['requests.lockRequestsOf']);
   });
 
   it('answers member-again for a guest too', async () => {

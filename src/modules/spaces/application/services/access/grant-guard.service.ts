@@ -1,3 +1,4 @@
+import { canManageListAccess } from '../../../domain/policies/access/access-role.policy.js';
 import type { TaskList } from '../../../domain/aggregates/list/task-list.aggregate.js';
 import type { Space } from '../../../domain/aggregates/space/space.aggregate.js';
 import type { Viewer } from '../../../domain/value-objects/member/viewer.value-object.js';
@@ -126,7 +127,7 @@ export class GrantGuard {
     if (access.listRole === null) {
       throw new SpaceRefusal({ reason: 'list-not-found' });
     }
-    if (access.listRole !== 'edit') {
+    if (!canManageListAccess(access.listRole)) {
       throw new SpaceRefusal({ reason: 'role-insufficient', role: access.listRole });
     }
     this.checkVersion(locked.list.snapshot.version, expectedVersions);

@@ -8,6 +8,7 @@ import {
   CAMILLE,
   DECIDED_AT,
   DIRECTION,
+  DIR_12_TASK,
   FakeAccessTargets,
   FakeMembers,
   FakeTaskReferences,
@@ -17,7 +18,9 @@ import {
   LEA,
   LIST_REQUEST,
   OTHER_ORGANIZATION,
+  PRODUIT,
   RECRUTEMENT,
+  ROADMAP,
   SPACE_REQUEST,
   TASK_REQUEST,
   listRequestState,
@@ -115,14 +118,14 @@ describe('ListAccessRequests: the pending requests the actor answers, the most r
     expect(tasks.calls).toEqual(['findByIds:1']);
   });
 
-  it('shows a task request whose task is no longer found with no task', async () => {
+  it('leaves out a task request whose task is no longer found, from the page and the total', async () => {
     const { tasks, useCase } = wire();
     tasks.tasks = [];
 
     const result = await useCase.execute(page());
 
-    expect(result.items).toHaveLength(3);
-    expect(result.items.find((item) => item.id === TASK_REQUEST)?.task).toBeNull();
+    expect(result.items.map((item) => item.id)).toEqual([SPACE_REQUEST, LIST_REQUEST]);
+    expect(result.total).toBe(2);
   });
 
   it('leaves out the answered requests', async () => {
@@ -236,5 +239,81 @@ describe('ListAccessRequests: the filters', () => {
     const result = await useCase.execute(page({ actorUserId: HUGO, spaceId: DIRECTION }));
 
     expect(result.items.map((item) => item.target)).toEqual(['task', 'list']);
+  });
+});
+
+describe('ListAccessRequests: a task request is listed on the list its task is in now', () => {
+  /** DIR-12, moved from "Budget" of "Direction" to "Roadmap" of "Produit". */
+  const moved = { ...DIR_12_TASK, listId: ROADMAP, spaceId: PRODUIT } as const;
+
+  it('lists a moved task request to whoever has edit on its new list, placed there', async () => {
+    const { targets, tasks, useCase } = wire();
+    tasks.tasks = [moved];
+    targets.allow(INES, ROADMAP, 'edit');
+
+    const result = await useCase.execute(page({ actorUserId: INES }));
+
+    expect(result.items).toEqual([
+      expect.objectContaining({ id: TASK_REQUEST, spaceId: PRODUIT, listId: ROADMAP }),
+    ]);
+    expect(result.total).toBe(1);
+  });
+
+  it('no longer lists a moved task request to the editors of the list it left', async () => {
+    const { tasks, useCase } = wire();
+    tasks.tasks = [moved];
+
+    const result = await useCase.execute(page());
+
+    expect(result.items.map((item) => item.id)).toEqual([SPACE_REQUEST, LIST_REQUEST]);
+    expect(result.total).toBe(2);
+  });
+
+  it('filters a task request on the current space and list of its task', async () => {
+    const { targets, tasks, useCase } = wire();
+    tasks.tasks = [moved];
+    targets.allow(INES, ROADMAP, 'edit');
+
+    const inProduit = await useCase.execute(page({ actorUserId: INES, spaceId: PRODUIT }));
+    const inDirection = await useCase.execute(page({ actorUserId: INES, spaceId: DIRECTION }));
+    const inBudget = await useCase.execute(page({ actorUserId: INES, listId: BUDGET }));
+
+    expect(inProduit.total).toBe(1);
+    expect(inDirection.total).toBe(0);
+    expect(inBudget.total).toBe(0);
+  });
+
+  it('reads no task request to a member who has edit on no list', async () => {
+    const { store, targets, tasks, useCase } = wire();
+    targets.allow(CAMILLE, DIRECTION, 'edit', true);
+
+    await useCase.execute(page({ actorUserId: CAMILLE }));
+
+    expect(store.calls).not.toContain('requests.listPendingTaskIds');
+    expect(tasks.calls).toEqual([]);
+  });
+
+  it('locates the tasks of the pending task requests in chunks of 100', async () => {
+    const requests = Array.from({ length: 150 }, (_, index) => {
+      const suffix = String(index + 1).padStart(12, '0');
+      return taskRequestState({
+        id: `019a7007-2222-7000-8000-${suffix}`,
+        targetId: `019a7002-2222-7000-8000-${suffix}`,
+        taskId: `019a7002-2222-7000-8000-${suffix}`,
+        taskKey: `DIR-${String(index + 100)}`,
+      });
+    });
+    const { tasks, useCase } = wire(requests);
+    tasks.tasks = requests.map((request) => ({
+      ...DIR_12_TASK,
+      id: request.taskId ?? '',
+      key: request.taskKey ?? '',
+    }));
+
+    const result = await useCase.execute(page({ limit: 100 }));
+
+    expect(tasks.calls).toEqual(['findByIds:100', 'findByIds:50']);
+    expect(result.total).toBe(150);
+    expect(result.items).toHaveLength(100);
   });
 });

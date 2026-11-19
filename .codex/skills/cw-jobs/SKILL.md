@@ -54,6 +54,7 @@ work, and the worker in `presentation/jobs/handlers/<family>/`, built by a provi
 `composition/` that passes it the queue name (presentation does not import `src/config/`).
 
 The member-lifecycle module enqueues `task.clean-up-removed-member` in the transaction of
-`member.removed.v1`; its worker hands the private spaces of the former member over, then unassigns
+`member.removed.v1`; its worker hands the private spaces of the former member over, removes their grants, drops
+their access requests, then unassigns
 them from their tasks, in batches the spaces and tasks modules expose (its `MODULE.md`, with the
 retries, the dead-letter queue and the SQL an operator runs about them).

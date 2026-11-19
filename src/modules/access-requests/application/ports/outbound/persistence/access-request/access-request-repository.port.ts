@@ -17,13 +17,21 @@ export interface AccessRequestRepository {
    *
    * @description
    * Stores a pending request, unless the requester already has a pending request for the same
-   * target: asking again changes nothing.
+   * target: asking again changes nothing. It runs the same one statement whether there is a request
+   * to store or not, so that the statements of a request never tell whether it was stored.
    *
-   * @param {AccessRequestDraft} draft - The checked request.
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} requesterUserId - The requester.
+   * @param {AccessRequestDraft | null} draft - The checked request to store, `null` when the rules
+   * store none.
    * @returns {Promise<AccessRequest | null>} The stored request, with its id and instant, or `null`
-   * when a pending one already exists.
+   * when nothing was to be stored or a pending one already exists.
    */
-  insertPending(draft: AccessRequestDraft): Promise<AccessRequest | null>;
+  insertPending(
+    organizationId: string,
+    requesterUserId: string,
+    draft: AccessRequestDraft | null,
+  ): Promise<AccessRequest | null>;
 
   /**
    * Method lock
@@ -83,18 +91,30 @@ export interface AccessRequestRepository {
   countPending(organizationId: string, scope: PendingScope): Promise<number>;
 
   /**
-   * Method lockPendingOf
+   * Method listPendingTaskIds
    *
    * @description
-   * Locks the first pending requests of a requester, in id order, until the end of the
-   * transaction.
+   * Reads the distinct tasks of the pending task requests of the organization, whoever asked, so
+   * that the listing resolves where each task is now.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @returns {Promise<readonly string[]>} The task ids.
+   */
+  listPendingTaskIds(organizationId: string): Promise<readonly string[]>;
+
+  /**
+   * Method lockRequestsOf
+   *
+   * @description
+   * Locks the first requests of a requester, pending or answered, in id order, until the end of
+   * the transaction.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} requesterUserId - The account.
    * @param {number} limit - Most requests to lock.
    * @returns {Promise<readonly string[]>} Their ids.
    */
-  lockPendingOf(
+  lockRequestsOf(
     organizationId: string,
     requesterUserId: string,
     limit: number,
@@ -104,7 +124,7 @@ export interface AccessRequestRepository {
    * Method deleteRequests
    *
    * @description
-   * Deletes requests by id.
+   * Deletes requests by id, pending or answered.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} ids - The ids, locked by the caller.

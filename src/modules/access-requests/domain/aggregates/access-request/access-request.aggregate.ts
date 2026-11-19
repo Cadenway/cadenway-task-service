@@ -9,6 +9,8 @@ import { isAccessRequestTarget } from '../../value-objects/access-request/access
 import type { GrantTarget } from '../../value-objects/access-request/grant-target.value-object.js';
 import type { NewAccessRequest } from '../../value-objects/access-request/new-access-request.value-object.js';
 import type { RequestActor } from '../../value-objects/access-request/request-actor.value-object.js';
+import type { RequestPlacement } from '../../value-objects/access-request/request-placement.value-object.js';
+import type { TaskPlacement } from '../../value-objects/access-request/task-placement.value-object.js';
 
 /**
  * Constant MESSAGE_MAX_LENGTH
@@ -178,8 +180,9 @@ function checkDecision(state: AccessRequestState): void {
  * A request for access to a space, a list or a task ("Demander l’accès", decision 4 of P3b-1,
  * "Access requests" of `openapi/public/access.yaml`). Rules:
  *
- * - it names exactly one target: a space, a list, or a task with the list it was in when asked,
- *   which an approval grants;
+ * - it names exactly one target: a space, a list, or a task with the list it was in when asked;
+ *   a task request is answered, and approved as a grant, on the list the task is in now
+ *   (`placement`, `grantTarget`);
  * - its message is trimmed, `null` when empty, 500 characters at most;
  * - it changes once, from `pending` to `approved` with a role or to `refused`; a second answer is
  *   refused with the status it has (`AccessRequestDecidedError`);
@@ -226,23 +229,6 @@ export class AccessRequest {
    */
   public get version(): number {
     return this.state.status === 'pending' ? 1 : 2;
-  }
-
-  /**
-   * Property grantTarget
-   *
-   * @description
-   * What an approval grants: the space of a space request, the list of a list or a task request.
-   *
-   * @type {GrantTarget}
-   * @readonly
-   */
-  public get grantTarget(): GrantTarget {
-    const { target, spaceId, listId } = this.state;
-    if (target === 'space' || listId === null) {
-      return { kind: 'space', spaceId };
-    }
-    return { kind: 'list', listId };
   }
   // #endregion
 
@@ -316,6 +302,56 @@ export class AccessRequest {
     }
     checkDecision(state);
     return new AccessRequest(state);
+  }
+
+  /**
+   * Method placement
+   *
+   * @description
+   * Where the target of the request is now: the stored space of a space request, the stored list
+   * and space of a list request, and for a task request the list the task is in now, which the
+   * caller reads from the tasks module ("the list of the task for a task" of
+   * `openapi/public/access.yaml`; "the role an approval gave on the list of the task" of
+   * `task.access-request-decided.v1`). The stored `listId` of a task request stays the list the task
+   * was in when it was asked for, as its `task.access-requested.v1` said.
+   *
+   * @param {TaskPlacement | null} task - Where the task of a task request is now; ignored for a
+   * space or a list request.
+   * @returns {RequestPlacement} Where the target is now.
+   * @throws {InvalidAccessRequestError} For a task request without the placement of its task: the
+   * caller answers such a request as an unknown one first.
+   */
+  public placement(task: TaskPlacement | null): RequestPlacement {
+    const { target, spaceId, listId } = this.state;
+    if (target !== 'task') {
+      return { spaceId, listId };
+    }
+    if (task === null) {
+      throw new InvalidAccessRequestError('a task request is placed where its task is now');
+    }
+    return { spaceId: task.spaceId, listId: task.listId };
+  }
+
+  /**
+   * Method grantTarget
+   *
+   * @description
+   * What an approval grants, and whose managers answer the request: the space of a space request,
+   * the list of a list request, the current list of the task of a task request (decision beyond
+   * the brief of the contract: "a task request is approved as a grant of its list").
+   *
+   * @param {RequestPlacement} placement - Where the target is now, from `placement`.
+   * @returns {GrantTarget} The space or the list.
+   * @throws {InvalidAccessRequestError} For a list or a task request placed without a list.
+   */
+  public grantTarget(placement: RequestPlacement): GrantTarget {
+    if (this.state.target === 'space') {
+      return { kind: 'space', spaceId: placement.spaceId };
+    }
+    if (placement.listId === null) {
+      throw new InvalidAccessRequestError('a list or task request is answered on a list');
+    }
+    return { kind: 'list', listId: placement.listId };
   }
 
   /**

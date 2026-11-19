@@ -9,9 +9,9 @@ import type { DropMemberAccessRequestsOutput } from './drop-member-access-reques
  * Constant DROP_BATCH_SIZE
  *
  * @description
- * How many pending requests one batch locks and deletes, in one tenant transaction: one locking
- * read, one read of the copy and two deletes, whatever the size, so a batch stays far under the
- * 10 s statement timeout of the application role.
+ * How many requests one batch locks and deletes, in one tenant transaction: one locking read, one
+ * read of the copy and two deletes, whatever the size, so a batch stays far under the 10 s
+ * statement timeout of the application role.
  *
  * @type {number}
  */
@@ -21,24 +21,25 @@ const DROP_BATCH_SIZE: number = 500;
  * Class DropMemberAccessRequests
  *
  * @description
- * One batch of the dropping of the pending requests of a member who left the organization ("The
- * pending requests ... of a person who leaves the organization, are dropped" of
+ * One batch of the dropping of the requests of a member who left the organization ("The pending
+ * requests ... of a person who leaves the organization, are dropped" of
  * `openapi/public/access.yaml`; "Members" of `openapi/internal/task-service.yaml`). The clean-up job
  * of member-lifecycle calls it in the organization context of the job, after the removal committed,
  * until it answers `none-left` or `member-again`; each call runs in one tenant transaction, which
  * `run` opens:
  *
- * 1. it locks up to 500 pending requests of the account, in id order, `FOR UPDATE`, so that an
- *    approval or a refusal running meanwhile is serialized with it;
+ * 1. it locks up to 500 requests of the account, pending or answered, in id order, `FOR UPDATE`,
+ *    so that an approval or a refusal running meanwhile is serialized with it;
  * 2. then it reads the copy of the memberships without lock: when the copy holds the account as a
  *    member again, it changes nothing (`member-again`) and the job stops for good;
  * 3. otherwise it deletes the locked requests and the attempts of the account (they only count
  *    towards its hourly limit), and answers `dropped`, or `none-left` when no request was locked.
  *
- * Answered requests are kept: they are history, the approvals among them gave grants that the
- * clean-up removes on its own. No event: the contract defines none for a dropped request. A dropped
- * request leaves the filter of step 1, so the next call goes on with the next ones, and a call once
- * none is left changes nothing: the batch is idempotent.
+ * The answered requests go too: each carries the free text the former member wrote, which nothing
+ * needs once they left (privacy); the grants their approvals gave are removed by the clean-up on
+ * their own. No event: the contract defines none for a dropped request. A dropped request leaves
+ * the filter of step 1, so the next call goes on with the next ones, and a call once none is left
+ * changes nothing: the batch is idempotent.
  */
 export class DropMemberAccessRequests {
   // #region Properties
@@ -87,7 +88,7 @@ export class DropMemberAccessRequests {
    * Method execute
    *
    * @description
-   * Drops one batch of the pending requests of the former member.
+   * Drops one batch of the requests of the former member, pending or answered.
    *
    * @param {DropMemberAccessRequestsInput} input - The organization and the member who left.
    * @returns {Promise<DropMemberAccessRequestsOutput>} What the batch did.
@@ -99,7 +100,7 @@ export class DropMemberAccessRequests {
   ): Promise<DropMemberAccessRequestsOutput> {
     return this.unitOfWork.run(
       async (store: AccessRequestsStore): Promise<DropMemberAccessRequestsOutput> => {
-        const ids: readonly string[] = await store.requests.lockPendingOf(
+        const ids: readonly string[] = await store.requests.lockRequestsOf(
           input.organizationId,
           input.userId,
           DROP_BATCH_SIZE,

@@ -12,6 +12,7 @@ import {
 import type { Context, Span } from '@opentelemetry/api';
 import { z } from 'zod';
 
+import { CleanUpStepError } from '../../../../application/models/clean-up/clean-up-step-error.model.js';
 import type { CleanUpRemovedMemberOutput } from '../../../../application/use-cases/commands/membership/clean-up-removed-member/clean-up-removed-member.output.js';
 import type { CleanUpRemovedMember } from '../../../../application/use-cases/commands/membership/clean-up-removed-member/clean-up-removed-member.use-case.js';
 
@@ -76,9 +77,11 @@ function parentContext(traceparent: string | undefined): Context {
  * `list.access-changed.v1` and `task.updated.v1` rows it appends carry the `traceparent` of that
  * trace. The use case commits batch after batch and is idempotent,
  * so a retried attempt resumes from what is left. A rejected attempt is retried by the queue, then
- * becomes a dead letter of `task.clean-up-removed-member.dead-letter`; the kit logs both. A
- * finished job logs its outcome with the job id and the counts, never the account, and warns once
- * when it left private spaces awaiting an owner.
+ * becomes a dead letter of `task.clean-up-removed-member.dead-letter`; the kit logs both, once per
+ * failed attempt, with the error, whose message names the failed step and the batches committed
+ * before it (`CleanUpStepError`); the span records the exception and the attributes
+ * `cleanup.step` and `cleanup.batches`. A finished job logs its outcome with the job id and the
+ * counts, never the account, and warns once when it left private spaces awaiting an owner.
  */
 export class CleanUpRemovedMemberHandler implements OnApplicationBootstrap {
   // #region Properties
@@ -173,7 +176,8 @@ export class CleanUpRemovedMemberHandler implements OnApplicationBootstrap {
    * @returns {Promise<void>} Resolves once nothing is left to hand over, remove, drop or unassign,
    * or once the copy holds the account as a member again.
    * @throws {z.ZodError} When the job is not a clean-up job: after the retries, a dead letter.
-   * @throws {Error} When a batch fails or the attempt is aborted: the queue retries the job.
+   * @throws {CleanUpStepError} When a batch fails: the queue retries the job.
+   * @throws {Error} When the attempt is aborted: the queue retries the job.
    */
   public async handle(job: Job): Promise<void> {
     const {
@@ -222,6 +226,11 @@ export class CleanUpRemovedMemberHandler implements OnApplicationBootstrap {
         );
       }
     } catch (error: unknown) {
+      // The kit logs the failed attempt once, with this error; the span says where it stopped.
+      span.recordException(error instanceof Error ? error : String(error));
+      if (error instanceof CleanUpStepError) {
+        span.setAttributes({ 'cleanup.step': error.step, 'cleanup.batches': error.batches });
+      }
       span.setStatus({ code: SpanStatusCode.ERROR, message: 'job attempt failed' });
       throw error;
     } finally {

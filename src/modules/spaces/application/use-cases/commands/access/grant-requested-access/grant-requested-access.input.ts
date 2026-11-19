@@ -5,7 +5,8 @@ import type { AccessTargetRef } from '../../../../models/access/access-target-re
  *
  * @description
  * The approval of an access request: the grant to give or raise. The caller checked that the
- * actor answers requests for the target, and runs this in its own transaction, which the use case
+ * actor answers requests for the target; the use case checks it again on the locked space or list
+ * (a change of access may commit between the two), and runs in the caller's transaction, which it
  * joins.
  */
 export interface GrantRequestedAccessInput {
@@ -32,6 +33,18 @@ export interface GrantRequestedAccessInput {
    * @readonly
    */
   readonly actorUserId: string;
+
+  /**
+   * Property actorRole
+   *
+   * @description
+   * The role of the actor in the organization, as the caller read it from the copy of the
+   * memberships in the same transaction, for the check on the locked rows.
+   *
+   * @type {'owner' | 'admin' | 'member' | 'guest'}
+   * @readonly
+   */
+  readonly actorRole: 'owner' | 'admin' | 'member' | 'guest';
 
   /**
    * Property target

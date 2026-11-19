@@ -34,6 +34,7 @@ function approve(overrides: Partial<GrantRequestedAccessInput> = {}): GrantReque
   return {
     organizationId: ATELIER_NORD,
     actorUserId: HUGO,
+    actorRole: 'member',
     target: { kind: 'space', spaceId: DESIGN },
     granteeUserId: LEA,
     role: 'edit',
@@ -105,6 +106,7 @@ describe('GrantRequestedAccess: an approval creates or raises the grant', () => 
     const outcome = await new GrantRequestedAccess(spaces, atelierNordMembers()).execute(
       approve({
         actorUserId: CAMILLE,
+        actorRole: 'owner',
         target: { kind: 'list', listId: SPRINT_14 },
         granteeUserId: NADIA,
         role: 'comment',
@@ -193,5 +195,61 @@ describe('GrantRequestedAccess: a rule that refuses the grant answers refused, w
     );
 
     expect(outcome).toEqual({ outcome: 'refused', reason: 'grant-limit-reached' });
+  });
+});
+
+describe('GrantRequestedAccess: the right to answer is checked again on the locked rows', () => {
+  it('refuses manage-forbidden to an actor who does not manage the space, before the rules, writing nothing', async () => {
+    const spaces = atelierNord();
+
+    const outcome = await new GrantRequestedAccess(spaces, atelierNordMembers()).execute(
+      approve({ actorUserId: LEA, granteeUserId: NADIA }),
+    );
+
+    expect(outcome).toEqual({ outcome: 'refused', reason: 'manage-forbidden' });
+    expect(spaces.grants).toEqual([]);
+    expect(spaces.spaces.get(DESIGN)?.version).toBe(3);
+    expect(spaces.events).toEqual([]);
+  });
+
+  it('refuses manage-forbidden to an actor whose role on the list is no longer edit', async () => {
+    const spaces = atelierNord();
+    spaces.lists.set(SPRINT_14, sprintState({ version: 2, organizationAccess: false }));
+    spaces.grants = [listGrantOf(PRODUIT, SPRINT_14, LEA, 'view')];
+
+    const outcome = await new GrantRequestedAccess(spaces, atelierNordMembers()).execute(
+      approve({
+        actorUserId: LEA,
+        target: { kind: 'list', listId: SPRINT_14 },
+        granteeUserId: NADIA,
+      }),
+    );
+
+    expect(outcome).toEqual({ outcome: 'refused', reason: 'manage-forbidden' });
+    expect(spaces.lists.get(SPRINT_14)?.version).toBe(2);
+    expect(spaces.events).toEqual([]);
+  });
+
+  it('reads the role of the actor as the caller gives it: a guest manages no space', async () => {
+    const spaces = atelierNord();
+    spaces.spaces.set(DESIGN, designState({ version: 3, ownerUserId: NADIA }));
+
+    const outcome = await new GrantRequestedAccess(spaces, atelierNordMembers()).execute(
+      approve({ actorUserId: NADIA, actorRole: 'guest' }),
+    );
+
+    expect(outcome).toEqual({ outcome: 'refused', reason: 'manage-forbidden' });
+  });
+
+  it('lets the owner or an admin of the organization answer for a space of the organization', async () => {
+    const outcome = await new GrantRequestedAccess(atelierNord(), atelierNordMembers()).execute(
+      approve({
+        actorUserId: CAMILLE,
+        actorRole: 'owner',
+        target: { kind: 'space', spaceId: PRODUIT },
+      }),
+    );
+
+    expect(outcome).toEqual({ outcome: 'granted', changed: true });
   });
 });

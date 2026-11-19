@@ -97,13 +97,17 @@ describe('RemoveMemberGrants: a member who left loses their grants', () => {
     expect(spaces.events).toHaveLength(2);
   });
 
-  it('locks the spaces, then the lists, in the order of their ids, before it reads the copy', async () => {
+  it('locks the spaces in the order of the handover, for share when only a list of theirs changes, then the lists', async () => {
     const spaces = atelierNord();
     const members = atelierNordMembers({ removed: [LEA] });
 
     await new RemoveMemberGrants(spaces, members).execute(input);
 
-    expect(spaces.journal).toEqual([`space ${PRODUIT}`, `space ${DESIGN}`, `list ${SPRINT_14}`]);
+    expect(spaces.journal).toEqual([
+      `space ${PRODUIT} share`,
+      `space ${DESIGN}`,
+      `list ${SPRINT_14}`,
+    ]);
     expect(members.roleCalls).toEqual([
       { organizationId: ATELIER_NORD, userId: LEA, lock: undefined },
     ]);
@@ -160,5 +164,32 @@ describe('RemoveMemberGrants: batches of 100 grants, grants of spaces first', ()
     expect(second).toEqual({ outcome: 'removed', removed: 30 });
     expect(third).toEqual({ outcome: 'none-left' });
     expect(spaces.runs).toBe(3);
+  });
+});
+
+describe('RemoveMemberGrants: a grant on a row the batch did not lock is a defect', () => {
+  it('throws, removing nothing, when a grant names a space that is not there', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      grants: [spaceGrantOf(DESIGN, LEA, 'edit')],
+    });
+
+    await expect(
+      new RemoveMemberGrants(spaces, atelierNordMembers({ removed: [LEA] })).execute(input),
+    ).rejects.toThrow('A grant of the batch names a space the batch did not lock.');
+    expect(spaces.grants).toHaveLength(1);
+    expect(spaces.events).toEqual([]);
+  });
+
+  it('throws before it removes a grant whose list is not there', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      grants: [listGrantOf(PRODUIT, SPRINT_14, LEA, 'view')],
+    });
+
+    await expect(
+      new RemoveMemberGrants(spaces, atelierNordMembers({ removed: [LEA] })).execute(input),
+    ).rejects.toThrow('A grant of the batch names a list the batch did not lock.');
+    expect(spaces.grants).toHaveLength(1);
   });
 });

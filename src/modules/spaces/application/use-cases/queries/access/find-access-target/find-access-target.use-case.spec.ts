@@ -108,3 +108,43 @@ describe('FindAccessTarget: the target of an access request, seen or not', () =>
     expect(await new FindAccessTarget(atelierNord()).execute(find({ target }))).toBeNull();
   });
 });
+
+describe('FindAccessTarget: the statements tell nothing of the existence of the target', () => {
+  it.each([
+    ['a space', { kind: 'space', spaceId: DESIGN }, { kind: 'space', spaceId: UNKNOWN_SPACE }],
+    ['a list', { kind: 'list', listId: SPRINT_14 }, { kind: 'list', listId: UNKNOWN_LIST }],
+  ] as const)(
+    'reads the same for %s that exists and one that does not',
+    async (_kind, existing, unknown) => {
+      const seen = atelierNord();
+      const unseen = atelierNord();
+
+      await new FindAccessTarget(seen).execute(find({ target: existing }));
+      await new FindAccessTarget(unseen).execute(find({ target: unknown }));
+
+      expect(unseen.reads).toEqual(seen.reads);
+      expect(seen.reads.at(-1)).toBe('grants');
+    },
+  );
+
+  it('reads the grants even when the rule of the organization gives edit, with the nil UUID for an unknown list', async () => {
+    const spaces = atelierNord();
+
+    await new FindAccessTarget(spaces).execute(
+      find({
+        viewerUserId: CAMILLE,
+        viewerRole: 'owner',
+        target: { kind: 'list', listId: UNKNOWN_LIST },
+      }),
+    );
+
+    expect(spaces.reads).toEqual(['list', 'space', 'grants']);
+    expect(spaces.viewerGrantsCalls).toEqual([
+      {
+        viewerUserId: CAMILLE,
+        spaceId: '00000000-0000-0000-0000-000000000000',
+        listId: '00000000-0000-0000-0000-000000000000',
+      },
+    ]);
+  });
+});

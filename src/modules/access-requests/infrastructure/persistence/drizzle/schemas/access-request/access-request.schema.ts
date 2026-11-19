@@ -21,9 +21,10 @@ import {
  * their schemas, and none is deleted in this version (the deletions of PR 3 drop the requests of
  * what they delete). A request changes once, from `pending` to `approved` (with `role`) or
  * `refused`, which the checks keep whole. `access_requests_pending_unique` keeps one pending
- * request per requester and target ("asking again changes nothing") and serves the clean-up of a
- * removed member; `access_requests_pending_index` serves the listing of the pending requests, the
- * most recent first. A tenant table: `organization_id` carries the policy of the kit, which the
+ * request per requester and target ("asking again changes nothing");
+ * `access_requests_requester_index` serves the clean-up of a removed member, who loses their
+ * pending and answered requests in batches read in id order; `access_requests_pending_index`
+ * serves the listing of the pending requests, the most recent first. A tenant table: `organization_id` carries the policy of the kit, which the
  * migration forces by hand (`ALTER TABLE "access_requests" FORCE ROW LEVEL SECURITY;`).
  */
 export const accessRequests = pgTable(
@@ -56,6 +57,11 @@ export const accessRequests = pgTable(
     index('access_requests_pending_index')
       .on(table.organizationId, table.createdAt, table.id)
       .where(sql`${table.state} = 'pending'`),
+    index('access_requests_requester_index').on(
+      table.organizationId,
+      table.requesterUserId,
+      table.id,
+    ),
     check('access_requests_target_check', sql`${table.target} in ('space', 'list', 'task')`),
     check(
       'access_requests_target_shape_check',

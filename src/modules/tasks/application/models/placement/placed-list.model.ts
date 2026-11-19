@@ -1,4 +1,4 @@
-import type { AccessRole } from './access-role.model.js';
+import type { AccessRole } from '../../../domain/value-objects/access/access-role.value-object.js';
 
 /**
  * Interface PlacedList

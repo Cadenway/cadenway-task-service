@@ -23,9 +23,11 @@ import type { SpaceState } from '../../value-objects/space/space-state.value-obj
 import {
   canCreateSpace,
   canEdit,
+  canManageListAccess,
   canManageSpace,
   canSeeSpace,
   highestRole,
+  isHighestRole,
   listRoleOf,
   spaceRoleOf,
 } from './access-role.policy.js';
@@ -279,6 +281,35 @@ describe('listRoleOf: properties of the matrix', () => {
       if (role !== 'guest' && effective === null) {
         expect(spaceGrant).toBeNull();
       }
+    },
+  );
+});
+
+describe('canManageListAccess: whoever has edit on a list shares it and answers its requests', () => {
+  it.each([
+    ['edit', true],
+    ['comment', false],
+    ['view', false],
+    [null, false],
+  ] as const)('answers %s with %s', (role: AccessRole | null, expected: boolean) => {
+    expect(canManageListAccess(role)).toBe(expected);
+  });
+});
+
+describe('isHighestRole: no source raises edit, so a reading of the grants can stop there', () => {
+  it.each([
+    ['edit', true],
+    ['comment', false],
+    ['view', false],
+    [null, false],
+  ] as const)('answers %s with %s', (role: AccessRole | null, expected: boolean) => {
+    expect(isHighestRole(role)).toBe(expected);
+  });
+
+  test.prop([fc.constantFrom<AccessRole | null>('edit', 'comment', 'view', null)])(
+    'is the role no other role ranks above',
+    (role: AccessRole | null) => {
+      expect(isHighestRole(role)).toBe(highestRole([role, 'edit']) === role);
     },
   );
 });

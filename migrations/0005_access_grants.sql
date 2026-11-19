@@ -76,6 +76,7 @@ ALTER TABLE "space_grants" ADD CONSTRAINT "space_grants_space_fkey" FOREIGN KEY 
 CREATE INDEX "access_request_attempts_user_index" ON "access_request_attempts" USING btree ("organization_id","user_id","attempted_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "access_requests_pending_unique" ON "access_requests" USING btree ("organization_id","requester_user_id","target","target_id") WHERE "access_requests"."state" = 'pending';--> statement-breakpoint
 CREATE INDEX "access_requests_pending_index" ON "access_requests" USING btree ("organization_id","created_at","id") WHERE "access_requests"."state" = 'pending';--> statement-breakpoint
+CREATE INDEX "access_requests_requester_index" ON "access_requests" USING btree ("organization_id","requester_user_id","id");--> statement-breakpoint
 CREATE INDEX "list_grants_user_index" ON "list_grants" USING btree ("organization_id","user_id","space_id","list_id");--> statement-breakpoint
 CREATE INDEX "space_grants_user_index" ON "space_grants" USING btree ("organization_id","user_id","space_id");--> statement-breakpoint
 CREATE POLICY "access_request_attempts_organization_isolation" ON "access_request_attempts" AS PERMISSIVE FOR ALL TO public USING (organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on') WITH CHECK (organization_id = nullif(current_setting('app.organization_id', true), '')::uuid or current_setting('app.system_access', true) = 'on');--> statement-breakpoint

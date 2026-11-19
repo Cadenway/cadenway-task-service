@@ -19,7 +19,7 @@ export class AccessRequestsMemberAccessRequests implements MemberAccessRequests 
    * Property dropMemberAccessRequests
    *
    * @description
-   * One batch of the dropping of the pending requests of a former member.
+   * One batch of the dropping of the requests of a former member, pending or answered.
    *
    * @type {DropMemberAccessRequests}
    * @readonly

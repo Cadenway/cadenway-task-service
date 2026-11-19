@@ -44,10 +44,11 @@ interface LockedSubtree {
  * @description
  * Resolves the target of a patch for the domain: the list to move to and the task to attach to
  * are looked up, checked for existence and visibility (`list-invalid`, `parent-invalid`), then for
- * the role a change needs: a move needs `edit` on the list it goes to, an attachment `edit` on the
- * list of the new parent (`role-insufficient`; "It needs `edit` on the list of the task, and on the
- * list it moves to" of `openapi/public/tasks.yaml`); the list of the task itself was checked by
- * `TaskLocator`. An unseen target stays a `422`, a seen one without `edit` is a `403`, both after
+ * the role a change needs, which the task write policy of the domain decides (`canWriteTasksOf`,
+ * applied through `TaskEditGuard`): a move needs `edit` on the list it goes to, an attachment
+ * `edit` on the list of the new parent (`role-insufficient`; "It needs `edit` on the list of the
+ * task, and on the list it moves to" of `openapi/public/tasks.yaml`); the list of the task itself
+ * was checked by `TaskLocator`. An unseen target stays a `422`, a seen one without `edit` is a `403`, both after
  * `If-Match`. The tasks that move with the task (its descendants, and the new parent) are locked
  * in ordered statements after the task itself, until every descendant of the task is locked (a descendant
  * that left the subtree while the locks were taken is not kept). It also picks the statuses the domain checks a new status

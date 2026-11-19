@@ -13,7 +13,8 @@ export interface MemberAccessRequests {
    * Method dropBatch
    *
    * @description
-   * Drops one batch of the pending access requests of a former member, and their attempts, in its
+   * Drops one batch of the access requests of a former member, pending or answered (the answered
+   * ones carry the message they wrote), and their attempts, in its
    * own tenant transaction of the organization of the context, without event. Nothing changes
    * while the copy holds the account as a member again. A dropped request is not taken again, so
    * the job asks until `none-left`.

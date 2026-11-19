@@ -1,5 +1,5 @@
 {
-  "id": "353a49d9-a75e-4b79-9d5b-335155720191",
+  "id": "91c96770-2d8b-46bd-be24-c0d27b4928c4",
   "prevId": "4ae44ae7-dae9-48e5-ac28-7a699ef55641",
   "version": "7",
   "dialect": "postgresql",
@@ -253,6 +253,33 @@
           ],
           "isUnique": false,
           "where": "\"access_requests\".\"state\" = 'pending'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "access_requests_requester_index": {
+          "name": "access_requests_requester_index",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "requester_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}

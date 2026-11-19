@@ -173,9 +173,11 @@ required; issuer `api-gateway` for every route but the access check, which accep
 - The access check answers `AccessCheck`: the role of the actor on the list of the task, the
   space, the list and the key. A task the actor has no role on and an unknown key answer
   `404 task.not-found` (never `task.trashed`), a malformed key `400 request.invalid` like every
-  route of a task, an actor the copy does not hold `404 organization.not-found`. It runs in `runReadOnly`, reads the task by
-  `tasks_key_unique` without its collections, then `FindVisibleList` of spaces, and writes and
-  emits nothing.
+  route of a task, an actor the copy does not hold `404 organization.not-found`. It runs in
+  `runReadOnly`: the copy of the memberships, the task by `tasks_key_unique` without its
+  collections, then `FindVisibleList` of spaces for its list (the list, its space, the read of
+  the grants of the actor when the rule of the organization or ownership does not already give
+  `edit`, and the read of the prefix counter for `nextKey`); it writes and emits nothing.
 - Every `TaskList` and `Space` a route answers (the detail, the overview, the counters of a list,
   "Accueil") carries the access of the actor: `organizationAccess` and `callerRole` on a list,
   `callerRole` (`null` for a space seen through some of its lists only) and `callerCanManage` on a
@@ -405,9 +407,14 @@ statements of a route do not depend on the page size or on the size of the organ
 of a list 6 to 11 (the summaries are skipped for an empty page), the groups 5 (the groups and the
 total of the assignees come from one statement), the counters of a list 5, the overview 4, the
 labels 3, "Mes tâches" 9, "Accueil" 12 (control statements of the transaction not counted). These
-counts were taken in P3a, before grants, with the statements the spaces operations sent then; the
-reads of the roles of the actor that those operations add now are theirs (spaces MODULE.md). The
-access check is the copy of the memberships, one read of the task and `FindVisibleList`.
+counts were taken in P3a, before grants. `FindVisibleList`, which every route of a list or a task
+calls once per list it checks (the target of a move and the list of a new parent are lists too),
+is now 3 or 4 statements: the list, its space and the prefix counter of `nextKey`, plus the read of the grants
+of the actor, skipped when the rule of the organization or the ownership of the space already
+gives `edit`; so such a route sends at most one statement more per list checked. The cross-list
+routes call `ListVisibleListIds` where they called `ListVisibleSpaceIds` (its statements: spaces
+MODULE.md). The access check is the copy of the memberships, one read of the task and
+`FindVisibleList`: 5 or 6 statements.
 
 What a request costs, per route (what grows with the data, whatever the page size; the numbers are
 the medians of five calls through HTTP on the 75,000 tasks of `tests/task-queries.int-spec.ts`):
@@ -420,20 +427,21 @@ the medians of five calls through HTTP on the 75,000 tasks of `tests/task-querie
   list, 8 to 10 ms on Sprint 14). The groups of the assignees are one grouped scan of the tasks
   joined to their assignees, with the total as an extra grouping set.
 - Overview: O(tasks of the space) whatever `limit`: it reads every list of the space the actor has
-  a role on whole, counts the tasks of all of them and slices the page in memory; `listCount` and `taskCount` are counted
-  again on every page (29 ms for the space of the large list).
+  a role on whole, counts the tasks of all of them and slices the page in memory; `listCount` and
+  `taskCount` are counted again on every page (29 ms for the space of the large list).
 - Labels: O(label rows of the visible tasks), whatever `limit`, `search` or `cursor`: a join of
   `task_labels` and `tasks` grouped by label key (31 to 48 ms at 75,000 tasks), the fold running
   once per distinct key. Page 2 and a search cost the same as page 1.
 - "Mes tâches" and "Accueil": O(assignments of the actor), lifetime ones included (the hash join of
   the assignments with their tasks; 50 to 80 ms for 10,006 assignments), "Accueil" doing it for the
   stats and the seven tasks and calling two spaces reads.
-- The visibility filter of the cross-list reads (labels, "Mes tâches", "Accueil", the activity of a
-  list) is `tasks.list_id = ANY($listIds)`, one array parameter of every list the actor has a role
-  on: its size is O(lists of the organization the actor has a role on), unbounded, and each
-  candidate row is tested against it once. It replaced `tasks.space_id = ANY($spaceIds)` of P3a, a
-  list being finer than a space; the numbers above were measured with the space filter, before
-  grants, and have not been taken again with lists (see Decisions).
+- The visibility filter of the cross-list statements (the labels page, the "Mes tâches" page and
+  counts, the "Accueil" stats and tasks, the activity of a list and its total) is
+  `tasks.list_id = ANY($listIds)`: one array parameter of every list of the organization the actor
+  has a role on, unbounded (O(those lists)), each candidate row tested against it once. It
+  replaced `tasks.space_id = ANY($spaceIds)` of P3a, a list being finer than a space. The plans and
+  numbers above were measured with the space filter; the plans of these statements with an array
+  of 1,426 list ids are taken in `tests/access.int-spec.ts`.
 - Every route that sorts or searches in SQL pays the fold of the name per row; the fold takes the
   short path for ASCII text.
 
@@ -468,20 +476,27 @@ member-lifecycle (its MODULE.md).
   do labels and the checklist.
 - The role of the viewer is read from the copy of the memberships in the same transaction and
   passed to the spaces operations (`viewerRole`); it never comes from the token.
-- The effective role on a list is decided by the spaces module (decision 2 of P3b-1) and carried
-  on each list it answers (`callerRole`); this module only requires `edit` for a change
-  (`TaskEditGuard`) and keeps no copy of a grant. The cross-list reads filter `tasks.list_id`, not
-  `tasks.space_id`: a list closed to the organization, or shared with a guest, is finer than its
-  space, so the module no longer short-circuits a guest itself.
-- The role on the list of the task is checked before `If-Match` (`404` → `403` → `412`), and the
-  target of a move or an attachment after it, with the other checks of the target (`422` when
-  unseen, then `403` without `edit`), as in P3a where the target came after `If-Match`. A patch
-  that would change nothing still needs `edit`: the role is checked before the patch is applied.
+- The effective role on a list is computed by the spaces module (decision 2 of P3b-1) and carried
+  on each list it answers (`callerRole`); the rule that a task write needs `edit` on its list is a
+  policy of this domain (`canWriteTasksOf`, "Who sees a task" of `openapi/public/tasks.yaml`),
+  which `TaskEditGuard` applies for the locator, the creation and the move planner. The module
+  keeps no copy of a grant. The cross-list reads filter `tasks.list_id`, not `tasks.space_id`: a
+  list closed to the organization, or shared with a guest, is finer than its space, so the module
+  no longer short-circuits a guest itself.
+- The role on the list of the task is checked before `If-Match` (`404` → `403` → `412`). On a move
+  or an attachment, a stale `If-Match` answers `412` before the `403` of the list the task goes to
+  or of the list of the new parent: the contract gives no order between them, and the version of
+  the task is checked first, as in P3a, where the target came after `If-Match`. The target is then
+  checked as a whole: `422` when unseen, then `403` without `edit`. A patch that would change
+  nothing still needs `edit`: the role is checked before the patch is applied.
 - `role-insufficient` carries the role of the actor on a list, never `null`: the tasks routes act
   on lists only, and a list the actor has no role on is not found.
 - The access check reads the task without its collections (`TaskReader.locationByKey`, one
   statement) rather than through `TaskLocator`, which loads the assignees, labels and checklist of
-  the task: "one indexed read" of the contract.
+  the task, then goes through `FindVisibleList` for its list like every route of a task: the
+  list, its space, the grants read when the rule of the organization or ownership does not give
+  `edit`, and the prefix read of `nextKey`, which the check does not use (a dedicated spaces entry
+  without the space view would save that statement; not needed at this cost).
 - `FindTaskReferences` leaves out an id that is not a UUID rather than letting the `uuid[]` cast
   fail the transaction of the caller, and throws above 100 ids (a page of access requests).
 - `PATCH /tasks/{taskKey}` requires `If-Match` whenever the body names `description`, also with
@@ -553,8 +568,8 @@ member-lifecycle (its MODULE.md).
 - Left as they are, measured and documented: the overview reads every list of its space and slices
   in memory (`taskCount` needs the whole space anyway); the visible list ids go to the labels,
   "Mes tâches", "Accueil" and the activity of a list as one array, unbounded by the number of
-  lists of the organization (not measured with lists yet: `tests/task-queries.int-spec.ts` is to
-  take the plans and medians again with grants);
+  lists of the organization (their plans with an array of 1,426 list ids are in
+  `tests/access.int-spec.ts`; the P3a numbers were measured with the space filter);
   `total` is counted again on every page, cursor pages included (the contract gives it on each
   page); the page and the total of a list are two statements, so a concurrent write can make them
   disagree by a task (read committed).

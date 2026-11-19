@@ -27,6 +27,12 @@ export const BUDGET = '019a7001-2b3c-7d4e-8f5a-6b7c8d9e0f30';
 /** Another list of "Direction", "Recrutement". */
 export const RECRUTEMENT = '019a7001-2b3c-7d4e-8f5a-6b7c8d9e0f31';
 
+/** The space "Produit" of Camille Martin. */
+export const PRODUIT = '019a7000-1a2b-7c3d-8e4f-5a6b7c8d9e01';
+
+/** The list "Roadmap" of "Produit", where DIR-12 may move. */
+export const ROADMAP = '019a7001-2b3c-7d4e-8f5a-6b7c8d9e0f40';
+
 /** The task DIR-12 "Budget 2027" of "Budget". */
 export const DIR_12 = '019a7002-3c4d-7e5f-8a6b-7c8d9e0f1a12';
 

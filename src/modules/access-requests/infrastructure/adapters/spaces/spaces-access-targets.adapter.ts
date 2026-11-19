@@ -164,6 +164,7 @@ export class SpacesAccessTargets implements AccessTargets {
     const outcome: GrantRequestedAccessOutput = await this.grantRequestedAccess.execute({
       organizationId: request.organizationId,
       actorUserId: request.actorUserId,
+      actorRole: request.actorRole,
       target: request.target,
       granteeUserId: request.granteeUserId,
       role: request.role,

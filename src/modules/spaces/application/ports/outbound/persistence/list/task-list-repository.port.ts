@@ -1,6 +1,7 @@
 import type { TaskList } from '../../../../../domain/aggregates/list/task-list.aggregate.js';
 import type { TaskListDraft } from '../../../../../domain/value-objects/list/task-list-draft.value-object.js';
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
+import type { ListAccess } from '../../../../models/access/list-access.model.js';
 import type { ListWithGrants } from '../../../../models/access/list-with-grants.model.js';
 import type { PagePosition } from '../../../../models/page/page-position.model.js';
 
@@ -155,17 +156,17 @@ export interface TaskListRepository {
   ): Promise<ListWithGrants[]>;
 
   /**
-   * Method listAllVisibleTo
+   * Method listAccessesVisibleTo
    *
    * @description
-   * Every list of the organization a member has a role on, in the sidebar order of
-   * `listFirstVisibleTo`, unpaged: the lists of an organization are few, and the caller filters
-   * other collections by them.
+   * What the role of a member reads of every list of the organization they have a role on, and
+   * nothing else of the lists, in the sidebar order of `listFirstVisibleTo`, unpaged: the lists
+   * of an organization are few, and the caller filters other collections by them.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The member and its role.
-   * @returns {Promise<ListWithGrants[]>} The lists.
+   * @returns {Promise<ListAccess[]>} The lean rows.
    */
-  listAllVisibleTo(organizationId: string, viewer: Viewer): Promise<ListWithGrants[]>;
+  listAccessesVisibleTo(organizationId: string, viewer: Viewer): Promise<ListAccess[]>;
   // #endregion
 }

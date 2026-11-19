@@ -68,16 +68,21 @@ copy of the memberships.
   creation). It replaces `ListVisibleSpaceIds`, removed.
 - `FindAccessTarget` (`{ …, target: { kind: 'space', spaceId } | { kind: 'list', listId } }`): the
   target with `spaceName`, `spaceOwnerUserId`, `listName`, `viewerRole` (on the space for a space,
-  on the list for a list) and `viewerManages` (`callerCanManage` for a space, `edit` on the list for
-  a list), seen or not; `null` only when the organization has no such space or list. No lock.
+  on the list for a list) and `viewerManages` (`canManageSpace` for a space,
+  `canManageListAccess` for a list), seen or not; `null` only when the organization has no such
+  space or list. No lock. The same statements run whatever the outcome (an unknown target is read
+  with the nil UUID in its place, and the grants are always read), so that they tell nothing of
+  the existence of the target.
 - `ListManagedAccessTargets` (`{ organizationId, viewerUserId, viewerRole }` to
   `{ spaceIds, listIds }`): the spaces the viewer manages and the lists they have `edit` on.
-- `GrantRequestedAccess` (`{ organizationId, actorUserId, target, granteeUserId, role }` to
-  `{ outcome: 'granted', changed }` or `{ outcome: 'refused', reason }`, `reason` one of
-  `not-found`, `grantee-invalid`, `guest-space-forbidden`, `owner-unchangeable`,
-  `grant-limit-reached`): the grant of an approved request. It creates the grant, raises a lower
-  one and keeps an equal or higher one (`changed: false`); the caller checked that the actor
-  answers requests for the target, and a refusal is returned, not thrown.
+- `GrantRequestedAccess` (`{ organizationId, actorUserId, actorRole, target, granteeUserId, role }`
+  to `{ outcome: 'granted', changed }` or `{ outcome: 'refused', reason }`, `reason` one of
+  `not-found`, `manage-forbidden`, `grantee-invalid`, `guest-space-forbidden`,
+  `owner-unchangeable`, `grant-limit-reached`): the grant of an approved request. It creates the
+  grant, raises a lower one and keeps an equal or higher one (`changed: false`). The caller checks
+  that the actor answers requests for the target, and the operation checks it again on the locked
+  rows with `actorRole` (`manage-forbidden`, before the rules of the grant); a refusal is
+  returned, not thrown, and writes nothing.
 
 ## Owned tables
 
@@ -111,8 +116,8 @@ owner_user_id)` for the handover, `lists (organization_id, space_id, created_at,
   lists of a space; `space_grants_user_index (organization_id, user_id, space_id)` and
   `list_grants_user_index (organization_id, user_id, space_id, list_id)` for the grants of one
   person (the visibility conditions, the clean-up of a member who left); the primary keys of the
-  grant tables serve the grants of one space or list and the grant of one person there. No query
-  plan was taken on representative data yet.
+  grant tables serve the grants of one space or list and the grant of one person there. The plans
+  of these queries on representative data are taken by `tests/access.int-spec.ts`.
 
 ## API
 
@@ -237,7 +242,9 @@ Locks are always taken in this order: memberships `FOR SHARE`, then spaces, then
   actor's, so that the clean-up of a removal sees the grant.
 - A change of the grants of a list (its routes, `GrantRequestedAccess`) reads the list, locks its
   space `FOR SHARE` (its owner, whom no grant may name, cannot change meanwhile), then the list
-  `FOR NO KEY UPDATE`.
+  `FOR NO KEY UPDATE`. `GrantRequestedAccess` checks on these locked rows, with the role of the
+  actor its caller read in the same transaction, that the actor still manages the space or the
+  access of the list.
 - A grant write loads every grant of the space or the list (200 at most), applies
   `ResourceGrants`, checks `If-Match` against the version of the space or the list, upserts or
   deletes the one row (`granted_at` and `granted_by_*` change only when the role changes,
@@ -245,15 +252,25 @@ Locks are always taken in this order: memberships `FOR SHARE`, then spaces, then
 - A batch of `HandOverPrivateSpaces` locks up to 100 spaces in `(created_at, id)` order, then reads
   the copy without lock, then writes each space and its event, then removes the grants the new
   owner held there (one reading when they held none). A batch of `RemoveMemberGrants` reads up to
-  100 grants of the account (grants of spaces first), locks their spaces then their lists in id
-  order, then reads the copy without lock, then removes each grant, takes the next version of its
-  space or list and appends its event (about 400 short statements for a full batch, under the
-  10 s statement timeout and the 5 s lock timeout of the application role). A failed batch rolls
-  back alone.
+  100 grants of the account (grants of spaces first), locks their spaces one by one in the
+  `(created_at, id)` order of the handover (`FOR NO KEY UPDATE` the spaces whose grant goes,
+  `FOR SHARE` the spaces of the lists whose grant goes, since only those lists take a version), then
+  their lists in id order, then reads the copy without lock, then removes each grant, takes the
+  next version of its space or list and appends its event (about 500 short statements for a full
+  batch, under the 10 s statement timeout and the 5 s lock timeout of the application role). Two
+  batches, a handover among them, take their common spaces in the same order, and every one locks
+  its spaces before its lists, so they do not wait on each other in a cycle. A grant naming a space
+  or a list the batch did not lock is a defect the foreign keys rule out: the batch throws and
+  rolls back. A failed batch rolls back alone.
+- A request that writes a space or a list a batch of the clean-up holds (`PATCH`, a grant, a change
+  of the switch) waits for it at most the 5 s `lock_timeout` of the application role, then answers
+  `500` (`55P03`, `lock_not_available`); the batches are short, so this needs a batch stuck on a
+  slow statement.
 - The readings take no lock and append no event. The access of a member to one space and one list
   is ONE statement of three indexed lookups (the grant of the space, the grant of the list, a grant
   of any list of the space), skipped when the rule of the organization or the ownership already
-  gives `edit` on everything asked.
+  gives `edit` on everything asked (`isHighestRole`), except in `FindAccessTarget`, which always
+  reads it.
 - `AllocateTaskKeys` is one `UPDATE … RETURNING` of the prefix row, which serializes the creations
   under one prefix until the caller commits; the caller allocates last.
 
@@ -262,35 +279,45 @@ The unit of work wakes the relay once its `run` resolved when an event was appen
 ## Decisions
 
 - The effective role (decision 2 of P3b-1 as the contract fixed it) is computed by the policies of
-  the domain only (`spaceRoleOf`, `listRoleOf`, `canSeeSpace`, `canManageSpace`). The collections
-  apply ONE visibility condition per resource in SQL, kept in one mapper each
+  the domain only (`spaceRoleOf`, `listRoleOf`, `canSeeSpace`, `canManageSpace`, `canEdit`,
+  `canManageListAccess`, `isHighestRole`); the application compares no role by hand. The
+  collections apply ONE visibility condition per resource in SQL, kept in one mapper each
   (`visibleSpaceCondition`, `visibleListCondition`), and select the grants of the viewer so that
   the role of each row is computed in TypeScript; a row the policy refuses all the same is left
   out (fail closed). Lists: `not awaiting_owner and (grant of the list or (not a guest and (owner
 of the space or (space organization and organization_access) or grant of the space)))`. Spaces:
   `not awaiting_owner and ((not a guest and (space organization or owner or grant of the space))
-or a grant of one of its lists)`. The grant of a space or a list is a lookup by primary key, a
-  grant of any list of a space a range of `list_grants_user_index`, which `list_grants.space_id`
-  makes possible; `organization_id` is named in every predicate.
+or a grant of one of its lists)`. Each grant is read once per row by a left join on the full
+  primary key restricted to the viewer (`viewer_list_grant`, `viewer_space_grant`), and the spaces
+  of the lists shared with the viewer once per statement (`select distinct space_id from
+list_grants` by `list_grants_user_index`, which `list_grants.space_id` makes possible), instead of
+  correlated subqueries evaluated in the condition and again in the selection;
+  `organization_id` is named in every predicate. `ListVisibleListIds` and
+  `ListManagedAccessTargets` read lean rows (what the role needs, no name, look or sprint).
 - A write answers the access of the caller after the change. A write needs `edit` and can only
   take it away (a plain member turns the switch off, an admin makes a space private): it then
   answers `callerRole: 'edit'`, the role the change was made with, which the contract reads as
   absent; `callerCanManage` is the value after the change.
+- An approval raises a grant and never lowers it (`ResourceGrants.raise`): a person who holds the
+  role asked or a higher one keeps it, and nothing changes.
 - The clean-up of the grants of a member who left is a batch operation of 100 grants, as the
   handover of the private spaces, first-N without a cursor: a removed grant leaves the range. A
   re-join committed before the batch keeps the grants; one that commits after the read loses
   those of that batch (accepted race, as for the handover).
 - A space handed over to the owner of the organization drops the grants they held there (not in
   the design of P3b-1: the domain refuses to load grants that name the owner, which would make the
-  space and its lists unshareable). The access events share the version of the handover; the list
-  takes its next version.
+  space and its lists unshareable). The `space.access-changed.v1` of a removed space grant shares
+  the version of the `space.updated.v1` of the handover (one change, one version); each list whose
+  grant goes takes its own next version.
 - `If-Match` is optional; a stale one answers `412 request.version-mismatch` with the stored
   version, after the access checks and before the rules of the domain.
 - Lists live in this module (a space is created with its first list), and the tasks module depends
   on spaces through the public entries above, never the reverse; access-requests and
   member-lifecycle likewise.
 - `tests/spaces.int-spec.ts` proves the P3a routes, the visibility rules, idempotency, row-level
-  security and the handover on real PostgreSQL, NATS and pg-boss. The grants, the visibility
-  conditions in SQL, the locks and the batches of the clean-up are proven by unit specs on an
-  in-memory store that writes the conditions again from the SQL, and the SQL text of the conditions
-  by the specs of their mappers; their integration specs belong to the coordinating session.
+  security and the handover on real PostgreSQL, NATS and pg-boss. `tests/access.int-spec.ts`
+  proves the grant routes, the switch, the effective role on the P3a routes, row-level security of
+  `space_grants` and `list_grants`, the clean-up batches (a lock timeout and `member-again`
+  included), and takes the plans of the queries above. The unit specs prove the rules on an
+  in-memory store that writes the conditions again from the SQL, the SQL text of the conditions
+  and of the joins by the specs of their mappers and repositories.

@@ -1,7 +1,10 @@
 import { Space } from '../../../../../domain/aggregates/space/space.aggregate.js';
 import { SpaceStatusRequiredError } from '../../../../../domain/errors/space/space-status-required.error.js';
 import { SpaceVisibilityForbiddenError } from '../../../../../domain/errors/space/space-visibility-forbidden.error.js';
-import { canManageSpace } from '../../../../../domain/policies/access/access-role.policy.js';
+import {
+  canEdit,
+  canManageSpace,
+} from '../../../../../domain/policies/access/access-role.policy.js';
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
 import type { SpaceUpdate } from '../../../../../domain/value-objects/space/space-update.value-object.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
@@ -161,7 +164,7 @@ export class UpdateSpace {
       if (!access.seesSpace) {
         throw new SpaceRefusal({ reason: 'space-not-found' });
       }
-      if (access.spaceRole !== 'edit') {
+      if (!canEdit(access.spaceRole)) {
         throw new SpaceRefusal({ reason: 'role-insufficient', role: access.spaceRole });
       }
       const storedVersion: number = stored.snapshot.version;

@@ -1,11 +1,11 @@
 import type { AccessRequest } from '../../../../../domain/aggregates/access-request/access-request.aggregate.js';
+import type { AnswerableRequest } from '../../../../models/access-request/answerable-request.model.js';
 import type { AccessRequestsStore } from '../../../../models/transactions/access-requests-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { AccessTargets } from '../../../../ports/outbound/spaces/access/access-targets.port.js';
 import type { TaskReferences } from '../../../../ports/outbound/tasks/task/task-references.port.js';
 import type { AccessRequestsUnitOfWork } from '../../../../ports/outbound/transactions/access-request/access-requests-unit-of-work.port.js';
 import { RequestAnswerer } from '../../../../services/access-request/request-answerer.service.js';
-import { MemberRoleResolver } from '../../../../services/member/member-role-resolver.service.js';
 import type { RefuseAccessRequestInput } from './refuse-access-request.input.js';
 import type { RefuseAccessRequestOutput } from './refuse-access-request.output.js';
 
@@ -14,10 +14,11 @@ import type { RefuseAccessRequestOutput } from './refuse-access-request.output.j
  *
  * @description
  * Refuses a pending request ("Refuse an access request" of `openapi/public/access.yaml`), in one
- * tenant transaction: the checks of `RequestAnswerer` (membership, request locked `FOR UPDATE`, the
- * actor answers its target, still pending), then the answer is stored and
- * `…access-request-decided.v1` appended (`decision: 'refused'`, `role: null`). Nothing else
- * changes: no grant is touched.
+ * tenant transaction: the checks of `RequestAnswerer` (membership, request locked `FOR UPDATE`,
+ * requester still a member, task still found, the actor answers its target where it is now, still
+ * pending), then the answer is stored and `…access-request-decided.v1` appended
+ * (`decision: 'refused'`, `role: null`), naming where the target is now. Nothing else changes: no
+ * grant is touched.
  */
 export class RefuseAccessRequest {
   // #region Properties
@@ -64,7 +65,7 @@ export class RefuseAccessRequest {
     tasks: TaskReferences,
   ) {
     this.unitOfWork = unitOfWork;
-    this.answerer = new RequestAnswerer(new MemberRoleResolver(members), targets, tasks);
+    this.answerer = new RequestAnswerer(members, targets, tasks);
   }
   // #endregion
 
@@ -83,18 +84,18 @@ export class RefuseAccessRequest {
   public async execute(input: RefuseAccessRequestInput): Promise<RefuseAccessRequestOutput> {
     return this.unitOfWork.run(
       async (store: AccessRequestsStore): Promise<RefuseAccessRequestOutput> => {
-        const request: AccessRequest = await this.answerer.lockAnswerable(
+        const answerable: AnswerableRequest = await this.answerer.lockAnswerable(
           store,
           input,
           input.accessRequestId,
         );
         const now: Date = await store.clock.now();
         const refused: AccessRequest = this.answerer.answer(() =>
-          request.refuse({ type: 'user', id: input.actorUserId }, now),
+          answerable.request.refuse({ type: 'user', id: input.actorUserId }, now),
         );
         await store.requests.saveDecision(refused);
-        await store.events.accessRequestDecided(refused);
-        return this.answerer.view(input.organizationId, refused);
+        await store.events.accessRequestDecided(refused, answerable.placement);
+        return this.answerer.view(refused, answerable);
       },
     );
   }

@@ -2,6 +2,7 @@ import { AccessRequest } from '../../domain/aggregates/access-request/access-req
 import type { AccessRole } from '../../domain/value-objects/access/access-role.value-object.js';
 import type { AccessRequestDraft } from '../../domain/value-objects/access-request/access-request-draft.value-object.js';
 import type { AccessRequestState } from '../../domain/value-objects/access-request/access-request-state.value-object.js';
+import type { RequestPlacement } from '../../domain/value-objects/access-request/request-placement.value-object.js';
 import type { MemberRole } from '../../domain/value-objects/member/member-role.value-object.js';
 import {
   ATELIER_NORD,
@@ -12,7 +13,9 @@ import {
   HUGO,
   INES,
   LEA,
+  PRODUIT,
   RECRUTEMENT,
+  ROADMAP,
 } from '../../domain/access-requests.fixture.js';
 import type { PendingScope } from '../models/access-request/pending-scope.model.js';
 import type { RequestedTarget } from '../models/access-request/requested-target.model.js';
@@ -42,7 +45,9 @@ export {
   LEA,
   LIST_REQUEST,
   OTHER_ORGANIZATION,
+  PRODUIT,
   RECRUTEMENT,
+  ROADMAP,
   SPACE_REQUEST,
   TASK_REQUEST,
   listRequestState,
@@ -76,6 +81,7 @@ export type RecordedEvent =
       readonly status: string;
       readonly role: AccessRole | null;
       readonly decidedById: string | null;
+      readonly placement: RequestPlacement;
     };
 
 /** An attempt of the hourly limit, as the fake stores it. */
@@ -100,12 +106,17 @@ interface StoredAttempt {
  * @returns `true` when the scope keeps it.
  */
 function inScope(state: AccessRequestState, scope: PendingScope): boolean {
+  if (state.status !== 'pending') {
+    return false;
+  }
+  if (state.target === 'task') {
+    return state.taskId !== null && scope.taskIds.includes(state.taskId);
+  }
   const answered: boolean =
     state.target === 'space'
       ? scope.spaceIds.includes(state.spaceId)
       : state.listId !== null && scope.listIds.includes(state.listId);
   return (
-    state.status === 'pending' &&
     answered &&
     (scope.spaceId === null || state.spaceId === scope.spaceId) &&
     (scope.listId === null || state.listId === scope.listId)
@@ -258,8 +269,15 @@ export class InMemoryAccessRequests implements AccessRequestsUnitOfWork {
     };
     return {
       requests: {
-        insertPending: (draft: AccessRequestDraft) => {
+        insertPending: (
+          _organizationId: string,
+          _requesterUserId: string,
+          draft: AccessRequestDraft | null,
+        ) => {
           write('requests.insertPending');
+          if (draft === null) {
+            return Promise.resolve(null);
+          }
           const taken: boolean = [...this.requests.values()].some(
             (stored) =>
               stored.status === 'pending' &&
@@ -328,15 +346,31 @@ export class InMemoryAccessRequests implements AccessRequestsUnitOfWork {
             ).length,
           );
         },
-        lockPendingOf: (organizationId: string, requesterUserId: string, limit: number) => {
-          this.calls.push('requests.lockPendingOf');
+        listPendingTaskIds: (organizationId: string) => {
+          this.calls.push('requests.listPendingTaskIds');
+          return Promise.resolve(
+            [
+              ...new Set(
+                [...this.requests.values()]
+                  .filter(
+                    (state) =>
+                      state.organizationId === organizationId &&
+                      state.status === 'pending' &&
+                      state.target === 'task',
+                  )
+                  .flatMap((state) => (state.taskId === null ? [] : [state.taskId])),
+              ),
+            ].sort(),
+          );
+        },
+        lockRequestsOf: (organizationId: string, requesterUserId: string, limit: number) => {
+          this.calls.push('requests.lockRequestsOf');
           return Promise.resolve(
             [...this.requests.values()]
               .filter(
                 (state) =>
                   state.organizationId === organizationId &&
-                  state.requesterUserId === requesterUserId &&
-                  state.status === 'pending',
+                  state.requesterUserId === requesterUserId,
               )
               .map((state) => state.id)
               .sort()
@@ -410,7 +444,7 @@ export class InMemoryAccessRequests implements AccessRequestsUnitOfWork {
           });
           return Promise.resolve();
         },
-        accessRequestDecided: (request: AccessRequest) => {
+        accessRequestDecided: (request: AccessRequest, placement: RequestPlacement) => {
           write('events.accessRequestDecided');
           events.push({
             kind: 'accessRequestDecided',
@@ -420,6 +454,7 @@ export class InMemoryAccessRequests implements AccessRequestsUnitOfWork {
             status: request.snapshot.status,
             role: request.snapshot.role,
             decidedById: request.snapshot.decidedBy?.id ?? null,
+            placement,
           });
           return Promise.resolve();
         },
@@ -488,6 +523,41 @@ export class FakeMembers implements MemberDirectory {
   }
   // #endregion
 }
+
+/** A space of the fake spaces module. */
+interface FakeSpace {
+  // #region Properties
+  /** Its name. */
+  readonly spaceName: string;
+
+  /** Its owner. */
+  readonly spaceOwnerUserId: string;
+  // #endregion
+}
+
+/** A list of the fake spaces module. */
+interface FakeList {
+  // #region Properties
+  /** Its space. */
+  readonly spaceId: string;
+
+  /** Its name. */
+  readonly listName: string;
+  // #endregion
+}
+
+/** "Direction" of Léa Petit, and "Produit" of Camille Martin. */
+const SPACES: ReadonlyMap<string, FakeSpace> = new Map<string, FakeSpace>([
+  [DIRECTION, { spaceName: 'Direction', spaceOwnerUserId: LEA }],
+  [PRODUIT, { spaceName: 'Produit', spaceOwnerUserId: CAMILLE }],
+]);
+
+/** "Budget" and "Recrutement" of "Direction", "Roadmap" of "Produit". */
+const LISTS: ReadonlyMap<string, FakeList> = new Map<string, FakeList>([
+  [BUDGET, { spaceId: DIRECTION, listName: 'Budget' }],
+  [RECRUTEMENT, { spaceId: DIRECTION, listName: 'Recrutement' }],
+  [ROADMAP, { spaceId: PRODUIT, listName: 'Roadmap' }],
+]);
 
 /** The access of one member on one space or list, as a spec sets it. */
 interface Access {
@@ -578,21 +648,28 @@ export class FakeAccessTargets implements AccessTargets {
       role: null,
       manages: false,
     };
-    const common = {
-      spaceId: DIRECTION,
-      spaceName: 'Direction',
-      spaceOwnerUserId: LEA,
-      viewerRole: access.role,
-      viewerManages: access.manages,
-    };
+    const viewer = { viewerRole: access.role, viewerManages: access.manages };
     if (target.kind === 'space') {
+      const space: FakeSpace | undefined = SPACES.get(id);
       return Promise.resolve(
-        id === DIRECTION ? { ...common, kind: 'space', listId: null, listName: null } : null,
+        space === undefined
+          ? null
+          : { ...space, ...viewer, kind: 'space', spaceId: id, listId: null, listName: null },
       );
     }
-    const listName: string | undefined = { [BUDGET]: 'Budget', [RECRUTEMENT]: 'Recrutement' }[id];
+    const list: FakeList | undefined = LISTS.get(id);
+    const space: FakeSpace | undefined = list === undefined ? undefined : SPACES.get(list.spaceId);
     return Promise.resolve(
-      listName === undefined ? null : { ...common, kind: 'list', listId: id, listName },
+      list === undefined || space === undefined
+        ? null
+        : {
+            ...space,
+            ...viewer,
+            kind: 'list',
+            spaceId: list.spaceId,
+            listId: id,
+            listName: list.listName,
+          },
     );
   }
 
@@ -612,8 +689,8 @@ export class FakeAccessTargets implements AccessTargets {
             .map(([id]) => id)
         : [];
     return Promise.resolve({
-      spaceIds: managed.filter((id) => id === DIRECTION),
-      listIds: managed.filter((id) => id !== DIRECTION),
+      spaceIds: managed.filter((id) => SPACES.has(id)),
+      listIds: managed.filter((id) => LISTS.has(id)),
     });
   }
 

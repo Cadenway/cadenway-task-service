@@ -7,6 +7,7 @@ import type { AccessRequestEvents } from '../../../../application/ports/outbound
 import type { AccessRequest } from '../../../../domain/aggregates/access-request/access-request.aggregate.js';
 import type { AccessRequestState } from '../../../../domain/value-objects/access-request/access-request-state.value-object.js';
 import type { RequestActor } from '../../../../domain/value-objects/access-request/request-actor.value-object.js';
+import type { RequestPlacement } from '../../../../domain/value-objects/access-request/request-placement.value-object.js';
 
 /**
  * Function requireList
@@ -170,14 +171,20 @@ export class OutboxAccessRequestEvents implements AccessRequestEvents {
    * Method accessRequestDecided
    *
    * @description
-   * Appends the `…access-request-decided.v1` of the target of an answered request.
+   * Appends the `…access-request-decided.v1` of the target of an answered request, with the space
+   * and the list where the target is now: for a task request, the current list of the task, on
+   * which the approval gave its role ("the role an approval gave on the list of the task").
    *
    * @param {AccessRequest} request - The request, answered.
+   * @param {RequestPlacement} placement - Where its target is now.
    * @returns {Promise<void>} Resolves once appended.
    * @throws {Error} When the request is still pending, or the payload does not match the schema of
    * the contract: a defect, which rolls the transaction back.
    */
-  public async accessRequestDecided(request: AccessRequest): Promise<void> {
+  public async accessRequestDecided(
+    request: AccessRequest,
+    placement: RequestPlacement,
+  ): Promise<void> {
     const state: AccessRequestState = request.snapshot;
     const actor: RequestActor | null = state.decidedBy;
     if (actor === null) {
@@ -188,7 +195,7 @@ export class OutboxAccessRequestEvents implements AccessRequestEvents {
       actor: { type: actor.type, id: actor.id },
       version: request.version,
       accessRequestId: state.id,
-      spaceId: state.spaceId,
+      spaceId: placement.spaceId,
       requesterUserId: state.requesterUserId,
       decision: state.status,
       role: state.role,
@@ -205,13 +212,13 @@ export class OutboxAccessRequestEvents implements AccessRequestEvents {
       case 'list':
         await this.outbox.append(this.transaction, eventSchemas, 'list.access-request-decided.v1', {
           ...common,
-          listId: requireList(state.listId),
+          listId: requireList(placement.listId),
         });
         break;
       case 'task':
         await this.outbox.append(this.transaction, eventSchemas, 'task.access-request-decided.v1', {
           ...common,
-          listId: requireList(state.listId),
+          listId: requireList(placement.listId),
           key: requireName(state.taskKey),
         });
         break;

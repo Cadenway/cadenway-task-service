@@ -1,12 +1,25 @@
+import { canManageListAccess } from '../../../../../domain/policies/access/access-role.policy.js';
 import type { TaskList } from '../../../../../domain/aggregates/list/task-list.aggregate.js';
 import type { Space } from '../../../../../domain/aggregates/space/space.aggregate.js';
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
 import type { ViewerAccess } from '../../../../models/access/viewer-access.model.js';
+import type { ViewerGrants } from '../../../../models/access/viewer-grants.model.js';
 import type { SpacesStore } from '../../../../models/transactions/spaces-store.model.js';
 import type { SpacesUnitOfWork } from '../../../../ports/outbound/transactions/space/spaces-unit-of-work.port.js';
 import { AccessResolver } from '../../../../services/access/access-resolver.service.js';
 import type { FindAccessTargetInput } from './find-access-target.input.js';
 import type { FindAccessTargetOutput } from './find-access-target.output.js';
+
+/**
+ * Constant NO_TARGET
+ *
+ * @description
+ * The nil UUID, which no space or list has: the id the readings use in place of a target that
+ * does not exist, so that they run all the same.
+ *
+ * @type {string}
+ */
+const NO_TARGET: string = '00000000-0000-0000-0000-000000000000';
 
 /**
  * Class FindAccessTarget
@@ -16,11 +29,15 @@ import type { FindAccessTargetOutput } from './find-access-target.output.js';
  * access request names (decision 4 of P3b-1), whether the member sees it or not, with its names,
  * the owner of the space and the access of the member: their role on the space for a space
  * (`spaceRoleOf`), on the list for a list (`listRoleOf`), and whether they answer its requests
- * (`canManageSpace` for a space, `edit` on the list for a list). `null` only when the organization
- * has no such space or list, so that the caller decides what to tell the member. The role of the
- * member comes from the caller, which read it from the copy of the memberships. It runs in
- * `SpacesUnitOfWork.run`, which joins the tenant transaction of the caller; it reads the grants of
- * the member in one statement, takes no lock and appends no event.
+ * (`canManageSpace` for a space, `canManageListAccess` for a list). `null` only when the
+ * organization has no such space or list, so that the caller decides what to tell the member.
+ * The same statements run whatever the outcome, so that their number and kind tell nothing of the
+ * existence of the target: for a space, the space and the grants of the member; for a list, the
+ * list, its space and the grants of the member; an unknown target is read with the nil UUID in
+ * its place, and the grants are always read (no shortcut by the rule of the organization). The
+ * role of the member comes from the caller, which read it from the copy of the memberships. It
+ * runs in `SpacesUnitOfWork.run`, which joins the tenant transaction of the caller; it takes no
+ * lock and appends no event.
  */
 export class FindAccessTarget {
   // #region Properties
@@ -39,7 +56,7 @@ export class FindAccessTarget {
    * Property access
    *
    * @description
-   * Decides what the member reaches of the target.
+   * Decides what the member reaches of the target from the grants read.
    *
    * @type {AccessResolver}
    * @readonly
@@ -79,15 +96,16 @@ export class FindAccessTarget {
       const target: FindAccessTargetInput['target'] = input.target;
       if (target.kind === 'space') {
         const space: Space | null = await store.spaces.find(input.organizationId, target.spaceId);
+        const grants: ViewerGrants = await store.grants.viewerGrants(
+          input.organizationId,
+          viewer.userId,
+          space?.snapshot.id ?? NO_TARGET,
+          null,
+        );
         if (space === null) {
           return null;
         }
-        const access: ViewerAccess = await this.access.resolve(
-          store.grants,
-          viewer,
-          space.snapshot,
-          null,
-        );
+        const access: ViewerAccess = this.access.fromGrants(viewer, space.snapshot, null, grants);
         return {
           kind: 'space',
           spaceId: space.snapshot.id,
@@ -100,21 +118,24 @@ export class FindAccessTarget {
         };
       }
       const list: TaskList | null = await store.lists.find(input.organizationId, target.listId);
-      if (list === null) {
-        return null;
-      }
       const space: Space | null = await store.spaces.find(
         input.organizationId,
-        list.snapshot.spaceId,
+        list?.snapshot.spaceId ?? NO_TARGET,
       );
-      if (space === null) {
+      const grants: ViewerGrants = await store.grants.viewerGrants(
+        input.organizationId,
+        viewer.userId,
+        space?.snapshot.id ?? NO_TARGET,
+        list?.snapshot.id ?? NO_TARGET,
+      );
+      if (list === null || space === null) {
         return null;
       }
-      const access: ViewerAccess = await this.access.resolve(
-        store.grants,
+      const access: ViewerAccess = this.access.fromGrants(
         viewer,
         space.snapshot,
         list.snapshot,
+        grants,
       );
       return {
         kind: 'list',
@@ -124,7 +145,7 @@ export class FindAccessTarget {
         listId: list.snapshot.id,
         listName: list.snapshot.name,
         viewerRole: access.listRole,
-        viewerManages: access.listRole === 'edit',
+        viewerManages: canManageListAccess(access.listRole),
       };
     });
   }

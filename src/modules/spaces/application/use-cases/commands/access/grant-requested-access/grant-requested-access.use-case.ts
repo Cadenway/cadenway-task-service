@@ -1,3 +1,4 @@
+import { canManageListAccess } from '../../../../../domain/policies/access/access-role.policy.js';
 import type { ResourceGrants } from '../../../../../domain/aggregates/access/resource-grants.aggregate.js';
 import type { TaskList } from '../../../../../domain/aggregates/list/task-list.aggregate.js';
 import type { Space } from '../../../../../domain/aggregates/space/space.aggregate.js';
@@ -5,11 +6,13 @@ import type { GrantsUpdate } from '../../../../../domain/value-objects/access/gr
 import type { MemberRole } from '../../../../../domain/value-objects/member/member-role.value-object.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
 import type { GrantedResource } from '../../../../models/access/granted-resource.model.js';
+import type { ViewerAccess } from '../../../../models/access/viewer-access.model.js';
 import type { StoredGrant } from '../../../../models/access/stored-grant.model.js';
 import { SpaceRefusal } from '../../../../models/space/space-refusal.model.js';
 import type { SpacesStore } from '../../../../models/transactions/spaces-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpacesUnitOfWork } from '../../../../ports/outbound/transactions/space/spaces-unit-of-work.port.js';
+import { AccessResolver } from '../../../../services/access/access-resolver.service.js';
 import { GrantGuard } from '../../../../services/access/grant-guard.service.js';
 import { GrantKeeper } from '../../../../services/access/grant-keeper.service.js';
 import type { GrantRequestedAccessInput } from './grant-requested-access.input.js';
@@ -22,14 +25,19 @@ import type { GrantRequestedAccessOutput } from './grant-requested-access.output
  * Public operation of the spaces module for the access-requests module: the grant an approved
  * access request gives ("creates or raises the grant", decision 4 of P3b-1). It creates the grant,
  * raises a lower one, and keeps an equal or higher one (`changed: false`), with the rules of
- * `ResourceGrants.raise`; a rule that refuses it answers `refused` with that rule, and a space or a
- * list the organization no longer has `not-found`, without a throw, so that the caller decides
- * what to roll back. The caller checked that the actor answers requests for the target. Locks, in
- * this order: the membership of the requester `FOR SHARE`, then the space `FOR NO KEY UPDATE`, or
- * for a list its space `FOR SHARE` then the list `FOR NO KEY UPDATE`. A change writes the grant,
- * takes the next version of the space or the list and appends `space.access-changed.v1` or
- * `list.access-changed.v1` with the actor `{ type: 'user', id: actorUserId }`. It runs in
- * `SpacesUnitOfWork.run`, which joins the transaction of the caller.
+ * `ResourceGrants.raise`: an approval raises a role and never lowers one. Every refusal answers
+ * `refused` without a throw and writes nothing, so that the caller decides what to roll back:
+ * `not-found` for a space or a list the organization no longer has, `manage-forbidden` when the
+ * actor no longer answers requests for it, then the rules of the grant. Locks, in this order: the
+ * membership of the requester `FOR SHARE`, then the space `FOR NO KEY UPDATE`, or for a list its
+ * space `FOR SHARE` then the list `FOR NO KEY UPDATE`. On the locked rows it checks again, with the
+ * role of the actor the caller read in the same transaction, that the actor manages the space
+ * (`canManageSpace`) or the access of the list (`canManageListAccess`): the check of the caller
+ * ran before the locks, and a grant given meanwhile could have taken that right away. A change
+ * writes the grant, takes the next version of the space or the list and appends
+ * `space.access-changed.v1` or `list.access-changed.v1` with the actor
+ * `{ type: 'user', id: actorUserId }`. It runs in `SpacesUnitOfWork.run`, which joins the
+ * transaction of the caller.
  */
 export class GrantRequestedAccess {
   // #region Properties
@@ -76,6 +84,17 @@ export class GrantRequestedAccess {
    * @readonly
    */
   private readonly keeper: GrantKeeper;
+
+  /**
+   * Property access
+   *
+   * @description
+   * Decides, on the locked rows, whether the actor answers requests for the target.
+   *
+   * @type {AccessResolver}
+   * @readonly
+   */
+  private readonly access: AccessResolver;
   // #endregion
 
   // #region Constructor
@@ -94,6 +113,7 @@ export class GrantRequestedAccess {
     this.members = members;
     this.guard = new GrantGuard();
     this.keeper = new GrantKeeper();
+    this.access = new AccessResolver();
   }
   // #endregion
 
@@ -120,6 +140,15 @@ export class GrantRequestedAccess {
         const space: Space | null = await store.spaces.lock(input.organizationId, target.spaceId);
         if (space === null) {
           return { outcome: 'refused', reason: 'not-found' };
+        }
+        const access: ViewerAccess = await this.access.resolve(
+          store.grants,
+          { userId: input.actorUserId, role: input.actorRole },
+          space.snapshot,
+          null,
+        );
+        if (!access.canManage) {
+          return { outcome: 'refused', reason: 'manage-forbidden' };
         }
         const resource: GrantedResource = { kind: 'space', spaceId: space.snapshot.id };
         const raised: GrantsUpdate | GrantRequestedAccessOutput = await this.raise(
@@ -148,6 +177,15 @@ export class GrantRequestedAccess {
         await this.guard.lockList(store, input.organizationId, target.listId);
       if (locked === null) {
         return { outcome: 'refused', reason: 'not-found' };
+      }
+      const access: ViewerAccess = await this.access.resolve(
+        store.grants,
+        { userId: input.actorUserId, role: input.actorRole },
+        locked.space.snapshot,
+        locked.list.snapshot,
+      );
+      if (!canManageListAccess(access.listRole)) {
+        return { outcome: 'refused', reason: 'manage-forbidden' };
       }
       const resource: GrantedResource = {
         kind: 'list',

@@ -1,3 +1,4 @@
+import { canEdit } from '../../../../../domain/policies/access/access-role.policy.js';
 import { TaskList } from '../../../../../domain/aggregates/list/task-list.aggregate.js';
 import type { Space } from '../../../../../domain/aggregates/space/space.aggregate.js';
 import { SprintDatesInvalidError } from '../../../../../domain/errors/list/sprint-dates-invalid.error.js';
@@ -115,7 +116,7 @@ export class CreateList {
       if (!access.seesSpace) {
         throw new SpaceRefusal({ reason: 'space-not-found' });
       }
-      if (access.spaceRole !== 'edit') {
+      if (!canEdit(access.spaceRole)) {
         throw new SpaceRefusal({ reason: 'role-insufficient', role: access.spaceRole });
       }
       const list: TaskList = await store.lists.insert(this.draft(input));

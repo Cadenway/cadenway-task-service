@@ -22,13 +22,17 @@ export interface CleanUpRemovedMemberOutput {
   /** The grants of spaces and lists this run removed. */
   readonly grantsRemoved: number;
 
-  /** The pending access requests this run dropped. */
+  /** The access requests this run dropped, pending or answered. */
   readonly requestsDropped: number;
 
   /** The tasks this run removed the account from. */
   readonly tasksUnassigned: number;
 
-  /** The batches this run committed, of the four steps together. */
+  /**
+   * The batches this run committed that found something to process, of the four steps together;
+   * the closing call of each step, which finds nothing left, and a call answered `member-again`
+   * are not counted.
+   */
   readonly batches: number;
   // #endregion
 }

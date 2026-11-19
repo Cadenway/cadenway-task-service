@@ -1,4 +1,5 @@
 import type { AccessRole } from '../../../domain/value-objects/access/access-role.value-object.js';
+import type { MemberRole } from '../../../domain/value-objects/member/member-role.value-object.js';
 import type { TargetRef } from '../target/target-ref.model.js';
 
 /**
@@ -31,6 +32,18 @@ export interface GrantRequest {
    * @readonly
    */
   readonly actorUserId: string;
+
+  /**
+   * Property actorRole
+   *
+   * @description
+   * The role of the actor in the organization, from the copy of the memberships, which the spaces
+   * module checks the manager rule with again on the locked rows.
+   *
+   * @type {MemberRole}
+   * @readonly
+   */
+  readonly actorRole: MemberRole;
 
   /**
    * Property target

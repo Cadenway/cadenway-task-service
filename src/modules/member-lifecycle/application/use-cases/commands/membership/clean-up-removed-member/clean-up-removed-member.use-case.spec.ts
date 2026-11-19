@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { CleanUpStepError } from '../../../../models/clean-up/clean-up-step-error.model.js';
 import type { GrantRemovalBatch } from '../../../../models/clean-up/grant-removal-batch.model.js';
 import type { RequestDropBatch } from '../../../../models/clean-up/request-drop-batch.model.js';
 import type { SpaceHandoverBatch } from '../../../../models/clean-up/space-handover-batch.model.js';
@@ -306,31 +307,70 @@ describe('CleanUpRemovedMember: the job stops for good once the person is a memb
   });
 });
 
-describe('CleanUpRemovedMember: a failed batch fails the attempt, and the next one resumes', () => {
-  it('rejects with the error of the batch and asks for nothing after it', async () => {
+describe('CleanUpRemovedMember: a failed batch fails the attempt, says where, and the next one resumes', () => {
+  it('rejects with the step, the batches committed and the cause, and asks for nothing after it', async () => {
     const failure = new Error('lock timeout');
     const { calls, useCase } = scripted({
       spaces: [{ outcome: 'handed-over', handedOver: 100, awaitingOwner: 0 }, failure],
     });
 
-    await expect(useCase.execute(input)).rejects.toThrow(failure);
+    const rejection: unknown = await useCase.execute(input).catch((error: unknown) => error);
+
+    expect(rejection).toBeInstanceOf(CleanUpStepError);
+    expect(rejection).toMatchObject({
+      step: 'spaces',
+      batches: 1,
+      cause: failure,
+      message: 'spaces batch failed after 1 committed batches: lock timeout',
+    });
     expect(calls).toHaveLength(2);
   });
 
-  it('rejects with the error of a grant batch and drops no request', async () => {
+  it('names the grants step after two committed batches, and drops no request', async () => {
     const failure = new Error('statement timeout');
-    const { calls, useCase } = scripted({ grants: [failure] });
+    const { calls, useCase } = scripted({
+      spaces: [{ outcome: 'handed-over', handedOver: 3, awaitingOwner: 0 }],
+      grants: [{ outcome: 'removed', removed: 100 }, failure],
+    });
 
-    await expect(useCase.execute(input)).rejects.toThrow(failure);
-    expect(stepsOf(calls)).toEqual(['spaces', 'grants']);
+    await expect(useCase.execute(input)).rejects.toThrow(
+      'grants batch failed after 2 committed batches: statement timeout',
+    );
+    expect(stepsOf(calls)).toEqual(['spaces', 'spaces', 'grants', 'grants']);
   });
 
-  it('rejects with the error of a request batch and unassigns no task', async () => {
+  it('names the requests step, and unassigns no task', async () => {
     const failure = new Error('statement timeout');
     const { calls, useCase } = scripted({ requests: [failure] });
 
-    await expect(useCase.execute(input)).rejects.toThrow(failure);
+    await expect(useCase.execute(input)).rejects.toThrow(
+      expect.objectContaining({ step: 'requests', batches: 0 }) as CleanUpStepError,
+    );
     expect(stepsOf(calls)).toEqual(['spaces', 'grants', 'requests']);
+  });
+
+  it('names the tasks step with the batches before it', async () => {
+    const failure = new Error('statement timeout');
+    const { useCase } = scripted({
+      tasks: [{ outcome: 'unassigned', unassigned: 500, lastTaskId: 'task-500' }, failure],
+    });
+
+    await expect(useCase.execute(input)).rejects.toThrow(
+      expect.objectContaining({ step: 'tasks', batches: 1, cause: failure }) as CleanUpStepError,
+    );
+  });
+
+  it('keeps the reason of an aborted signal as it is', async () => {
+    const attempt = new AbortController();
+    const reason = new Error('The attempt expired.');
+    attempt.abort(reason);
+    const { useCase } = scripted({});
+
+    const rejection: unknown = await useCase
+      .execute({ ...input, signal: attempt.signal })
+      .catch((error: unknown) => error);
+
+    expect(rejection).toBe(reason);
   });
 
   it('starts the tasks of a new attempt again from the first batch', async () => {
@@ -338,7 +378,7 @@ describe('CleanUpRemovedMember: a failed batch fails the attempt, and the next o
     const { calls, useCase } = scripted({
       tasks: [{ outcome: 'unassigned', unassigned: 500, lastTaskId: 'task-500' }, failure],
     });
-    await expect(useCase.execute(input)).rejects.toThrow(failure);
+    await expect(useCase.execute(input)).rejects.toThrow(CleanUpStepError);
 
     await useCase.execute(input);
 

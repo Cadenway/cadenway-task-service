@@ -1,3 +1,4 @@
+import { canEdit } from '../../../../../domain/policies/access/access-role.policy.js';
 import type { TaskList } from '../../../../../domain/aggregates/list/task-list.aggregate.js';
 import type { Space } from '../../../../../domain/aggregates/space/space.aggregate.js';
 import { SprintDatesInvalidError } from '../../../../../domain/errors/list/sprint-dates-invalid.error.js';
@@ -130,7 +131,7 @@ export class UpdateList {
       if (access.listRole === null) {
         throw new SpaceRefusal({ reason: 'list-not-found' });
       }
-      if (access.listRole !== 'edit') {
+      if (!canEdit(access.listRole)) {
         throw new SpaceRefusal({ reason: 'role-insufficient', role: access.listRole });
       }
       const storedVersion: number = stored.snapshot.version;

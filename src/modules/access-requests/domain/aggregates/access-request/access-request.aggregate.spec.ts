@@ -9,6 +9,8 @@ import {
   DIRECTION,
   HUGO,
   LEA,
+  PRODUIT,
+  RECRUTEMENT,
   listRequestState,
   spaceRequestState,
   taskRequestState,
@@ -21,6 +23,9 @@ import { AccessRequest } from './access-request.aggregate.js';
 
 /** Léa Petit, who answers. */
 const BY_LEA = { type: 'user', id: LEA } as const;
+
+/** The space "Produit", where DIR-12 may have moved. */
+const OTHER_SPACE = PRODUIT;
 
 /**
  * The request of Camille Martin for "Direction", as the application resolved it.
@@ -206,26 +211,49 @@ describe('AccessRequest: pending, then approved with a role or refused, once', (
   });
 });
 
-describe('AccessRequest.grantTarget: a task request is approved as a grant of its list', () => {
-  it('grants the space of a space request', () => {
-    expect(AccessRequest.restore(spaceRequestState()).grantTarget).toEqual({
-      kind: 'space',
-      spaceId: DIRECTION,
-    });
+describe('AccessRequest.placement and grantTarget: a task request concerns the list the task is in now', () => {
+  it('places and grants a space request on its space, whatever a task placement says', () => {
+    const request = AccessRequest.restore(spaceRequestState());
+    const placement = request.placement({ spaceId: OTHER_SPACE, listId: RECRUTEMENT });
+
+    expect(placement).toEqual({ spaceId: DIRECTION, listId: null });
+    expect(request.grantTarget(placement)).toEqual({ kind: 'space', spaceId: DIRECTION });
   });
 
-  it('grants the list of a list request', () => {
-    expect(AccessRequest.restore(listRequestState()).grantTarget).toEqual({
-      kind: 'list',
-      listId: BUDGET,
-    });
+  it('places and grants a list request on its list', () => {
+    const request = AccessRequest.restore(listRequestState());
+    const placement = request.placement(null);
+
+    expect(placement).toEqual({ spaceId: DIRECTION, listId: BUDGET });
+    expect(request.grantTarget(placement)).toEqual({ kind: 'list', listId: BUDGET });
   });
 
-  it('grants the list the task was in when asked for', () => {
-    expect(AccessRequest.restore(taskRequestState()).grantTarget).toEqual({
-      kind: 'list',
-      listId: BUDGET,
-    });
+  it('places a task request where its task is now, and grants that list', () => {
+    const request = AccessRequest.restore(taskRequestState());
+    const placement = request.placement({ spaceId: OTHER_SPACE, listId: RECRUTEMENT });
+
+    expect(placement).toEqual({ spaceId: OTHER_SPACE, listId: RECRUTEMENT });
+    expect(request.grantTarget(placement)).toEqual({ kind: 'list', listId: RECRUTEMENT });
+  });
+
+  it('keeps the list the task was in when asked for as the stored list', () => {
+    const request = AccessRequest.restore(taskRequestState());
+
+    request.placement({ spaceId: OTHER_SPACE, listId: RECRUTEMENT });
+
+    expect(request.snapshot.listId).toBe(BUDGET);
+  });
+
+  it('refuses to place a task request without the placement of its task', () => {
+    expect(() => AccessRequest.restore(taskRequestState()).placement(null)).toThrow(
+      InvalidAccessRequestError,
+    );
+  });
+
+  it('refuses to grant a list or a task request placed without a list', () => {
+    expect(() =>
+      AccessRequest.restore(listRequestState()).grantTarget({ spaceId: DIRECTION, listId: null }),
+    ).toThrow(InvalidAccessRequestError);
   });
 });
 

@@ -63,17 +63,23 @@ export interface SpaceRepository {
   lockShared(organizationId: string, id: string): Promise<Space | null>;
 
   /**
-   * Method lockMany
+   * Method lockInOrder
    *
    * @description
-   * Loads and locks some spaces until the end of the transaction, in the order of their ids, so
-   * that two batches never wait on each other.
+   * Loads and locks some spaces until the end of the transaction, one after the other in the order
+   * `(created_at, id)`, the order of `lockPrivateOwnedBy`, each `FOR NO KEY UPDATE` (`update`) or
+   * `FOR SHARE` (`share`) as asked: two batches that lock spaces, a handover among them, take
+   * their common spaces in the same order and never wait on each other in a cycle.
    *
    * @param {string} organizationId - The organization of the transaction.
-   * @param {readonly string[]} ids - The ids of the spaces.
-   * @returns {Promise<Space[]>} The spaces that exist, by id.
+   * @param {readonly { readonly id: string; readonly mode: 'update' | 'share' }[]} locks - The
+   * spaces and how to lock each.
+   * @returns {Promise<Space[]>} The spaces that exist, in the order they were locked.
    */
-  lockMany(organizationId: string, ids: readonly string[]): Promise<Space[]>;
+  lockInOrder(
+    organizationId: string,
+    locks: readonly { readonly id: string; readonly mode: 'update' | 'share' }[],
+  ): Promise<Space[]>;
 
   /**
    * Method update

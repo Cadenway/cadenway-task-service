@@ -1,3 +1,5 @@
+import { CleanUpStepError } from '../../../../models/clean-up/clean-up-step-error.model.js';
+import type { CleanUpStep } from '../../../../models/clean-up/clean-up-step.model.js';
 import type { GrantRemovalBatch } from '../../../../models/clean-up/grant-removal-batch.model.js';
 import type { RequestDropBatch } from '../../../../models/clean-up/request-drop-batch.model.js';
 import type { SpaceHandoverBatch } from '../../../../models/clean-up/space-handover-batch.model.js';
@@ -21,7 +23,7 @@ interface Progress {
   /** The grants of spaces and lists removed. */
   grantsRemoved: number;
 
-  /** The pending access requests dropped. */
+  /** The access requests dropped, pending or answered. */
   requestsDropped: number;
 
   /** The tasks the account was removed from. */
@@ -48,7 +50,7 @@ interface Progress {
  *    until a batch finds none left (`space.access-changed.v1` or `list.access-changed.v1`, system
  *    actor; "A person who leaves the organization loses their grants" of
  *    `openapi/public/access.yaml`);
- * 3. then their pending access requests and attempts, in batches of 500
+ * 3. then their access requests, pending or answered, and their attempts, in batches of 500
  *    (`DropMemberAccessRequests` of access-requests), until a batch finds none left, without event;
  * 4. then their assignments, in batches of 500 after the last task id of the previous batch
  *    (`UnassignRemovedMember` of tasks), until a batch finds none left.
@@ -59,8 +61,9 @@ interface Progress {
  * membership joined after the removal) changes nothing, and the job stops for good: the person
  * keeps what is left. It stops only on an empty batch or on that answer, never on a short batch,
  * and starts no batch once the signal of its attempt aborted. A failed batch rolls back alone: the
- * batches before it stay committed, the attempt fails, and the next attempt starts again from what
- * is still owned, granted, pending or assigned, so nothing is written twice. A run that finds
+ * batches before it stay committed, the attempt fails with a `CleanUpStepError` naming the step
+ * and the batches committed before it, and the next attempt starts again from what is still owned,
+ * granted, asked for or assigned, so nothing is written twice. A run that finds
  * nothing left changes nothing, which makes the job idempotent.
  */
 export class CleanUpRemovedMember {
@@ -71,7 +74,7 @@ export class CleanUpRemovedMember {
   /** The removal of the grants, one batch per call. */
   private readonly grants: MemberGrants;
 
-  /** The dropping of the pending access requests, one batch per call. */
+  /** The dropping of the access requests, one batch per call. */
   private readonly requests: MemberAccessRequests;
 
   /** The unassignment from the tasks, one batch per call. */
@@ -87,7 +90,7 @@ export class CleanUpRemovedMember {
    *
    * @param {PrivateSpaceHandover} spaces - The handover of the private spaces.
    * @param {MemberGrants} grants - The removal of the grants.
-   * @param {MemberAccessRequests} requests - The dropping of the pending access requests.
+   * @param {MemberAccessRequests} requests - The dropping of the access requests.
    * @param {TaskAssignments} assignments - The unassignment from the tasks.
    * @constructor
    */
@@ -116,9 +119,10 @@ export class CleanUpRemovedMember {
    * of the attempt.
    * @returns {Promise<CleanUpRemovedMemberOutput>} How the run ended, with its counts; a space, a
    * grant, a request or a task a batch found already as wanted is not counted.
-   * @throws {Error} When a batch fails (the database, a lock or statement timeout): that batch
-   * rolls back, the earlier ones stay, and the job is retried. Also the reason of the signal once it
-   * aborted.
+   * @throws {CleanUpStepError} When a batch fails (the database, a lock or statement timeout):
+   * that batch rolls back, the earlier ones stay, and the job is retried; the error names the step
+   * and the batches committed before it, with the failure as its cause.
+   * @throws {Error} The reason of the signal once it aborted, as it is.
    */
   public async execute(input: CleanUpRemovedMemberInput): Promise<CleanUpRemovedMemberOutput> {
     const progress: Progress = {
@@ -131,9 +135,8 @@ export class CleanUpRemovedMember {
     };
     for (;;) {
       input.signal?.throwIfAborted();
-      const batch: SpaceHandoverBatch = await this.spaces.handOverBatch(
-        input.organizationId,
-        input.userId,
+      const batch: SpaceHandoverBatch = await this.batch('spaces', progress, () =>
+        this.spaces.handOverBatch(input.organizationId, input.userId),
       );
       if (batch.outcome === 'member-again') {
         return { outcome: 'member-again', ...progress };
@@ -147,9 +150,8 @@ export class CleanUpRemovedMember {
     }
     for (;;) {
       input.signal?.throwIfAborted();
-      const batch: GrantRemovalBatch = await this.grants.removeBatch(
-        input.organizationId,
-        input.userId,
+      const batch: GrantRemovalBatch = await this.batch('grants', progress, () =>
+        this.grants.removeBatch(input.organizationId, input.userId),
       );
       if (batch.outcome === 'member-again') {
         return { outcome: 'member-again', ...progress };
@@ -162,9 +164,8 @@ export class CleanUpRemovedMember {
     }
     for (;;) {
       input.signal?.throwIfAborted();
-      const batch: RequestDropBatch = await this.requests.dropBatch(
-        input.organizationId,
-        input.userId,
+      const batch: RequestDropBatch = await this.batch('requests', progress, () =>
+        this.requests.dropBatch(input.organizationId, input.userId),
       );
       if (batch.outcome === 'member-again') {
         return { outcome: 'member-again', ...progress };
@@ -178,10 +179,9 @@ export class CleanUpRemovedMember {
     let afterTaskId: string | null = null;
     for (;;) {
       input.signal?.throwIfAborted();
-      const batch: TaskUnassignmentBatch = await this.assignments.unassignBatch(
-        input.organizationId,
-        input.userId,
-        afterTaskId,
+      const after: string | null = afterTaskId;
+      const batch: TaskUnassignmentBatch = await this.batch('tasks', progress, () =>
+        this.assignments.unassignBatch(input.organizationId, input.userId, after),
       );
       if (batch.outcome === 'member-again') {
         return { outcome: 'member-again', ...progress };
@@ -192,6 +192,31 @@ export class CleanUpRemovedMember {
       progress.batches += 1;
       progress.tasksUnassigned += batch.unassigned;
       afterTaskId = batch.lastTaskId;
+    }
+  }
+
+  /**
+   * Method batch
+   *
+   * @description
+   * Runs one batch of a step, and turns its failure into a `CleanUpStepError` that names the step
+   * and the batches committed before it, the original error as its cause.
+   *
+   * @param {CleanUpStep} step - The step of the batch.
+   * @param {Progress} progress - The counts of the run so far.
+   * @param {() => Promise<TBatch>} run - The call of the port.
+   * @returns {Promise<TBatch>} What the batch did.
+   * @throws {CleanUpStepError} When the batch fails.
+   */
+  private async batch<TBatch>(
+    step: CleanUpStep,
+    progress: Progress,
+    run: () => Promise<TBatch>,
+  ): Promise<TBatch> {
+    try {
+      return await run();
+    } catch (error: unknown) {
+      throw new CleanUpStepError(step, progress.batches, error);
     }
   }
   // #endregion

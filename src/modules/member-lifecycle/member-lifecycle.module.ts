@@ -27,7 +27,7 @@ import { cleanUpRemovedMemberProvider } from './composition/providers/use-cases/
  * `task.clean-up-removed-member` job in the same transaction, and the worker of that job
  * (`CleanUpRemovedMemberHandler`), which hands the private spaces of the former member over to the
  * owner (`HandOverPrivateSpaces` of `SpacesModule`), removes their grants (`RemoveMemberGrants` of
- * `SpacesModule`), drops their pending access requests (`DropMemberAccessRequests` of
+ * `SpacesModule`), drops their access requests (`DropMemberAccessRequests` of
  * `AccessRequestsModule`), then removes them from the assignees of every task
  * (`UnassignRemovedMember` of `TasksModule`), batch after batch. It orchestrates these modules so
  * that none calls another: `SpacesModule`, `TasksModule` and `AccessRequestsModule` already read the

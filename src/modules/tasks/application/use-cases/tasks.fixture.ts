@@ -48,7 +48,7 @@ import type { TaskPosition } from '../models/query/task-position.model.js';
 import type { MyTaskState } from '../models/user/my-task-state.model.js';
 import type { KeyAllocation } from '../models/placement/key-allocation.model.js';
 import type { ListPlacement } from '../models/placement/list-placement.model.js';
-import type { AccessRole } from '../models/placement/access-role.model.js';
+import type { AccessRole } from '../../domain/value-objects/access/access-role.value-object.js';
 import type { PlacedList } from '../models/placement/placed-list.model.js';
 import type { PlacedSpace } from '../models/placement/placed-space.model.js';
 import { TaskRefusal } from '../models/task/task-refusal.model.js';

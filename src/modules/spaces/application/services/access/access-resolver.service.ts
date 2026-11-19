@@ -1,6 +1,7 @@
 import {
   canManageSpace,
   canSeeSpace,
+  isHighestRole,
   listRoleOf,
   spaceRoleOf,
 } from '../../../domain/policies/access/access-role.policy.js';
@@ -58,7 +59,7 @@ export class AccessResolver {
     if (space.awaitingOwner) {
       return without;
     }
-    if (without.spaceRole === 'edit' && (list === null || without.listRole === 'edit')) {
+    if (isHighestRole(without.spaceRole) && (list === null || isHighestRole(without.listRole))) {
       return without;
     }
     const read: ViewerGrants = await grants.viewerGrants(

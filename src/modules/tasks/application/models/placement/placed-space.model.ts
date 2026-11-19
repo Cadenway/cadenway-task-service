@@ -1,5 +1,5 @@
 import type { StatusKey } from '../../../domain/value-objects/task/status-key.value-object.js';
-import type { AccessRole } from './access-role.model.js';
+import type { AccessRole } from '../../../domain/value-objects/access/access-role.value-object.js';
 
 /**
  * Interface PlacedSpace

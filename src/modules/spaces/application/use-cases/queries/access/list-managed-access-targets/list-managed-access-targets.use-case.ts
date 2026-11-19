@@ -1,11 +1,13 @@
-import { canManageSpace } from '../../../../../domain/policies/access/access-role.policy.js';
+import {
+  canManageListAccess,
+  canManageSpace,
+} from '../../../../../domain/policies/access/access-role.policy.js';
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
-import { toListViews } from '../../../../mappers/list/list-view.mapper.js';
-import type { ListWithGrants } from '../../../../models/access/list-with-grants.model.js';
+import { toListRoles } from '../../../../mappers/list/list-role.mapper.js';
+import type { ListAccess } from '../../../../models/access/list-access.model.js';
 import type { SpaceWithGrants } from '../../../../models/access/space-with-grants.model.js';
 import type { SpacesStore } from '../../../../models/transactions/spaces-store.model.js';
 import type { SpacesUnitOfWork } from '../../../../ports/outbound/transactions/space/spaces-unit-of-work.port.js';
-import type { ListView } from '../../../../projections/list/list-view.projection.js';
 import type { ListManagedAccessTargetsInput } from './list-managed-access-targets.input.js';
 import type { ListManagedAccessTargetsOutput } from './list-managed-access-targets.output.js';
 
@@ -18,10 +20,10 @@ import type { ListManagedAccessTargetsOutput } from './list-managed-access-targe
  * of the space, and for a space `organization` the owner and the admins of the organization) and
  * the lists they have `edit` on (`listRoleOf`), both in sidebar order. Two queries, unpaged (the
  * spaces and lists of an organization are few), with the visibility conditions of the spaces and
- * the lists; a guest manages no space, so their spaces are not read. The role of the member comes
- * from the caller, which read it from the copy of the memberships. It runs in
- * `SpacesUnitOfWork.run`, which joins the tenant transaction of the caller; it takes no lock and
- * appends no event.
+ * the lists, the lists read lean (what the role needs only); the policies give a guest no space
+ * to manage. The role of the member comes from the caller, which read it from the copy of the
+ * memberships. It runs in `SpacesUnitOfWork.run`, which joins the tenant transaction of the caller;
+ * it takes no lock and appends no event.
  */
 export class ListManagedAccessTargets {
   // #region Properties
@@ -68,11 +70,11 @@ export class ListManagedAccessTargets {
     return this.unitOfWork.run(
       async (store: SpacesStore): Promise<ListManagedAccessTargetsOutput> => {
         const viewer: Viewer = { userId: input.viewerUserId, role: input.viewerRole };
-        const spaces: SpaceWithGrants[] =
-          viewer.role === 'guest'
-            ? []
-            : await store.spaces.listAllVisible(input.organizationId, viewer);
-        const lists: ListWithGrants[] = await store.lists.listAllVisibleTo(
+        const spaces: SpaceWithGrants[] = await store.spaces.listAllVisible(
+          input.organizationId,
+          viewer,
+        );
+        const lists: ListAccess[] = await store.lists.listAccessesVisibleTo(
           input.organizationId,
           viewer,
         );
@@ -80,9 +82,9 @@ export class ListManagedAccessTargets {
           spaceIds: spaces
             .filter((row: SpaceWithGrants): boolean => canManageSpace(row.space.snapshot, viewer))
             .map((row: SpaceWithGrants): string => row.space.snapshot.id),
-          listIds: toListViews(lists, viewer)
-            .filter((view: ListView): boolean => view.callerRole === 'edit')
-            .map((view: ListView): string => view.list.id),
+          listIds: toListRoles(lists, viewer)
+            .filter((role): boolean => canManageListAccess(role.callerRole))
+            .map((role): string => role.listId),
         };
       },
     );

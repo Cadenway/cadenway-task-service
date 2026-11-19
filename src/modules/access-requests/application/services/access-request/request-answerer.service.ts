@@ -1,15 +1,18 @@
 import type { AccessRequest } from '../../../domain/aggregates/access-request/access-request.aggregate.js';
 import { AccessRequestDecidedError } from '../../../domain/errors/access-request/access-request-decided.error.js';
+import type { RequestPlacement } from '../../../domain/value-objects/access-request/request-placement.value-object.js';
 import type { MemberRole } from '../../../domain/value-objects/member/member-role.value-object.js';
 import { AccessRequestRefusal } from '../../models/access-request/access-request-refusal.model.js';
+import type { AnswerableRequest } from '../../models/access-request/answerable-request.model.js';
 import type { Caller } from '../../models/caller/caller.model.js';
 import type { TargetAccess } from '../../models/target/target-access.model.js';
 import type { TaskReference } from '../../models/task/task-reference.model.js';
 import type { AccessRequestsStore } from '../../models/transactions/access-requests-store.model.js';
 import type { AccessRequestView } from '../../projections/access-request/access-request-view.projection.js';
+import type { MemberDirectory } from '../../ports/outbound/members/membership/member-directory.port.js';
 import type { AccessTargets } from '../../ports/outbound/spaces/access/access-targets.port.js';
 import type { TaskReferences } from '../../ports/outbound/tasks/task/task-references.port.js';
-import type { MemberRoleResolver } from '../member/member-role-resolver.service.js';
+import { MemberRoleResolver } from '../member/member-role-resolver.service.js';
 import { AccessRequestViewBuilder } from './access-request-view-builder.service.js';
 
 /**
@@ -21,14 +24,30 @@ import { AccessRequestViewBuilder } from './access-request-view-builder.service.
  *
  * 1. the membership of the actor, locked `FOR SHARE` (`404 organization.not-found`);
  * 2. the request, locked `FOR UPDATE`, so that two answers are serialized;
- * 3. whether the actor answers it: manages the space of a space request, has `edit` on the list of
- *    a list or a task request, as the spaces module says (`viewerManages`); a request the actor may
- *    not answer answers `404 access-request.not-found` like an unknown one, decided or not, so that
- *    a non-manager learns nothing;
- * 4. then the domain refuses a second answer (`409 access-request.already-decided`, with how).
+ * 3. the membership of the requester, without lock: a request whose requester left the
+ *    organization answers `404 access-request.not-found` ("or one whose requester left" of
+ *    `AccessRequestNotFound`), whether the clean-up has dropped it yet or not;
+ * 4. for a task request, where the task is now (`FindTaskReferences`): a task no longer found
+ *    answers `404 access-request.not-found`;
+ * 5. whether the actor answers it, on where its target is now: manages the space of a space
+ *    request, has `edit` on the list of a list request or on the current list of the task of a
+ *    task request (`viewerManages`); a request the actor may not answer answers `404` like an
+ *    unknown one, decided or not, so that a non-manager learns nothing;
+ * 6. then the domain refuses a second answer (`409 access-request.already-decided`, with how).
  */
 export class RequestAnswerer {
   // #region Properties
+  /**
+   * Property members
+   *
+   * @description
+   * The copy of the memberships, for the requester.
+   *
+   * @type {MemberDirectory}
+   * @readonly
+   */
+  private readonly members: MemberDirectory;
+
   /**
    * Property resolver
    *
@@ -55,7 +74,7 @@ export class RequestAnswerer {
    * Property tasks
    *
    * @description
-   * The tasks of the task requests.
+   * The tasks of the task requests, where they are now.
    *
    * @type {TaskReferences}
    * @readonly
@@ -81,13 +100,14 @@ export class RequestAnswerer {
    * @description
    * Takes the outbound ports.
    *
-   * @param {MemberRoleResolver} resolver - The role of the actor.
+   * @param {MemberDirectory} members - The copy of the memberships.
    * @param {AccessTargets} targets - The spaces module.
    * @param {TaskReferences} tasks - The tasks module.
    * @constructor
    */
-  public constructor(resolver: MemberRoleResolver, targets: AccessTargets, tasks: TaskReferences) {
-    this.resolver = resolver;
+  public constructor(members: MemberDirectory, targets: AccessTargets, tasks: TaskReferences) {
+    this.members = members;
+    this.resolver = new MemberRoleResolver(members);
     this.targets = targets;
     this.tasks = tasks;
   }
@@ -98,42 +118,54 @@ export class RequestAnswerer {
    * Method lockAnswerable
    *
    * @description
-   * Locks a request the actor answers, pending or not.
+   * Locks a request the actor answers, pending or not, and places it where its target is now.
    *
    * @param {AccessRequestsStore} store - The store of the transaction.
    * @param {Caller} caller - The organization and the actor.
    * @param {string} accessRequestId - The id of the path, in lower case.
-   * @returns {Promise<AccessRequest>} The locked request.
+   * @returns {Promise<AnswerableRequest>} The locked request, its placement, its task and the role
+   * of the actor.
    * @throws {AccessRequestRefusal} `organization-not-found`, or `access-request-not-found` when the
-   * request is unknown or the actor does not answer its target.
+   * request is unknown, its requester left, its task is no longer found, or the actor does not
+   * answer its target.
    */
   public async lockAnswerable(
     store: AccessRequestsStore,
     caller: Caller,
     accessRequestId: string,
-  ): Promise<AccessRequest> {
-    const role: MemberRole = await this.resolver.resolve(
-      caller.organizationId,
-      caller.actorUserId,
-      true,
-    );
+  ): Promise<AnswerableRequest> {
+    const { organizationId, actorUserId } = caller;
+    const actorRole: MemberRole = await this.resolver.resolve(organizationId, actorUserId, true);
     const request: AccessRequest | null = await store.requests.lock(
-      caller.organizationId,
+      organizationId,
       accessRequestId,
     );
     if (request === null) {
       throw new AccessRequestRefusal({ reason: 'access-request-not-found' });
     }
+    const { requesterUserId, taskId } = request.snapshot;
+    if ((await this.members.roleOf(organizationId, requesterUserId)) === null) {
+      throw new AccessRequestRefusal({ reason: 'access-request-not-found' });
+    }
+    let task: TaskReference | null = null;
+    if (taskId !== null) {
+      const found: readonly TaskReference[] = await this.tasks.findByIds(organizationId, [taskId]);
+      task = found.find((candidate: TaskReference): boolean => candidate.id === taskId) ?? null;
+      if (task === null) {
+        throw new AccessRequestRefusal({ reason: 'access-request-not-found' });
+      }
+    }
+    const placement: RequestPlacement = request.placement(task);
     const target: TargetAccess | null = await this.targets.find(
-      caller.organizationId,
-      caller.actorUserId,
-      role,
-      request.grantTarget,
+      organizationId,
+      actorUserId,
+      actorRole,
+      request.grantTarget(placement),
     );
     if (target?.viewerManages !== true) {
       throw new AccessRequestRefusal({ reason: 'access-request-not-found' });
     }
-    return request;
+    return { request, placement, task, actorRole };
   }
 
   /**
@@ -161,17 +193,15 @@ export class RequestAnswerer {
    * Method view
    *
    * @description
-   * The answered request as the route answers it, with its task as it is now for a task request.
+   * The answered request as the route answers it, placed where its target is now, with its task
+   * as it was read under the lock.
    *
-   * @param {string} organizationId - The organization of the transaction.
-   * @param {AccessRequest} request - The request, answered.
-   * @returns {Promise<AccessRequestView>} The view.
+   * @param {AccessRequest} answered - The request, answered.
+   * @param {AnswerableRequest} answerable - What `lockAnswerable` read.
+   * @returns {AccessRequestView} The view.
    */
-  public async view(organizationId: string, request: AccessRequest): Promise<AccessRequestView> {
-    const taskIds: readonly string[] = this.views.taskIdsOf([request]);
-    const tasks: readonly TaskReference[] =
-      taskIds.length === 0 ? [] : await this.tasks.findByIds(organizationId, taskIds);
-    return this.views.build(request, tasks);
+  public view(answered: AccessRequest, answerable: AnswerableRequest): AccessRequestView {
+    return this.views.build(answered, answerable.placement, answerable.task);
   }
   // #endregion
 }

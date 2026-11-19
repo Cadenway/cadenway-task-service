@@ -9,13 +9,13 @@ description: "The data, rules, events and screens cadenway-task-service owns, ta
 
 The core of the product.
 
-**Data**: Spaces (appearance, privacy, renamed or hidden statuses), lists and sprints, tasks, subtasks, checklist, dependencies, milestones, recurrence, labels, custom fields, templates, saved views, comments, time entries, approvals, activity log, goals and key results, intake forms, trash, archives.
+**Data**: Spaces (appearance, privacy, renamed or hidden statuses), lists and sprints, tasks, subtasks, checklist, dependencies, milestones, recurrence, labels, custom fields, templates, saved views, comments, time entries, approvals, activity log, goals and key results, intake forms, trash, archives, access grants of spaces and lists, access requests.
 
 **API**: All of the above. Every change carries its `actor` (`user`, `automation`, `git` or `system`, `Actor` of the contracts) so the activity log can sign it "par GitHub".
 
-**Events emitted**: `space.*`, `list.*`, `task.created`, `task.updated`, `task.status-changed`, `task.assigned`, `task.trashed`, `task.restored`, `task.purged`, `comment.created`, `approval.requested`, `approval.decided`, `milestone.reached`.
+**Events emitted**: `space.*`, `list.*`, `task.created`, `task.updated`, `task.status-changed`, `task.assigned`, `task.access-requested`, `task.access-request-decided`, `task.trashed`, `task.restored`, `task.purged`, `comment.created`, `approval.requested`, `approval.decided`, `milestone.reached`.
 
-**Events consumed**: `member.joined`, `member.role-changed` and `member.removed`, the copy of the memberships that answers who is a member, with which role, and who owns the organization (decision 4 of the P3a plan: never the `role` claim of the internal token; the removal hands the private spaces of the member to the owner of the organization and unassigns the member from every task), and later `organization.deleted`, which `@cadenway/contracts` does not define yet.
+**Events consumed**: `member.joined`, `member.role-changed` and `member.removed`, the copy of the memberships that answers who is a member, with which role, and who owns the organization (decision 4 of the P3a plan: never the `role` claim of the internal token; the removal hands the private spaces of the member to the owner of the organization, removes their grants of spaces and lists and their pending access requests, and unassigns the member from every task), and later `organization.deleted`, which `@cadenway/contracts` does not define yet.
 
 **External systems**: None.
 

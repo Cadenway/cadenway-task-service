@@ -11,6 +11,7 @@ import {
   CAMILLE,
   DECIDED_AT,
   DIRECTION,
+  DIR_12_TASK,
   FakeAccessTargets,
   FakeMembers,
   FakeTaskReferences,
@@ -19,6 +20,8 @@ import {
   InMemoryAccessRequests,
   LEA,
   NOW,
+  PRODUIT,
+  ROADMAP,
   SPACE_REQUEST,
   TASK_REQUEST,
   UNKNOWN_REQUEST,
@@ -40,6 +43,9 @@ interface Wiring {
 
   /** The spaces module. */
   readonly targets: FakeAccessTargets;
+
+  /** The tasks module. */
+  readonly tasks: FakeTaskReferences;
 
   /** The use case. */
   readonly useCase: ApproveAccessRequest;
@@ -64,11 +70,13 @@ function wire(
   const store = new InMemoryAccessRequests(requests);
   const members = new FakeMembers(roles);
   const targets = new FakeAccessTargets();
+  const tasks = new FakeTaskReferences();
   return {
     store,
     members,
     targets,
-    useCase: new ApproveAccessRequest(store, members, targets, new FakeTaskReferences()),
+    tasks,
+    useCase: new ApproveAccessRequest(store, members, targets, tasks),
   };
 }
 
@@ -98,8 +106,17 @@ function refusedWith(refusal: AccessRequestRefusalReason): AccessRequestRefusal 
   return expect.objectContaining({ refusal }) as AccessRequestRefusal;
 }
 
+/** DIR-12, moved from "Budget" of "Direction" to "Roadmap" of "Produit", renamed and done. */
+const MOVED_DIR_12 = {
+  ...DIR_12_TASK,
+  name: 'Budget 2027 (clos)',
+  status: 'done',
+  listId: ROADMAP,
+  spaceId: PRODUIT,
+} as const;
+
 describe('ApproveAccessRequest: the requester receives the grant, and the request is approved', () => {
-  it('grants the space of a space request with the role, by Léa Petit', async () => {
+  it('grants the space of a space request with the role, by Léa Petit with her role', async () => {
     const { targets, useCase } = wire();
 
     await useCase.execute(approval());
@@ -108,6 +125,7 @@ describe('ApproveAccessRequest: the requester receives the grant, and the reques
       {
         organizationId: ATELIER_NORD,
         actorUserId: LEA,
+        actorRole: 'member',
         target: { kind: 'space', spaceId: DIRECTION },
         granteeUserId: CAMILLE,
         role: 'view',
@@ -155,11 +173,12 @@ describe('ApproveAccessRequest: the requester receives the grant, and the reques
         status: 'approved',
         role: 'comment',
         decidedById: LEA,
+        placement: { spaceId: DIRECTION, listId: null },
       },
     ]);
   });
 
-  it('approves a task request as a grant of the list it was in, and names the task as it is now', async () => {
+  it('approves a task request as a grant of the list it is in, and names the task as it is now', async () => {
     const { targets, useCase } = wire();
 
     const view = await useCase.execute(approval({ accessRequestId: TASK_REQUEST, role: 'edit' }));
@@ -182,6 +201,64 @@ describe('ApproveAccessRequest: the requester receives the grant, and the reques
     expect(targets.grants.map((grant) => grant.role)).toEqual(['view']);
     expect(view.status).toBe('approved');
     expect(store.events.map((event) => event.kind)).toEqual(['accessRequestDecided']);
+  });
+});
+
+describe('ApproveAccessRequest: a task request concerns the list the task is in now', () => {
+  it('lets whoever has edit on the new list of a moved task approve it, and grants that list', async () => {
+    const { targets, tasks, useCase } = wire();
+    tasks.tasks = [MOVED_DIR_12];
+    targets.allow(INES, ROADMAP, 'edit');
+
+    const view = await useCase.execute(
+      approval({ actorUserId: INES, accessRequestId: TASK_REQUEST, role: 'comment' }),
+    );
+
+    expect(targets.grants[0]).toMatchObject({
+      actorUserId: INES,
+      target: { kind: 'list', listId: ROADMAP },
+      granteeUserId: HUGO,
+    });
+    expect(view).toMatchObject({
+      spaceId: PRODUIT,
+      listId: ROADMAP,
+      task: { key: 'DIR-12', name: 'Budget 2027 (clos)', status: 'done' },
+    });
+  });
+
+  it('names the new list and space of the task in task.access-request-decided, and keeps the stored list', async () => {
+    const { store, targets, tasks, useCase } = wire();
+    tasks.tasks = [MOVED_DIR_12];
+    targets.allow(INES, ROADMAP, 'edit');
+
+    await useCase.execute(approval({ actorUserId: INES, accessRequestId: TASK_REQUEST }));
+
+    expect(store.events[0]).toMatchObject({
+      target: 'task',
+      placement: { spaceId: PRODUIT, listId: ROADMAP },
+    });
+    expect(store.requests.get(TASK_REQUEST)?.listId).toBe(BUDGET);
+  });
+
+  it('answers access-request-not-found to the editors of the list the task left', async () => {
+    const { targets, tasks, useCase } = wire();
+    tasks.tasks = [MOVED_DIR_12];
+
+    await expect(useCase.execute(approval({ accessRequestId: TASK_REQUEST }))).rejects.toThrow(
+      refusedWith({ reason: 'access-request-not-found' }),
+    );
+    expect(targets.calls).toEqual([`find:list:${ROADMAP}`]);
+    expect(targets.grants).toEqual([]);
+  });
+
+  it('answers access-request-not-found when the task is no longer found', async () => {
+    const { targets, tasks, useCase } = wire();
+    tasks.tasks = [];
+
+    await expect(useCase.execute(approval({ accessRequestId: TASK_REQUEST }))).rejects.toThrow(
+      refusedWith({ reason: 'access-request-not-found' }),
+    );
+    expect(targets.calls).toEqual([]);
   });
 });
 
@@ -226,6 +303,16 @@ describe('ApproveAccessRequest: only the people who manage the target answer it'
     );
   });
 
+  it('answers access-request-not-found for a request whose requester left the organization', async () => {
+    const { store, targets, useCase } = wire(undefined, { [CAMILLE]: null });
+
+    await expect(useCase.execute(approval())).rejects.toThrow(
+      refusedWith({ reason: 'access-request-not-found' }),
+    );
+    expect(targets.grants).toEqual([]);
+    expect(store.requests.get(SPACE_REQUEST)?.status).toBe('pending');
+  });
+
   it('answers organization-not-found to an account the copy does not hold', async () => {
     const { useCase } = wire(undefined, { [LEA]: null });
 
@@ -234,12 +321,12 @@ describe('ApproveAccessRequest: only the people who manage the target answer it'
     );
   });
 
-  it('locks the membership, then the request, then reads the target', async () => {
+  it('locks the membership of the actor, then the request, then reads the requester and the target', async () => {
     const { members, store, targets, useCase } = wire();
 
     await useCase.execute(approval());
 
-    expect(members.calls).toEqual([`roleOf:${LEA}:share`]);
+    expect(members.calls).toEqual([`roleOf:${LEA}:share`, `roleOf:${CAMILLE}:none`]);
     expect(store.calls[0]).toBe(`requests.lock:${SPACE_REQUEST}`);
     expect(targets.calls).toEqual([`find:space:${DIRECTION}`, 'grant:space']);
   });
@@ -281,6 +368,7 @@ describe('ApproveAccessRequest: a refused grant refuses the approval and changes
     [{ outcome: 'refused', reason: 'owner-unchangeable' }, { reason: 'owner-unchangeable' }],
     [{ outcome: 'refused', reason: 'grant-limit-reached' }, { reason: 'grant-limit-reached' }],
     [{ outcome: 'refused', reason: 'not-found' }, { reason: 'access-request-not-found' }],
+    [{ outcome: 'refused', reason: 'manage-forbidden' }, { reason: 'access-request-not-found' }],
   ];
 
   for (const [outcome, refusal] of cases) {

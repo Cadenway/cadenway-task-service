@@ -59,7 +59,8 @@ export interface AccessTargets {
    * @description
    * Gives the requester the grant of an approval, or raises a lower one, and keeps an equal or
    * higher one; a change bumps the version of the space or the list and appends its
-   * `space.access-changed.v1` or `list.access-changed.v1`, in the transaction of the approval.
+   * `space.access-changed.v1` or `list.access-changed.v1`, in the transaction of the approval. The
+   * spaces module checks again, on the locked rows, that the actor manages the target.
    *
    * @param {GrantRequest} request - The grant.
    * @returns {Promise<GrantOutcome>} What was done, or the rule that refused it.

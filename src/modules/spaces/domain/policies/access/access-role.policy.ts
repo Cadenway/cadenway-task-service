@@ -173,6 +173,35 @@ export function canEdit(role: AccessRole | null): boolean {
 }
 
 /**
+ * Function canManageListAccess
+ *
+ * @description
+ * Whether a role on a list lets a member manage who reaches it: give and remove its grants, turn
+ * its switch "Accès de l’organisation", and answer the access requests of the list and of its
+ * tasks (decision 3 of P3b-1, "the mockup has no gate": whoever has `edit` on the list).
+ *
+ * @param {AccessRole | null} role - The effective role on the list, `null` for none.
+ * @returns {boolean} Whether the member manages the access of the list.
+ */
+export function canManageListAccess(role: AccessRole | null): boolean {
+  return canEdit(role);
+}
+
+/**
+ * Function isHighestRole
+ *
+ * @description
+ * Whether a role is the highest there is (`edit`), so that no other source can raise it: a
+ * reading of the grants can be skipped once a rule gives it.
+ *
+ * @param {AccessRole | null} role - The role, `null` for none.
+ * @returns {boolean} Whether no role ranks above it.
+ */
+export function isHighestRole(role: AccessRole | null): boolean {
+  return role !== null && rankOf(role) === rankOf('edit');
+}
+
+/**
  * Function canCreateSpace
  *
  * @description

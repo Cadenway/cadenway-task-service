@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 
 import type { SpaceWithGrants } from '../../../../../application/models/access/space-with-grants.model.js';
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
@@ -11,37 +12,72 @@ import { toSpace } from './space.mapper.js';
 import type { SpaceRow } from './space.mapper.js';
 
 /**
- * Function spaceGrantRoleOf
+ * Constant viewerSpaceGrant
  *
  * @description
- * The role the grant of a member on the space of the row gives, `null` without one: a lookup by
- * the primary key of `space_grants` `(organization_id, space_id, user_id)`, over the columns of
- * `spaces`.
+ * `space_grants` as `viewer_space_grant`: the grant of the viewer on the space of a row, left
+ * joined with `viewerSpaceGrantJoin` on the full primary key `(organization_id, space_id,
+ * user_id)`, so that each row reads it once. The collections of lists join it too, on the space of
+ * the list.
+ *
+ * @type {ReturnType<typeof alias<typeof spaceGrants, 'viewer_space_grant'>>}
+ */
+export const viewerSpaceGrant = alias(spaceGrants, 'viewer_space_grant');
+
+/**
+ * Constant LIST_SPACES_SPACE_ID
+ *
+ * @description
+ * The column `space_id` of the subquery `viewer_list_spaces` of `viewerListSpaces`: not `null`
+ * when the viewer holds a grant of a list of the space of the row.
+ *
+ * @type {SQL}
+ */
+const LIST_SPACES_SPACE_ID: SQL = sql`${sql.identifier('viewer_list_spaces')}.${sql.identifier('space_id')}`;
+
+/**
+ * Function viewerSpaceGrantJoin
+ *
+ * @description
+ * The condition of the left join of `viewerSpaceGrant`: the grant of the viewer on the space of
+ * the row (`spaces.id`), one probe of the primary key of `space_grants`.
  *
  * @param {string} organizationId - The organization of the transaction.
  * @param {string} viewerUserId - The account of the member.
- * @returns {SQL<string | null>} The scalar subquery.
+ * @returns {SQL} The join condition.
  */
-export function spaceGrantRoleOf(organizationId: string, viewerUserId: string): SQL<string | null> {
-  return sql<
-    string | null
-  >`(select ${spaceGrants.role} from ${spaceGrants} where ${spaceGrants.organizationId} = ${organizationId} and ${spaceGrants.spaceId} = ${spaces.id} and ${spaceGrants.userId} = ${viewerUserId})`;
+export function viewerSpaceGrantJoin(organizationId: string, viewerUserId: string): SQL {
+  return sql`${viewerSpaceGrant.organizationId} = ${organizationId} and ${viewerSpaceGrant.spaceId} = ${spaces.id} and ${viewerSpaceGrant.userId} = ${viewerUserId}`;
 }
 
 /**
- * Function anyListGrantOf
+ * Function viewerListSpaces
  *
  * @description
- * Whether a member holds a grant of at least one list of the space of the row: a range of
- * `list_grants_user_index` `(organization_id, user_id, space_id, list_id)`, which `space_id`, a
- * copy of the space of the list, makes possible.
+ * The spaces of the lists shared with a viewer, as the subquery `viewer_list_spaces`
+ * (`select distinct space_id from list_grants where organization_id = $org and user_id =
+ * $viewer`), to left join with `viewerListSpacesJoin`: one range of `list_grants_user_index`
+ * `(organization_id, user_id, space_id, list_id)`, which `list_grants.space_id`, a copy of the
+ * space of the list, makes possible, read once for the whole collection.
  *
  * @param {string} organizationId - The organization of the transaction.
  * @param {string} viewerUserId - The account of the member.
- * @returns {SQL<boolean>} The `exists` subquery.
+ * @returns {SQL} The aliased subquery.
  */
-export function anyListGrantOf(organizationId: string, viewerUserId: string): SQL<boolean> {
-  return sql<boolean>`exists (select 1 from ${listGrants} where ${listGrants.organizationId} = ${organizationId} and ${listGrants.userId} = ${viewerUserId} and ${listGrants.spaceId} = ${spaces.id})`;
+export function viewerListSpaces(organizationId: string, viewerUserId: string): SQL {
+  return sql`(select distinct ${listGrants.spaceId} from ${listGrants} where ${listGrants.organizationId} = ${organizationId} and ${listGrants.userId} = ${viewerUserId}) as ${sql.identifier('viewer_list_spaces')}`;
+}
+
+/**
+ * Function viewerListSpacesJoin
+ *
+ * @description
+ * The condition of the left join of `viewerListSpaces`: the space of the row.
+ *
+ * @returns {SQL} The join condition.
+ */
+export function viewerListSpacesJoin(): SQL {
+  return sql`${LIST_SPACES_SPACE_ID} = ${spaces.id}`;
 }
 
 /**
@@ -51,22 +87,22 @@ export function anyListGrantOf(organizationId: string, viewerUserId: string): SQ
  * The ONE condition that keeps the spaces a member sees ("Access" and "Who sees a space" of
  * `openapi/public/spaces.yaml`, `canSeeSpace` of the domain), never one awaiting an owner: for a
  * member who is not a guest, the spaces of the whole organization, the ones they own and the ones
- * shared with them; for anyone, the spaces of the lists shared with them. Every query that lists
- * spaces applies it, and selects the grants of the member with `spaceGrantRoleOf` and
- * `anyListGrantOf`, from which the application computes the role of each row with the policies of
- * the domain. It is parenthesized as a whole, so it stays one term under `not` or `or`. The
- * caller names `organization_id` of `spaces`.
+ * shared with them (`viewer_space_grant`); for anyone, the spaces of the lists shared with them
+ * (`viewer_list_spaces`). Every query that lists spaces applies it over `spaces` left joined to
+ * `viewerSpaceGrant` and to `viewerListSpaces`, and selects the same grants with
+ * `visibleSpaceColumns`, from which the application computes the role of each row with the
+ * policies of the domain. It is parenthesized as a whole, so it stays one term under `not` or
+ * `or`. The caller names `organization_id` of `spaces`.
  *
- * @param {string} organizationId - The organization of the transaction.
  * @param {Viewer} viewer - The member and its role in the organization.
- * @returns {SQL} The condition, over the columns of `spaces`.
+ * @returns {SQL} The condition, over the columns of `spaces` and of the two joins.
  */
-export function visibleSpaceCondition(organizationId: string, viewer: Viewer): SQL {
-  const throughLists: SQL<boolean> = anyListGrantOf(organizationId, viewer.userId);
+export function visibleSpaceCondition(viewer: Viewer): SQL {
+  const throughLists: SQL = sql`${LIST_SPACES_SPACE_ID} is not null`;
   if (viewer.role === 'guest') {
     return sql`(not ${spaces.awaitingOwner} and ${throughLists})`;
   }
-  return sql`(not ${spaces.awaitingOwner} and (${spaces.visibility} = 'organization' or ${spaces.ownerUserId} = ${viewer.userId} or ${spaceGrantRoleOf(organizationId, viewer.userId)} is not null or ${throughLists}))`;
+  return sql`(not ${spaces.awaitingOwner} and (${spaces.visibility} = 'organization' or ${spaces.ownerUserId} = ${viewer.userId} or ${viewerSpaceGrant.role} is not null or ${throughLists}))`;
 }
 
 /**
@@ -117,24 +153,19 @@ export interface VisibleSpaceRow {
  *
  * @description
  * The columns a collection of spaces selects for a member: the space and the grants of the member
- * there.
+ * there, read from the two joins of `visibleSpaceCondition`.
  *
- * @param {string} organizationId - The organization of the transaction.
- * @param {string} viewerUserId - The account of the member.
  * @returns {object} The selection of the query.
  */
-export function visibleSpaceColumns(
-  organizationId: string,
-  viewerUserId: string,
-): {
+export function visibleSpaceColumns(): {
   space: typeof spaces;
-  spaceGrantRole: SQL<string | null>;
+  spaceGrantRole: typeof viewerSpaceGrant.role;
   anyListGrant: SQL<boolean>;
 } {
   return {
     space: spaces,
-    spaceGrantRole: spaceGrantRoleOf(organizationId, viewerUserId),
-    anyListGrant: anyListGrantOf(organizationId, viewerUserId),
+    spaceGrantRole: viewerSpaceGrant.role,
+    anyListGrant: sql<boolean>`${LIST_SPACES_SPACE_ID} is not null`,
   };
 }
 

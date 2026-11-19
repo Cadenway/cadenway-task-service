@@ -58,12 +58,14 @@ interface ResolvedTarget {
  *    stored or not;
  * 4. the target: a space or a list through the spaces module, a task through the tasks module then
  *    its list through the spaces module;
- * 5. the request is stored only when `isRequestStored` says so, once per requester and target
- *    while pending, and appends its `…access-requested.v1`.
+ * 5. one insert statement, always: it stores the request only when `isRequestStored` says so,
+ *    once per requester and target while pending; a stored request appends its
+ *    `…access-requested.v1`.
  *
  * It always resolves the same way, whatever the target: the route answers `202` with no body, and
- * the calls of steps 1 to 4 are the same for every outcome, so neither the answer nor the reads
- * tell whether the target exists, is seen already or is asked for already.
+ * the statements of steps 1 to 5 are the same for every outcome, so neither the answer nor the
+ * statements tell whether the target exists, is seen already or is asked for already. The one
+ * difference left is the outbox append of a stored request.
  */
 export class CreateAccessRequest {
   // #region Properties
@@ -181,21 +183,27 @@ export class CreateAccessRequest {
         requesterRole: role,
         roleOnTarget: target === null ? null : target.viewerRole,
       });
-      if (!stored || target === null) {
-        return;
-      }
-      const draft: AccessRequestDraft = AccessRequest.ask({
+      const draft: AccessRequestDraft | null =
+        stored && target !== null
+          ? AccessRequest.ask({
+              organizationId,
+              target: input.target.kind,
+              spaceId: target.spaceId,
+              listId: input.target.kind === 'space' ? null : target.listId,
+              taskId: task === null ? null : task.id,
+              taskKey: task === null ? null : task.key,
+              requesterUserId: actorUserId,
+              message: input.message,
+            })
+          : null;
+      // The insert runs whether there is a request to store or not, so that its statements are the
+      // same for every outcome.
+      const request: AccessRequest | null = await store.requests.insertPending(
         organizationId,
-        target: input.target.kind,
-        spaceId: target.spaceId,
-        listId: input.target.kind === 'space' ? null : target.listId,
-        taskId: task === null ? null : task.id,
-        taskKey: task === null ? null : task.key,
-        requesterUserId: actorUserId,
-        message: input.message,
-      });
-      const request: AccessRequest | null = await store.requests.insertPending(draft);
-      if (request === null) {
+        actorUserId,
+        draft,
+      );
+      if (request === null || target === null) {
         return;
       }
       await store.events.accessRequested(request, {

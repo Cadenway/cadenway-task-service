@@ -1,5 +1,5 @@
 import type { TransactionDatabase } from '@cadenway/nest-common/database';
-import { and, asc, count, desc, eq, ne, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, or, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 
 import type { PendingScope } from '../../../../../application/models/access-request/pending-scope.model.js';
@@ -26,11 +26,24 @@ import { accessRequests } from '../../schemas/access-request/access-request.sche
 const PENDING: SQL = sql`${accessRequests.state} = 'pending'`;
 
 /**
+ * Constant NO_ID
+ *
+ * @description
+ * The nil UUID, which `uuidv7()` never gives: the placeholder target of the insert of a request
+ * the rules store none of.
+ *
+ * @type {string}
+ */
+const NO_ID: string = '00000000-0000-0000-0000-000000000000';
+
+/**
  * Function scopeCondition
  *
  * @description
- * The pending requests a member answers: the space requests of the spaces they manage, the list
- * and task requests of the lists they have `edit` on, narrowed by the filters.
+ * The pending requests a member answers: the space requests of the spaces they manage and the list
+ * requests of the lists they have `edit` on, narrowed by the filters on their stored space and
+ * list, and the task requests of the tasks named in the scope, whose current place the caller
+ * already checked against the filters.
  *
  * @param {string} organizationId - The organization of the transaction.
  * @param {PendingScope} scope - The scope.
@@ -41,11 +54,16 @@ function scopeCondition(organizationId: string, scope: PendingScope): SQL | unde
     eq(accessRequests.organizationId, organizationId),
     PENDING,
     or(
-      and(eq(accessRequests.target, 'space'), anyOf(accessRequests.spaceId, scope.spaceIds)),
-      and(ne(accessRequests.target, 'space'), anyOf(accessRequests.listId, scope.listIds)),
+      and(
+        or(
+          and(eq(accessRequests.target, 'space'), anyOf(accessRequests.spaceId, scope.spaceIds)),
+          and(eq(accessRequests.target, 'list'), anyOf(accessRequests.listId, scope.listIds)),
+        ),
+        scope.spaceId === null ? undefined : eq(accessRequests.spaceId, scope.spaceId),
+        scope.listId === null ? undefined : eq(accessRequests.listId, scope.listId),
+      ),
+      and(eq(accessRequests.target, 'task'), anyOf(accessRequests.taskId, scope.taskIds)),
     ),
-    scope.spaceId === null ? undefined : eq(accessRequests.spaceId, scope.spaceId),
-    scope.listId === null ? undefined : eq(accessRequests.listId, scope.listId),
   );
 }
 
@@ -54,12 +72,12 @@ function scopeCondition(organizationId: string, scope: PendingScope): SQL | unde
  *
  * @description
  * `AccessRequestRepository` on the `access_requests` table, in the transaction of its unit of
- * work. Every query names `organization_id`, the first column of the primary key and of both
- * partial indexes; row-level security is the second barrier. The insert relies on
- * `access_requests_pending_unique` (one pending request per requester and target), the clean-up
- * of a former member reads through its `(organization_id, requester_user_id)` prefix, and the
- * listing walks `access_requests_pending_index` `(organization_id, created_at, id)` backwards,
- * filtering on the spaces and lists the member answers.
+ * work. Every query names `organization_id`, the first column of the primary key and of every
+ * index; row-level security is the second barrier. The insert relies on
+ * `access_requests_pending_unique` (one pending request per requester and target), the listing
+ * walks `access_requests_pending_index` `(organization_id, created_at, id)` backwards, filtering on
+ * the spaces, lists and tasks the member answers, and the clean-up of a former member reads the
+ * requests of the account through `access_requests_requester_index`.
  */
 export class DrizzleAccessRequestRepository implements AccessRequestRepository {
   // #region Properties
@@ -95,26 +113,46 @@ export class DrizzleAccessRequestRepository implements AccessRequestRepository {
    * Method insertPending
    *
    * @description
-   * `INSERT ... ON CONFLICT (organization_id, requester_user_id, target, target_id) WHERE state =
-   * 'pending' DO NOTHING RETURNING *`: a pending request for the same target is kept as it is.
+   * `INSERT INTO access_requests SELECT ... WHERE $stored ON CONFLICT (organization_id,
+   * requester_user_id, target, target_id) WHERE state = 'pending' DO NOTHING RETURNING *`: one
+   * statement of the same text whether there is a request to store or not. Without a draft, the
+   * values are placeholders (a space request for the nil UUID by the requester) that no row ever
+   * takes, since `WHERE false` selects none; a pending request for the same target is kept as it
+   * is. The columns follow the order of the table, as an insert from a select requires; the id
+   * comes from `uuidv7()` and the instant from `now()`, as their defaults would give them.
    *
-   * @param {AccessRequestDraft} draft - The checked request.
-   * @returns {Promise<AccessRequest | null>} The stored request, or `null` when one was pending.
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} requesterUserId - The requester.
+   * @param {AccessRequestDraft | null} draft - The checked request, `null` to store none.
+   * @returns {Promise<AccessRequest | null>} The stored request, or `null` when none was to be
+   * stored or one was pending.
    */
-  public async insertPending(draft: AccessRequestDraft): Promise<AccessRequest | null> {
+  public async insertPending(
+    organizationId: string,
+    requesterUserId: string,
+    draft: AccessRequestDraft | null,
+  ): Promise<AccessRequest | null> {
+    const values: AccessRequestDraft = draft ?? {
+      organizationId,
+      target: 'space',
+      targetId: NO_ID,
+      spaceId: NO_ID,
+      listId: null,
+      taskId: null,
+      taskKey: null,
+      requesterUserId,
+      message: null,
+    };
     const rows: AccessRequestRow[] = await this.db
       .insert(accessRequests)
-      .values({
-        organizationId: draft.organizationId,
-        target: draft.target,
-        targetId: draft.targetId,
-        spaceId: draft.spaceId,
-        listId: draft.listId,
-        taskId: draft.taskId,
-        taskKey: draft.taskKey,
-        requesterUserId: draft.requesterUserId,
-        message: draft.message,
-      })
+      .select(
+        sql`select ${values.organizationId}::uuid, uuidv7(), ${values.target}::text,
+          ${values.targetId}::uuid, ${values.spaceId}::uuid, ${values.listId}::uuid,
+          ${values.taskId}::uuid, ${values.taskKey}::text, ${values.requesterUserId}::uuid,
+          ${values.message}::text, 'pending'::text, null::text, now(), null::timestamptz,
+          null::text, null::text
+          where ${draft !== null}::boolean`,
+      )
       .onConflictDoNothing({
         target: [
           accessRequests.organizationId,
@@ -236,18 +274,47 @@ export class DrizzleAccessRequestRepository implements AccessRequestRepository {
   }
 
   /**
-   * Method lockPendingOf
+   * Method listPendingTaskIds
    *
    * @description
-   * Locks the first pending requests of a requester, in id order, `FOR UPDATE`, through the
-   * `(organization_id, requester_user_id)` prefix of `access_requests_pending_unique`.
+   * Reads the distinct tasks of the pending task requests of the organization, through
+   * `access_requests_pending_index`: O(pending requests of the organization), which the hourly
+   * limit of each requester and the clean-up of the former members bound.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @returns {Promise<readonly string[]>} The task ids, in id order.
+   */
+  public async listPendingTaskIds(organizationId: string): Promise<readonly string[]> {
+    const rows: { taskId: string | null }[] = await this.db
+      .selectDistinct({ taskId: accessRequests.taskId })
+      .from(accessRequests)
+      .where(
+        and(
+          eq(accessRequests.organizationId, organizationId),
+          PENDING,
+          eq(accessRequests.target, 'task'),
+        ),
+      )
+      .orderBy(asc(accessRequests.taskId));
+    return rows.flatMap((row: { taskId: string | null }): string[] =>
+      row.taskId === null ? [] : [row.taskId],
+    );
+  }
+
+  /**
+   * Method lockRequestsOf
+   *
+   * @description
+   * Locks the first requests of a requester, pending or answered, in id order, `FOR UPDATE`: one
+   * range of `access_requests_requester_index` `(organization_id, requester_user_id, id)`, which
+   * stops at `limit`.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} requesterUserId - The account.
    * @param {number} limit - Most requests to lock.
    * @returns {Promise<readonly string[]>} Their ids.
    */
-  public async lockPendingOf(
+  public async lockRequestsOf(
     organizationId: string,
     requesterUserId: string,
     limit: number,
@@ -259,7 +326,6 @@ export class DrizzleAccessRequestRepository implements AccessRequestRepository {
         and(
           eq(accessRequests.organizationId, organizationId),
           eq(accessRequests.requesterUserId, requesterUserId),
-          PENDING,
         ),
       )
       .orderBy(asc(accessRequests.id))
@@ -272,7 +338,7 @@ export class DrizzleAccessRequestRepository implements AccessRequestRepository {
    * Method deleteRequests
    *
    * @description
-   * Deletes pending requests by id, in one statement.
+   * Deletes requests by id, pending or answered, in one statement.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} ids - The ids, locked by the caller.
@@ -284,13 +350,7 @@ export class DrizzleAccessRequestRepository implements AccessRequestRepository {
     }
     const deleted: { id: string }[] = await this.db
       .delete(accessRequests)
-      .where(
-        and(
-          eq(accessRequests.organizationId, organizationId),
-          anyOf(accessRequests.id, ids),
-          PENDING,
-        ),
-      )
+      .where(and(eq(accessRequests.organizationId, organizationId), anyOf(accessRequests.id, ids)))
       .returning({ id: accessRequests.id });
     return deleted.length;
   }

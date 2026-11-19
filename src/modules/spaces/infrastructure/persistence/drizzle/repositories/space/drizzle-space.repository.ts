@@ -1,5 +1,6 @@
 import type { TransactionDatabase } from '@cadenway/nest-common/database';
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import type { SQL } from 'drizzle-orm';
 
 import type { SpaceWithGrants } from '../../../../../application/models/access/space-with-grants.model.js';
 import type { PagePosition } from '../../../../../application/models/page/page-position.model.js';
@@ -13,6 +14,10 @@ import { keysetAfter } from '../../mappers/page/keyset-after.mapper.js';
 import {
   toSpaceWithGrants,
   visibleSpaceColumns,
+  viewerListSpaces,
+  viewerListSpacesJoin,
+  viewerSpaceGrant,
+  viewerSpaceGrantJoin,
   visibleSpaceCondition,
 } from '../../mappers/space/visible-space.mapper.js';
 import type { VisibleSpaceRow } from '../../mappers/space/visible-space.mapper.js';
@@ -195,27 +200,44 @@ export class DrizzleSpaceRepository implements SpaceRepository {
   }
 
   /**
-   * Method lockMany
+   * Method lockInOrder
    *
    * @description
-   * Loads some spaces by their primary keys and locks them `FOR NO KEY UPDATE` in the order of
-   * their ids, so that two batches never wait on each other. No id reads nothing.
+   * Reads the `(created_at, id)` of some spaces without lock, then locks each in that order, the
+   * order of `lockPrivateOwnedBy`, `FOR NO KEY UPDATE` or `FOR SHARE` as asked: one statement per
+   * space, since a statement takes one lock mode. No space reads nothing.
    *
    * @param {string} organizationId - The organization of the transaction.
-   * @param {readonly string[]} ids - The ids of the spaces.
-   * @returns {Promise<Space[]>} The spaces that exist, by id.
+   * @param {readonly { readonly id: string; readonly mode: 'update' | 'share' }[]} locks - The
+   * spaces and how to lock each.
+   * @returns {Promise<Space[]>} The spaces that exist, in the order they were locked.
    */
-  public async lockMany(organizationId: string, ids: readonly string[]): Promise<Space[]> {
-    if (ids.length === 0) {
+  public async lockInOrder(
+    organizationId: string,
+    locks: readonly { readonly id: string; readonly mode: 'update' | 'share' }[],
+  ): Promise<Space[]> {
+    if (locks.length === 0) {
       return [];
     }
-    const rows: SpaceRow[] = await this.db
-      .select()
+    const modes = new Map<string, 'update' | 'share'>(
+      locks.map((lock): [string, 'update' | 'share'] => [lock.id, lock.mode]),
+    );
+    const ordered: { id: string }[] = await this.db
+      .select({ id: spaces.id })
       .from(spaces)
-      .where(and(eq(spaces.organizationId, organizationId), inArray(spaces.id, [...ids])))
-      .orderBy(asc(spaces.id))
-      .for('no key update');
-    return rows.map(toSpace);
+      .where(and(eq(spaces.organizationId, organizationId), inArray(spaces.id, [...modes.keys()])))
+      .orderBy(asc(spaces.createdAt), asc(spaces.id));
+    const locked: Space[] = [];
+    for (const { id } of ordered) {
+      const space: Space | null =
+        modes.get(id) === 'share'
+          ? await this.lockShared(organizationId, id)
+          : await this.lock(organizationId, id);
+      if (space !== null) {
+        locked.push(space);
+      }
+    }
+    return locked;
   }
 
   /**
@@ -224,8 +246,9 @@ export class DrizzleSpaceRepository implements SpaceRepository {
    * @description
    * Loads a page of the spaces a member sees, with the one condition of `visibleSpaceCondition`
    * and the grants of the member on each, in the order `(created_at, id)`, after `after`, through
-   * `(organization_id, created_at, id)`; the grants are lookups by primary key and by the index
-   * of the grants of a person.
+   * `(organization_id, created_at, id)`. The grant of each space is one left join on the primary
+   * key of `space_grants`; the spaces of the lists shared with the member, one range of
+   * `list_grants_user_index` read once and left joined.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The member and its role.
@@ -239,16 +262,11 @@ export class DrizzleSpaceRepository implements SpaceRepository {
     after: PagePosition | null,
     limit: number,
   ): Promise<SpaceWithGrants[]> {
-    const rows: VisibleSpaceRow[] = await this.db
-      .select(visibleSpaceColumns(organizationId, viewer.userId))
-      .from(spaces)
-      .where(
-        and(
-          eq(spaces.organizationId, organizationId),
-          visibleSpaceCondition(organizationId, viewer),
-          keysetAfter(spaces.createdAt, spaces.id, after),
-        ),
-      )
+    const rows: VisibleSpaceRow[] = await this.visibleTo(
+      organizationId,
+      viewer,
+      keysetAfter(spaces.createdAt, spaces.id, after),
+    )
       .orderBy(asc(spaces.createdAt), asc(spaces.id))
       .limit(limit);
     return rows.map(toSpaceWithGrants);
@@ -258,25 +276,44 @@ export class DrizzleSpaceRepository implements SpaceRepository {
    * Method listAllVisible
    *
    * @description
-   * Loads every space a member sees, with the condition and the order of `listVisible`, no
-   * limit: the spaces of an organization are few.
+   * Loads every space a member sees, with the condition, the joins and the order of
+   * `listVisible`, no limit: the spaces of an organization are few.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The member and its role.
    * @returns {Promise<SpaceWithGrants[]>} The spaces.
    */
   public async listAllVisible(organizationId: string, viewer: Viewer): Promise<SpaceWithGrants[]> {
-    const rows: VisibleSpaceRow[] = await this.db
-      .select(visibleSpaceColumns(organizationId, viewer.userId))
-      .from(spaces)
-      .where(
-        and(
-          eq(spaces.organizationId, organizationId),
-          visibleSpaceCondition(organizationId, viewer),
-        ),
-      )
-      .orderBy(asc(spaces.createdAt), asc(spaces.id));
+    const rows: VisibleSpaceRow[] = await this.visibleTo(organizationId, viewer, undefined).orderBy(
+      asc(spaces.createdAt),
+      asc(spaces.id),
+    );
     return rows.map(toSpaceWithGrants);
+  }
+
+  /**
+   * Method visibleTo
+   *
+   * @description
+   * The spaces of the organization a member sees: `spaces` left joined to the grant of the member
+   * on each and to the spaces of the lists shared with them, with the columns of
+   * `visibleSpaceColumns` and one more condition.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {Viewer} viewer - The member and its role.
+   * @param {SQL | undefined} condition - What the collection adds, or `undefined`.
+   * @returns {object} The query, to order and bound.
+   */
+  private visibleTo(organizationId: string, viewer: Viewer, condition: SQL | undefined) {
+    return this.db
+      .select(visibleSpaceColumns())
+      .from(spaces)
+      .leftJoin(viewerSpaceGrant, viewerSpaceGrantJoin(organizationId, viewer.userId))
+      .leftJoin(viewerListSpaces(organizationId, viewer.userId), viewerListSpacesJoin())
+      .where(
+        and(eq(spaces.organizationId, organizationId), visibleSpaceCondition(viewer), condition),
+      )
+      .$dynamic();
   }
 
   /**

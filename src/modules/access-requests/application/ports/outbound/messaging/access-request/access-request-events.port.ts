@@ -1,4 +1,5 @@
 import type { AccessRequest } from '../../../../../domain/aggregates/access-request/access-request.aggregate.js';
+import type { RequestPlacement } from '../../../../../domain/value-objects/access-request/request-placement.value-object.js';
 import type { RequestedTarget } from '../../../../models/access-request/requested-target.model.js';
 
 /**
@@ -28,11 +29,13 @@ export interface AccessRequestEvents {
    *
    * @description
    * Appends `space.access-request-decided.v1`, `list.access-request-decided.v1` or
-   * `task.access-request-decided.v1` for an answered request, at version 2, by who answered it.
+   * `task.access-request-decided.v1` for an answered request, at version 2, by who answered it,
+   * naming where its target is now (the current list of the task of a task request).
    *
    * @param {AccessRequest} request - The request, answered.
+   * @param {RequestPlacement} placement - Where its target is now.
    * @returns {Promise<void>} Resolves once appended.
    */
-  accessRequestDecided(request: AccessRequest): Promise<void>;
+  accessRequestDecided(request: AccessRequest, placement: RequestPlacement): Promise<void>;
   // #endregion
 }

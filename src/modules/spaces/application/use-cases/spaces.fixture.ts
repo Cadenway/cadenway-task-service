@@ -12,6 +12,7 @@ import type { SpaceField } from '../../domain/value-objects/space/space-field.va
 import type { SpaceState } from '../../domain/value-objects/space/space-state.value-object.js';
 import type { EventActor } from '../models/actor/event-actor.model.js';
 import type { GrantedResource } from '../models/access/granted-resource.model.js';
+import type { ListAccess } from '../models/access/list-access.model.js';
 import type { ListWithGrants } from '../models/access/list-with-grants.model.js';
 import type { SpaceWithGrants } from '../models/access/space-with-grants.model.js';
 import type { StoredGrant } from '../models/access/stored-grant.model.js';
@@ -472,6 +473,18 @@ export class InMemorySpaces implements SpacesUnitOfWork {
    * @type {string[]}
    */
   public journal: string[] = [];
+
+  /**
+   * Property reads
+   *
+   * @description
+   * The readings by id, in order (`space` and `list` for `find`, `grants` for `viewerGrants`),
+   * whatever they found: what a spec compares to tell whether a path reads more than another.
+   *
+   * @type {string[]}
+   * @readonly
+   */
+  public readonly reads: string[] = [];
 
   /**
    * Property prefixOwners
@@ -983,8 +996,10 @@ export class InMemorySpaces implements SpacesUnitOfWork {
           spaces.set(state.id, state);
           return Promise.resolve(Space.restore(state));
         },
-        find: (organizationId: string, id: string): Promise<Space | null> =>
-          Promise.resolve(findSpace(organizationId, id)),
+        find: (organizationId: string, id: string): Promise<Space | null> => {
+          this.reads.push('space');
+          return Promise.resolve(findSpace(organizationId, id));
+        },
         lock: (organizationId: string, id: string): Promise<Space | null> => {
           this.journal.push(`space ${id}`);
           return Promise.resolve(findSpace(organizationId, id));
@@ -993,13 +1008,23 @@ export class InMemorySpaces implements SpacesUnitOfWork {
           this.journal.push(`space ${id} share`);
           return Promise.resolve(findSpace(organizationId, id));
         },
-        lockMany: (organizationId: string, ids: readonly string[]): Promise<Space[]> => {
-          const found: Space[] = [...ids]
-            .sort()
-            .map((id: string): Space | null => findSpace(organizationId, id))
-            .filter((space: Space | null): space is Space => space !== null);
+        lockInOrder: (
+          organizationId: string,
+          locks: readonly { readonly id: string; readonly mode: 'update' | 'share' }[],
+        ): Promise<Space[]> => {
+          const found: Space[] = InMemorySpaces.page(
+            locks
+              .map(({ id }): Space | null => findSpace(organizationId, id))
+              .filter((space: Space | null): space is Space => space !== null)
+              .map((space: Space): SpaceState => space.snapshot),
+            null,
+            Number.MAX_SAFE_INTEGER,
+          ).map((state: SpaceState): Space => Space.restore(state));
           for (const space of found) {
-            this.journal.push(`space ${space.snapshot.id}`);
+            const mode: 'update' | 'share' | undefined = locks.find(
+              (lock): boolean => lock.id === space.snapshot.id,
+            )?.mode;
+            this.journal.push(`space ${space.snapshot.id}${mode === 'share' ? ' share' : ''}`);
           }
           return Promise.resolve(found);
         },
@@ -1111,8 +1136,10 @@ export class InMemorySpaces implements SpacesUnitOfWork {
           lists.set(state.id, state);
           return Promise.resolve(TaskList.restore(state));
         },
-        find: (organizationId: string, id: string): Promise<TaskList | null> =>
-          Promise.resolve(findList(organizationId, id)),
+        find: (organizationId: string, id: string): Promise<TaskList | null> => {
+          this.reads.push('list');
+          return Promise.resolve(findList(organizationId, id));
+        },
         lock: (organizationId: string, id: string): Promise<TaskList | null> => {
           this.journal.push(`list ${id}`);
           return Promise.resolve(findList(organizationId, id));
@@ -1218,12 +1245,22 @@ export class InMemorySpaces implements SpacesUnitOfWork {
           );
           return Promise.resolve(visibleLists(organizationId, viewer, ordered).slice(0, limit));
         },
-        listAllVisibleTo: (organizationId: string, viewer: Viewer): Promise<ListWithGrants[]> => {
+        listAccessesVisibleTo: (organizationId: string, viewer: Viewer): Promise<ListAccess[]> => {
           const ordered: TaskListState[] = [...lists.values()].sort(
             (left: TaskListState, right: TaskListState): number =>
               InMemorySpaces.sidebarOrder(spaces, left, right),
           );
-          return Promise.resolve(visibleLists(organizationId, viewer, ordered));
+          return Promise.resolve(
+            visibleLists(organizationId, viewer, ordered).map(
+              (row: ListWithGrants): ListAccess => ({
+                listId: row.list.snapshot.id,
+                spaceId: row.list.snapshot.spaceId,
+                organizationAccess: row.list.snapshot.organizationAccess,
+                space: row.space,
+                grants: row.grants,
+              }),
+            ),
+          );
         },
       },
       grants: {
@@ -1234,6 +1271,7 @@ export class InMemorySpaces implements SpacesUnitOfWork {
           listId: string | null,
         ): Promise<ViewerGrants> => {
           this.viewerGrantsCalls.push({ viewerUserId, spaceId, listId });
+          this.reads.push('grants');
           return Promise.resolve({
             space: InMemorySpaces.roleOfGrant(
               grants,
