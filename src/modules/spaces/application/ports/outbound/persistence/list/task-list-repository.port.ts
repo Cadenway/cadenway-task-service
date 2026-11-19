@@ -1,5 +1,7 @@
 import type { TaskList } from '../../../../../domain/aggregates/list/task-list.aggregate.js';
 import type { TaskListDraft } from '../../../../../domain/value-objects/list/task-list-draft.value-object.js';
+import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
+import type { ListWithGrants } from '../../../../models/access/list-with-grants.model.js';
 import type { PagePosition } from '../../../../models/page/page-position.model.js';
 
 /**
@@ -7,7 +9,9 @@ import type { PagePosition } from '../../../../models/page/page-position.model.j
  *
  * @description
  * The lists and sprints of the organization of the tenant transaction of a unit of work: row-level
- * security limits it to that organization, and every method names it again.
+ * security limits it to that organization, and every method names it again. The collections keep
+ * the lists a member has a role on ("Access" of `openapi/public/spaces.yaml`), each with the
+ * grants of the member, from which the application computes the role with `listRoleOf`.
  */
 export interface TaskListRepository {
   // #region Methods
@@ -48,10 +52,23 @@ export interface TaskListRepository {
   lock(organizationId: string, id: string): Promise<TaskList | null>;
 
   /**
+   * Method lockMany
+   *
+   * @description
+   * Loads and locks some lists until the end of the transaction, in the order of their ids, so
+   * that two batches never wait on each other.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {readonly string[]} ids - The ids of the lists.
+   * @returns {Promise<TaskList[]>} The lists that exist, by id.
+   */
+  lockMany(organizationId: string, ids: readonly string[]): Promise<TaskList[]>;
+
+  /**
    * Method update
    *
    * @description
-   * Writes a list locked by `lock` after a change, with its new version.
+   * Writes a list locked by `lock` or `lockMany` after a change, with its new version.
    *
    * @param {TaskList} list - The list after the change.
    * @returns {Promise<void>} Resolves once written.
@@ -59,76 +76,96 @@ export interface TaskListRepository {
   update(list: TaskList): Promise<void>;
 
   /**
-   * Method listOfSpace
+   * Method listOfSpaceVisibleTo
    *
    * @description
-   * The lists of a space in the order of their creation (id as tie-breaker), after `after`.
+   * The lists of a space a member has a role on, in the order of their creation (id as
+   * tie-breaker), after `after`. It does not check that the member sees the space.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} spaceId - The space.
+   * @param {Viewer} viewer - The member and its role.
    * @param {PagePosition | null} after - Where the page starts, `null` for the first page.
    * @param {number} limit - Most rows to return.
-   * @returns {Promise<TaskList[]>} The lists, at most `limit`.
+   * @returns {Promise<ListWithGrants[]>} The lists, at most `limit`.
    */
-  listOfSpace(
+  listOfSpaceVisibleTo(
     organizationId: string,
     spaceId: string,
+    viewer: Viewer,
     after: PagePosition | null,
     limit: number,
-  ): Promise<TaskList[]>;
+  ): Promise<ListWithGrants[]>;
 
   /**
-   * Method listAllOfSpace
+   * Method listAllOfSpaceVisibleTo
    *
    * @description
-   * Every list of a space in the order of their creation (id as tie-breaker), unpaged: a space
-   * holds few lists, and the caller needs all of them. It does not check that the viewer sees the
-   * space.
+   * Every list of a space a member has a role on, in the order of their creation (id as
+   * tie-breaker), unpaged: a space holds few lists, and the caller needs all of them.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} spaceId - The space.
-   * @returns {Promise<TaskList[]>} Its lists.
+   * @param {Viewer} viewer - The member and its role.
+   * @returns {Promise<ListWithGrants[]>} Its lists the member has a role on.
    */
-  listAllOfSpace(organizationId: string, spaceId: string): Promise<TaskList[]>;
+  listAllOfSpaceVisibleTo(
+    organizationId: string,
+    spaceId: string,
+    viewer: Viewer,
+  ): Promise<ListWithGrants[]>;
 
   /**
    * Method listCurrentSprintsVisibleTo
    *
    * @description
-   * The sprints of the spaces a viewer sees (the whole organization and the private ones the viewer
-   * owns, none awaiting an owner) whose period holds `today`, bounds included, ordered by end date,
-   * then creation instant, then id, at most `limit`.
+   * The sprints a member has a role on whose period holds `today`, bounds included, ordered by end
+   * date, then creation instant, then id, at most `limit`.
    *
    * @param {string} organizationId - The organization of the transaction.
-   * @param {string} viewerUserId - The account of the member.
+   * @param {Viewer} viewer - The member and its role.
    * @param {string} today - The calendar date of the caller, `YYYY-MM-DD`.
    * @param {number} limit - Most rows to return.
-   * @returns {Promise<TaskList[]>} The sprints, at most `limit`.
+   * @returns {Promise<ListWithGrants[]>} The sprints, at most `limit`.
    */
   listCurrentSprintsVisibleTo(
     organizationId: string,
-    viewerUserId: string,
+    viewer: Viewer,
     today: string,
     limit: number,
-  ): Promise<TaskList[]>;
+  ): Promise<ListWithGrants[]>;
 
   /**
    * Method listFirstVisibleTo
    *
    * @description
-   * The first lists of the spaces a viewer sees, in sidebar order: spaces by creation instant (id as
+   * The first lists a member has a role on, in sidebar order: spaces by creation instant (id as
    * tie-breaker), then the lists of each space by creation instant (id as tie-breaker), at most
    * `limit`. Sprints are lists and are included.
    *
    * @param {string} organizationId - The organization of the transaction.
-   * @param {string} viewerUserId - The account of the member.
+   * @param {Viewer} viewer - The member and its role.
    * @param {number} limit - Most rows to return.
-   * @returns {Promise<TaskList[]>} The lists, at most `limit`.
+   * @returns {Promise<ListWithGrants[]>} The lists, at most `limit`.
    */
   listFirstVisibleTo(
     organizationId: string,
-    viewerUserId: string,
+    viewer: Viewer,
     limit: number,
-  ): Promise<TaskList[]>;
+  ): Promise<ListWithGrants[]>;
+
+  /**
+   * Method listAllVisibleTo
+   *
+   * @description
+   * Every list of the organization a member has a role on, in the sidebar order of
+   * `listFirstVisibleTo`, unpaged: the lists of an organization are few, and the caller filters
+   * other collections by them.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {Viewer} viewer - The member and its role.
+   * @returns {Promise<ListWithGrants[]>} The lists.
+   */
+  listAllVisibleTo(organizationId: string, viewer: Viewer): Promise<ListWithGrants[]>;
   // #endregion
 }

@@ -18,12 +18,12 @@ the removal committed.
 
 ## Public entry points
 
-| Entry point                                  | Consumers                       |
-| -------------------------------------------- | ------------------------------- |
-| `organization-members.module`                | spaces, member-lifecycle, tasks |
-| `public/membership/apply-membership-change`  | member-lifecycle                |
-| `public/membership/find-organization-member` | spaces, tasks                   |
-| `public/membership/find-organization-owner`  | spaces                          |
+| Entry point                                  | Consumers                                        |
+| -------------------------------------------- | ------------------------------------------------ |
+| `organization-members.module`                | spaces, member-lifecycle, tasks, access-requests |
+| `public/membership/apply-membership-change`  | member-lifecycle                                 |
+| `public/membership/find-organization-member` | spaces, tasks, access-requests                   |
+| `public/membership/find-organization-owner`  | spaces                                           |
 
 `OrganizationMembersModule` exports the `ApplyMembershipChange`, `FindOrganizationMember` and
 `FindOrganizationOwner` providers, each with its input type and, for the two readings, its output type.
@@ -34,8 +34,10 @@ the removal committed.
 - `FindOrganizationMember` (`{ organizationId, userId }` to `{ memberId, role }`, or `null` when
   the account is not a current member) and `FindOrganizationOwner` (`{ organizationId }` to
   `{ memberId, userId }`, or `null` until the join of the owner arrives) serve the access rules of
-  the spaces module; the tasks module reads `FindOrganizationMember` for the role of the actor and
-  the eligibility of the people it assigns.
+  the spaces module (the role of the actor, and of the person given a grant); the tasks module
+  reads `FindOrganizationMember` for the role of the actor and the eligibility of the people it
+  assigns; the access-requests module reads it for the role of the requester or of the person who
+  answers, and for whether a former member joined again (the clean-up of their requests).
 
 All three run in the tenant transaction of their caller and join it, or open one for the
 organization of the context; they must not be called from a system transaction (the kit refuses

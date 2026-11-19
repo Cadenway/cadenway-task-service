@@ -13,6 +13,7 @@ import {
   SPRINT_14,
   atelierNordMembers,
   refusalOf,
+  sprint14SharedWith,
   subtaskState,
   taskState,
 } from '../../../tasks.fixture.js';
@@ -96,10 +97,32 @@ describe('GetTaskDetail: what the actor does not see is not found', () => {
     });
   });
 
-  it('refuses any task to a guest', async () => {
+  it('refuses a task of no list shared with a guest', async () => {
     expect(await refusalOf(atelierNord().execute(read({ actorUserId: NADIA })))).toEqual({
       reason: 'task-not-found',
     });
+  });
+
+  it('shows a guest the task of a list shared with them, with their role on the list and none on the space', async () => {
+    const detail = await new GetTaskDetail(
+      new InMemoryTasks({ tasks: [taskState(), subtaskState()] }),
+      atelierNordMembers(),
+      sprint14SharedWith({ [NADIA]: 'view' }),
+    ).execute(read({ actorUserId: NADIA }));
+
+    expect(detail.list).toMatchObject({
+      id: SPRINT_14,
+      organizationAccess: false,
+      callerRole: 'view',
+    });
+    expect(detail.space).toMatchObject({ id: PRODUIT, callerRole: null, callerCanManage: false });
+  });
+
+  it('gives the owner of the organization edit on the list and the management of the space', async () => {
+    const detail = await atelierNord().execute(read());
+
+    expect(detail.list.callerRole).toBe('edit');
+    expect(detail.space).toMatchObject({ callerRole: 'edit', callerCanManage: true });
   });
 
   it('refuses a task of the private space of another member', async () => {

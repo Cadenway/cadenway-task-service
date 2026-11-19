@@ -18,6 +18,8 @@ import {
   UNKNOWN_SPACE,
   backlogState,
   designState,
+  listGrantOf,
+  spaceGrantOf,
   spaceState,
   sprintState,
 } from '../../../spaces.fixture.js';
@@ -71,6 +73,8 @@ describe('FindVisibleList: a member finds the list and its space', () => {
         sprint: { startDate: '2026-11-03', endDate: '2026-11-17', goal: SPRINT_14_GOAL },
         createdAt: sprintState().createdAt,
         version: 1,
+        organizationAccess: true,
+        callerRole: 'edit',
       },
       space: {
         id: PRODUIT,
@@ -85,6 +89,8 @@ describe('FindVisibleList: a member finds the list and its space', () => {
         nextKey: 'CAD-482',
         createdAt: spaceState().createdAt,
         version: 1,
+        callerRole: 'edit',
+        callerCanManage: false,
       },
     } satisfies FindVisibleListOutput);
   });
@@ -240,5 +246,53 @@ describe('FindVisibleList: a lookup changes nothing', () => {
     expect(spaces.lists).toEqual(before.lists);
     expect(spaces.lastNumberOf(ATELIER_NORD, 'CAD')).toBe(481);
     expect(spaces.allocateCalls).toEqual([]);
+  });
+});
+
+describe('FindVisibleList: the role of the viewer on the list and its access to the space', () => {
+  it('finds for a guest a list shared with them, with its role and no role on the space', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [sprintState()],
+      grants: [listGrantOf(PRODUIT, SPRINT_14, NADIA, 'view')],
+    });
+
+    const found = await new FindVisibleList(spaces).execute(
+      find({ viewerUserId: NADIA, viewerRole: 'guest' }),
+    );
+
+    expect(found?.list.callerRole).toBe('view');
+    expect(found?.space).toMatchObject({ callerRole: null, callerCanManage: false });
+  });
+
+  it('answers null for a list whose switch is off to a member it is not shared with', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [sprintState({ organizationAccess: false })],
+    });
+
+    expect(await new FindVisibleList(spaces).execute(find())).toBeNull();
+  });
+
+  it('finds a list of a private space shared with the viewer through the space', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [designState()],
+      lists: [backlogState({ id: MAQUETTES, spaceId: DESIGN, name: 'Maquettes' })],
+      grants: [spaceGrantOf(DESIGN, LEA, 'comment')],
+    });
+
+    const found = await new FindVisibleList(spaces).execute(find({ listId: MAQUETTES }));
+
+    expect(found?.list).toMatchObject({ callerRole: 'comment', organizationAccess: true });
+    expect(found?.space).toMatchObject({ callerRole: 'comment', callerCanManage: false });
+  });
+
+  it('answers the owner of the space that they manage it and have edit on the list', async () => {
+    const found = await new FindVisibleList(atelierNord()).execute(
+      find({ viewerUserId: CAMILLE, viewerRole: 'owner' }),
+    );
+
+    expect(found?.list.callerRole).toBe('edit');
+    expect(found?.space).toMatchObject({ callerRole: 'edit', callerCanManage: true });
   });
 });

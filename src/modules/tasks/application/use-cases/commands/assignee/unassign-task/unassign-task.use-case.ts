@@ -75,7 +75,8 @@ export class UnassignTask {
    * @param {UnassignTaskInput} input - The actor, the task, the account and the versions `If-Match`
    * accepts.
    * @returns {Promise<UnassignTaskOutput>} The version of the task after the removal.
-   * @throws {TaskRefusal} `organization-not-found`, `task-not-found` or `version-mismatch`.
+   * @throws {TaskRefusal} `organization-not-found`, `task-not-found`, `role-insufficient` or
+   * `version-mismatch`.
    */
   public async execute(input: UnassignTaskInput): Promise<UnassignTaskOutput> {
     return this.unitOfWork.run(async (store: TasksStore): Promise<UnassignTaskOutput> => {
@@ -88,6 +89,7 @@ export class UnassignTask {
         organizationId: input.organizationId,
         viewer,
         taskKey: input.taskKey,
+        edit: true,
         lock: true,
         expectedVersions: input.expectedVersions,
       });

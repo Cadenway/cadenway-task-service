@@ -18,8 +18,8 @@ import type { GetListCountsOutput } from './get-list-counts.output.js';
  * @description
  * Reads a list the actor sees with the counts of its top-level tasks, subtasks left out
  * (`GET /internal/v1/lists/{listId}/counts`), in one read-only transaction, without a lock. An
- * unknown list and a list of a space the actor does not see (a guest sees none) get the same
- * answer, `list-not-found`. A list without a task answers zeros.
+ * unknown list and a list the actor has no role on get the same answer, `list-not-found`. A list
+ * without a task answers zeros.
  */
 export class GetListCounts {
   // #region Properties

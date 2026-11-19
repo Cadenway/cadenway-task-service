@@ -1,4 +1,5 @@
 import type { SpaceEvents } from '../../ports/outbound/messaging/space/space-events.port.js';
+import type { GrantRepository } from '../../ports/outbound/persistence/access/grant-repository.port.js';
 import type { TaskListRepository } from '../../ports/outbound/persistence/list/task-list-repository.port.js';
 import type { SpacePrefixRepository } from '../../ports/outbound/persistence/space/space-prefix-repository.port.js';
 import type { SpaceRepository } from '../../ports/outbound/persistence/space/space-repository.port.js';
@@ -44,6 +45,17 @@ export interface SpacesStore {
    * @readonly
    */
   readonly lists: TaskListRepository;
+
+  /**
+   * Property grants
+   *
+   * @description
+   * The grants of the spaces and lists.
+   *
+   * @type {GrantRepository}
+   * @readonly
+   */
+  readonly grants: GrantRepository;
 
   /**
    * Property events

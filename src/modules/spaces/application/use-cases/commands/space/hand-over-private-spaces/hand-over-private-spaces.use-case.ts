@@ -4,6 +4,7 @@ import type { EventActor } from '../../../../models/actor/event-actor.model.js';
 import type { SpacesStore } from '../../../../models/transactions/spaces-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpacesUnitOfWork } from '../../../../ports/outbound/transactions/space/spaces-unit-of-work.port.js';
+import { OwnerGrantsRemover } from '../../../../services/access/owner-grants-remover.service.js';
 import type { HandOverPrivateSpacesInput } from './hand-over-private-spaces.input.js';
 import type { HandOverPrivateSpacesOutput } from './hand-over-private-spaces.output.js';
 
@@ -12,7 +13,8 @@ import type { HandOverPrivateSpacesOutput } from './hand-over-private-spaces.out
  *
  * @description
  * How many private spaces one batch locks and hands over, in one tenant transaction: each costs
- * one update and, when handed over, one outbox append, so a full batch is about 200 round trips,
+ * one update and, when handed over, one outbox append, and one reading finds the grants the owner
+ * of the organization held on the batch (usually none), so a full batch is about 200 round trips,
  * far under the 10 s statement timeout of the application role, and a request waits for a space
  * of a batch at most its 5 s lock timeout.
  *
@@ -48,7 +50,9 @@ const SYSTEM_ACTOR: EventActor = { type: 'system', id: 'task-service' };
  * 3. otherwise it gives each space to the owner of the organization (`Space.handOver`) and appends
  *    `space.updated.v1` (field `ownerUserId`, actor `{ type: 'system', id: 'task-service' }`); while
  *    the copy does not hold that owner, it marks the spaces awaiting one, seen by nobody, without
- *    event, and `HandOverAwaitingSpaces` gives them to the owner once the copy learns it.
+ *    event, and `HandOverAwaitingSpaces` gives them to the owner once the copy learns it;
+ * 4. a grant the owner of the organization held on a space handed over to them, or on one of its
+ *    lists, is removed with its access event (`OwnerGrantsRemover`): an owner holds no grant.
  *
  * The spaces of a batch, their versions and their events commit together, or the batch rolls back
  * alone. A handed-over or awaiting space leaves the filter of step 1, so the next call goes on with
@@ -80,6 +84,17 @@ export class HandOverPrivateSpaces {
    * @readonly
    */
   private readonly members: MemberDirectory;
+
+  /**
+   * Property ownerGrants
+   *
+   * @description
+   * Removes the grants of the owner of the organization on the spaces handed over to them.
+   *
+   * @type {OwnerGrantsRemover}
+   * @readonly
+   */
+  private readonly ownerGrants: OwnerGrantsRemover;
   // #endregion
 
   // #region Constructor
@@ -96,6 +111,7 @@ export class HandOverPrivateSpaces {
   public constructor(unitOfWork: SpacesUnitOfWork, members: MemberDirectory) {
     this.unitOfWork = unitOfWork;
     this.members = members;
+    this.ownerGrants = new OwnerGrantsRemover();
   }
   // #endregion
 
@@ -141,16 +157,17 @@ export class HandOverPrivateSpaces {
       if (ownerUserId === input.formerOwnerUserId) {
         return { outcome: 'member-again' };
       }
-      let handedOver: number = 0;
+      const handed: { readonly space: Space; readonly formerOwnerUserId: string }[] = [];
       for (const stored of spaces) {
         const { space, changed }: SpaceUpdate = stored.handOver(ownerUserId);
         if (changed.length > 0) {
           await store.spaces.update(space);
           await store.events.spaceUpdated(space, changed, SYSTEM_ACTOR);
-          handedOver += 1;
+          handed.push({ space, formerOwnerUserId: input.formerOwnerUserId });
         }
       }
-      return { outcome: 'handed-over', handedOver, awaitingOwner: 0 };
+      await this.ownerGrants.remove(store, ownerUserId, handed, SYSTEM_ACTOR);
+      return { outcome: 'handed-over', handedOver: handed.length, awaitingOwner: 0 };
     });
   }
   // #endregion

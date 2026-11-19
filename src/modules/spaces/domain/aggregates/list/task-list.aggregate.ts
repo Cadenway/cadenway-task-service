@@ -280,10 +280,14 @@ function checkStoredSprint(sprint: Sprint | null): void {
  * - its name, icon and color follow `ListCreation` and `ListPatch`;
  * - a sprint has a first day, a last day on or after it, and an optional goal of 300 characters
  *   at most; its state follows from its dates, with no start or completion;
- * - who creates and changes it is whoever sees its space, which the application checks first
- *   ("Who sees a list" of `openapi/public/lists.yaml`): there is no role rule beyond the space;
- * - each change that changes something takes the next version; one that changes nothing keeps the
- *   same instance, so no `list.updated.v1` is emitted.
+ * - whoever has `edit` on its space creates it, whoever has `edit` on it changes it, which the
+ *   application checks first with `access-role.policy.ts` ("Who sees a list" of
+ *   `openapi/public/lists.yaml`, decision 2 of P3b-1);
+ * - its switch "Accès de l’organisation" (`organizationAccess`) is on unless the creation or a
+ *   change turns it off; a change of the switch is a change of access, apart from the content;
+ * - each change that changes something takes the next version, and a change of its grants too
+ *   (`recordAccessChange`); one that changes nothing keeps the same instance, so nothing is
+ *   emitted.
  *
  * The name of the first list of a new space is chosen by the application, not by this class.
  */

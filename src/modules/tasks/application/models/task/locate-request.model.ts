@@ -17,6 +17,9 @@ export interface LocateRequest {
   /** The key of the task, as the path carries it. */
   readonly taskKey: string;
 
+  /** `true` when the operation changes the task: the actor needs `edit` on the list it is in. */
+  readonly edit: boolean;
+
   /** `true` in a write: the task is locked `FOR NO KEY UPDATE` until the commit. */
   readonly lock: boolean;
 

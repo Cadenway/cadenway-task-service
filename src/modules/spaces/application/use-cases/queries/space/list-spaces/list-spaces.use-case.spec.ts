@@ -12,10 +12,14 @@ import {
   OTHER_ORGANIZATION,
   PRODUIT,
   STRANGER,
+  DESIGN,
+  backlogState,
   atelierNordMembers,
   designState,
+  listGrantOf,
   marketingState,
   refusalOf,
+  spaceGrantOf,
   spaceState,
 } from '../../../spaces.fixture.js';
 import type { ListSpacesInput } from './list-spaces.input.js';
@@ -176,19 +180,7 @@ describe('ListSpaces: a page holds the limit, and limit + 1 rows are read to kno
   });
 });
 
-describe('ListSpaces: a guest sees no space and a stranger no organization', () => {
-  it('answers an empty page to a guest, without reading any space', async () => {
-    const spaces = atelierNord();
-
-    const page = await new ListSpaces(spaces, atelierNordMembers()).execute(
-      listSpaces({ actorUserId: NADIA }),
-    );
-
-    expect(page).toEqual({ items: [], next: null });
-    expect(spaces.listVisibleCalls).toEqual([]);
-    expect(spaces.nextNumbersCalls).toEqual([]);
-  });
-
+describe('ListSpaces: a stranger sees no organization', () => {
   it('refuses an account the copy of the members does not know with organization-not-found', async () => {
     const refusal = await refusalOf(
       new ListSpaces(atelierNord(), atelierNordMembers()).execute(
@@ -224,5 +216,74 @@ describe('ListSpaces: a private space that awaits an owner is left out for every
     );
 
     expect(page.items.map((view) => view.space.prefix)).toEqual(['CAD']);
+  });
+});
+
+describe('ListSpaces: grants show more spaces, each with the role of the caller', () => {
+  it('answers edit and the management of each space to a member of the organization (P3a unchanged)', async () => {
+    const page = await new ListSpaces(atelierNord(), atelierNordMembers()).execute(
+      listSpaces({ actorUserId: INES }),
+    );
+
+    expect(
+      page.items.map((view) => [view.space.prefix, view.callerRole, view.callerCanManage]),
+    ).toEqual([
+      ['CAD', 'edit', true],
+      ['MKT', 'edit', true],
+      ['SUP', 'edit', true],
+    ]);
+  });
+
+  it('adds a private space shared with the caller, with the role of the grant', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState(), designState()],
+      grants: [spaceGrantOf(DESIGN, LEA, 'comment')],
+    });
+
+    const page = await new ListSpaces(spaces, atelierNordMembers()).execute(listSpaces());
+
+    expect(
+      page.items.map((view) => [view.space.prefix, view.callerRole, view.callerCanManage]),
+    ).toEqual([
+      ['CAD', 'edit', false],
+      ['DES', 'comment', false],
+    ]);
+  });
+
+  it('lists to a guest the spaces of the lists shared with them, with no role on the space', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState(), designState(), marketingState()],
+      lists: [backlogState()],
+      grants: [listGrantOf(PRODUIT, backlogState().id, NADIA, 'view')],
+    });
+
+    const page = await new ListSpaces(spaces, atelierNordMembers()).execute(
+      listSpaces({ actorUserId: NADIA }),
+    );
+
+    expect(
+      page.items.map((view) => [view.space.prefix, view.callerRole, view.callerCanManage]),
+    ).toEqual([['CAD', null, false]]);
+  });
+
+  it('answers an empty page to a guest without a grant of a list', async () => {
+    const page = await new ListSpaces(atelierNord(), atelierNordMembers()).execute(
+      listSpaces({ actorUserId: NADIA }),
+    );
+
+    expect(page).toEqual({ items: [], next: null });
+  });
+
+  it('gives nothing to a guest through a grant of a space', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [designState()],
+      grants: [spaceGrantOf(DESIGN, NADIA, 'edit')],
+    });
+
+    const page = await new ListSpaces(spaces, atelierNordMembers()).execute(
+      listSpaces({ actorUserId: NADIA }),
+    );
+
+    expect(page.items).toEqual([]);
   });
 });

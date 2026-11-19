@@ -1,13 +1,21 @@
 import { TaskList } from '../../domain/aggregates/list/task-list.aggregate.js';
 import { Space } from '../../domain/aggregates/space/space.aggregate.js';
+import type { AccessRole } from '../../domain/value-objects/access/access-role.value-object.js';
+import type { GrantEntry } from '../../domain/value-objects/access/grant-entry.value-object.js';
 import type { TaskListDraft } from '../../domain/value-objects/list/task-list-draft.value-object.js';
 import type { TaskListField } from '../../domain/value-objects/list/task-list-field.value-object.js';
 import type { TaskListState } from '../../domain/value-objects/list/task-list-state.value-object.js';
 import type { MemberRole } from '../../domain/value-objects/member/member-role.value-object.js';
+import type { Viewer } from '../../domain/value-objects/member/viewer.value-object.js';
 import type { SpaceDraft } from '../../domain/value-objects/space/space-draft.value-object.js';
 import type { SpaceField } from '../../domain/value-objects/space/space-field.value-object.js';
 import type { SpaceState } from '../../domain/value-objects/space/space-state.value-object.js';
 import type { EventActor } from '../models/actor/event-actor.model.js';
+import type { GrantedResource } from '../models/access/granted-resource.model.js';
+import type { ListWithGrants } from '../models/access/list-with-grants.model.js';
+import type { SpaceWithGrants } from '../models/access/space-with-grants.model.js';
+import type { StoredGrant } from '../models/access/stored-grant.model.js';
+import type { ViewerGrants } from '../models/access/viewer-grants.model.js';
 import type { PagePosition } from '../models/page/page-position.model.js';
 import type { SpacesStore } from '../models/transactions/spaces-store.model.js';
 import type { MemberDirectory } from '../ports/outbound/members/membership/member-directory.port.js';
@@ -54,7 +62,10 @@ export const UNKNOWN_SPACE = '019a7000-0000-7000-8000-0000000000ff';
 /** A list id no list has. */
 export const UNKNOWN_LIST = '019a7100-0000-7000-8000-0000000000ff';
 
-/** When the first space or list created by a spec gets its `createdAt`; each next one is a second later. */
+/** When the grants a spec seeds were first given ("le 4 mars"). */
+export const GRANTED_AT: Date = new Date('2026-03-04T14:05:00Z');
+
+/** When the first space, list or grant created by a spec gets its instant; each next one is a second later. */
 const FIRST_CREATION: number = Date.parse('2026-11-18T10:00:00Z');
 
 /**
@@ -74,6 +85,89 @@ export function marketingState(overrides: Partial<SpaceState> = {}): SpaceState 
     createdAt: new Date('2026-10-21T09:00:00Z'),
     ...overrides,
   });
+}
+
+/** A grant the fake stores, of Atelier Nord unless the spec says otherwise. */
+export interface FakeGrant extends StoredGrant {
+  // #region Properties
+  /**
+   * Property organizationId
+   *
+   * @description
+   * The organization of the grant.
+   *
+   * @type {string}
+   * @readonly
+   */
+  readonly organizationId: string;
+
+  /**
+   * Property resource
+   *
+   * @description
+   * The space or the list the grant opens.
+   *
+   * @type {GrantedResource}
+   * @readonly
+   */
+  readonly resource: GrantedResource;
+  // #endregion
+}
+
+/**
+ * Builds a grant of a space given by Camille Martin.
+ *
+ * @param spaceId - The space.
+ * @param userId - The person given access.
+ * @param role - The role.
+ * @param overrides - Fields to replace.
+ * @returns The grant.
+ */
+export function spaceGrantOf(
+  spaceId: string,
+  userId: string,
+  role: AccessRole,
+  overrides: Partial<FakeGrant> = {},
+): FakeGrant {
+  return {
+    organizationId: ATELIER_NORD,
+    resource: { kind: 'space', spaceId },
+    userId,
+    role,
+    createdAt: GRANTED_AT,
+    grantedAt: GRANTED_AT,
+    grantedBy: { type: 'user', id: CAMILLE },
+    ...overrides,
+  };
+}
+
+/**
+ * Builds a grant of a list given by Camille Martin.
+ *
+ * @param spaceId - The space of the list.
+ * @param listId - The list.
+ * @param userId - The person given access.
+ * @param role - The role.
+ * @param overrides - Fields to replace.
+ * @returns The grant.
+ */
+export function listGrantOf(
+  spaceId: string,
+  listId: string,
+  userId: string,
+  role: AccessRole,
+  overrides: Partial<FakeGrant> = {},
+): FakeGrant {
+  return {
+    organizationId: ATELIER_NORD,
+    resource: { kind: 'list', spaceId, listId },
+    userId,
+    role,
+    createdAt: GRANTED_AT,
+    grantedAt: GRANTED_AT,
+    grantedBy: { type: 'user', id: CAMILLE },
+    ...overrides,
+  };
 }
 
 /** An event the use cases appended to the outbox, as plain data. */
@@ -103,6 +197,25 @@ export type RecordedEvent =
       readonly version: number;
       readonly changed: readonly TaskListField[];
       readonly actor: EventActor;
+    }
+  | {
+      readonly kind: 'spaceAccessChanged';
+      readonly spaceId: string;
+      readonly version: number;
+      readonly grants: readonly GrantEntry[];
+      readonly changedUserIds: readonly string[];
+      readonly actor: EventActor;
+    }
+  | {
+      readonly kind: 'listAccessChanged';
+      readonly listId: string;
+      readonly spaceId: string;
+      readonly version: number;
+      readonly organizationAccess: boolean;
+      readonly grants: readonly GrantEntry[];
+      readonly changed: readonly ('grants' | 'organizationAccess')[];
+      readonly changedUserIds: readonly string[];
+      readonly actor: EventActor;
     };
 
 /** What a spec seeds in the fake store. */
@@ -129,6 +242,17 @@ export interface InMemorySpacesSeed {
    * @readonly
    */
   readonly lists?: readonly TaskListState[];
+
+  /**
+   * Property grants
+   *
+   * @description
+   * The grants of spaces and lists already stored.
+   *
+   * @type {readonly FakeGrant[]}
+   * @readonly
+   */
+  readonly grants?: readonly FakeGrant[];
 
   /**
    * Property formerPrefixes
@@ -188,6 +312,17 @@ export class InMemoryMembers implements MemberDirectory {
    * @readonly
    */
   public readonly ownerCalls: string[] = [];
+
+  /**
+   * Property journal
+   *
+   * @description
+   * Where the locked memberships are written (`membership <account>`); a spec shares it with the
+   * journal of `InMemorySpaces` to check the lock order.
+   *
+   * @type {string[]}
+   */
+  public journal: string[] = [];
 
   /**
    * Property roles
@@ -252,6 +387,9 @@ export class InMemoryMembers implements MemberDirectory {
     lock?: boolean,
   ): Promise<MemberRole | null> {
     this.roleCalls.push({ organizationId, userId, lock });
+    if (lock === true) {
+      this.journal.push(`membership ${userId}`);
+    }
     return Promise.resolve(this.roles.get(organizationId)?.get(userId) ?? null);
   }
 
@@ -275,10 +413,12 @@ export class InMemoryMembers implements MemberDirectory {
  * Class InMemorySpaces
  *
  * @description
- * A fake `SpacesUnitOfWork` holding the spaces, lists, prefixes and outbox in memory, with no
- * database: the work runs on a copy that is committed only when it resolves, as the tenant
- * transaction is, so a refusal leaves no row and no event. It scopes every read to the organization
- * as the repositories do, and records the calls the specs count.
+ * A fake `SpacesUnitOfWork` holding the spaces, lists, grants, prefixes and outbox in memory, with
+ * no database: the work runs on a copy that is committed only when it resolves, as the tenant
+ * transaction is, so a refusal leaves no row and no event. It scopes every read to the
+ * organization as the repositories do, keeps in its collections the rows the one visibility
+ * condition of each resource keeps (written again here from the SQL, not from the policies), and
+ * records the calls and the locks the specs count.
  */
 export class InMemorySpaces implements SpacesUnitOfWork {
   // #region Properties
@@ -303,6 +443,16 @@ export class InMemorySpaces implements SpacesUnitOfWork {
   public lists: Map<string, TaskListState>;
 
   /**
+   * Property grants
+   *
+   * @description
+   * The committed grants, in insertion order.
+   *
+   * @type {FakeGrant[]}
+   */
+  public grants: FakeGrant[];
+
+  /**
    * Property events
    *
    * @description
@@ -311,6 +461,17 @@ export class InMemorySpaces implements SpacesUnitOfWork {
    * @type {RecordedEvent[]}
    */
   public events: RecordedEvent[] = [];
+
+  /**
+   * Property journal
+   *
+   * @description
+   * The locks taken, in order (`space <id>`, `space <id> share`, `list <id>`), committed or not; a
+   * spec shares it with the journal of `InMemoryMembers` to check the lock order.
+   *
+   * @type {string[]}
+   */
+  public journal: string[] = [];
 
   /**
    * Property prefixOwners
@@ -334,6 +495,21 @@ export class InMemorySpaces implements SpacesUnitOfWork {
   public readonly nextNumbersCalls: (readonly string[])[] = [];
 
   /**
+   * Property viewerGrantsCalls
+   *
+   * @description
+   * The arguments of each `viewerGrants` call: the one statement that reads the grants of a member.
+   *
+   * @type {{ viewerUserId: string; spaceId: string; listId: string | null }[]}
+   * @readonly
+   */
+  public readonly viewerGrantsCalls: {
+    readonly viewerUserId: string;
+    readonly spaceId: string;
+    readonly listId: string | null;
+  }[] = [];
+
+  /**
    * Property listVisibleCalls
    *
    * @description
@@ -353,7 +529,7 @@ export class InMemorySpaces implements SpacesUnitOfWork {
    * Property listOfSpaceCalls
    *
    * @description
-   * The arguments of each `listOfSpace` call.
+   * The arguments of each `listOfSpaceVisibleTo` call.
    *
    * @type {{ spaceId: string; after: PagePosition | null; limit: number }[]}
    * @readonly
@@ -391,24 +567,10 @@ export class InMemorySpaces implements SpacesUnitOfWork {
   }[] = [];
 
   /**
-   * Property listVisibleIdsCalls
-   *
-   * @description
-   * The arguments of each `listVisibleIds` call.
-   *
-   * @type {{ organizationId: string; viewerUserId: string }[]}
-   * @readonly
-   */
-  public readonly listVisibleIdsCalls: {
-    readonly organizationId: string;
-    readonly viewerUserId: string;
-  }[] = [];
-
-  /**
    * Property listAllOfSpaceCalls
    *
    * @description
-   * The space of each `listAllOfSpace` call.
+   * The space of each `listAllOfSpaceVisibleTo` call.
    *
    * @type {string[]}
    * @readonly
@@ -461,7 +623,7 @@ export class InMemorySpaces implements SpacesUnitOfWork {
    * Property sequence
    *
    * @description
-   * Counter of the ids and creation times the fake gives.
+   * Counter of the ids and instants the fake gives.
    *
    * @type {number}
    */
@@ -481,6 +643,7 @@ export class InMemorySpaces implements SpacesUnitOfWork {
   public constructor(seed: InMemorySpacesSeed = {}) {
     this.spaces = new Map((seed.spaces ?? []).map((row: SpaceState) => [row.id, row]));
     this.lists = new Map((seed.lists ?? []).map((row: TaskListState) => [row.id, row]));
+    this.grants = [...(seed.grants ?? [])];
     this.prefixOwners = new Map(
       (seed.spaces ?? []).map((row: SpaceState): [string, string] => [
         InMemorySpaces.prefixKey(row.organizationId, row.prefix),
@@ -519,26 +682,208 @@ export class InMemorySpaces implements SpacesUnitOfWork {
   }
 
   /**
-   * Method isVisibleSpace
+   * Method roleOfGrant
    *
    * @description
-   * The visibility filter of the repositories for a member that is no guest: the space is of the
-   * organization, belongs to the whole organization or to the viewer, and does not await an owner.
+   * The role of the grant of an account on a space or a list, `null` without one.
    *
-   * @param {SpaceState | undefined} space - The space, when it exists.
-   * @param {string} organizationId - The organization of the transaction.
-   * @param {string} viewerUserId - The account of the member.
-   * @returns {boolean} Whether the viewer sees the space.
+   * @param {readonly FakeGrant[]} grants - The grants of the work.
+   * @param {string} organizationId - The organization.
+   * @param {GrantedResource} resource - The space or the list.
+   * @param {string} userId - The account.
+   * @returns {AccessRole | null} The role.
    */
-  private static isVisibleSpace(
-    space: SpaceState | undefined,
+  private static roleOfGrant(
+    grants: readonly FakeGrant[],
     organizationId: string,
-    viewerUserId: string,
-  ): boolean {
+    resource: GrantedResource,
+    userId: string,
+  ): AccessRole | null {
     return (
-      space?.organizationId === organizationId &&
-      !space.awaitingOwner &&
-      (space.visibility === 'organization' || space.ownerUserId === viewerUserId)
+      grants.find(
+        (grant: FakeGrant): boolean =>
+          grant.organizationId === organizationId &&
+          grant.userId === userId &&
+          InMemorySpaces.sameResource(grant.resource, resource),
+      )?.role ?? null
+    );
+  }
+
+  /**
+   * Method sameResource
+   *
+   * @description
+   * Whether two grants open the same space or the same list.
+   *
+   * @param {GrantedResource} left - One resource.
+   * @param {GrantedResource} right - The other.
+   * @returns {boolean} Whether they are the same.
+   */
+  private static sameResource(left: GrantedResource, right: GrantedResource): boolean {
+    if (left.kind === 'space' && right.kind === 'space') {
+      return left.spaceId === right.spaceId;
+    }
+    if (left.kind === 'list' && right.kind === 'list') {
+      return left.listId === right.listId;
+    }
+    return false;
+  }
+
+  /**
+   * Method anyListGrant
+   *
+   * @description
+   * Whether an account holds a grant of at least one list of a space.
+   *
+   * @param {readonly FakeGrant[]} grants - The grants of the work.
+   * @param {string} organizationId - The organization.
+   * @param {string} spaceId - The space.
+   * @param {string} userId - The account.
+   * @returns {boolean} Whether it does.
+   */
+  private static anyListGrant(
+    grants: readonly FakeGrant[],
+    organizationId: string,
+    spaceId: string,
+    userId: string,
+  ): boolean {
+    return grants.some(
+      (grant: FakeGrant): boolean =>
+        grant.organizationId === organizationId &&
+        grant.userId === userId &&
+        grant.resource.kind === 'list' &&
+        grant.resource.spaceId === spaceId,
+    );
+  }
+
+  /**
+   * Method spaceRow
+   *
+   * @description
+   * A space with the grants of a member there, when the visibility condition of the spaces keeps
+   * it: not awaiting an owner, and for a member who is not a guest the whole organization, the
+   * owner or a grant of the space, for anyone a grant of one of its lists.
+   *
+   * @param {SpaceState} space - The space.
+   * @param {readonly FakeGrant[]} grants - The grants of the work.
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {Viewer} viewer - The member.
+   * @returns {SpaceWithGrants | null} The row, or `null` when the condition leaves it out.
+   */
+  private static spaceRow(
+    space: SpaceState,
+    grants: readonly FakeGrant[],
+    organizationId: string,
+    viewer: Viewer,
+  ): SpaceWithGrants | null {
+    if (space.organizationId !== organizationId || space.awaitingOwner) {
+      return null;
+    }
+    const spaceGrant: AccessRole | null = InMemorySpaces.roleOfGrant(
+      grants,
+      organizationId,
+      { kind: 'space', spaceId: space.id },
+      viewer.userId,
+    );
+    const anyList: boolean = InMemorySpaces.anyListGrant(
+      grants,
+      organizationId,
+      space.id,
+      viewer.userId,
+    );
+    const member: boolean =
+      viewer.role !== 'guest' &&
+      (space.visibility === 'organization' ||
+        space.ownerUserId === viewer.userId ||
+        spaceGrant !== null);
+    if (!member && !anyList) {
+      return null;
+    }
+    return { space: Space.restore(space), grants: { space: spaceGrant, list: null, anyList } };
+  }
+
+  /**
+   * Method listRow
+   *
+   * @description
+   * A list with the grants of a member there, when the visibility condition of the lists keeps
+   * it: not of a space awaiting an owner, and a grant of the list, or for a member who is not a
+   * guest the owner of the space, a space of the organization with the switch on, or a grant of
+   * the space.
+   *
+   * @param {TaskListState} list - The list.
+   * @param {ReadonlyMap<string, SpaceState>} spaces - The spaces of the work.
+   * @param {readonly FakeGrant[]} grants - The grants of the work.
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {Viewer} viewer - The member.
+   * @returns {ListWithGrants | null} The row, or `null` when the condition leaves it out.
+   */
+  private static listRow(
+    list: TaskListState,
+    spaces: ReadonlyMap<string, SpaceState>,
+    grants: readonly FakeGrant[],
+    organizationId: string,
+    viewer: Viewer,
+  ): ListWithGrants | null {
+    const space: SpaceState | undefined = spaces.get(list.spaceId);
+    if (list.organizationId !== organizationId || space === undefined || space.awaitingOwner) {
+      return null;
+    }
+    const spaceGrant: AccessRole | null = InMemorySpaces.roleOfGrant(
+      grants,
+      organizationId,
+      { kind: 'space', spaceId: space.id },
+      viewer.userId,
+    );
+    const listGrant: AccessRole | null = InMemorySpaces.roleOfGrant(
+      grants,
+      organizationId,
+      { kind: 'list', spaceId: space.id, listId: list.id },
+      viewer.userId,
+    );
+    const member: boolean =
+      viewer.role !== 'guest' &&
+      (space.ownerUserId === viewer.userId ||
+        (space.visibility === 'organization' && list.organizationAccess) ||
+        spaceGrant !== null);
+    if (listGrant === null && !member) {
+      return null;
+    }
+    return {
+      list: TaskList.restore(list),
+      space: {
+        visibility: space.visibility,
+        ownerUserId: space.ownerUserId,
+        awaitingOwner: space.awaitingOwner,
+      },
+      grants: { space: spaceGrant, list: listGrant },
+    };
+  }
+
+  /**
+   * Method sidebarOrder
+   *
+   * @description
+   * Compares two lists in sidebar order: their spaces by creation (id as tie-breaker), then the
+   * lists by creation (id as tie-breaker).
+   *
+   * @param {ReadonlyMap<string, SpaceState>} spaces - The spaces of the work.
+   * @param {TaskListState} left - One list.
+   * @param {TaskListState} right - The other.
+   * @returns {number} The order.
+   */
+  private static sidebarOrder(
+    spaces: ReadonlyMap<string, SpaceState>,
+    left: TaskListState,
+    right: TaskListState,
+  ): number {
+    const leftSpace: SpaceState | undefined = spaces.get(left.spaceId);
+    const rightSpace: SpaceState | undefined = spaces.get(right.spaceId);
+    return (
+      (leftSpace?.createdAt.getTime() ?? 0) - (rightSpace?.createdAt.getTime() ?? 0) ||
+      left.spaceId.localeCompare(right.spaceId) ||
+      left.createdAt.getTime() - right.createdAt.getTime() ||
+      left.id.localeCompare(right.id)
     );
   }
 
@@ -600,32 +945,63 @@ export class InMemorySpaces implements SpacesUnitOfWork {
     this.runs += 1;
     const spaces = new Map<string, SpaceState>(this.spaces);
     const lists = new Map<string, TaskListState>(this.lists);
+    let grants: FakeGrant[] = [...this.grants];
     const prefixOwners = new Map<string, string>(this.prefixOwners);
     const lastNumbers = new Map<string, number>(this.lastNumbers);
     const events: RecordedEvent[] = [...this.events];
+    const findSpace = (organizationId: string, id: string): Space | null => {
+      const state: SpaceState | undefined = spaces.get(id);
+      return state?.organizationId === organizationId ? Space.restore(state) : null;
+    };
+    const findList = (organizationId: string, id: string): TaskList | null => {
+      const state: TaskListState | undefined = lists.get(id);
+      return state?.organizationId === organizationId ? TaskList.restore(state) : null;
+    };
+    const visibleSpaces = (organizationId: string, viewer: Viewer): SpaceWithGrants[] =>
+      InMemorySpaces.page([...spaces.values()], null, Number.MAX_SAFE_INTEGER)
+        .map((space: SpaceState) => InMemorySpaces.spaceRow(space, grants, organizationId, viewer))
+        .filter((row: SpaceWithGrants | null): row is SpaceWithGrants => row !== null);
+    const visibleLists = (
+      organizationId: string,
+      viewer: Viewer,
+      rows: readonly TaskListState[],
+    ): ListWithGrants[] =>
+      rows
+        .map((list: TaskListState) =>
+          InMemorySpaces.listRow(list, spaces, grants, organizationId, viewer),
+        )
+        .filter((row: ListWithGrants | null): row is ListWithGrants => row !== null);
     const store: SpacesStore = {
       spaces: {
         insert: (draft: SpaceDraft): Promise<Space> => {
           const state: SpaceState = {
             ...draft,
             id: this.nextId('019a7200'),
-            createdAt: this.nextCreatedAt(),
+            createdAt: this.nextInstant(),
             version: 1,
           };
           spaces.set(state.id, state);
           return Promise.resolve(Space.restore(state));
         },
-        find: (organizationId: string, id: string): Promise<Space | null> => {
-          const state: SpaceState | undefined = spaces.get(id);
-          return Promise.resolve(
-            state?.organizationId === organizationId ? Space.restore(state) : null,
-          );
-        },
+        find: (organizationId: string, id: string): Promise<Space | null> =>
+          Promise.resolve(findSpace(organizationId, id)),
         lock: (organizationId: string, id: string): Promise<Space | null> => {
-          const state: SpaceState | undefined = spaces.get(id);
-          return Promise.resolve(
-            state?.organizationId === organizationId ? Space.restore(state) : null,
-          );
+          this.journal.push(`space ${id}`);
+          return Promise.resolve(findSpace(organizationId, id));
+        },
+        lockShared: (organizationId: string, id: string): Promise<Space | null> => {
+          this.journal.push(`space ${id} share`);
+          return Promise.resolve(findSpace(organizationId, id));
+        },
+        lockMany: (organizationId: string, ids: readonly string[]): Promise<Space[]> => {
+          const found: Space[] = [...ids]
+            .sort()
+            .map((id: string): Space | null => findSpace(organizationId, id))
+            .filter((space: Space | null): space is Space => space !== null);
+          for (const space of found) {
+            this.journal.push(`space ${space.snapshot.id}`);
+          }
+          return Promise.resolve(found);
         },
         update: (space: Space): Promise<void> => {
           spaces.set(space.snapshot.id, space.snapshot);
@@ -633,41 +1009,28 @@ export class InMemorySpaces implements SpacesUnitOfWork {
         },
         listVisible: (
           organizationId: string,
-          viewerUserId: string,
+          viewer: Viewer,
           after: PagePosition | null,
           limit: number,
-        ): Promise<Space[]> => {
-          this.listVisibleCalls.push({ organizationId, viewerUserId, after, limit });
-          const visible: SpaceState[] = [...spaces.values()].filter(
-            (row: SpaceState): boolean =>
-              row.organizationId === organizationId &&
-              !row.awaitingOwner &&
-              (row.visibility === 'organization' || row.ownerUserId === viewerUserId),
+        ): Promise<SpaceWithGrants[]> => {
+          this.listVisibleCalls.push({
+            organizationId,
+            viewerUserId: viewer.userId,
+            after,
+            limit,
+          });
+          const rows: SpaceWithGrants[] = visibleSpaces(organizationId, viewer);
+          const kept: readonly SpaceState[] = InMemorySpaces.page(
+            rows.map((row: SpaceWithGrants): SpaceState => row.space.snapshot),
+            after,
+            limit,
           );
           return Promise.resolve(
-            InMemorySpaces.page(visible, after, limit).map((row: SpaceState): Space =>
-              Space.restore(row),
-            ),
+            rows.filter((row: SpaceWithGrants): boolean => kept.includes(row.space.snapshot)),
           );
         },
-        listVisibleIds: (
-          organizationId: string,
-          viewerUserId: string,
-        ): Promise<readonly string[]> => {
-          this.listVisibleIdsCalls.push({ organizationId, viewerUserId });
-          return Promise.resolve(
-            InMemorySpaces.page(
-              [...spaces.values()].filter(
-                (row: SpaceState): boolean =>
-                  row.organizationId === organizationId &&
-                  !row.awaitingOwner &&
-                  (row.visibility === 'organization' || row.ownerUserId === viewerUserId),
-              ),
-              null,
-              Number.MAX_SAFE_INTEGER,
-            ).map((row: SpaceState): string => row.id),
-          );
-        },
+        listAllVisible: (organizationId: string, viewer: Viewer): Promise<SpaceWithGrants[]> =>
+          Promise.resolve(visibleSpaces(organizationId, viewer)),
         lockPrivateOwnedBy: (
           organizationId: string,
           ownerUserId: string,
@@ -742,115 +1105,269 @@ export class InMemorySpaces implements SpacesUnitOfWork {
           const state: TaskListState = {
             ...draft,
             id: this.nextId('019a7300'),
-            createdAt: this.nextCreatedAt(),
+            createdAt: this.nextInstant(),
             version: 1,
           };
           lists.set(state.id, state);
           return Promise.resolve(TaskList.restore(state));
         },
-        find: (organizationId: string, id: string): Promise<TaskList | null> => {
-          const state: TaskListState | undefined = lists.get(id);
-          return Promise.resolve(
-            state?.organizationId === organizationId ? TaskList.restore(state) : null,
-          );
-        },
+        find: (organizationId: string, id: string): Promise<TaskList | null> =>
+          Promise.resolve(findList(organizationId, id)),
         lock: (organizationId: string, id: string): Promise<TaskList | null> => {
-          const state: TaskListState | undefined = lists.get(id);
-          return Promise.resolve(
-            state?.organizationId === organizationId ? TaskList.restore(state) : null,
-          );
+          this.journal.push(`list ${id}`);
+          return Promise.resolve(findList(organizationId, id));
+        },
+        lockMany: (organizationId: string, ids: readonly string[]): Promise<TaskList[]> => {
+          const found: TaskList[] = [...ids]
+            .sort()
+            .map((id: string): TaskList | null => findList(organizationId, id))
+            .filter((list: TaskList | null): list is TaskList => list !== null);
+          for (const list of found) {
+            this.journal.push(`list ${list.snapshot.id}`);
+          }
+          return Promise.resolve(found);
         },
         update: (list: TaskList): Promise<void> => {
           lists.set(list.snapshot.id, list.snapshot);
           return Promise.resolve();
         },
-        listOfSpace: (
+        listOfSpaceVisibleTo: (
           organizationId: string,
           spaceId: string,
+          viewer: Viewer,
           after: PagePosition | null,
           limit: number,
-        ): Promise<TaskList[]> => {
+        ): Promise<ListWithGrants[]> => {
           this.listOfSpaceCalls.push({ spaceId, after, limit });
-          const inSpace: TaskListState[] = [...lists.values()].filter(
-            (row: TaskListState): boolean =>
-              row.organizationId === organizationId && row.spaceId === spaceId,
+          const rows: ListWithGrants[] = visibleLists(
+            organizationId,
+            viewer,
+            [...lists.values()].filter((row: TaskListState): boolean => row.spaceId === spaceId),
+          );
+          const kept: readonly TaskListState[] = InMemorySpaces.page(
+            rows.map((row: ListWithGrants): TaskListState => row.list.snapshot),
+            after,
+            limit,
           );
           return Promise.resolve(
-            InMemorySpaces.page(inSpace, after, limit).map((row: TaskListState): TaskList =>
-              TaskList.restore(row),
-            ),
+            kept.map((state: TaskListState): ListWithGrants => {
+              const row: ListWithGrants | undefined = rows.find(
+                (candidate: ListWithGrants): boolean => candidate.list.snapshot === state,
+              );
+              if (row === undefined) {
+                throw new Error('A kept row is a row.');
+              }
+              return row;
+            }),
           );
         },
-        listAllOfSpace: (organizationId: string, spaceId: string): Promise<TaskList[]> => {
+        listAllOfSpaceVisibleTo: (
+          organizationId: string,
+          spaceId: string,
+          viewer: Viewer,
+        ): Promise<ListWithGrants[]> => {
           this.listAllOfSpaceCalls.push(spaceId);
           return Promise.resolve(
-            InMemorySpaces.page(
-              [...lists.values()].filter(
-                (row: TaskListState): boolean =>
-                  row.organizationId === organizationId && row.spaceId === spaceId,
+            visibleLists(
+              organizationId,
+              viewer,
+              InMemorySpaces.page(
+                [...lists.values()].filter(
+                  (row: TaskListState): boolean => row.spaceId === spaceId,
+                ),
+                null,
+                Number.MAX_SAFE_INTEGER,
               ),
-              null,
-              Number.MAX_SAFE_INTEGER,
-            ).map((row: TaskListState): TaskList => TaskList.restore(row)),
+            ),
           );
         },
         listCurrentSprintsVisibleTo: (
           organizationId: string,
-          viewerUserId: string,
+          viewer: Viewer,
           today: string,
           limit: number,
-        ): Promise<TaskList[]> => {
-          this.listCurrentSprintsCalls.push({ organizationId, viewerUserId, today, limit });
-          const current: TaskListState[] = [...lists.values()].filter(
-            (row: TaskListState): boolean =>
-              row.organizationId === organizationId &&
-              InMemorySpaces.isVisibleSpace(
-                spaces.get(row.spaceId),
-                organizationId,
-                viewerUserId,
-              ) &&
-              row.sprint !== null &&
-              row.sprint.startDate <= today &&
-              row.sprint.endDate >= today,
-          );
-          return Promise.resolve(
-            current
-              .sort(
-                (left: TaskListState, right: TaskListState): number =>
-                  (left.sprint?.endDate ?? '').localeCompare(right.sprint?.endDate ?? '') ||
-                  left.createdAt.getTime() - right.createdAt.getTime() ||
-                  left.id.localeCompare(right.id),
-              )
-              .slice(0, limit)
-              .map((row: TaskListState): TaskList => TaskList.restore(row)),
-          );
+        ): Promise<ListWithGrants[]> => {
+          this.listCurrentSprintsCalls.push({
+            organizationId,
+            viewerUserId: viewer.userId,
+            today,
+            limit,
+          });
+          const current: TaskListState[] = [...lists.values()]
+            .filter(
+              (row: TaskListState): boolean =>
+                row.sprint !== null && row.sprint.startDate <= today && row.sprint.endDate >= today,
+            )
+            .sort(
+              (left: TaskListState, right: TaskListState): number =>
+                (left.sprint?.endDate ?? '').localeCompare(right.sprint?.endDate ?? '') ||
+                left.createdAt.getTime() - right.createdAt.getTime() ||
+                left.id.localeCompare(right.id),
+            );
+          return Promise.resolve(visibleLists(organizationId, viewer, current).slice(0, limit));
         },
         listFirstVisibleTo: (
           organizationId: string,
-          viewerUserId: string,
+          viewer: Viewer,
           limit: number,
-        ): Promise<TaskList[]> => {
-          this.listFirstVisibleCalls.push({ organizationId, viewerUserId, limit });
-          const visible: TaskListState[] = [...lists.values()].filter(
-            (row: TaskListState): boolean =>
-              row.organizationId === organizationId &&
-              InMemorySpaces.isVisibleSpace(spaces.get(row.spaceId), organizationId, viewerUserId),
+        ): Promise<ListWithGrants[]> => {
+          this.listFirstVisibleCalls.push({ organizationId, viewerUserId: viewer.userId, limit });
+          const ordered: TaskListState[] = [...lists.values()].sort(
+            (left: TaskListState, right: TaskListState): number =>
+              InMemorySpaces.sidebarOrder(spaces, left, right),
           );
-          return Promise.resolve(
-            visible
-              .sort((left: TaskListState, right: TaskListState): number => {
-                const leftSpace: SpaceState | undefined = spaces.get(left.spaceId);
-                const rightSpace: SpaceState | undefined = spaces.get(right.spaceId);
-                return (
-                  (leftSpace?.createdAt.getTime() ?? 0) - (rightSpace?.createdAt.getTime() ?? 0) ||
-                  left.spaceId.localeCompare(right.spaceId) ||
+          return Promise.resolve(visibleLists(organizationId, viewer, ordered).slice(0, limit));
+        },
+        listAllVisibleTo: (organizationId: string, viewer: Viewer): Promise<ListWithGrants[]> => {
+          const ordered: TaskListState[] = [...lists.values()].sort(
+            (left: TaskListState, right: TaskListState): number =>
+              InMemorySpaces.sidebarOrder(spaces, left, right),
+          );
+          return Promise.resolve(visibleLists(organizationId, viewer, ordered));
+        },
+      },
+      grants: {
+        viewerGrants: (
+          organizationId: string,
+          viewerUserId: string,
+          spaceId: string,
+          listId: string | null,
+        ): Promise<ViewerGrants> => {
+          this.viewerGrantsCalls.push({ viewerUserId, spaceId, listId });
+          return Promise.resolve({
+            space: InMemorySpaces.roleOfGrant(
+              grants,
+              organizationId,
+              { kind: 'space', spaceId },
+              viewerUserId,
+            ),
+            list:
+              listId === null
+                ? null
+                : InMemorySpaces.roleOfGrant(
+                    grants,
+                    organizationId,
+                    { kind: 'list', spaceId, listId },
+                    viewerUserId,
+                  ),
+            anyList: InMemorySpaces.anyListGrant(grants, organizationId, spaceId, viewerUserId),
+          });
+        },
+        listOf: (organizationId: string, resource: GrantedResource): Promise<StoredGrant[]> =>
+          Promise.resolve(
+            grants
+              .filter(
+                (grant: FakeGrant): boolean =>
+                  grant.organizationId === organizationId &&
+                  InMemorySpaces.sameResource(grant.resource, resource),
+              )
+              .sort(
+                (left: FakeGrant, right: FakeGrant): number =>
                   left.createdAt.getTime() - right.createdAt.getTime() ||
-                  left.id.localeCompare(right.id)
-                );
-              })
-              .slice(0, limit)
-              .map((row: TaskListState): TaskList => TaskList.restore(row)),
+                  left.userId.localeCompare(right.userId),
+              )
+              .map((grant: FakeGrant): StoredGrant => ({
+                userId: grant.userId,
+                role: grant.role,
+                createdAt: grant.createdAt,
+                grantedAt: grant.grantedAt,
+                grantedBy: grant.grantedBy,
+              })),
+          ),
+        put: (
+          organizationId: string,
+          resource: GrantedResource,
+          userId: string,
+          role: AccessRole,
+          actor: EventActor,
+        ): Promise<StoredGrant> => {
+          const now: Date = this.nextInstant();
+          const current: FakeGrant | undefined = grants.find(
+            (grant: FakeGrant): boolean =>
+              grant.organizationId === organizationId &&
+              grant.userId === userId &&
+              InMemorySpaces.sameResource(grant.resource, resource),
           );
+          const stored: FakeGrant = {
+            organizationId,
+            resource,
+            userId,
+            role,
+            createdAt: current?.createdAt ?? now,
+            grantedAt: now,
+            grantedBy: actor,
+          };
+          grants =
+            current === undefined
+              ? [...grants, stored]
+              : grants.map((grant: FakeGrant): FakeGrant => (grant === current ? stored : grant));
+          return Promise.resolve({
+            userId,
+            role,
+            createdAt: stored.createdAt,
+            grantedAt: stored.grantedAt,
+            grantedBy: actor,
+          });
+        },
+        remove: (
+          organizationId: string,
+          resource: GrantedResource,
+          userId: string,
+        ): Promise<void> => {
+          grants = grants.filter(
+            (grant: FakeGrant): boolean =>
+              !(
+                grant.organizationId === organizationId &&
+                grant.userId === userId &&
+                InMemorySpaces.sameResource(grant.resource, resource)
+              ),
+          );
+          return Promise.resolve();
+        },
+        listOfMember: (
+          organizationId: string,
+          userId: string,
+          limit: number,
+        ): Promise<GrantedResource[]> => {
+          const held: FakeGrant[] = grants.filter(
+            (grant: FakeGrant): boolean =>
+              grant.organizationId === organizationId && grant.userId === userId,
+          );
+          const ofSpaces: GrantedResource[] = held
+            .filter((grant: FakeGrant): boolean => grant.resource.kind === 'space')
+            .map((grant: FakeGrant): GrantedResource => grant.resource)
+            .sort((left: GrantedResource, right: GrantedResource): number =>
+              left.spaceId.localeCompare(right.spaceId),
+            );
+          const ofLists: GrantedResource[] = held
+            .filter((grant: FakeGrant): boolean => grant.resource.kind === 'list')
+            .map((grant: FakeGrant): GrantedResource => grant.resource)
+            .sort(
+              (left: GrantedResource, right: GrantedResource): number =>
+                left.spaceId.localeCompare(right.spaceId) ||
+                (left.kind === 'list' && right.kind === 'list'
+                  ? left.listId.localeCompare(right.listId)
+                  : 0),
+            );
+          return Promise.resolve([...ofSpaces, ...ofLists].slice(0, limit));
+        },
+        listOfMemberInSpaces: (
+          organizationId: string,
+          userId: string,
+          spaceIds: readonly string[],
+        ): Promise<GrantedResource[]> => {
+          const held: GrantedResource[] = grants
+            .filter(
+              (grant: FakeGrant): boolean =>
+                grant.organizationId === organizationId &&
+                grant.userId === userId &&
+                spaceIds.includes(grant.resource.spaceId),
+            )
+            .map((grant: FakeGrant): GrantedResource => grant.resource);
+          return Promise.resolve([
+            ...held.filter((resource: GrantedResource): boolean => resource.kind === 'space'),
+            ...held.filter((resource: GrantedResource): boolean => resource.kind === 'list'),
+          ]);
         },
       },
       events: {
@@ -900,15 +1417,67 @@ export class InMemorySpaces implements SpacesUnitOfWork {
           });
           return Promise.resolve();
         },
+        spaceAccessChanged: (
+          space: Space,
+          entries: readonly GrantEntry[],
+          changedUserIds: readonly string[],
+          actor: EventActor,
+        ): Promise<void> => {
+          events.push({
+            kind: 'spaceAccessChanged',
+            spaceId: space.snapshot.id,
+            version: space.snapshot.version,
+            grants: entries,
+            changedUserIds,
+            actor,
+          });
+          return Promise.resolve();
+        },
+        listAccessChanged: (
+          list: TaskList,
+          entries: readonly GrantEntry[],
+          changed: readonly ('grants' | 'organizationAccess')[],
+          changedUserIds: readonly string[],
+          actor: EventActor,
+        ): Promise<void> => {
+          events.push({
+            kind: 'listAccessChanged',
+            listId: list.snapshot.id,
+            spaceId: list.snapshot.spaceId,
+            version: list.snapshot.version,
+            organizationAccess: list.snapshot.organizationAccess,
+            grants: entries,
+            changed,
+            changedUserIds,
+            actor,
+          });
+          return Promise.resolve();
+        },
       },
     };
     const result: TResult = await work(store);
     this.spaces = spaces;
     this.lists = lists;
+    this.grants = grants;
     this.prefixOwners = prefixOwners;
     this.lastNumbers = lastNumbers;
     this.events = events;
     return result;
+  }
+
+  /**
+   * Method grantsOf
+   *
+   * @description
+   * The committed grants of a space or a list, as `{ userId, role }`, in the order of the store.
+   *
+   * @param {GrantedResource} resource - The space or the list.
+   * @returns {GrantEntry[]} Its grants.
+   */
+  public grantsOf(resource: GrantedResource): GrantEntry[] {
+    return this.grants
+      .filter((grant: FakeGrant): boolean => InMemorySpaces.sameResource(grant.resource, resource))
+      .map((grant: FakeGrant): GrantEntry => ({ userId: grant.userId, role: grant.role }));
   }
 
   /**
@@ -926,14 +1495,14 @@ export class InMemorySpaces implements SpacesUnitOfWork {
   }
 
   /**
-   * Method nextCreatedAt
+   * Method nextInstant
    *
    * @description
-   * Gives the creation time of the row the fake inserts: one second after the previous one.
+   * Gives the instant of the row the fake writes: one second after the previous one.
    *
-   * @returns {Date} The time.
+   * @returns {Date} The instant.
    */
-  private nextCreatedAt(): Date {
+  private nextInstant(): Date {
     return new Date(FIRST_CREATION + this.sequence * 1000);
   }
   // #endregion

@@ -12,8 +12,8 @@ export interface ListSidebarListsOutput {
    * Property lists
    *
    * @description
-   * The lists of the spaces the member sees: spaces by creation, then the lists of each by
-   * creation; empty for a guest.
+   * The lists the member has a role on, each with that role: spaces by creation, then the lists of
+   * each by creation.
    *
    * @type {readonly VisibleList[]}
    * @readonly

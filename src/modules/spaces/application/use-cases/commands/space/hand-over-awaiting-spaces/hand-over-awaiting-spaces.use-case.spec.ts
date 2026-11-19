@@ -87,10 +87,12 @@ describe('HandOverAwaitingSpaces: the owner of the organization takes the spaces
 
     const [forCamille, forHugo] = await spaces.run((store) =>
       Promise.all(
-        [CAMILLE, HUGO].map((userId) => store.spaces.listVisible(ATELIER_NORD, userId, null, 10)),
+        [CAMILLE, HUGO].map((userId) =>
+          store.spaces.listVisible(ATELIER_NORD, { userId, role: 'member' }, null, 10),
+        ),
       ),
     );
-    expect(forCamille?.map((space) => space.snapshot.id)).toEqual([DESIGN]);
+    expect(forCamille?.map((row) => row.space.snapshot.id)).toEqual([DESIGN]);
     expect(forHugo).toEqual([]);
   });
 });

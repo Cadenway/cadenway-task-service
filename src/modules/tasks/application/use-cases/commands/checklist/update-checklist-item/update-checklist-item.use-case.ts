@@ -80,8 +80,8 @@ export class UpdateChecklistItem {
    * @param {UpdateChecklistItemInput} input - The actor, the task, the item, its new state and the
    * versions `If-Match` accepts.
    * @returns {Promise<UpdateChecklistItemOutput>} The task after the change.
-   * @throws {TaskRefusal} `organization-not-found`, `task-not-found`, `version-mismatch` or
-   * `checklist-item-not-found`.
+   * @throws {TaskRefusal} `organization-not-found`, `task-not-found`, `role-insufficient`,
+   * `version-mismatch` or `checklist-item-not-found`.
    */
   public async execute(input: UpdateChecklistItemInput): Promise<UpdateChecklistItemOutput> {
     return this.unitOfWork.run(async (store: TasksStore): Promise<UpdateChecklistItemOutput> => {
@@ -94,6 +94,7 @@ export class UpdateChecklistItem {
         organizationId: input.organizationId,
         viewer,
         taskKey: input.taskKey,
+        edit: true,
         lock: true,
         expectedVersions: input.expectedVersions,
       });

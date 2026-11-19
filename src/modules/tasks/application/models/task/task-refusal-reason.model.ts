@@ -1,4 +1,5 @@
 import type { StatusKey } from '../../../domain/value-objects/task/status-key.value-object.js';
+import type { AccessRole } from '../placement/access-role.model.js';
 
 /**
  * Type TaskRefusalReason
@@ -11,6 +12,8 @@ import type { StatusKey } from '../../../domain/value-objects/task/status-key.va
  * - `task-not-found`, `list-not-found`, `space-not-found`, `checklist-item-not-found`: unknown, or
  *   not seen by the actor.
  * - `user-not-found`: the `userId` of a route of the tasks of the actor is not the actor.
+ * - `role-insufficient`: the actor sees the list a change acts on (the list of the task, the list
+ *   a task is created in or moved to, the list of the new parent) with `role`, and needs `edit`.
  * - `version-mismatch`: `If-Match` names another version than the stored one.
  * - `status-hidden`: the status is hidden in the space the task is in after the operation.
  * - `cancel-reason-required`, `cancel-reason-unexpected`: the cancellation rules.
@@ -28,6 +31,7 @@ export type TaskRefusalReason =
   | { readonly reason: 'space-not-found' }
   | { readonly reason: 'user-not-found' }
   | { readonly reason: 'checklist-item-not-found' }
+  | { readonly reason: 'role-insufficient'; readonly role: AccessRole }
   | { readonly reason: 'version-mismatch'; readonly version: number }
   | { readonly reason: 'status-hidden'; readonly status: StatusKey }
   | { readonly reason: 'cancel-reason-required' }

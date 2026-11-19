@@ -24,8 +24,10 @@ const COMPLETED: CleanUpRemovedMemberOutput = {
   outcome: 'completed',
   spacesHandedOver: 2,
   spacesAwaitingOwner: 0,
+  grantsRemoved: 5,
+  requestsDropped: 3,
   tasksUnassigned: 700,
-  batches: 4,
+  batches: 6,
 };
 
 /**
@@ -146,8 +148,10 @@ describe('CleanUpRemovedMemberHandler: each job cleans up after one former membe
         outcome: 'completed',
         spacesHandedOver: 2,
         spacesAwaitingOwner: 0,
+        grantsRemoved: 5,
+        requestsDropped: 3,
         tasksUnassigned: 700,
-        batches: 4,
+        batches: 6,
       },
       'removed member clean-up job handled',
     );

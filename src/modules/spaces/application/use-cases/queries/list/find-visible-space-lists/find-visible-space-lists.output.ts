@@ -4,7 +4,7 @@ import type { VisibleList } from '../../../../projections/list/visible-list.proj
  * Interface FindVisibleSpaceListsOutput
  *
  * @description
- * The lists of a space the member sees.
+ * The lists of a space the member sees that they have a role on.
  */
 export interface FindVisibleSpaceListsOutput {
   // #region Properties
@@ -12,7 +12,8 @@ export interface FindVisibleSpaceListsOutput {
    * Property lists
    *
    * @description
-   * Every list and sprint of the space, in the order of their creation.
+   * The lists and sprints of the space the member has a role on, each with that role, in the
+   * order of their creation.
    *
    * @type {readonly VisibleList[]}
    * @readonly

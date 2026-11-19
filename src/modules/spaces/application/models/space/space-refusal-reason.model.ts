@@ -1,3 +1,4 @@
+import type { AccessRole } from '../../../domain/value-objects/access/access-role.value-object.js';
 import type { StatusKey } from '../../../domain/value-objects/status/status-key.value-object.js';
 
 /**
@@ -15,6 +16,13 @@ import type { StatusKey } from '../../../domain/value-objects/status/status-key.
  * - `status-required`: a patch hides `todo` or `done`.
  * - `sprint-dates-invalid`: the end of a sprint is before its start.
  * - `version-mismatch`: `If-Match` names another version than the stored one.
+ * - `role-insufficient`: the actor sees the space or the list without `edit` on it; `role` is
+ *   their role there, `null` for a space they see only through some of its lists.
+ * - `manage-forbidden`: the actor sees the space but does not manage it, for its grants.
+ * - `grantee-invalid`: the person given access is not a current member or guest.
+ * - `guest-space-forbidden`: a grant of a space for a guest.
+ * - `owner-unchangeable`: a grant given to, or removed from, the owner of the space.
+ * - `grant-limit-reached`: a new grant on a space or a list that already holds 200.
  *
  * @type {object}
  */
@@ -27,4 +35,10 @@ export type SpaceRefusalReason =
   | { readonly reason: 'visibility-forbidden' }
   | { readonly reason: 'status-required'; readonly status: StatusKey }
   | { readonly reason: 'sprint-dates-invalid' }
-  | { readonly reason: 'version-mismatch'; readonly version: number };
+  | { readonly reason: 'version-mismatch'; readonly version: number }
+  | { readonly reason: 'role-insufficient'; readonly role: AccessRole | null }
+  | { readonly reason: 'manage-forbidden' }
+  | { readonly reason: 'grantee-invalid'; readonly userId: string }
+  | { readonly reason: 'guest-space-forbidden' }
+  | { readonly reason: 'owner-unchangeable' }
+  | { readonly reason: 'grant-limit-reached' };

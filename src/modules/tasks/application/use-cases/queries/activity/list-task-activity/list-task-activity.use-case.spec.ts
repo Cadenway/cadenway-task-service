@@ -138,7 +138,7 @@ describe('ListTaskActivity: the entries of a task, most recent first', () => {
 describe('ListTaskActivity: what the actor does not see is not found', () => {
   it.each([
     ['an unknown task', { taskKey: 'CAD-999' }],
-    ['any task, for a guest', { actorUserId: NADIA }],
+    ['a task of no list shared with a guest', { actorUserId: NADIA }],
   ] as const)('refuses %s', async (_name, overrides) => {
     expect(await refusalOf(atelierNord().execute(read(overrides)))).toEqual({
       reason: 'task-not-found',

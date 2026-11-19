@@ -15,25 +15,41 @@ The tasks of each organization (P3a, "Tâches") and what hangs from a task:
 - the seven queries the product screens read: the tasks of a list with filters and sorts, the
   counts of its groups, the counters of a list, the overview of a space, the labels, "Mes tâches"
   and "Accueil". They live here, not in a module of their own, because they read the tables of
-  this module (see Decisions).
+  this module (see Decisions);
+- the access check of a task for the realtime gateway, and the reading of tasks by key or id for
+  the access requests of the access-requests module.
 
-It decides who sees a task: whoever sees the space of its list, with the visibility rules of the
-spaces module, from the copy of the memberships of the organization-members module, never from the
-`role` claim of the internal token. It does not own spaces, lists or the numbers of the task keys
-(spaces hands them out), the memberships (organization-members), the documents, the attachments or
-the automation rules (other services). The lists, sprints and spaces the queries show come from
-five public entries of the spaces module (`FindVisibleList`, `ListVisibleSpaceIds`,
-`FindVisibleSpaceLists`, `ListCurrentSprints`, `ListSidebarLists`), which join the transaction of
-the query.
+It applies the effective role of the actor on the list of a task (P3b-1, "Who sees a task" of
+`openapi/public/tasks.yaml`): any role (`view`, `comment`, `edit`) reads the task, `edit` changes
+it. The role is computed by the spaces module (owner of the space, rule of the organization and
+the switch of the list, grants of the space and of the list), from the copy of the memberships of
+the organization-members module, never from the `role` claim of the internal token. It does not
+own spaces, lists, grants or the numbers of the task keys (spaces hands them out), the memberships
+(organization-members), the access requests (access-requests), the documents, the attachments or
+the automation rules (other services). The lists, sprints and spaces the queries show, with the
+role of the actor on them, come from five public entries of the spaces module (`FindVisibleList`,
+`ListVisibleListIds`, `FindVisibleSpaceLists`, `ListCurrentSprints`, `ListSidebarLists`), which
+join the transaction of the query.
 
 ## Public entry points
 
-| Entry point                               | Consumers        |
-| ----------------------------------------- | ---------------- |
-| `tasks.module`                            | member-lifecycle |
-| `public/assignee/unassign-removed-member` | member-lifecycle |
+| Entry point                               | Consumers                         |
+| ----------------------------------------- | --------------------------------- |
+| `tasks.module`                            | member-lifecycle, access-requests |
+| `public/assignee/unassign-removed-member` | member-lifecycle                  |
+| `public/task/find-task-reference`         | access-requests                   |
+| `public/task/find-task-references`        | access-requests                   |
 
-`TasksModule` exports the `UnassignRemovedMember` provider
+`TasksModule` exports the `FindTaskReference` and `FindTaskReferences` providers, which the
+access-requests module reads the task of a request with: `{ organizationId, taskKey }` to a
+`TaskLocation` (`{ id, key, name, status, listId, spaceId }`) or `null` for an unknown or malformed
+key, and `{ organizationId, taskIds }` (100 ids at most, more is a defect that throws) to
+`{ tasks }`, unknown ids and ids that are not UUIDs left out, in no particular order. Neither checks
+any visibility: the caller decides what the actor may learn. Both join the transaction of the
+caller (`TasksUnitOfWork.run`, read-only or not), read one statement without the collections of
+the task, take no lock and write nothing.
+
+`TasksModule` also exports the `UnassignRemovedMember` provider
 (`{ organizationId, userId, afterTaskId }` to `{ outcome: 'none-left' }`,
 `{ outcome: 'member-again' }` or `{ outcome: 'unassigned', locked, unassigned, lastTaskId }`): one batch of the removal of a former
 member from their tasks, in a tenant transaction of its own of the organization of the context.
@@ -124,8 +140,10 @@ due_date)` to the list index for index-only counts; status changes then stop bei
 
 ## API
 
-`openapi/internal/task-service.yaml` (`@cadenway/contracts` 0.9.0), issuer `api-gateway`, actor
-`user`, organization required:
+`openapi/internal/task-service.yaml` (`@cadenway/contracts` 0.10.0), actor `user`, organization
+required; issuer `api-gateway` for every route but the access check, which accepts
+`realtime-gateway` only (`TaskAccessController`, a controller of its own; any other issuer answers
+`403 auth.issuer-not-allowed`):
 
 | Route                                                                  | Operation                     | Success                   |
 | ---------------------------------------------------------------------- | ----------------------------- | ------------------------- |
@@ -150,6 +168,18 @@ due_date)` to the list index for index-only counts; status changes then stop bei
 | `GET /internal/v1/labels`                                              | `listLabelsInternal`          | `200`                     |
 | `GET /internal/v1/users/{userId}/tasks`                                | `listMyTasksInternal`         | `200`                     |
 | `GET /internal/v1/users/{userId}/home`                                 | `getHomeInternal`             | `200`                     |
+| `GET /internal/v1/tasks/{taskKey}/access` (`realtime-gateway`)         | `checkTaskAccessInternal`     | `200`                     |
+
+- The access check answers `AccessCheck`: the role of the actor on the list of the task, the
+  space, the list and the key. A task the actor has no role on and an unknown key answer
+  `404 task.not-found` (never `task.trashed`), a malformed key `400 request.invalid` like every
+  route of a task, an actor the copy does not hold `404 organization.not-found`. It runs in `runReadOnly`, reads the task by
+  `tasks_key_unique` without its collections, then `FindVisibleList` of spaces, and writes and
+  emits nothing.
+- Every `TaskList` and `Space` a route answers (the detail, the overview, the counters of a list,
+  "Accueil") carries the access of the actor: `organizationAccess` and `callerRole` on a list,
+  `callerRole` (`null` for a space seen through some of its lists only) and `callerCanManage` on a
+  space, as the spaces module computed them in the transaction of the read.
 
 - The task routes and `listSubtasks` name a task by its key, `^[A-Z]{2,5}-[1-9][0-9]{0,8}$`: a
   lower-case or zero-padded key answers `400 request.invalid`.
@@ -169,7 +199,9 @@ due_date)` to the list index for index-only counts; status changes then stop bei
   lower-cased; any other actor id (`task-service`, an automation) is matched as sent.
 - Refusals: `404 task.not-found`, `list.not-found`, `space.not-found` (the overview),
   `user.not-found` (the two `users` routes, when `userId` is not the actor, checked before the
-  membership), `checklist-item.not-found`, `organization.not-found`; `412 request.version-mismatch`; `422 task.status-hidden`
+  membership), `checklist-item.not-found`, `organization.not-found`; `403
+access.role-insufficient` with `details: { role, requiredRole: 'edit' }` (`role` is the role of
+  the actor on the list the change acts on); `412 request.version-mismatch`; `422 task.status-hidden`
   (`details.status`), `task.cancel-reason-required`, `task.cancel-reason-unexpected`,
   `task.assignee-invalid` (`details.userIds`), `task.assignee-limit-reached`,
   `task.label-limit-reached`, `task.checklist-limit-reached`, `task.start-date-invalid`,
@@ -214,9 +246,21 @@ never changes the assignees.
 
 ## Invariants
 
-- An actor the copy of the memberships does not hold answers `404 organization.not-found`. What
-  the actor does not see (a task whose space is private to another member, a list unknown to them,
-  anything for a guest) answers `404` and is left out of every collection.
+- An actor the copy of the memberships does not hold answers `404 organization.not-found`. A task
+  is seen by whoever has a role on its list, any role; what the actor has no role on (a task of a
+  list closed to the organization and not shared with them, of a private space of another member,
+  of a list not shared with a guest, a list unknown to them) answers `404` and is left out of every
+  collection. A guest has a role on the lists shared with them only, and sees their tasks.
+- A change needs `edit` on the list of the task, whatever it changes (the patch, an assignee, a
+  label, the checklist, a new subtask on its parent, a patch that changes nothing): a task the
+  actor sees with `view` or `comment` answers `403 access.role-insufficient` with that role. A
+  creation needs `edit` on its list; a move needs `edit` on the list it goes to as well; an
+  attachment needs `edit` on the list of the new parent (the task moves to it). An unseen target
+  list stays `422 task.list-invalid`, an unseen parent `422 task.parent-invalid`. Order of the
+  refusals: not found (`404`), then the role on the list of the task (`403`), then `If-Match`
+  (`412`), then the target of a move or an attachment (`422` unseen, `403` without `edit`), then
+  the domain (`422`). With `edit` on every list (the rule before grants), every route behaves as
+  in P3a.
 - A new status that differs from the current one must not be hidden in the space the task is in
   after the change (`422 task.status-hidden`); a task keeps its status when it moves into a space
   that hides it. `cancelled` needs a cancel reason, a cancel reason or note belongs to `cancelled`
@@ -248,8 +292,8 @@ never changes the assignees.
   instant of the last change, and is deleted when `from` and `to` are equal again. The task lock
   serializes the merges.
 - The activity of a list holds the entries recorded while their task was in it; the entries of a
-  task the actor no longer sees are left out of `items` and `total`, and those of a task now in
-  another visible list stay.
+  task now in a list the actor has no role on are left out of `items` and `total`, and those of a
+  task now in another visible list stay.
 - The organization and the actor come from the verified token only, lower-cased; an actor id that is
   not a UUID answers `403 auth.actor-not-allowed`.
 - A removed member is unassigned from every task they hold, closed ones included, by the clean-up
@@ -263,11 +307,14 @@ never changes the assignees.
 - A text holding U+0000, in any member, or a calendar date of the year 0000 in `dueDate` or
   `startDate`, answers `400 request.invalid`: the contract validators accept them, PostgreSQL cannot
   store them. A name, a label or a note that reads `0000-11-03` is only a text.
-- Visibility of the queries: a list or a space the actor does not see answers `404`; the cross-list
-  routes (labels, "Mes tâches", "Accueil") read the tasks of the spaces the actor sees only. A guest
-  sees nothing: the list and space routes answer `404`, labels and "Mes tâches" an empty page with
-  zero counts, "Accueil" zeros and empty lists. An account that is not the actor never reads
-  another's tasks or home.
+- Visibility of the queries: a list the actor has no role on, or a space they do not see, answers
+  `404`; the overview of a space lists the lists of it the actor has a role on (a guest sees a
+  space through the lists shared with them, and those only), and its `listCount` and `taskCount`
+  cover those lists. The cross-list routes (labels, "Mes tâches", "Accueil", and the entries of
+  the activity of a list) keep the tasks whose `list_id` is one of the lists the actor has a role
+  on (`ListVisibleListIds`). An actor with a role on no list gets, without a read of the tasks, an
+  empty page with zero counts for labels and "Mes tâches", zeros and empty lists for "Accueil". An
+  account that is not the actor never reads another's tasks or home.
 - Filters of a list (tasks and groups): values of one filter add up, filters narrow each other.
   `assignee` takes account ids, `me` (the actor) and `none` (nobody assigned); `label` compares the
   label key (trimmed, form C, lower case), so case is ignored and accents are significant; `search`
@@ -295,7 +342,8 @@ never changes the assignees.
   sidebar (spaces then lists, by creation), sprints included.
 - Labels: one per label key, whatever the case, in the order of the first 128 code points of the
   folded key then the key (code point order); the spelling is the first in code point order among
-  the visible tasks, so a private space leaks none. A search that folds to nothing matches nothing.
+  the visible tasks, so a list the actor has no role on leaks none. A search that folds to nothing
+  matches nothing.
 
 ## Transactions
 
@@ -303,8 +351,9 @@ Every use case runs in one tenant transaction of the organization of the context
 (`TenantTasksUnitOfWork`), joined to the one the `Idempotency-Key` interceptor opened for a creation
 or to the one the deduplicator opened for the removal of a member: the task, its collections, its
 activity entries and their outbox rows commit together, or nothing does. A refusal rolls it back.
-The readings of the copy of the memberships, `FindVisibleList`, `ListVisibleSpaceIds` and
-`AllocateTaskKeys` join the same transaction. The unit of work wakes the relay once its `run`
+The readings of the copy of the memberships, the operations of the spaces module (`FindVisibleList`,
+`ListVisibleListIds` and the others, which read the roles of the actor) and `AllocateTaskKeys`
+join the same transaction. The unit of work wakes the relay once its `run`
 resolved when an event was appended (inside a joined transaction, before the outer commit, so the
 rows leave at the next poll).
 
@@ -313,7 +362,11 @@ the database, and the detail in a read-only `REPEATABLE READ` one, so that the t
 list, its parent and its subtasks come from one snapshot ("read in one transaction" in the
 contract). The operations of the other modules a query calls join it: the kit only refuses a join
 that asks for more than the running transaction gives. The other queries read each statement as
-committed when it started; the page and the total of a list are two statements.
+committed when it started; the page and the total of a list are two statements. The access check
+runs in `runReadOnly` too. `FindTaskReference` and `FindTaskReferences` run in `run`, not
+`runReadOnly`: they join the transaction of access-requests, which is read-write for a request
+or a decision, and the kit refuses a read-only join over a read-write transaction; they write
+nothing all the same.
 
 Lock order, the same for every writer:
 
@@ -323,10 +376,12 @@ Lock order, the same for every writer:
 3. the `space_prefixes` row, last, by `AllocateTaskKeys`, which serializes the creations of a prefix
    until the commit.
 
-A task write does not lock before it knows the actor may see the task: it reads the task without
-a lock, checks the visibility of its list, then locks it and reads it again, and checks the
-visibility again when the locked task is in another list (a move committed meanwhile). An
-attachment does the same for the new parent. A move or an attachment locks the descendants in
+A task write does not lock before it knows the actor may see and change the task: it reads the
+task without a lock, checks the visibility of its list and `edit` on it, then locks it and reads
+it again, and checks both again when the locked task is in another list (a move committed
+meanwhile). An attachment does the same for the new parent. The role is read once per list, with
+no lock on the grants: a grant changed while the write runs is seen by the next request (accepted).
+A refused subtask creation that inherits its assignee locks no membership but the actor's. A move or an attachment locks the descendants in
 ordered statements until the subtree read under the locks holds nothing unlocked, and carries only
 the tasks that are still descendants then; a valid subtree has three levels and at most 650
 descendants, which bounds the passes, and a larger one is a defect that answers 500. A subtask
@@ -339,8 +394,8 @@ and no space and no task; each task batch of its clean-up job locks up to 500 ta
 id order in one statement, then reads the copy without lock. A sequential task lock that is not
 globally ordered could still meet another writer that holds several: PostgreSQL then aborts one
 transaction, and the request answers an error or the batch of the clean-up job is retried. The
-412 is checked inside the transaction, after the visibility of the task and before the domain
-rules.
+412 is checked inside the transaction, after the visibility of the task and the role on its list,
+and before the target of a move or an attachment and the domain rules.
 
 Reads (`GET` routes) run in read-only transactions without locks (see above). The tasks of a list,
 the groups, the counters of a list, the labels and "Mes tâches" read each statement as committed
@@ -349,7 +404,10 @@ run on one snapshot (`REPEATABLE READ`), so that their counters agree with each 
 statements of a route do not depend on the page size or on the size of the organization: the tasks
 of a list 6 to 11 (the summaries are skipped for an empty page), the groups 5 (the groups and the
 total of the assignees come from one statement), the counters of a list 5, the overview 4, the
-labels 3, "Mes tâches" 9, "Accueil" 12 (control statements of the transaction not counted).
+labels 3, "Mes tâches" 9, "Accueil" 12 (control statements of the transaction not counted). These
+counts were taken in P3a, before grants, with the statements the spaces operations sent then; the
+reads of the roles of the actor that those operations add now are theirs (spaces MODULE.md). The
+access check is the copy of the memberships, one read of the task and `FindVisibleList`.
 
 What a request costs, per route (what grows with the data, whatever the page size; the numbers are
 the medians of five calls through HTTP on the 75,000 tasks of `tests/task-queries.int-spec.ts`):
@@ -361,8 +419,8 @@ the medians of five calls through HTTP on the 75,000 tasks of `tests/task-querie
 - Groups and counters of a list: O(tasks of the list), one statement each (16 to 36 ms on the large
   list, 8 to 10 ms on Sprint 14). The groups of the assignees are one grouped scan of the tasks
   joined to their assignees, with the total as an extra grouping set.
-- Overview: O(tasks of the space) whatever `limit`: it reads every list of the space whole, counts
-  the tasks of all of them and slices the page in memory; `listCount` and `taskCount` are counted
+- Overview: O(tasks of the space) whatever `limit`: it reads every list of the space the actor has
+  a role on whole, counts the tasks of all of them and slices the page in memory; `listCount` and `taskCount` are counted
   again on every page (29 ms for the space of the large list).
 - Labels: O(label rows of the visible tasks), whatever `limit`, `search` or `cursor`: a join of
   `task_labels` and `tasks` grouped by label key (31 to 48 ms at 75,000 tasks), the fold running
@@ -370,6 +428,12 @@ the medians of five calls through HTTP on the 75,000 tasks of `tests/task-querie
 - "Mes tâches" and "Accueil": O(assignments of the actor), lifetime ones included (the hash join of
   the assignments with their tasks; 50 to 80 ms for 10,006 assignments), "Accueil" doing it for the
   stats and the seven tasks and calling two spaces reads.
+- The visibility filter of the cross-list reads (labels, "Mes tâches", "Accueil", the activity of a
+  list) is `tasks.list_id = ANY($listIds)`, one array parameter of every list the actor has a role
+  on: its size is O(lists of the organization the actor has a role on), unbounded, and each
+  candidate row is tested against it once. It replaced `tasks.space_id = ANY($spaceIds)` of P3a, a
+  list being finer than a space; the numbers above were measured with the space filter, before
+  grants, and have not been taken again with lists (see Decisions).
 - Every route that sorts or searches in SQL pays the fold of the name per row; the fold takes the
   short path for ASCII text.
 
@@ -404,6 +468,22 @@ member-lifecycle (its MODULE.md).
   do labels and the checklist.
 - The role of the viewer is read from the copy of the memberships in the same transaction and
   passed to the spaces operations (`viewerRole`); it never comes from the token.
+- The effective role on a list is decided by the spaces module (decision 2 of P3b-1) and carried
+  on each list it answers (`callerRole`); this module only requires `edit` for a change
+  (`TaskEditGuard`) and keeps no copy of a grant. The cross-list reads filter `tasks.list_id`, not
+  `tasks.space_id`: a list closed to the organization, or shared with a guest, is finer than its
+  space, so the module no longer short-circuits a guest itself.
+- The role on the list of the task is checked before `If-Match` (`404` → `403` → `412`), and the
+  target of a move or an attachment after it, with the other checks of the target (`422` when
+  unseen, then `403` without `edit`), as in P3a where the target came after `If-Match`. A patch
+  that would change nothing still needs `edit`: the role is checked before the patch is applied.
+- `role-insufficient` carries the role of the actor on a list, never `null`: the tasks routes act
+  on lists only, and a list the actor has no role on is not found.
+- The access check reads the task without its collections (`TaskReader.locationByKey`, one
+  statement) rather than through `TaskLocator`, which loads the assignees, labels and checklist of
+  the task: "one indexed read" of the contract.
+- `FindTaskReferences` leaves out an id that is not a UUID rather than letting the `uuid[]` cast
+  fail the transaction of the caller, and throws above 100 ids (a page of access requests).
 - `PATCH /tasks/{taskKey}` requires `If-Match` whenever the body names `description`, also with
   `null` or the value the task has, and `*` satisfies it (open questions 5 and 16 of the design:
   the description is stored as sent).
@@ -471,8 +551,10 @@ member-lifecycle (its MODULE.md).
 - A label that contains a comma cannot be a `label` filter (comma-separated by the contract): to
   report to the contract owner.
 - Left as they are, measured and documented: the overview reads every list of its space and slices
-  in memory (`taskCount` needs the whole space anyway); the visible space ids go to the labels,
-  "Mes tâches" and "Accueil" as one array, unbounded by the number of spaces of the organization;
+  in memory (`taskCount` needs the whole space anyway); the visible list ids go to the labels,
+  "Mes tâches", "Accueil" and the activity of a list as one array, unbounded by the number of
+  lists of the organization (not measured with lists yet: `tests/task-queries.int-spec.ts` is to
+  take the plans and medians again with grants);
   `total` is counted again on every page, cursor pages included (the contract gives it on each
   page); the page and the total of a list are two statements, so a concurrent write can make them
   disagree by a task (read committed).

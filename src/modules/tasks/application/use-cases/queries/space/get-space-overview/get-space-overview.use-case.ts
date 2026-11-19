@@ -18,13 +18,14 @@ import type { GetSpaceOverviewOutput } from './get-space-overview.output.js';
  * Class GetSpaceOverview
  *
  * @description
- * Reads the lists of a space the actor sees with the counts of their top-level tasks, in the order
- * of their creation, one keyset page at a time (`GET /internal/v1/spaces/{spaceId}/overview`),
- * without a lock, in one read-only transaction on one snapshot (repeatable read), so that the page,
- * `listCount` and `taskCount` agree even while writers commit ("4 listes · 108 tâches"). An unknown
- * space and a space the actor does not see (a guest sees none) get the same answer,
- * `space-not-found`. `listCount` and `taskCount` cover the whole space on every page: the counts
- * are read for every list of the space in one statement, and the page is cut from them in memory.
+ * Reads the lists of a space the actor has a role on, each with that role and the counts of its
+ * top-level tasks, in the order of their creation, one keyset page at a time
+ * (`GET /internal/v1/spaces/{spaceId}/overview`), without a lock, in one read-only transaction on
+ * one snapshot (repeatable read), so that the page, `listCount` and `taskCount` agree even while
+ * writers commit ("4 listes · 108 tâches"). An unknown space and a space the actor does not see get
+ * the same answer, `space-not-found`; a space seen through some of its lists only (a guest with a
+ * list grant) shows those lists only. `listCount` and `taskCount` cover those lists on every page:
+ * the counts are read for every one of them in one statement, and the page is cut in memory.
  */
 export class GetSpaceOverview {
   // #region Properties

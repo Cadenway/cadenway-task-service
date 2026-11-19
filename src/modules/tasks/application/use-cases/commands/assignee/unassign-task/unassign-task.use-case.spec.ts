@@ -12,6 +12,7 @@ import {
   STRANGER,
   atelierNordMembers,
   refusalOf,
+  sprint14SharedWith,
   taskState,
 } from '../../../tasks.fixture.js';
 import type { UnassignTaskInput } from './unassign-task.input.js';
@@ -107,7 +108,7 @@ describe('UnassignTask: the refusals', () => {
 
   it.each([
     ['an unknown task', { taskKey: 'CAD-999' }],
-    ['any task, for a guest', { actorUserId: NADIA }],
+    ['a task of no list shared with a guest', { actorUserId: NADIA }],
   ] as const)('refuses %s as task-not-found', async (_name, overrides) => {
     const { useCase } = atelierNord();
 
@@ -122,5 +123,38 @@ describe('UnassignTask: the refusals', () => {
     expect(await refusalOf(useCase.execute(unassign({ actorUserId: STRANGER })))).toEqual({
       reason: 'organization-not-found',
     });
+  });
+});
+
+describe('UnassignTask: a change needs edit on the list of the task', () => {
+  it.each(['view', 'comment'] as const)(
+    'refuses a member with %s on Sprint 14 as role-insufficient, changing nothing',
+    async (role) => {
+      const tasks = InMemoryTasks.withCad482();
+      const useCase = new UnassignTask(
+        tasks,
+        atelierNordMembers(),
+        sprint14SharedWith({ [HUGO]: role }),
+      );
+
+      expect(await refusalOf(useCase.execute(unassign({ actorUserId: HUGO })))).toEqual({
+        reason: 'role-insufficient',
+        role,
+      });
+      expect(tasks.stored(CAD_482).assigneeIds).toEqual([CAMILLE, INES]);
+      expect(tasks.events).toEqual([]);
+    },
+  );
+
+  it('answers role-insufficient before version-mismatch', async () => {
+    const useCase = new UnassignTask(
+      InMemoryTasks.withCad482(),
+      atelierNordMembers(),
+      sprint14SharedWith({ [HUGO]: 'comment' }),
+    );
+
+    expect(
+      await refusalOf(useCase.execute(unassign({ actorUserId: HUGO, expectedVersions: [3] }))),
+    ).toEqual({ reason: 'role-insufficient', role: 'comment' });
   });
 });

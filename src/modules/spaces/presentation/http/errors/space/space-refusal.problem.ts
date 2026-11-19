@@ -83,6 +83,22 @@ function shapeOf(refusal: SpaceRefusalReason): ProblemShape {
         code: 'request.version-mismatch',
         details: { version: refusal.version },
       };
+    case 'role-insufficient':
+      return {
+        status: 403,
+        code: 'access.role-insufficient',
+        details: { role: refusal.role, requiredRole: 'edit' },
+      };
+    case 'manage-forbidden':
+      return { status: 403, code: 'space.manage-forbidden' };
+    case 'grantee-invalid':
+      return { status: 422, code: 'access.grantee-invalid', details: { userId: refusal.userId } };
+    case 'guest-space-forbidden':
+      return { status: 422, code: 'access.guest-space-forbidden' };
+    case 'owner-unchangeable':
+      return { status: 422, code: 'access.owner-unchangeable' };
+    case 'grant-limit-reached':
+      return { status: 422, code: 'access.grant-limit-reached' };
   }
 }
 

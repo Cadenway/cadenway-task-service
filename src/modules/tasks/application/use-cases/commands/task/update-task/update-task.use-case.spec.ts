@@ -16,9 +16,11 @@ import {
   CAMILLE,
   CLOTURES,
   DESIGN,
+  HUGO,
   InMemorySpaceDirectory,
   InMemoryTasks,
   INES,
+  LEA,
   MAQUETTES,
   NADIA,
   NOW,
@@ -26,9 +28,11 @@ import {
   SPRINT_14,
   STRANGER,
   UNKNOWN_LIST,
+  atelierNordLists,
   atelierNordMembers,
   cad490State,
   refusalOf,
+  sprint14SharedWith,
   subtaskState,
   taskState,
 } from '../../../tasks.fixture.js';
@@ -343,7 +347,7 @@ describe('UpdateTask: If-Match is checked after visibility and before the rules 
 describe('UpdateTask: what the actor does not see is not found', () => {
   it.each([
     ['an unknown task', { taskKey: 'CAD-999' }],
-    ['any task, for a guest', { actorUserId: NADIA }],
+    ['a task of no list shared with a guest', { actorUserId: NADIA }],
   ] as const)('refuses %s as task-not-found', async (_name, overrides) => {
     const { useCase } = atelierNord();
 
@@ -748,5 +752,230 @@ describe('UpdateTask: a move carries only the tasks that are still descendants o
 
     await expect(useCase.execute(patchOf({ listId: BUGS }))).rejects.toThrow('descendants');
     expect(tasks.stored(CAD_482).listId).toBe(SPRINT_14);
+  });
+});
+
+/**
+ * Builds the spaces of Atelier Nord with "Bugs" closed to the organization (its switch off) and
+ * shared with some accounts; "Sprint 14" stays open to every member.
+ *
+ * @param grants - The role of each account Bugs is shared with.
+ * @returns The fake spaces.
+ */
+function bugsSharedWith(grants: Readonly<Record<string, 'edit' | 'comment' | 'view'>>) {
+  return new InMemorySpaceDirectory({
+    lists: atelierNordLists().map((list) =>
+      list.id === BUGS ? { ...list, organizationAccess: false } : list,
+    ),
+    listGrants: { [BUGS]: grants },
+  });
+}
+
+/**
+ * Builds the use case over a store and some spaces.
+ *
+ * @param stored - The tasks.
+ * @param spaces - The fake spaces.
+ * @returns The fake store and the use case.
+ */
+function over(
+  stored: readonly TaskState[],
+  spaces: InMemorySpaceDirectory,
+): { readonly tasks: InMemoryTasks; readonly useCase: UpdateTask } {
+  const tasks = new InMemoryTasks({ tasks: stored });
+  return { tasks, useCase: new UpdateTask(tasks, atelierNordMembers(), spaces) };
+}
+
+describe('UpdateTask: a change needs edit on the list of the task', () => {
+  it.each(['view', 'comment'] as const)(
+    'refuses a member with %s on Sprint 14 as role-insufficient, changing nothing',
+    async (role) => {
+      const { tasks, useCase } = over([taskState()], sprint14SharedWith({ [HUGO]: role }));
+
+      expect(
+        await refusalOf(useCase.execute(patchOf({ status: 'review' }, { actorUserId: HUGO }))),
+      ).toEqual({ reason: 'role-insufficient', role });
+      expect(tasks.stored(CAD_482)).toMatchObject({ status: 'progress', version: 12 });
+      expect(tasks.events).toEqual([]);
+      expect(tasks.activity.size).toBe(0);
+    },
+  );
+
+  it('answers task-not-found before role-insufficient, and role-insufficient before If-Match', async () => {
+    const { useCase } = over([taskState()], sprint14SharedWith({ [HUGO]: 'view' }));
+
+    expect(
+      await refusalOf(useCase.execute(patchOf({ status: 'review' }, { actorUserId: LEA }))),
+    ).toEqual({ reason: 'task-not-found' });
+    expect(
+      await refusalOf(
+        useCase.execute(
+          patchOf({ status: 'review' }, { actorUserId: HUGO, expectedVersions: [3] }),
+        ),
+      ),
+    ).toEqual({ reason: 'role-insufficient', role: 'view' });
+  });
+
+  it('refuses even a patch that would change nothing', async () => {
+    const { useCase } = over([taskState()], sprint14SharedWith({ [HUGO]: 'comment' }));
+
+    expect(await refusalOf(useCase.execute(patchOf({}, { actorUserId: HUGO })))).toEqual({
+      reason: 'role-insufficient',
+      role: 'comment',
+    });
+  });
+
+  it('lets a guest with edit on the list change the status of its task', async () => {
+    const { tasks, useCase } = over([taskState()], sprint14SharedWith({ [NADIA]: 'edit' }));
+
+    const view = await useCase.execute(patchOf({ status: 'review' }, { actorUserId: NADIA }));
+
+    expect(view).toMatchObject({ status: 'review', version: 13 });
+    expect(tasks.events[0]).toMatchObject({ actor: { type: 'user', id: NADIA } });
+  });
+
+  it('keeps every member at edit on a list of the organization, the rule before grants', async () => {
+    const { useCase } = over([taskState()], new InMemorySpaceDirectory());
+
+    expect(
+      (await useCase.execute(patchOf({ status: 'review' }, { actorUserId: LEA }))).version,
+    ).toBe(13);
+  });
+});
+
+describe('UpdateTask: a move needs edit on the list it goes to', () => {
+  it.each(['view', 'comment'] as const)(
+    'refuses a move to a list the actor sees with %s as role-insufficient, moving nothing',
+    async (role) => {
+      const { tasks, useCase } = over(tree(), bugsSharedWith({ [HUGO]: role }));
+
+      expect(
+        await refusalOf(useCase.execute(patchOf({ listId: BUGS }, { actorUserId: HUGO }))),
+      ).toEqual({ reason: 'role-insufficient', role });
+      expect(tasks.stored(CAD_482)).toMatchObject({ listId: SPRINT_14, version: 12 });
+      expect(tasks.stored(CAD_483)).toMatchObject({ listId: SPRINT_14 });
+      expect(tasks.events).toEqual([]);
+    },
+  );
+
+  it('keeps list-invalid for a list the actor has no role on', async () => {
+    const { useCase } = over(tree(), bugsSharedWith({}));
+
+    expect(
+      await refusalOf(useCase.execute(patchOf({ listId: BUGS }, { actorUserId: HUGO }))),
+    ).toEqual({ reason: 'list-invalid' });
+  });
+
+  it('checks If-Match before the role on the list it goes to', async () => {
+    const { useCase } = over(tree(), bugsSharedWith({ [HUGO]: 'view' }));
+
+    expect(
+      await refusalOf(
+        useCase.execute(patchOf({ listId: BUGS }, { actorUserId: HUGO, expectedVersions: [3] })),
+      ),
+    ).toEqual({ reason: 'version-mismatch', version: 12 });
+  });
+
+  it('moves the task and its subtree to a list the actor has edit on', async () => {
+    const { tasks, useCase } = over(tree(), bugsSharedWith({ [HUGO]: 'edit' }));
+
+    const view = await useCase.execute(patchOf({ listId: BUGS }, { actorUserId: HUGO }));
+
+    expect(view).toMatchObject({ listId: BUGS, version: 13 });
+    expect(tasks.stored(CAD_484)).toMatchObject({ listId: BUGS });
+  });
+});
+
+describe('UpdateTask: an attachment needs edit on the list of the new parent', () => {
+  it.each(['view', 'comment'] as const)(
+    'refuses a parent in a list the actor sees with %s as role-insufficient',
+    async (role) => {
+      const { tasks, useCase } = over(
+        [taskState({ listId: BUGS }), cad490State()],
+        bugsSharedWith({ [HUGO]: role }),
+      );
+
+      expect(
+        await refusalOf(
+          useCase.execute(
+            patchOf({ parentKey: 'CAD-482' }, { actorUserId: HUGO, taskKey: 'CAD-490' }),
+          ),
+        ),
+      ).toEqual({ reason: 'role-insufficient', role });
+      expect(tasks.stored(CAD_490)).toMatchObject({ parentId: null, listId: SPRINT_14 });
+    },
+  );
+
+  it('keeps parent-invalid for a parent in a list the actor has no role on', async () => {
+    const { useCase } = over([taskState({ listId: BUGS }), cad490State()], bugsSharedWith({}));
+
+    expect(
+      await refusalOf(
+        useCase.execute(
+          patchOf({ parentKey: 'CAD-482' }, { actorUserId: HUGO, taskKey: 'CAD-490' }),
+        ),
+      ),
+    ).toEqual({ reason: 'parent-invalid', parentKey: 'CAD-482' });
+  });
+
+  it('attaches the task to a parent of its own list with edit on that list only', async () => {
+    const { useCase } = over(
+      [taskState({ listId: BUGS }), cad490State({ listId: BUGS })],
+      bugsSharedWith({ [HUGO]: 'edit' }),
+    );
+
+    const view = await useCase.execute(
+      patchOf({ parentKey: 'CAD-482' }, { actorUserId: HUGO, taskKey: 'CAD-490' }),
+    );
+
+    expect(view).toMatchObject({ parentKey: 'CAD-482', listId: BUGS });
+  });
+
+  it('moves the task to the list of a parent the actor has edit on', async () => {
+    const { useCase } = over(
+      [taskState({ listId: BUGS }), cad490State()],
+      bugsSharedWith({ [HUGO]: 'edit' }),
+    );
+
+    const view = await useCase.execute(
+      patchOf({ parentKey: 'CAD-482' }, { actorUserId: HUGO, taskKey: 'CAD-490' }),
+    );
+
+    expect(view).toMatchObject({ parentKey: 'CAD-482', listId: BUGS });
+  });
+
+  it('decides the role on the list the locked parent is in', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState(), cad490State()] });
+    const unitOfWork: TasksUnitOfWork = {
+      run: (work) =>
+        tasks.run((store) =>
+          work({
+            ...store,
+            tasks: {
+              ...store.tasks,
+              lockByIds: async (organizationId, ids) =>
+                (await store.tasks.lockByIds(organizationId, ids)).map((task) =>
+                  task.snapshot.id === CAD_482
+                    ? Task.restore({ ...task.snapshot, listId: BUGS })
+                    : task,
+                ),
+            },
+          }),
+        ),
+      runReadOnly: (work, options) => tasks.runReadOnly(work, options),
+    };
+    const useCase = new UpdateTask(
+      unitOfWork,
+      atelierNordMembers(),
+      bugsSharedWith({ [HUGO]: 'comment' }),
+    );
+
+    expect(
+      await refusalOf(
+        useCase.execute(
+          patchOf({ parentKey: 'CAD-482' }, { actorUserId: HUGO, taskKey: 'CAD-490' }),
+        ),
+      ),
+    ).toEqual({ reason: 'role-insufficient', role: 'comment' });
   });
 });

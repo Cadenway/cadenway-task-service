@@ -1,10 +1,13 @@
+import type { AccessRole } from '../../../domain/value-objects/access/access-role.value-object.js';
 import type { SpaceState } from '../../../domain/value-objects/space/space-state.value-object.js';
 
 /**
  * Interface SpaceView
  *
  * @description
- * A space as the routes return it: its state and the key its next task would take now ("Les tâches seront numérotées CAD-1, CAD-2…"), a preview that reserves nothing.
+ * A space as the routes return it: its state, the key its next task would take now ("Les tâches
+ * seront numérotées CAD-1, CAD-2…", a preview that reserves nothing), and the access of the caller
+ * after the request ("Access" of `openapi/public/spaces.yaml`).
  */
 export interface SpaceView {
   // #region Properties
@@ -29,5 +32,28 @@ export interface SpaceView {
    * @readonly
    */
   readonly nextKey: string;
+
+  /**
+   * Property callerRole
+   *
+   * @description
+   * The role of the caller on the space itself; `null` when they see it only through the grants
+   * of some of its lists.
+   *
+   * @type {AccessRole | null}
+   * @readonly
+   */
+  readonly callerRole: AccessRole | null;
+
+  /**
+   * Property callerCanManage
+   *
+   * @description
+   * Whether the caller manages the space: changes its visibility, shares it and deletes it.
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  readonly callerCanManage: boolean;
   // #endregion
 }

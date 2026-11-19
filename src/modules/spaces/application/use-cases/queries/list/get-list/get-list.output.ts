@@ -1,11 +1,11 @@
-import type { TaskListState } from '../../../../../domain/value-objects/list/task-list-state.value-object.js';
+import type { ListView } from '../../../../projections/list/list-view.projection.js';
 
 /**
  * Type GetListOutput
  *
  * @description
- * The list.
+ * The list, with the role of the actor on it.
  *
- * @type {TaskListState}
+ * @type {ListView}
  */
-export type GetListOutput = TaskListState;
+export type GetListOutput = ListView;

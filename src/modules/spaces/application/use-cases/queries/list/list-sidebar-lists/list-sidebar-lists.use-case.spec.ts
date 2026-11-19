@@ -16,6 +16,7 @@ import {
   SPRINT_14,
   backlogState,
   designState,
+  listGrantOf,
   marketingState,
   spaceState,
 } from '../../../spaces.fixture.js';
@@ -89,6 +90,8 @@ describe('ListSidebarLists: the first lists of the sidebar of a member', () => {
         sprint: null,
         createdAt: new Date('2026-10-21T09:00:00Z'),
         version: 1,
+        organizationAccess: true,
+        callerRole: 'edit',
       },
     ]);
   });
@@ -184,7 +187,7 @@ describe('ListSidebarLists: only the spaces the viewer sees', () => {
     expect(output.lists).toEqual([]);
   });
 
-  it('answers an empty list for a guest without any read', async () => {
+  it('answers an empty list for a guest no list is shared with', async () => {
     const spaces = atelierNord();
 
     const output = await new ListSidebarLists(spaces).execute(
@@ -192,10 +195,9 @@ describe('ListSidebarLists: only the spaces the viewer sees', () => {
     );
 
     expect(output).toEqual({ lists: [] });
-    expect(spaces.listFirstVisibleCalls).toEqual([]);
   });
 
-  it('answers an empty list for the former owner of a private space who is now a guest', async () => {
+  it('answers an empty list for the former owner of a private space who is now a guest, without a grant', async () => {
     const spaces = atelierNord();
 
     const output = await new ListSidebarLists(spaces).execute(
@@ -203,7 +205,6 @@ describe('ListSidebarLists: only the spaces the viewer sees', () => {
     );
 
     expect(output).toEqual({ lists: [] });
-    expect(spaces.listFirstVisibleCalls).toEqual([]);
   });
 });
 
@@ -219,5 +220,37 @@ describe('ListSidebarLists: a listing changes nothing', () => {
     expect(spaces.spaces).toEqual(before.spaces);
     expect(spaces.lists).toEqual(before.lists);
     expect(spaces.allocateCalls).toEqual([]);
+  });
+});
+
+describe('ListSidebarLists: the lists the viewer has a role on, each with that role', () => {
+  it('lists to a guest the lists shared with them, in sidebar order', async () => {
+    const spaces = atelierNord();
+    spaces.grants = [
+      listGrantOf(MARKETING, CAMPAGNES, NADIA, 'edit'),
+      listGrantOf(DESIGN, MAQUETTES, NADIA, 'view'),
+    ];
+
+    const output = await new ListSidebarLists(spaces).execute(
+      sidebar({ viewerUserId: NADIA, viewerRole: 'guest' }),
+    );
+
+    expect(output.lists.map((list) => [list.id, list.callerRole])).toEqual([
+      [MAQUETTES, 'view'],
+      [CAMPAGNES, 'edit'],
+    ]);
+  });
+
+  it('leaves out a list whose switch is off for a member it is not shared with, not for the owner of the space', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [backlogState({ organizationAccess: false })],
+    });
+    const listing = new ListSidebarLists(spaces);
+
+    expect((await listing.execute(sidebar())).lists).toEqual([]);
+    expect(
+      (await listing.execute(sidebar({ viewerUserId: CAMILLE, viewerRole: 'owner' }))).lists,
+    ).toHaveLength(1);
   });
 });

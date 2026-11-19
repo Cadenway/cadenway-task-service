@@ -21,6 +21,28 @@ describe('answerRefusals', () => {
     ],
     [{ reason: 'sprint-dates-invalid' }, 422, 'list.sprint-dates-invalid', undefined],
     [{ reason: 'version-mismatch', version: 13 }, 412, 'request.version-mismatch', { version: 13 }],
+    [
+      { reason: 'role-insufficient', role: 'view' },
+      403,
+      'access.role-insufficient',
+      { role: 'view', requiredRole: 'edit' },
+    ],
+    [
+      { reason: 'role-insufficient', role: null },
+      403,
+      'access.role-insufficient',
+      { role: null, requiredRole: 'edit' },
+    ],
+    [{ reason: 'manage-forbidden' }, 403, 'space.manage-forbidden', undefined],
+    [
+      { reason: 'grantee-invalid', userId: '019a6f00-1b2c-7d3e-8f4a-5b6c7d8e9f41' },
+      422,
+      'access.grantee-invalid',
+      { userId: '019a6f00-1b2c-7d3e-8f4a-5b6c7d8e9f41' },
+    ],
+    [{ reason: 'guest-space-forbidden' }, 422, 'access.guest-space-forbidden', undefined],
+    [{ reason: 'owner-unchangeable' }, 422, 'access.owner-unchangeable', undefined],
+    [{ reason: 'grant-limit-reached' }, 422, 'access.grant-limit-reached', undefined],
   ];
 
   it.each(answers)(

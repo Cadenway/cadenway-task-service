@@ -4,12 +4,14 @@ import {
   ATELIER_NORD,
   CAD_482,
   CAMILLE,
+  HUGO,
   InMemorySpaceDirectory,
   InMemoryTasks,
   NADIA,
   STRANGER,
   atelierNordMembers,
   refusalOf,
+  sprint14SharedWith,
   taskState,
 } from '../../../tasks.fixture.js';
 import type { AddChecklistItemInput } from './add-checklist-item.input.js';
@@ -108,7 +110,7 @@ describe('AddChecklistItem: the refusals', () => {
 
   it.each([
     ['an unknown task', { taskKey: 'CAD-999' }],
-    ['any task, for a guest', { actorUserId: NADIA }],
+    ['a task of no list shared with a guest', { actorUserId: NADIA }],
   ] as const)('refuses %s as task-not-found', async (_name, overrides) => {
     const { useCase } = atelierNord();
 
@@ -124,4 +126,25 @@ describe('AddChecklistItem: the refusals', () => {
       reason: 'organization-not-found',
     });
   });
+});
+
+describe('AddChecklistItem: a change needs edit on the list of the task', () => {
+  it.each(['view', 'comment'] as const)(
+    'refuses a member with %s on Sprint 14 as role-insufficient, adding nothing',
+    async (role) => {
+      const tasks = InMemoryTasks.withCad482();
+      const useCase = new AddChecklistItem(
+        tasks,
+        atelierNordMembers(),
+        sprint14SharedWith({ [HUGO]: role }),
+      );
+
+      expect(await refusalOf(useCase.execute(addItem({ actorUserId: HUGO })))).toEqual({
+        reason: 'role-insufficient',
+        role,
+      });
+      expect(tasks.stored(CAD_482).checklist).toHaveLength(2);
+      expect(tasks.events).toEqual([]);
+    },
+  );
 });

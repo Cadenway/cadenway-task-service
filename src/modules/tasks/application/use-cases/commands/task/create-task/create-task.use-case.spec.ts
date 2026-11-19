@@ -8,6 +8,7 @@ import {
   InMemorySpaceDirectory,
   InMemoryTasks,
   INES,
+  LEA,
   MAQUETTES,
   NADIA,
   NOW,
@@ -18,6 +19,7 @@ import {
   UNKNOWN_LIST,
   atelierNordMembers,
   refusalOf,
+  sprint14SharedWith,
 } from '../../../tasks.fixture.js';
 import type { CreateTaskInput } from './create-task.input.js';
 import { CreateTask } from './create-task.use-case.js';
@@ -266,7 +268,7 @@ describe('CreateTask: what the actor does not see is not found', () => {
   it.each([
     ['an unknown list', { listId: UNKNOWN_LIST }],
     ['a list of the private space of another member', { listId: MAQUETTES }],
-    ['any list, for a guest', { actorUserId: NADIA, assigneeIds: [] }],
+    ['a list not shared with a guest', { actorUserId: NADIA, assigneeIds: [] }],
   ] as const)('refuses %s as list-not-found', async (_name, overrides) => {
     const { tasks, useCase } = atelierNord();
 
@@ -331,5 +333,53 @@ describe('CreateTask: the rules of the domain refuse the task and roll everythin
       reason: 'assignee-invalid',
       userIds: [NADIA],
     });
+  });
+});
+
+describe('CreateTask: a creation needs edit on the list', () => {
+  /**
+   * Builds the use case over the spaces of Atelier Nord with Sprint 14 shared with some accounts.
+   *
+   * @param grants - The role of each account Sprint 14 is shared with.
+   * @returns The fake store, the fake spaces and the use case.
+   */
+  function sharedSprint14(grants: Parameters<typeof sprint14SharedWith>[0]): {
+    readonly tasks: InMemoryTasks;
+    readonly spaces: InMemorySpaceDirectory;
+    readonly useCase: CreateTask;
+  } {
+    const tasks = new InMemoryTasks();
+    const spaces = sprint14SharedWith(grants);
+    return { tasks, spaces, useCase: new CreateTask(tasks, atelierNordMembers(), spaces) };
+  }
+
+  it.each(['view', 'comment'] as const)(
+    'refuses a member with %s on the list as role-insufficient, before any key is taken',
+    async (role) => {
+      const { tasks, spaces, useCase } = sharedSprint14({ [HUGO]: role });
+
+      expect(
+        await refusalOf(useCase.execute(createTask({ actorUserId: HUGO, assigneeIds: [] }))),
+      ).toEqual({ reason: 'role-insufficient', role });
+      expect(tasks.tasks.size).toBe(0);
+      expect(spaces.allocateCalls).toEqual([]);
+    },
+  );
+
+  it('answers list-not-found before role-insufficient for a list the actor has no role on', async () => {
+    const { useCase } = sharedSprint14({ [HUGO]: 'view' });
+
+    expect(
+      await refusalOf(useCase.execute(createTask({ actorUserId: LEA, assigneeIds: [] }))),
+    ).toEqual({ reason: 'list-not-found' });
+  });
+
+  it('lets a guest with edit on the list create a task in it', async () => {
+    const { tasks, useCase } = sharedSprint14({ [NADIA]: 'edit' });
+
+    const view = await useCase.execute(createTask({ actorUserId: NADIA, assigneeIds: [HUGO] }));
+
+    expect(view).toMatchObject({ key: 'CAD-496', listId: SPRINT_14, assigneeIds: [HUGO] });
+    expect(tasks.events[0]).toMatchObject({ kind: 'created', actor: { type: 'user', id: NADIA } });
   });
 });

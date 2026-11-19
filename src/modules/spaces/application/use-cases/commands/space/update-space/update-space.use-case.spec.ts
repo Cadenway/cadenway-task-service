@@ -15,8 +15,11 @@ import {
   STRANGER,
   UNKNOWN_SPACE,
   atelierNordMembers,
+  backlogState,
   designState,
+  listGrantOf,
   refusalOf,
+  spaceGrantOf,
   spaceState,
 } from '../../../spaces.fixture.js';
 import type { UpdateSpaceInput } from './update-space.input.js';
@@ -39,6 +42,8 @@ function updateProduit(overrides: Partial<UpdateSpaceInput> = {}): UpdateSpaceIn
   };
 }
 
+/** A list of the private space "Design". */
+const MAQUETTES = '019a7100-0000-7000-8000-000000000003';
 /** Atelier Nord with "Produit" (CAD, version 3, owned by Camille Martin) and the private "Design" (DES, Hugo Dubois). */
 function atelierNord(): InMemorySpaces {
   return new InMemorySpaces({
@@ -47,7 +52,7 @@ function atelierNord(): InMemorySpaces {
   });
 }
 
-describe('UpdateSpace: a member who sees the space changes it', () => {
+describe('UpdateSpace: a member with edit on the space changes it', () => {
   it('stores the change at the next version and returns the space with its next key', async () => {
     const spaces = atelierNord();
 
@@ -593,4 +598,130 @@ describe('UpdateSpace: a private space that awaits an owner is unknown to everyo
       expect(spaces.events).toEqual([]);
     },
   );
+});
+
+describe('UpdateSpace: a change of a space needs edit on it, then the version, then the rules', () => {
+  /**
+   * The private Design (version 2), which Léa Petit sees through a grant of the space and Nadia
+   * Benali through a grant of its list Maquettes.
+   *
+   * @param role - The role the grant of Léa Petit gives.
+   * @returns The fake store.
+   */
+  function designSharedWithLea(role: 'edit' | 'comment' | 'view'): InMemorySpaces {
+    return new InMemorySpaces({
+      spaces: [designState({ version: 2 })],
+      lists: [backlogState({ id: MAQUETTES, spaceId: DESIGN, name: 'Maquettes' })],
+      grants: [spaceGrantOf(DESIGN, LEA, role), listGrantOf(DESIGN, MAQUETTES, NADIA, 'edit')],
+    });
+  }
+
+  it.each([['comment'], ['view']] as const)(
+    'refuses role-insufficient with the role %s to a member who sees the space',
+    async (role: 'comment' | 'view') => {
+      const spaces = designSharedWithLea(role);
+
+      const refusal = await refusalOf(
+        new UpdateSpace(spaces, atelierNordMembers()).execute(
+          updateProduit({ actorUserId: LEA, spaceId: DESIGN }),
+        ),
+      );
+
+      expect(refusal).toEqual({ reason: 'role-insufficient', role });
+      expect(spaces.events).toEqual([]);
+    },
+  );
+
+  it('refuses role-insufficient with no role to a guest who sees the space through a list', async () => {
+    const refusal = await refusalOf(
+      new UpdateSpace(designSharedWithLea('view'), atelierNordMembers()).execute(
+        updateProduit({ actorUserId: NADIA, spaceId: DESIGN }),
+      ),
+    );
+
+    expect(refusal).toEqual({ reason: 'role-insufficient', role: null });
+  });
+
+  it('answers role-insufficient before a stale If-Match', async () => {
+    const refusal = await refusalOf(
+      new UpdateSpace(designSharedWithLea('view'), atelierNordMembers()).execute(
+        updateProduit({ actorUserId: LEA, spaceId: DESIGN, expectedVersions: [1] }),
+      ),
+    );
+
+    expect(refusal).toEqual({ reason: 'role-insufficient', role: 'view' });
+  });
+
+  it('answers space-not-found before role-insufficient to a member who does not see the space', async () => {
+    const refusal = await refusalOf(
+      new UpdateSpace(designSharedWithLea('view'), atelierNordMembers()).execute(
+        updateProduit({ actorUserId: INES, spaceId: DESIGN }),
+      ),
+    );
+
+    expect(refusal).toEqual({ reason: 'space-not-found' });
+  });
+
+  it('lets a member with edit through a grant change the settings, answering edit without managing', async () => {
+    const view = await new UpdateSpace(designSharedWithLea('edit'), atelierNordMembers()).execute(
+      updateProduit({ actorUserId: LEA, spaceId: DESIGN, expectedVersions: [2] }),
+    );
+
+    expect(view).toMatchObject({ callerRole: 'edit', callerCanManage: false });
+    expect(view.space).toMatchObject({ name: 'Plateforme', version: 3 });
+  });
+
+  it('refuses visibility-forbidden to a member with edit who does not manage the space', async () => {
+    const refusal = await refusalOf(
+      new UpdateSpace(designSharedWithLea('edit'), atelierNordMembers()).execute(
+        updateProduit({ actorUserId: LEA, spaceId: DESIGN, patch: { visibility: 'organization' } }),
+      ),
+    );
+
+    expect(refusal).toEqual({ reason: 'visibility-forbidden' });
+  });
+
+  it('answers that the owner of the space manages it after the change', async () => {
+    const view = await new UpdateSpace(atelierNord(), atelierNordMembers()).execute(
+      updateProduit({ actorUserId: HUGO, spaceId: DESIGN }),
+    );
+
+    expect(view).toMatchObject({ callerRole: 'edit', callerCanManage: true });
+  });
+
+  it('answers the role the change was made with to an admin who made the space private', async () => {
+    const view = await new UpdateSpace(atelierNord(), atelierNordMembers()).execute(
+      updateProduit({ actorUserId: INES, patch: { visibility: 'private' } }),
+    );
+
+    expect(view).toMatchObject({ callerRole: 'edit', callerCanManage: false });
+  });
+});
+
+describe('UpdateSpace: a space handed to the owner of the organization keeps no grant of theirs', () => {
+  it('removes the grant the owner held on the space, with its access event at the version of the change', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState({ ownerUserId: HUGO, version: 3 })],
+      grants: [spaceGrantOf(PRODUIT, CAMILLE, 'view'), spaceGrantOf(PRODUIT, LEA, 'edit')],
+    });
+
+    await new UpdateSpace(spaces, atelierNordMembers({ removed: [HUGO] })).execute(
+      updateProduit({ actorUserId: INES, patch: { visibility: 'private' } }),
+    );
+
+    expect(spaces.grantsOf({ kind: 'space', spaceId: PRODUIT })).toEqual([
+      { userId: LEA, role: 'edit' },
+    ]);
+    expect(spaces.events).toEqual([
+      expect.objectContaining({ kind: 'spaceUpdated', version: 4 }),
+      {
+        kind: 'spaceAccessChanged',
+        spaceId: PRODUIT,
+        version: 4,
+        grants: [{ userId: LEA, role: 'edit' }],
+        changedUserIds: [CAMILLE],
+        actor: { type: 'user', id: INES },
+      },
+    ]);
+  });
 });

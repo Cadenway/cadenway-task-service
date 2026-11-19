@@ -54,7 +54,8 @@ interface ProblemShape {
  *
  * @description
  * Maps a refusal of a use case to its problem. What the actor does not see answers `404`, like
- * what does not exist, as "Visibility" of the contract says.
+ * what does not exist, and what they see without the role a change needs `403
+ * access.role-insufficient`, as "Visibility and roles" of the contract says.
  *
  * @param {TaskRefusalReason} refusal - The refusal.
  * @returns {ProblemShape} The problem of the contract.
@@ -73,6 +74,12 @@ function shapeOf(refusal: TaskRefusalReason): ProblemShape {
       return { status: 404, code: 'user.not-found' };
     case 'checklist-item-not-found':
       return { status: 404, code: 'checklist-item.not-found' };
+    case 'role-insufficient':
+      return {
+        status: 403,
+        code: 'access.role-insufficient',
+        details: { role: refusal.role, requiredRole: 'edit' },
+      };
     case 'version-mismatch':
       return {
         status: 412,

@@ -1,8 +1,10 @@
+import type { AccessRole } from './access-role.model.js';
+
 /**
  * Interface PlacedList
  *
  * @description
- * A list of a space the actor sees, as the spaces module answers it.
+ * A list the actor has a role on, as the spaces module answers it, with that role.
  */
 export interface PlacedList {
   // #region Properties
@@ -33,5 +35,11 @@ export interface PlacedList {
 
   /** Version of the list. */
   readonly version: number;
+
+  /** The switch "Accès de l’organisation" of the list. */
+  readonly organizationAccess: boolean;
+
+  /** The role of the actor on the list: any role reads its tasks, `edit` changes them. */
+  readonly callerRole: AccessRole;
   // #endregion
 }

@@ -72,8 +72,9 @@ function parentContext(traceparent: string | undefined): Context {
  * The worker of the clean-up jobs: each job calls `CleanUpRemovedMember` for one former member, in
  * the organization context the runtime set from the job (lower-cased by `runJobInOrganization`),
  * with the signal of the attempt, inside a `process task.clean-up-removed-member` span whose parent
- * is the delivery of the removal, so the `space.updated.v1` and `task.updated.v1` rows it appends
- * carry the `traceparent` of that trace. The use case commits batch after batch and is idempotent,
+ * is the delivery of the removal, so the `space.updated.v1`, `space.access-changed.v1`,
+ * `list.access-changed.v1` and `task.updated.v1` rows it appends carry the `traceparent` of that
+ * trace. The use case commits batch after batch and is idempotent,
  * so a retried attempt resumes from what is left. A rejected attempt is retried by the queue, then
  * becomes a dead letter of `task.clean-up-removed-member.dead-letter`; the kit logs both. A
  * finished job logs its outcome with the job id and the counts, never the account, and warns once
@@ -169,8 +170,8 @@ export class CleanUpRemovedMemberHandler implements OnApplicationBootstrap {
    * Cleans up after the former member of a job, in the span of the job.
    *
    * @param {Job} job - The job.
-   * @returns {Promise<void>} Resolves once nothing is left to hand over or unassign, or once the
-   * copy holds the account as a member again.
+   * @returns {Promise<void>} Resolves once nothing is left to hand over, remove, drop or unassign,
+   * or once the copy holds the account as a member again.
    * @throws {z.ZodError} When the job is not a clean-up job: after the retries, a dead letter.
    * @throws {Error} When a batch fails or the attempt is aborted: the queue retries the job.
    */
@@ -207,6 +208,8 @@ export class CleanUpRemovedMemberHandler implements OnApplicationBootstrap {
           outcome: result.outcome,
           spacesHandedOver: result.spacesHandedOver,
           spacesAwaitingOwner: result.spacesAwaitingOwner,
+          grantsRemoved: result.grantsRemoved,
+          requestsDropped: result.requestsDropped,
           tasksUnassigned: result.tasksUnassigned,
           batches: result.batches,
         },

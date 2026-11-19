@@ -22,25 +22,25 @@ export function assignedTasksSource(): SQL {
  * Function assignedTasksCondition
  *
  * @description
- * The `where` of the tasks assigned to an account in the spaces the actor sees, subtasks included.
- * It names the organization on both tables.
+ * The `where` of the tasks assigned to an account in the lists the actor has a role on, subtasks
+ * included. It names the organization on both tables.
  *
  * @param {string} organizationId - The organization of the transaction.
  * @param {string} userId - The account.
- * @param {readonly string[]} spaceIds - The spaces the actor sees.
+ * @param {readonly string[]} listIds - The lists the actor has a role on.
  * @returns {SQL} The condition.
  */
 export function assignedTasksCondition(
   organizationId: string,
   userId: string,
-  spaceIds: readonly string[],
+  listIds: readonly string[],
 ): SQL {
   return (
     and(
       eq(taskAssignees.organizationId, organizationId),
       eq(taskAssignees.userId, userId),
       eq(tasks.organizationId, organizationId),
-      anyOf(tasks.spaceId, spaceIds, 'uuid'),
+      anyOf(tasks.listId, listIds, 'uuid'),
     ) ?? sql`false`
   );
 }

@@ -1,6 +1,6 @@
 import { TaskList } from '../../../../../domain/aggregates/list/task-list.aggregate.js';
 import { Space } from '../../../../../domain/aggregates/space/space.aggregate.js';
-import { canCreateSpace } from '../../../../../domain/policies/space/space-access.policy.js';
+import { canCreateSpace } from '../../../../../domain/policies/access/access-role.policy.js';
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
 import type { SpacesStore } from '../../../../models/transactions/spaces-store.model.js';
@@ -32,7 +32,10 @@ const FIRST_LIST_NAME = 'Première liste';
  * of its prefix, the first list, and `space.created.v1` then `list.created.v1` in the outbox. A
  * guest is refused (`role-forbidden`); a prefix another space of the organization uses or used is
  * refused (`prefix-taken`), which rolls the inserted space back. The viewer comes from the copy of
- * the memberships. Rules: "Who changes what" and "Prefixes and keys" of `openapi/public/spaces.yaml`.
+ * the memberships. The first list has its switch "Accès de l’organisation" on. The creator owns the
+ * space: the answer carries `callerRole: 'edit'` and `callerCanManage: true` without a reading of
+ * the grants, which a new space has none of. Rules: "Who changes what" and "Prefixes and keys" of
+ * `openapi/public/spaces.yaml`.
  */
 export class CreateSpace {
   // #region Properties
@@ -139,6 +142,7 @@ export class CreateSpace {
           icon: null,
           color: 'gris',
           sprint: null,
+          organizationAccess: true,
         }),
       );
       await store.events.spaceCreated(space, actor);
@@ -147,8 +151,9 @@ export class CreateSpace {
         store.prefixes,
         input.organizationId,
         space.snapshot,
+        { callerRole: 'edit', callerCanManage: true },
       );
-      return { space: view, firstList: firstList.snapshot };
+      return { space: view, firstList: { list: firstList.snapshot, callerRole: 'edit' } };
     });
   }
   // #endregion

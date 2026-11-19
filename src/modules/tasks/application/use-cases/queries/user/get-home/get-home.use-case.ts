@@ -22,7 +22,7 @@ const SPRINT_COUNT: number = 10;
 /** How many lists "Listes" shows (`openapi/public/tasks.yaml:1477-1478`). */
 const LIST_COUNT: number = 6;
 
-/** What "Accueil" answers when the actor sees no space: zeros and empty lists. */
+/** What "Accueil" answers when the actor has a role on no list: zeros and empty lists. */
 const EMPTY_HOME: GetHomeOutput = {
   stats: { assigned: 0, late: 0, dueToday: 0, done: 0 },
   priorities: [],
@@ -38,15 +38,16 @@ const EMPTY_HOME: GetHomeOutput = {
  * read-only transaction on one snapshot (repeatable read), so that the counters, the priorities and
  * the counts of the lists agree even while writers commit, without a lock.
  *
- * - `stats` and `priorities` cover the tasks assigned to the actor in the spaces they see, subtasks
- *   included; `priorities` are seven tasks that are not closed, by due date (undated last) then
+ * - `stats` and `priorities` cover the tasks assigned to the actor in the lists they have a role
+ *   on, subtasks included; `priorities` are seven tasks that are not closed, by due date (undated last) then
  *   creation.
  * - `sprints` and `lists` carry the counts of the top-level tasks of the list, subtasks left out,
  *   as everywhere else. The first six lists in the order of the sidebar include the sprints, a
  *   sprint being a list (`openapi/internal/task-service.yaml:2018-2019`).
  *
  * A `userId` other than the actor answers `user-not-found`, checked before the membership copy is
- * read. A guest sees no space and gets zeros and empty lists (`openapi/public/tasks.yaml:1480-1481`).
+ * read. The lists come from the spaces module (a guest has a role on the lists shared with them
+ * only); an actor with a role on no list gets zeros and empty lists without a read of the tasks.
  */
 export class GetHome {
   // #region Properties
@@ -105,23 +106,23 @@ export class GetHome {
     return this.unitOfWork.runReadOnly(
       async (store: TasksStore): Promise<GetHomeOutput> => {
         const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
-        const spaceIds: readonly string[] = await this.spaces.visibleSpaceIds(
+        const listIds: readonly string[] = await this.spaces.visibleListIds(
           input.organizationId,
           viewer,
         );
-        if (spaceIds.length === 0) {
+        if (listIds.length === 0) {
           return EMPTY_HOME;
         }
         const stats: HomeStatsView = await store.counter.homeStatsOf(
           input.organizationId,
           viewer.userId,
-          spaceIds,
+          listIds,
           input.today,
         );
         const priorities: readonly ListedTask[] = await store.assigned.pageAssignedTo(
           input.organizationId,
           viewer.userId,
-          spaceIds,
+          listIds,
           'open',
           null,
           PRIORITY_COUNT,

@@ -24,7 +24,10 @@ import { addTaskLabelProvider } from './composition/providers/use-cases/label/ad
 import { removeTaskLabelProvider } from './composition/providers/use-cases/label/remove-task-label.provider.js';
 import { createSubtaskProvider } from './composition/providers/use-cases/subtask/create-subtask.provider.js';
 import { listSubtasksProvider } from './composition/providers/use-cases/subtask/list-subtasks.provider.js';
+import { checkTaskAccessProvider } from './composition/providers/use-cases/task/check-task-access.provider.js';
 import { createTaskProvider } from './composition/providers/use-cases/task/create-task.provider.js';
+import { findTaskReferenceProvider } from './composition/providers/use-cases/task/find-task-reference.provider.js';
+import { findTaskReferencesProvider } from './composition/providers/use-cases/task/find-task-references.provider.js';
 import { getTaskDetailProvider } from './composition/providers/use-cases/task/get-task-detail.provider.js';
 import { getTaskProvider } from './composition/providers/use-cases/task/get-task.provider.js';
 import { updateTaskProvider } from './composition/providers/use-cases/task/update-task.provider.js';
@@ -34,6 +37,7 @@ import { LabelsController } from './presentation/http/controllers/label/labels.c
 import { TaskGroupsController } from './presentation/http/controllers/query/task-groups.controller.js';
 import { UserTasksController } from './presentation/http/controllers/user/user-tasks.controller.js';
 import { ListActivityController } from './presentation/http/controllers/activity/list-activity.controller.js';
+import { TaskAccessController } from './presentation/http/controllers/access/task-access.controller.js';
 import { TaskActivityController } from './presentation/http/controllers/activity/task-activity.controller.js';
 import { TaskAssigneesController } from './presentation/http/controllers/assignee/task-assignees.controller.js';
 import { ChecklistItemsController } from './presentation/http/controllers/checklist/checklist-items.controller.js';
@@ -42,6 +46,8 @@ import { SubtasksController } from './presentation/http/controllers/subtask/subt
 import { ListTasksController } from './presentation/http/controllers/task/list-tasks.controller.js';
 import { TasksController } from './presentation/http/controllers/task/tasks.controller.js';
 import { UnassignRemovedMember } from './public/assignee/unassign-removed-member.js';
+import { FindTaskReference } from './public/task/find-task-reference.js';
+import { FindTaskReferences } from './public/task/find-task-references.js';
 
 /**
  * Function markIdempotent
@@ -84,11 +90,13 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
  * cases run on one tenant unit of work that appends
  * their events to the outbox in the same transaction. They read the role of the actor, and of the
  * people to assign, from `OrganizationMembersModule` through the `MemberDirectory` port, never from
- * the `role` claim of the internal token (decision 4 of the P3a plan), and the lists, the spaces
- * and the task keys from `SpacesModule` through the `SpaceDirectory` port. It exports
- * `UnassignRemovedMember`, one batch of the removal of a former member from their tasks, which the
- * clean-up job of the member-lifecycle module runs batch after batch once the member left the
- * organization.
+ * the `role` claim of the internal token (decision 4 of the P3a plan), and the lists, the spaces,
+ * the role of the actor on them and the task keys from `SpacesModule` through the `SpaceDirectory`
+ * port. `TaskAccessController` serves the access check of a task to the realtime gateway, the only
+ * route of the module it accepts. It exports `UnassignRemovedMember`, one batch of the removal of a
+ * former member from their tasks, which the clean-up job of the member-lifecycle module runs batch
+ * after batch once the member left the organization, and `FindTaskReference` and
+ * `FindTaskReferences`, which the access-requests module reads tasks with.
  */
 @Module({
   imports: [OrganizationMembersModule, SpacesModule],
@@ -106,6 +114,7 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
     SubtasksController,
     ChecklistItemsController,
     TaskActivityController,
+    TaskAccessController,
   ],
   providers: [
     tasksUnitOfWorkProvider,
@@ -133,7 +142,10 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
     listLabelsProvider,
     listMyTasksProvider,
     getHomeProvider,
+    checkTaskAccessProvider,
+    findTaskReferenceProvider,
+    findTaskReferencesProvider,
   ],
-  exports: [UnassignRemovedMember],
+  exports: [UnassignRemovedMember, FindTaskReference, FindTaskReferences],
 })
 export class TasksModule {}

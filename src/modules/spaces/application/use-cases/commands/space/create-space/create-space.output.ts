@@ -1,11 +1,12 @@
-import type { TaskListState } from '../../../../../domain/value-objects/list/task-list-state.value-object.js';
+import type { ListView } from '../../../../projections/list/list-view.projection.js';
 import type { SpaceView } from '../../../../projections/space/space-view.projection.js';
 
 /**
  * Interface CreateSpaceOutput
  *
  * @description
- * The new space and its first list "Première liste", created together.
+ * The new space and its first list "Première liste", created together, both with the access of
+ * their creator (`edit`, and the space managed).
  */
 export interface CreateSpaceOutput {
   // #region Properties
@@ -26,9 +27,9 @@ export interface CreateSpaceOutput {
    * @description
    * Its first list.
    *
-   * @type {TaskListState}
+   * @type {ListView}
    * @readonly
    */
-  readonly firstList: TaskListState;
+  readonly firstList: ListView;
   // #endregion
 }

@@ -61,6 +61,8 @@ const DETAIL: TaskDetailView = {
     nextKey: 'CAD-483',
     createdAt: new Date('2026-11-01T08:00:00.000Z'),
     version: 2,
+    callerRole: 'edit',
+    callerCanManage: true,
   },
   list: {
     id: LIST,
@@ -71,6 +73,8 @@ const DETAIL: TaskDetailView = {
     sprint: { startDate: '2026-11-03', endDate: '2026-11-17', goal: null },
     createdAt: new Date('2026-11-02T08:00:00.000Z'),
     version: 1,
+    organizationAccess: true,
+    callerRole: 'edit',
   },
   parent: { key: 'CAD-480', name: 'Authentification', status: 'progress' },
   subtasks: [
@@ -128,6 +132,19 @@ describe('toTaskDetail', () => {
     });
     expect(detail.parent).toEqual({ key: 'CAD-480', name: 'Authentification', status: 'progress' });
     expect(detail.subtasks.map((subtask) => subtask.key)).toEqual(['CAD-484']);
+  });
+
+  it('gives the space and the list the access of the caller, as the spaces module computed it', () => {
+    const detail = toTaskDetail({
+      ...DETAIL,
+      space: { ...DETAIL.space, callerRole: null, callerCanManage: false },
+      list: { ...DETAIL.list, organizationAccess: false, callerRole: 'view' },
+    });
+
+    expect(GetTaskDetailInternalResponse.parse(detail)).toEqual(detail);
+    expect(detail.space).toMatchObject({ callerRole: null, callerCanManage: false });
+    expect(detail.list).toMatchObject({ organizationAccess: false, callerRole: 'view' });
+    expect(toTaskDetail(DETAIL).space).toMatchObject({ callerRole: 'edit', callerCanManage: true });
   });
 
   it('gives a top-level task no parent and a list that is not a sprint no sprint', () => {

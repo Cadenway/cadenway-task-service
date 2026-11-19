@@ -86,5 +86,17 @@ export interface CreateListInput {
    * @readonly
    */
   readonly sprint: SprintInput | null;
+
+  /**
+   * Property organizationAccess
+   *
+   * @description
+   * The switch "Accès de l’organisation" of the new list; the presentation layer turns it on when
+   * the body leaves it out.
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  readonly organizationAccess: boolean;
   // #endregion
 }

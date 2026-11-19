@@ -93,24 +93,24 @@ export class DrizzleTaskCounter implements TaskCounter {
    * Method stateCountsOf
    *
    * @description
-   * Counts the tasks assigned to an account in some spaces by tab, subtasks included. No space
+   * Counts the tasks assigned to an account in some lists by tab, subtasks included. No list
    * gives zeros, without a statement.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} userId - The account.
-   * @param {readonly string[]} spaceIds - The spaces the actor sees.
+   * @param {readonly string[]} listIds - The lists the actor has a role on.
    * @returns {Promise<MyTaskCountsView>} The tasks not closed and the closed ones.
    */
   public async stateCountsOf(
     organizationId: string,
     userId: string,
-    spaceIds: readonly string[],
+    listIds: readonly string[],
   ): Promise<MyTaskCountsView> {
-    if (spaceIds.length === 0) {
+    if (listIds.length === 0) {
       return { open: 0, closed: 0 };
     }
     const result = await this.db.execute<{ open: number; closed: number }>(
-      stateCountsStatement(organizationId, userId, spaceIds),
+      stateCountsStatement(organizationId, userId, listIds),
     );
     return { open: result.rows[0]?.open ?? 0, closed: result.rows[0]?.closed ?? 0 };
   }
@@ -119,22 +119,22 @@ export class DrizzleTaskCounter implements TaskCounter {
    * Method homeStatsOf
    *
    * @description
-   * Counts the tasks assigned to an account in some spaces for "Accueil", subtasks included. No
-   * space gives zeros, without a statement.
+   * Counts the tasks assigned to an account in some lists for "Accueil", subtasks included. No
+   * list gives zeros, without a statement.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} userId - The account.
-   * @param {readonly string[]} spaceIds - The spaces the actor sees.
+   * @param {readonly string[]} listIds - The lists the actor has a role on.
    * @param {string} today - The date of the caller, `YYYY-MM-DD`.
    * @returns {Promise<HomeStatsView>} The counters.
    */
   public async homeStatsOf(
     organizationId: string,
     userId: string,
-    spaceIds: readonly string[],
+    listIds: readonly string[],
     today: string,
   ): Promise<HomeStatsView> {
-    if (spaceIds.length === 0) {
+    if (listIds.length === 0) {
       return { assigned: 0, late: 0, dueToday: 0, done: 0 };
     }
     const result = await this.db.execute<{
@@ -142,7 +142,7 @@ export class DrizzleTaskCounter implements TaskCounter {
       late: number;
       dueToday: number;
       done: number;
-    }>(homeStatsStatement(organizationId, userId, spaceIds, today));
+    }>(homeStatsStatement(organizationId, userId, listIds, today));
     const row = result.rows[0];
     return {
       assigned: row?.assigned ?? 0,

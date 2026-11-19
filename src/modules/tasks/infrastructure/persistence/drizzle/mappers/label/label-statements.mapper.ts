@@ -12,10 +12,10 @@ import { foldText } from '../query/text-fold.mapper.js';
  * Function labelPageStatement
  *
  * @description
- * A page of the labels of the tasks in some spaces, any level, one row per `label_key`, by the
+ * A page of the labels of the tasks in some lists, any level, one row per `label_key`, by the
  * first `SORT_KEY_PREFIX_LENGTH` code points of the folded key then the key, both in the `C`
  * collation. The name is the spelling that comes first (`min` in code point order, so `Auth` before
- * `auth`) among the rows of the visible tasks only, so a space the actor does not see leaks no
+ * `auth`) among the rows of the visible tasks only, so a list the actor has no role on leaks no
  * spelling.
  *
  * The visible label rows are grouped first, in a materialized CTE that also folds the key once per
@@ -26,7 +26,7 @@ import { foldText } from '../query/text-fold.mapper.js';
  * text matches nothing. Built without a connection, so a test can `EXPLAIN` it.
  *
  * @param {string} organizationId - The organization of the transaction.
- * @param {readonly string[]} spaceIds - The spaces the actor sees.
+ * @param {readonly string[]} listIds - The lists the actor has a role on.
  * @param {string | null} search - The text to find in the key, folded; `null` for every label.
  * @param {LabelPosition | null} after - The last label of the previous page, `null` for the first.
  * @param {number} limit - How many rows at most.
@@ -34,7 +34,7 @@ import { foldText } from '../query/text-fold.mapper.js';
  */
 export function labelPageStatement(
   organizationId: string,
-  spaceIds: readonly string[],
+  listIds: readonly string[],
   search: string | null,
   after: LabelPosition | null,
   limit: number,
@@ -42,7 +42,7 @@ export function labelPageStatement(
   const visibleLabels: SQL = sql`select min(${taskLabels.name} collate "C") as "name", ${foldText(taskLabels.labelKey)} as "foldedKey", ${taskLabels.labelKey} as "labelKey" from ${taskLabels} join ${tasks} on ${tasks.organizationId} = ${taskLabels.organizationId} and ${tasks.id} = ${taskLabels.taskId} where ${and(
     eq(taskLabels.organizationId, organizationId),
     eq(tasks.organizationId, organizationId),
-    anyOf(tasks.spaceId, spaceIds, 'uuid'),
+    anyOf(tasks.listId, listIds, 'uuid'),
   )} group by ${taskLabels.labelKey}`;
   const sortKey: SQL = sql`left("foldedKey", ${sql.raw(String(SORT_KEY_PREFIX_LENGTH))})`;
   const conditions: (SQL | undefined)[] = [

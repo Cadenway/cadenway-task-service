@@ -149,10 +149,35 @@ describe('GetSpaceOverview: the lists of a space with the counts of their top-le
   });
 });
 
+describe('GetSpaceOverview: the lists of the space the actor has a role on', () => {
+  it('shows a guest the lists of the space shared with them only, with their role', async () => {
+    const tasks = produit();
+    const spaces = new InMemorySpaceDirectory({ listGrants: { [BUGS]: { [NADIA]: 'comment' } } });
+
+    const overview = await over(tasks, spaces).execute(read({ actorUserId: NADIA }));
+
+    expect(overview.items.map((item) => [item.list.id, item.list.callerRole])).toEqual([
+      [BUGS, 'comment'],
+    ]);
+    expect(overview).toMatchObject({ listCount: 1, taskCount: 1 });
+    expect(tasks.reads.counts).toEqual([[BUGS]]);
+  });
+
+  it('leaves out a list closed to the organization for a member it is not shared with', async () => {
+    const spaces = new InMemorySpaceDirectory({
+      lists: [placedList({ organizationAccess: false }), placedList({ id: BUGS, sprint: null })],
+    });
+
+    const overview = await over(produit(), spaces).execute(read({ actorUserId: HUGO }));
+
+    expect(overview.items.map((item) => item.list.id)).toEqual([BUGS]);
+  });
+});
+
 describe('GetSpaceOverview: what the actor does not see is not found', () => {
   it.each([
     ['an unknown space', { spaceId: UNKNOWN_SPACE }],
-    ['any space, for a guest', { actorUserId: NADIA }],
+    ['a space with no list shared with a guest', { actorUserId: NADIA }],
     ['the private space of another member', { spaceId: DESIGN }],
   ] as const)('refuses %s as space-not-found, before counting', async (_name, overrides) => {
     const tasks = produit();

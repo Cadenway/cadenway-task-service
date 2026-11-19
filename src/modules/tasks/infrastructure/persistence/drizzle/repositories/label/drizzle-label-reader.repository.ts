@@ -11,7 +11,7 @@ import { labelPageStatement } from '../../mappers/label/label-statements.mapper.
  * @description
  * `LabelReader` on `task_labels` joined to `tasks`, in the transaction of its unit of work,
  * without a lock: one grouped statement per page, naming the organization on both tables and
- * keeping the tasks of the spaces the actor sees.
+ * keeping the tasks of the lists the actor has a role on.
  */
 export class DrizzleLabelReader implements LabelReader {
   // #region Properties
@@ -47,12 +47,12 @@ export class DrizzleLabelReader implements LabelReader {
    * Method pageOfLabels
    *
    * @description
-   * Reads a page of the labels of the tasks in some spaces, one per `label_key`, by folded key then
+   * Reads a page of the labels of the tasks in some lists, one per `label_key`, by folded key then
    * key. The spelling is the first in code point order among the rows of the visible tasks. No
-   * space gives no label, without a statement.
+   * list gives no label, without a statement.
    *
    * @param {string} organizationId - The organization of the transaction.
-   * @param {readonly string[]} spaceIds - The spaces the actor sees.
+   * @param {readonly string[]} listIds - The lists the actor has a role on.
    * @param {string | null} search - The text to find, without regard to case or accents; `null`
    * for every label.
    * @param {LabelPosition | null} after - The last label of the previous page, `null` for the first.
@@ -61,16 +61,16 @@ export class DrizzleLabelReader implements LabelReader {
    */
   public async pageOfLabels(
     organizationId: string,
-    spaceIds: readonly string[],
+    listIds: readonly string[],
     search: string | null,
     after: LabelPosition | null,
     limit: number,
   ): Promise<readonly ListedLabel[]> {
-    if (spaceIds.length === 0) {
+    if (listIds.length === 0) {
       return [];
     }
     const result = await this.db.execute<{ name: string; sortKey: string; labelKey: string }>(
-      labelPageStatement(organizationId, spaceIds, search, after, limit),
+      labelPageStatement(organizationId, listIds, search, after, limit),
     );
     return result.rows.map(
       (row: { name: string; sortKey: string; labelKey: string }): ListedLabel => ({

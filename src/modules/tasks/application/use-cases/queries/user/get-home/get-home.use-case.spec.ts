@@ -209,6 +209,28 @@ describe('GetHome: only the actor, and only what the actor sees', () => {
     ).toEqual({ reason: 'organization-not-found' });
   });
 
+  it('counts and lists for a guest the tasks and the lists shared with them only', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [
+        taskState({ assigneeIds: [NADIA] }),
+        queryTask(1, { assigneeIds: [NADIA], listId: BUGS, dueDate: '2026-11-08' }),
+      ],
+    });
+    const directory = new InMemorySpaceDirectory({ listGrants: { [BUGS]: { [NADIA]: 'view' } } });
+
+    const home = await new GetHome(tasks, atelierNordMembers(), directory).execute(
+      read({ actorUserId: NADIA, userId: NADIA }),
+    );
+
+    expect(home.stats).toEqual({ assigned: 1, late: 0, dueToday: 1, done: 0 });
+    expect(home.priorities.map((task) => task.key)).toEqual(['CAD-801']);
+    expect(home.sprints).toEqual([]);
+    expect(home.lists.map((summary) => [summary.list.id, summary.list.callerRole])).toEqual([
+      [BUGS, 'view'],
+    ]);
+    expect(home.lists[0]?.counts.total).toBe(1);
+  });
+
   it('answers zeros and empty lists to a guest, without reading a task or a list', async () => {
     const tasks = atelierNord();
     const directory = spaces();

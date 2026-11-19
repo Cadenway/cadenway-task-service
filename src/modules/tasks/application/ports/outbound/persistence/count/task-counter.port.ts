@@ -35,29 +35,29 @@ export interface TaskCounter {
    * Method stateCountsOf
    *
    * @description
-   * Counts the tasks assigned to an account in some spaces, subtasks included, by tab of "Mes
+   * Counts the tasks assigned to an account in some lists, subtasks included, by tab of "Mes
    * tâches".
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} userId - The account.
-   * @param {readonly string[]} spaceIds - The spaces the actor sees.
+   * @param {readonly string[]} listIds - The lists the actor has a role on.
    * @returns {Promise<MyTaskCountsView>} The tasks not closed and the closed ones.
    */
   stateCountsOf(
     organizationId: string,
     userId: string,
-    spaceIds: readonly string[],
+    listIds: readonly string[],
   ): Promise<MyTaskCountsView>;
 
   /**
    * Method homeStatsOf
    *
    * @description
-   * Counts the tasks assigned to an account in some spaces, subtasks included, for "Accueil".
+   * Counts the tasks assigned to an account in some lists, subtasks included, for "Accueil".
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} userId - The account.
-   * @param {readonly string[]} spaceIds - The spaces the actor sees.
+   * @param {readonly string[]} listIds - The lists the actor has a role on.
    * @param {string} today - The date of the caller, `YYYY-MM-DD`.
    * @returns {Promise<HomeStatsView>} The tasks not closed, the late ones, those not closed due
    * `today`, and those of the key `done`.
@@ -65,7 +65,7 @@ export interface TaskCounter {
   homeStatsOf(
     organizationId: string,
     userId: string,
-    spaceIds: readonly string[],
+    listIds: readonly string[],
     today: string,
   ): Promise<HomeStatsView>;
   // #endregion

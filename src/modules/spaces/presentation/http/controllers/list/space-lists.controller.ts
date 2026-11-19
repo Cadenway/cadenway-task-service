@@ -82,14 +82,16 @@ export class SpaceListsController {
    * @description
    * `POST /internal/v1/spaces/{spaceId}/lists`: `201` with the list or the sprint, `Location` and
    * `ETag`. With an `Idempotency-Key` the kit records the answer for 24 hours and replays it.
-   * `404 space.not-found` for a space the actor does not see, `422 list.sprint-dates-invalid` for
-   * an end before the start.
+   * `404 space.not-found` for a space the actor does not see, `403 access.role-insufficient`
+   * without `edit` on it, `422 list.sprint-dates-invalid` for an end before the start. The switch
+   * "Accès de l’organisation" is on unless the body turns it off.
    *
    * @param {SpaceListsPath} path - The id of the space.
    * @param {CreateListBody} body - The list, with the defaults of the contract applied.
    * @param {Response} response - The response, for `Location`.
    * @returns {Promise<TaskList>} The list.
-   * @throws {ProblemException} `404 space.not-found` or `422 list.sprint-dates-invalid`.
+   * @throws {ProblemException} `404 space.not-found`, `403 access.role-insufficient` or
+   * `422 list.sprint-dates-invalid`.
    */
   @Post()
   @HttpCode(201)
@@ -114,9 +116,10 @@ export class SpaceListsController {
                 endDate: body.sprint.endDate,
                 goal: body.sprint.goal ?? null,
               },
+        organizationAccess: body.organizationAccess ?? true,
       }),
     );
-    response.setHeader('Location', `/internal/v1/lists/${created.id}`);
+    response.setHeader('Location', `/internal/v1/lists/${created.list.id}`);
     return toTaskList(created);
   }
 
@@ -125,7 +128,8 @@ export class SpaceListsController {
    *
    * @description
    * `GET /internal/v1/spaces/{spaceId}/lists`: `200` with one page of the lists of a space the
-   * actor sees, in the order of their creation; `404 space.not-found` for any other space.
+   * actor sees that they have a role on, in the order of their creation; `404 space.not-found` for
+   * any other space.
    *
    * @param {SpaceListsPath} path - The id of the space.
    * @param {ListListsQuery} query - The cursor and the page size.

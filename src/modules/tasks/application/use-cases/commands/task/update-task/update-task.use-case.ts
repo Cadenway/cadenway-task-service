@@ -24,9 +24,10 @@ import type { UpdateTaskOutput } from './update-task.output.js';
  * Patches a task the actor sees (`PATCH /internal/v1/tasks/{taskKey}`). Locks follow the order of
  * the module: the membership of the actor, the task `FOR NO KEY UPDATE`, then, for a move or an
  * attach, the new parent and the descendants in one ordered statement. Visibility comes first
- * (`task-not-found`), then `If-Match` (`version-mismatch` with the stored version), then the
- * target of a move or an attach (`list-invalid`, `parent-invalid`), then the domain, which decides
- * every other rule (`Task.update`). A patch that changes nothing writes nothing, records nothing,
+ * (`task-not-found`), then `edit` on the list of the task (`role-insufficient`), then `If-Match`
+ * (`version-mismatch` with the stored version), then the target of a move or an attach
+ * (`list-invalid`, `parent-invalid` when not seen, `role-insufficient` when seen without `edit`),
+ * then the domain, which decides every other rule (`Task.update`). A patch that changes nothing writes nothing, records nothing,
  * emits nothing and answers the stored version. A change writes the task, records the activity
  * entries of the status, priority and due date (merged by the coalescing policy) and appends
  * `task.updated.v1` (and `task.status-changed.v1`); every descendant that follows a move or an
@@ -94,9 +95,11 @@ export class UpdateTask {
    * @param {UpdateTaskInput} input - The actor, the task, the versions `If-Match` accepts and the
    * patch.
    * @returns {Promise<UpdateTaskOutput>} The task after the patch.
-   * @throws {TaskRefusal} `organization-not-found`, `task-not-found`, `version-mismatch`,
-   * `list-invalid`, `parent-invalid`, `subtask-depth-exceeded`, `subtask-limit-reached`,
-   * `status-hidden`, `cancel-reason-required`, `cancel-reason-unexpected` or `start-date-invalid`.
+   * @throws {TaskRefusal} `organization-not-found`, `task-not-found`, `role-insufficient`,
+   * `version-mismatch`, `list-invalid`, `parent-invalid`, `subtask-depth-exceeded`,
+   * `subtask-limit-reached`, `status-hidden`, `cancel-reason-required`,
+   * `cancel-reason-unexpected` or `start-date-invalid`. `role-insufficient` also comes after
+   * `version-mismatch`, for the list a move goes to or the list of the new parent.
    */
   public async execute(input: UpdateTaskInput): Promise<UpdateTaskOutput> {
     return this.unitOfWork.run(async (store: TasksStore): Promise<UpdateTaskOutput> => {
@@ -109,6 +112,7 @@ export class UpdateTask {
         organizationId: input.organizationId,
         viewer,
         taskKey: input.taskKey,
+        edit: true,
         lock: true,
         expectedVersions: input.expectedVersions,
       });

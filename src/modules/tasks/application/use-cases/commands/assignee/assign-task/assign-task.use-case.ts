@@ -89,8 +89,8 @@ export class AssignTask {
    * @param {AssignTaskInput} input - The actor, the task, the account and the versions `If-Match`
    * accepts.
    * @returns {Promise<AssignTaskOutput>} The task after the assignment.
-   * @throws {TaskRefusal} `organization-not-found`, `task-not-found`, `version-mismatch`,
-   * `assignee-invalid` or `assignee-limit-reached`.
+   * @throws {TaskRefusal} `organization-not-found`, `task-not-found`, `role-insufficient`,
+   * `version-mismatch`, `assignee-invalid` or `assignee-limit-reached`.
    */
   public async execute(input: AssignTaskInput): Promise<AssignTaskOutput> {
     return this.unitOfWork.run(async (store: TasksStore): Promise<AssignTaskOutput> => {
@@ -108,6 +108,7 @@ export class AssignTask {
         organizationId: input.organizationId,
         viewer,
         taskKey: input.taskKey,
+        edit: true,
         lock: true,
         expectedVersions: input.expectedVersions,
       });

@@ -108,10 +108,10 @@ export interface ActivityRepository {
    *
    * @description
    * Reads a page of the entries recorded while their task was in a list, left out when the task is
-   * now in a space that is not in `filter.spaceIds`.
+   * now in a list that is not in `filter.listIds`.
    *
    * @param {string} organizationId - The organization of the transaction.
-   * @param {ListActivityFilter} filter - The list, the visible spaces and the filters.
+   * @param {ListActivityFilter} filter - The list, the visible lists and the filters.
    * @param {ActivityPosition | null} after - The last entry of the previous page, `null` for the first.
    * @param {number} limit - How many rows at most.
    * @returns {Promise<readonly ActivityEntryState[]>} The entries.
@@ -130,7 +130,7 @@ export interface ActivityRepository {
    * Counts the entries `pageOfList` reads, whatever the page.
    *
    * @param {string} organizationId - The organization of the transaction.
-   * @param {ListActivityFilter} filter - The list, the visible spaces and the filters.
+   * @param {ListActivityFilter} filter - The list, the visible lists and the filters.
    * @returns {Promise<number>} The count.
    */
   countOfList(organizationId: string, filter: ListActivityFilter): Promise<number>;

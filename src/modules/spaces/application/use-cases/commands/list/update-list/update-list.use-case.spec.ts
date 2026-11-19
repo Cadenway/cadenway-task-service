@@ -12,6 +12,7 @@ import {
   LEA,
   NADIA,
   OTHER_ORGANIZATION,
+  PRODUIT,
   SPRINT_14,
   SPRINT_14_GOAL,
   STRANGER,
@@ -19,6 +20,7 @@ import {
   atelierNordMembers,
   backlogState,
   designState,
+  listGrantOf,
   refusalOf,
   spaceState,
   sprintState,
@@ -58,13 +60,15 @@ function atelierNord(): InMemorySpaces {
   });
 }
 
-describe('UpdateList: any member who sees the space changes its lists', () => {
+describe('UpdateList: a member with edit on the list changes it', () => {
   it('stores the change at the next version and returns the list', async () => {
     const spaces = atelierNord();
 
-    const list = await new UpdateList(spaces, atelierNordMembers()).execute(updateSprint());
+    const view = await new UpdateList(spaces, atelierNordMembers()).execute(updateSprint());
+    const { list } = view;
 
     expect(list).toEqual(sprintState({ name: 'Sprint 14 bis', version: 3 }));
+    expect(view.callerRole).toBe('edit');
     expect(spaces.lists.get(SPRINT_14)).toEqual(list);
   });
 
@@ -87,7 +91,7 @@ describe('UpdateList: any member who sees the space changes its lists', () => {
   });
 
   it('lets the owner of a private space change its lists', async () => {
-    const list = await new UpdateList(atelierNord(), atelierNordMembers()).execute(
+    const { list } = await new UpdateList(atelierNord(), atelierNordMembers()).execute(
       updateSprint({ actorUserId: HUGO, listId: MAQUETTES, patch: { name: 'Wireframes' } }),
     );
 
@@ -109,11 +113,12 @@ describe('UpdateList: a change that changes nothing stores nothing and emits not
   it('keeps the version and appends no event for an empty patch', async () => {
     const spaces = atelierNord();
 
-    const list = await new UpdateList(spaces, atelierNordMembers()).execute(
+    const view = await new UpdateList(spaces, atelierNordMembers()).execute(
       updateSprint({ patch: {} }),
     );
 
-    expect(list).toEqual(sprintState({ version: 2 }));
+    expect(view.list).toEqual(sprintState({ version: 2 }));
+    expect(view.callerRole).toBe('edit');
     expect(spaces.events).toEqual([]);
   });
 
@@ -146,7 +151,7 @@ describe('UpdateList: the dates and the goal of a sprint', () => {
   it('moves the dates and keeps the goal the patch leaves out', async () => {
     const spaces = atelierNord();
 
-    const list = await new UpdateList(spaces, atelierNordMembers()).execute(
+    const { list } = await new UpdateList(spaces, atelierNordMembers()).execute(
       updateSprint({ patch: { sprint: { startDate: '2026-11-04', endDate: '2026-11-18' } } }),
     );
 
@@ -161,7 +166,7 @@ describe('UpdateList: the dates and the goal of a sprint', () => {
   it('makes the sprint a list again with sprint: null, dropping its dates and goal', async () => {
     const spaces = atelierNord();
 
-    const list = await new UpdateList(spaces, atelierNordMembers()).execute(
+    const { list } = await new UpdateList(spaces, atelierNordMembers()).execute(
       updateSprint({ patch: { sprint: null } }),
     );
 
@@ -170,7 +175,7 @@ describe('UpdateList: the dates and the goal of a sprint', () => {
   });
 
   it('turns the list Backlog into a sprint with no goal', async () => {
-    const list = await new UpdateList(atelierNord(), atelierNordMembers()).execute(
+    const { list } = await new UpdateList(atelierNord(), atelierNordMembers()).execute(
       updateSprint({
         listId: BACKLOG,
         patch: { sprint: { startDate: '2026-11-03', endDate: '2026-11-17' } },
@@ -197,7 +202,7 @@ describe('UpdateList: the dates and the goal of a sprint', () => {
   });
 
   it('allows a sprint of a single day', async () => {
-    const list = await new UpdateList(atelierNord(), atelierNordMembers()).execute(
+    const { list } = await new UpdateList(atelierNord(), atelierNordMembers()).execute(
       updateSprint({ patch: { sprint: { startDate: '2026-11-10', endDate: '2026-11-10' } } }),
     );
 
@@ -326,5 +331,183 @@ describe('UpdateList: the lists of a private space that awaits an owner are unkn
     );
 
     expect(refusal).toEqual({ reason: 'list-not-found' });
+  });
+});
+
+describe('UpdateList: a change of a list needs edit on it, then the version, then the rules', () => {
+  /**
+   * Atelier Nord with Sprint 14 (version 2) shared with Léa Petit and the guest Nadia Benali.
+   *
+   * @param role - The role of the grant of Léa Petit on Sprint 14.
+   * @param organizationAccess - The switch of Sprint 14.
+   * @returns The fake store.
+   */
+  function sprintShared(
+    role: 'edit' | 'comment' | 'view',
+    organizationAccess: boolean,
+  ): InMemorySpaces {
+    return new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [sprintState({ version: 2, organizationAccess })],
+      grants: [
+        listGrantOf(PRODUIT, SPRINT_14, LEA, role),
+        listGrantOf(PRODUIT, SPRINT_14, NADIA, 'view'),
+      ],
+    });
+  }
+
+  it.each([['comment'], ['view']] as const)(
+    'refuses role-insufficient with the role %s on the list, and stores nothing',
+    async (role: 'comment' | 'view') => {
+      const spaces = sprintShared(role, false);
+
+      const refusal = await refusalOf(
+        new UpdateList(spaces, atelierNordMembers()).execute(updateSprint()),
+      );
+
+      expect(refusal).toEqual({ reason: 'role-insufficient', role });
+      expect(spaces.lists.get(SPRINT_14)?.version).toBe(2);
+      expect(spaces.events).toEqual([]);
+    },
+  );
+
+  it('refuses role-insufficient to a guest whose grant of the list is view', async () => {
+    const refusal = await refusalOf(
+      new UpdateList(sprintShared('edit', true), atelierNordMembers()).execute(
+        updateSprint({ actorUserId: NADIA }),
+      ),
+    );
+
+    expect(refusal).toEqual({ reason: 'role-insufficient', role: 'view' });
+  });
+
+  it('answers role-insufficient before a stale If-Match', async () => {
+    const refusal = await refusalOf(
+      new UpdateList(sprintShared('view', false), atelierNordMembers()).execute(
+        updateSprint({ expectedVersions: [1] }),
+      ),
+    );
+
+    expect(refusal).toEqual({ reason: 'role-insufficient', role: 'view' });
+  });
+
+  it('answers list-not-found to a member of the organization when the switch is off and nothing is shared', async () => {
+    const refusal = await refusalOf(
+      new UpdateList(sprintShared('edit', false), atelierNordMembers()).execute(
+        updateSprint({ actorUserId: HUGO }),
+      ),
+    );
+
+    expect(refusal).toEqual({ reason: 'list-not-found' });
+  });
+
+  it('lets the owner of the space change a list whose switch is off', async () => {
+    const { list } = await new UpdateList(
+      sprintShared('view', false),
+      atelierNordMembers(),
+    ).execute(updateSprint({ actorUserId: CAMILLE }));
+
+    expect(list.name).toBe('Sprint 14 bis');
+  });
+
+  it('lets a guest with edit through the grant of the list change it', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [sprintState({ version: 2 })],
+      grants: [listGrantOf(PRODUIT, SPRINT_14, NADIA, 'edit')],
+    });
+
+    const view = await new UpdateList(spaces, atelierNordMembers()).execute(
+      updateSprint({ actorUserId: NADIA }),
+    );
+
+    expect(view).toMatchObject({ callerRole: 'edit', list: { version: 3 } });
+  });
+});
+
+describe('UpdateList: the switch "Accès de l’organisation" emits list.access-changed', () => {
+  /** Sprint 14 (version 2), shared with Léa Petit (comment) then Nadia Benali (view). */
+  function sprintWithGrants(): InMemorySpaces {
+    return new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [sprintState({ version: 2 })],
+      grants: [
+        listGrantOf(PRODUIT, SPRINT_14, LEA, 'comment'),
+        listGrantOf(PRODUIT, SPRINT_14, NADIA, 'view', {
+          createdAt: new Date('2026-03-05T09:00:00Z'),
+        }),
+      ],
+    });
+  }
+
+  it('turns the switch off at the next version, with every grant and no person changed', async () => {
+    const spaces = sprintWithGrants();
+
+    const view = await new UpdateList(spaces, atelierNordMembers()).execute(
+      updateSprint({ actorUserId: HUGO, patch: { organizationAccess: false } }),
+    );
+
+    expect(view.list).toEqual(sprintState({ version: 3, organizationAccess: false }));
+    expect(spaces.events).toEqual([
+      {
+        kind: 'listAccessChanged',
+        listId: SPRINT_14,
+        spaceId: PRODUIT,
+        version: 3,
+        organizationAccess: false,
+        grants: [
+          { userId: LEA, role: 'comment' },
+          { userId: NADIA, role: 'view' },
+        ],
+        changed: ['organizationAccess'],
+        changedUserIds: [],
+        actor: { type: 'user', id: HUGO },
+      },
+    ]);
+  });
+
+  it('answers edit, the role it was made with, to a plain member who loses the list by turning it off', async () => {
+    const spaces = sprintWithGrants();
+    const update = new UpdateList(spaces, atelierNordMembers());
+
+    const view = await update.execute(
+      updateSprint({ actorUserId: HUGO, patch: { organizationAccess: false } }),
+    );
+
+    expect(view.callerRole).toBe('edit');
+    expect(await refusalOf(update.execute(updateSprint({ actorUserId: HUGO })))).toEqual({
+      reason: 'list-not-found',
+    });
+  });
+
+  it('emits list.updated then list.access-changed with the one next version for a content and a switch change', async () => {
+    const spaces = sprintWithGrants();
+
+    await new UpdateList(spaces, atelierNordMembers()).execute(
+      updateSprint({
+        actorUserId: CAMILLE,
+        patch: { name: 'Sprint 15', organizationAccess: false },
+      }),
+    );
+
+    expect(spaces.lists.get(SPRINT_14)?.version).toBe(3);
+    expect(spaces.events).toEqual([
+      expect.objectContaining({ kind: 'listUpdated', version: 3, changed: ['name'] }),
+      expect.objectContaining({
+        kind: 'listAccessChanged',
+        version: 3,
+        changed: ['organizationAccess'],
+      }),
+    ]);
+  });
+
+  it('emits only list.updated for a content change, the switch left as it is', async () => {
+    const spaces = sprintWithGrants();
+
+    await new UpdateList(spaces, atelierNordMembers()).execute(
+      updateSprint({ patch: { name: 'Sprint 15', organizationAccess: true } }),
+    );
+
+    expect(spaces.events.map((event) => event.kind)).toEqual(['listUpdated']);
   });
 });

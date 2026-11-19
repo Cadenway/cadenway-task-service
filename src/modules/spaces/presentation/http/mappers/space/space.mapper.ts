@@ -34,10 +34,11 @@ function toStatus(key: StatusKey, status: StoredStatus): SpaceStatus {
  *
  * @description
  * Maps a space of the use cases to the `Space` of `openapi/internal/task-service.yaml`: the owner
- * as `{ userId }`, the ten statuses with their category and the creation instant in ISO 8601. The
- * organization of the space is not part of the contract and does not leave the service.
+ * as `{ userId }`, the ten statuses with their category, the creation instant in ISO 8601 and the
+ * access of the caller (`callerRole`, `callerCanManage`). The organization of the space is not
+ * part of the contract and does not leave the service.
  *
- * @param {SpaceView} view - The space and its next key.
+ * @param {SpaceView} view - The space, its next key and the access of the caller.
  * @returns {Space} The space of the contract.
  */
 export function toSpace(view: SpaceView): Space {
@@ -66,5 +67,7 @@ export function toSpace(view: SpaceView): Space {
     nextKey,
     createdAt: space.createdAt.toISOString(),
     version: space.version,
+    callerRole: view.callerRole,
+    callerCanManage: view.callerCanManage,
   };
 }

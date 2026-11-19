@@ -27,7 +27,8 @@ import type { CreateSubtaskOutput } from './create-subtask.output.js';
  *
  * @description
  * Creates a subtask under a task the actor sees (`POST /internal/v1/tasks/{taskKey}/subtasks`).
- * The subtask takes the list of its parent. Locks follow the order of the module: the membership
+ * The subtask takes the list of its parent, on which the actor needs `edit`
+ * (`role-insufficient`, after `task-not-found`). Locks follow the order of the module: the membership
  * of the actor, those of the assignees (explicit, or the first assignee of the parent, whose
  * account is read before the parent is locked), then the parent `FOR NO KEY UPDATE`, then the
  * key counter. A membership is never locked while the parent is: a removal locks the membership
@@ -110,15 +111,22 @@ export class CreateSubtask {
    *
    * @param {CreateSubtaskInput} input - The actor, the parent and the subtask.
    * @returns {Promise<CreateSubtaskOutput>} The subtask created.
-   * @throws {TaskRefusal} `organization-not-found`, `task-not-found`, `subtask-depth-exceeded`,
-   * `subtask-limit-reached`, `status-hidden`, `cancel-reason-required`,
+   * @throws {TaskRefusal} `organization-not-found`, `task-not-found`, `role-insufficient`,
+   * `subtask-depth-exceeded`, `subtask-limit-reached`, `status-hidden`, `cancel-reason-required`,
    * `cancel-reason-unexpected`, `start-date-invalid` or `assignee-invalid`.
    */
   public async execute(input: CreateSubtaskInput): Promise<CreateSubtaskOutput> {
     return this.unitOfWork.run(async (store: TasksStore): Promise<CreateSubtaskOutput> => {
       const { organizationId } = input;
       const viewer: Viewer = await this.viewers.resolve(organizationId, input.actorUserId, true);
-      const request = { organizationId, viewer, taskKey: input.taskKey, expectedVersions: null };
+      // A subtask is created in the list of its parent: the actor needs `edit` on it.
+      const request = {
+        organizationId,
+        viewer,
+        taskKey: input.taskKey,
+        edit: true,
+        expectedVersions: null,
+      };
       let inherited: readonly AssigneeCandidate[] = [];
       let requested: readonly AssigneeCandidate[] = [];
       let peeked: string | undefined;

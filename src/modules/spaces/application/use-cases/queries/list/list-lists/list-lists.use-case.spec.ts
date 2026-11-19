@@ -18,8 +18,10 @@ import {
   atelierNordMembers,
   backlogState,
   designState,
+  listGrantOf,
   marketingState,
   refusalOf,
+  spaceGrantOf,
   spaceState,
   sprintState,
 } from '../../../spaces.fixture.js';
@@ -66,7 +68,10 @@ describe('ListLists: the lists of a space the caller sees, in the order they wer
   it('lists Backlog then Sprint 14 for a member', async () => {
     const page = await new ListLists(atelierNord(), atelierNordMembers()).execute(listProduit());
 
-    expect(page.items).toEqual([backlogState(), sprintState()]);
+    expect(page.items).toEqual([
+      { list: backlogState(), callerRole: 'edit' },
+      { list: sprintState(), callerRole: 'edit' },
+    ]);
     expect(page.next).toBeNull();
   });
 
@@ -75,7 +80,7 @@ describe('ListLists: the lists of a space the caller sees, in the order they wer
       listProduit({ spaceId: MARKETING }),
     );
 
-    expect(page.items.map((list) => list.id)).toEqual([CAMPAGNES]);
+    expect(page.items.map((item) => item.list.id)).toEqual([CAMPAGNES]);
   });
 
   it('lists the lists of a private space to its owner', async () => {
@@ -83,7 +88,7 @@ describe('ListLists: the lists of a space the caller sees, in the order they wer
       listProduit({ actorUserId: HUGO, spaceId: DESIGN }),
     );
 
-    expect(page.items.map((list) => list.id)).toEqual([MAQUETTES]);
+    expect(page.items.map((item) => item.list.id)).toEqual([MAQUETTES]);
   });
 
   it('is an empty page for a space with no list', async () => {
@@ -104,7 +109,7 @@ describe('ListLists: a page holds the limit, and limit + 1 rows are read to know
     );
 
     expect(spaces.listOfSpaceCalls).toEqual([{ spaceId: PRODUIT, after: null, limit: 2 }]);
-    expect(page.items.map((list) => list.id)).toEqual([BACKLOG]);
+    expect(page.items.map((item) => item.list.id)).toEqual([BACKLOG]);
     expect(page.next).toEqual({ createdAt: backlogState().createdAt, id: BACKLOG });
   });
 
@@ -123,7 +128,7 @@ describe('ListLists: a page holds the limit, and limit + 1 rows are read to know
 
     const second = await list.execute(listProduit({ limit: 1, after: first.next }));
 
-    expect(second.items.map((item) => item.id)).toEqual([SPRINT_14]);
+    expect(second.items.map((item) => item.list.id)).toEqual([SPRINT_14]);
     expect(second.next).toBeNull();
   });
 });
@@ -204,5 +209,54 @@ describe('ListLists: the lists of a private space that awaits an owner are unkno
     );
 
     expect(refusal).toEqual({ reason: 'space-not-found' });
+  });
+});
+
+describe('ListLists: only the lists the caller has a role on, each with that role', () => {
+  it('lists to a guest the lists of the space shared with them, and nothing else of it', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [backlogState(), sprintState()],
+      grants: [listGrantOf(PRODUIT, SPRINT_14, NADIA, 'comment')],
+    });
+
+    const page = await new ListLists(spaces, atelierNordMembers()).execute(
+      listProduit({ actorUserId: NADIA }),
+    );
+
+    expect(page.items).toEqual([{ list: sprintState(), callerRole: 'comment' }]);
+  });
+
+  it('leaves out of the page of a member a list whose switch is off, and keeps it for the owner', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [backlogState(), sprintState({ organizationAccess: false })],
+    });
+    const list = new ListLists(spaces, atelierNordMembers());
+
+    const ofLea = await list.execute(listProduit());
+    const ofCamille = await list.execute(listProduit({ actorUserId: CAMILLE }));
+
+    expect(ofLea.items.map((item) => item.list.id)).toEqual([BACKLOG]);
+    expect(ofCamille.items.map((item) => [item.list.id, item.callerRole])).toEqual([
+      [BACKLOG, 'edit'],
+      [SPRINT_14, 'edit'],
+    ]);
+  });
+
+  it('gives every list of a private space the role of the grant of the space', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [designState()],
+      lists: [backlogState({ id: MAQUETTES, spaceId: DESIGN, name: 'Maquettes' })],
+      grants: [spaceGrantOf(DESIGN, LEA, 'view')],
+    });
+
+    const page = await new ListLists(spaces, atelierNordMembers()).execute(
+      listProduit({ spaceId: DESIGN }),
+    );
+
+    expect(page.items.map((item) => [item.list.id, item.callerRole])).toEqual([
+      [MAQUETTES, 'view'],
+    ]);
   });
 });

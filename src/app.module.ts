@@ -19,6 +19,7 @@ import { Module } from '@nestjs/common';
 import { appConfigSchema } from './config/app-config.js';
 import type { AppConfig } from './config/app-config.js';
 import { jobQueues } from './config/job-queues.js';
+import { AccessRequestsModule } from './modules/access-requests/access-requests.module.js';
 import { MemberLifecycleModule } from './modules/member-lifecycle/member-lifecycle.module.js';
 import { OrganizationMembersModule } from './modules/organization-members/organization-members.module.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
@@ -117,12 +118,17 @@ function runJobInOrganization(
  *   `/internal/v1/labels` and "Mes tâches" and "Accueil" of `/internal/v1/users/{userId}`. It
  *   reads the members from `OrganizationMembersModule` and the lists, spaces and task keys from
  *   `SpacesModule`.
+ * - `AccessRequestsModule`: the requests for access to spaces, lists and tasks, with the internal
+ *   routes of `/internal/v1/access-requests`. It reads the members from
+ *   `OrganizationMembersModule`, the targets and the grants from `SpacesModule` and the tasks from
+ *   `TasksModule`; neither depends on it.
  * - `MemberLifecycleModule`: the three durable consumers (`task-service__project-member-*`) of
  *   `member.joined.v1`, `member.role-changed.v1` and `member.removed.v1`, which the deduplicator of
  *   `OutboxModule` runs in the tenant transaction of each event. Each event updates the copy of
  *   `OrganizationMembersModule`; a removal then enqueues the `task.clean-up-removed-member` job in
  *   the same transaction, whose worker, in this module, hands the private spaces of the former
- *   member over to the owner through `SpacesModule`, then unassigns them from their tasks through
+ *   member over to the owner and removes their grants through `SpacesModule`, drops their pending
+ *   access requests through `AccessRequestsModule`, then unassigns them from their tasks through
  *   `TasksModule`, batch after batch.
  *
  * Business modules under `src/modules/` are registered here as they are created.
@@ -172,6 +178,7 @@ function runJobInOrganization(
     OrganizationMembersModule,
     SpacesModule,
     TasksModule,
+    AccessRequestsModule,
     MemberLifecycleModule,
   ],
 })
