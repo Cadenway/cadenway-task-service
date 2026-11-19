@@ -21,7 +21,7 @@ describe('countsOfListsStatement: the counters of the lists in one grouped scan'
         `(count(*) filter (where "tasks"."status" = 'done'))::int as "done", ` +
         `(count(*) filter (where "tasks"."status" = 'cancelled'))::int as "cancelled", ` +
         `(count(*) filter (where ${OPEN} and "tasks"."due_date" < $1::date))::int as "late" ` +
-        'from "tasks" where ("tasks"."organization_id" = $2 and "tasks"."list_id" = any($3::uuid[]) and "tasks"."parent_id" is null and "tasks"."archived_at" is null) ' +
+        'from "tasks" where ("tasks"."organization_id" = $2 and "tasks"."list_id" = any($3::uuid[]) and "tasks"."parent_id" is null and ("tasks"."archived_at" is null and "tasks"."trash_entry_id" is null)) ' +
         'group by "tasks"."list_id"',
       params: ['2026-11-08', 'org', ['l1', 'l2']],
     });
@@ -34,7 +34,7 @@ describe('stateCountsStatement: the tabs of Mes taches', () => {
       sql:
         `select (count(*) filter (where ${OPEN}))::int as "open", ` +
         `(count(*) filter (where "tasks"."status" in ('done', 'cancelled')))::int as "closed" ` +
-        `${ASSIGNED}1 and "task_assignees"."user_id" = $2 and "tasks"."organization_id" = $3 and "tasks"."list_id" = any($4::uuid[]) and "tasks"."archived_at" is null)`,
+        `${ASSIGNED}1 and "task_assignees"."user_id" = $2 and "tasks"."organization_id" = $3 and "tasks"."list_id" = any($4::uuid[]) and ("tasks"."archived_at" is null and "tasks"."trash_entry_id" is null))`,
       params: ['org', 'user', 'org', ['l1']],
     });
   });
@@ -48,7 +48,7 @@ describe('homeStatsStatement: the counters of Accueil', () => {
         `(count(*) filter (where ${OPEN} and "tasks"."due_date" < $1::date))::int as "late", ` +
         `(count(*) filter (where ${OPEN} and "tasks"."due_date" = $2::date))::int as "dueToday", ` +
         `(count(*) filter (where "tasks"."status" = 'done'))::int as "done" ` +
-        `${ASSIGNED}3 and "task_assignees"."user_id" = $4 and "tasks"."organization_id" = $5 and "tasks"."list_id" = any($6::uuid[]) and "tasks"."archived_at" is null)`,
+        `${ASSIGNED}3 and "task_assignees"."user_id" = $4 and "tasks"."organization_id" = $5 and "tasks"."list_id" = any($6::uuid[]) and ("tasks"."archived_at" is null and "tasks"."trash_entry_id" is null))`,
       params: ['2026-11-08', '2026-11-08', 'org', 'user', 'org', ['l1']],
     });
   });

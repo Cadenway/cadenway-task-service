@@ -26,7 +26,10 @@ import type { CreateListOutput } from './create-list.output.js';
  * sprint that ends before it starts answers `sprint-dates-invalid`. The list is stored after the
  * others of its space and `list.created.v1` is appended in the same tenant transaction. The answer
  * carries `callerRole: 'edit'`: the creator has `edit` on the new list, or lost it only to the
- * switch they turned off, and the answer then carries the role it was created with. Rules:
+ * switch they turned off, and the answer then carries the role it was created with. The membership
+ * of the actor is read `FOR SHARE`, then the space is held `FOR SHARE` until the commit, so that a
+ * deletion of the space, which locks it `FOR NO KEY UPDATE`, either commits first (the space reads
+ * deleted: `space-not-found`) or waits, and then deletes the new list with the others. Rules:
  * "Access" of `openapi/public/spaces.yaml`, "Who changes what" of `openapi/public/lists.yaml`.
  */
 export class CreateList {
@@ -103,7 +106,10 @@ export class CreateList {
         input.actorUserId,
         true,
       );
-      const space: Space | null = await store.spaces.find(input.organizationId, input.spaceId);
+      const space: Space | null = await store.spaces.lockShared(
+        input.organizationId,
+        input.spaceId,
+      );
       if (space === null) {
         throw new SpaceRefusal({ reason: 'space-not-found' });
       }

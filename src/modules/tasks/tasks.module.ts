@@ -6,6 +6,7 @@ import { SpacesModule } from '../spaces/spaces.module.js';
 import { memberDirectoryProvider } from './composition/providers/adapters/membership/member-directory.provider.js';
 import { spaceDirectoryProvider } from './composition/providers/adapters/space/space-directory.provider.js';
 import { tasksUnitOfWorkProvider } from './composition/providers/adapters/task/tasks-unit-of-work.provider.js';
+import { trashSystemUnitOfWorkProvider } from './composition/providers/adapters/trash/trash-system-unit-of-work.provider.js';
 import { listListActivityProvider } from './composition/providers/use-cases/activity/list-list-activity.provider.js';
 import { listTaskActivityProvider } from './composition/providers/use-cases/activity/list-task-activity.provider.js';
 import { archiveTaskProvider } from './composition/providers/use-cases/archive/archive-task.provider.js';
@@ -35,6 +36,15 @@ import { findTaskReferencesProvider } from './composition/providers/use-cases/ta
 import { getTaskDetailProvider } from './composition/providers/use-cases/task/get-task-detail.provider.js';
 import { getTaskProvider } from './composition/providers/use-cases/task/get-task.provider.js';
 import { updateTaskProvider } from './composition/providers/use-cases/task/update-task.provider.js';
+import { emptyTrashProvider } from './composition/providers/use-cases/trash/empty-trash.provider.js';
+import { listOrganizationsWithTrashToPurgeProvider } from './composition/providers/use-cases/trash/list-organizations-with-trash-to-purge.provider.js';
+import { listTrashEntriesProvider } from './composition/providers/use-cases/trash/list-trash-entries.provider.js';
+import { listUntrashedTaskIdsProvider } from './composition/providers/use-cases/trash/list-untrashed-task-ids.provider.js';
+import { purgeTrashBatchProvider } from './composition/providers/use-cases/trash/purge-trash-batch.provider.js';
+import { purgeTrashEntryProvider } from './composition/providers/use-cases/trash/purge-trash-entry.provider.js';
+import { restoreTrashEntryProvider } from './composition/providers/use-cases/trash/restore-trash-entry.provider.js';
+import { trashDeletedListTasksProvider } from './composition/providers/use-cases/trash/trash-deleted-list-tasks.provider.js';
+import { trashTaskProvider } from './composition/providers/use-cases/trash/trash-task.provider.js';
 import { ListCountsController } from './presentation/http/controllers/count/list-counts.controller.js';
 import { SpaceOverviewController } from './presentation/http/controllers/count/space-overview.controller.js';
 import { LabelsController } from './presentation/http/controllers/label/labels.controller.js';
@@ -51,9 +61,15 @@ import { TaskLabelsController } from './presentation/http/controllers/label/task
 import { SubtasksController } from './presentation/http/controllers/subtask/subtasks.controller.js';
 import { ListTasksController } from './presentation/http/controllers/task/list-tasks.controller.js';
 import { TasksController } from './presentation/http/controllers/task/tasks.controller.js';
+import { TaskTrashController } from './presentation/http/controllers/trash/task-trash.controller.js';
+import { TrashController } from './presentation/http/controllers/trash/trash.controller.js';
 import { UnassignRemovedMember } from './public/assignee/unassign-removed-member.js';
 import { FindTaskReference } from './public/task/find-task-reference.js';
 import { FindTaskReferences } from './public/task/find-task-references.js';
+import { ListOrganizationsWithTrashToPurge } from './public/trash/list-organizations-with-trash-to-purge.js';
+import { ListUntrashedTaskIds } from './public/trash/list-untrashed-task-ids.js';
+import { PurgeTrashBatch } from './public/trash/purge-trash-batch.js';
+import { TrashDeletedListTasks } from './public/trash/trash-deleted-list-tasks.js';
 
 /**
  * Function markIdempotent
@@ -93,17 +109,23 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
  * Composition root of the tasks (P3a): their subtasks, assignees, labels and checklist, the activity
  * log of a task and of a list, and the queries (the tasks of a list with their filters, sorts and
  * groups, the counters of a list and of a space, the labels, "Mes tâches" and "Accueil") and the
- * archives of the tasks (P3b-1: archive, restoration and the page "Archives"). The use
- * cases run on one tenant unit of work that appends
- * their events to the outbox in the same transaction. They read the role of the actor, and of the
+ * archives of the tasks (P3b-1: archive, restoration and the page "Archives") and the trash
+ * (P3b-1 PR 3: deletion, restoration, erasure, "Vider la corbeille" and the page "Corbeille"). The
+ * use cases run on one tenant unit of work that appends their events to the outbox, and inserts
+ * the jobs of the trash, in the same transaction. They read the role of the actor, and of the
  * people to assign, from `OrganizationMembersModule` through the `MemberDirectory` port, never from
  * the `role` claim of the internal token (decision 4 of the P3a plan), and the lists, the spaces,
  * the role of the actor on them and the task keys from `SpacesModule` through the `SpaceDirectory`
  * port. `TaskAccessController` serves the access check of a task to the realtime gateway, the only
  * route of the module it accepts. It exports `UnassignRemovedMember`, one batch of the removal of a
  * former member from their tasks, which the clean-up job of the member-lifecycle module runs batch
- * after batch once the member left the organization, and `FindTaskReference` and
- * `FindTaskReferences`, which the access-requests module reads tasks with.
+ * after batch once the member left the organization, `FindTaskReference` and
+ * `FindTaskReferences`, which the access-requests module reads tasks with, and the four entries
+ * of the jobs of the deletion-lifecycle module: `TrashDeletedListTasks` and `PurgeTrashBatch`
+ * (tenant batches), `ListUntrashedTaskIds` (the tasks of an entry whose requests stay) and
+ * `ListOrganizationsWithTrashToPurge` (on a read-only system unit of work, the only
+ * cross-organization read of the module).
+
  */
 @Module({
   imports: [OrganizationMembersModule, SpacesModule],
@@ -123,6 +145,8 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
     TaskActivityController,
     TaskArchiveController,
     ArchivesController,
+    TaskTrashController,
+    TrashController,
     TaskAccessController,
   ],
   providers: [
@@ -158,7 +182,25 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
     unarchiveTaskProvider,
     listArchivedTasksProvider,
     listArchivedListsProvider,
+    trashSystemUnitOfWorkProvider,
+    trashTaskProvider,
+    listTrashEntriesProvider,
+    purgeTrashEntryProvider,
+    restoreTrashEntryProvider,
+    emptyTrashProvider,
+    trashDeletedListTasksProvider,
+    purgeTrashBatchProvider,
+    listOrganizationsWithTrashToPurgeProvider,
+    listUntrashedTaskIdsProvider,
   ],
-  exports: [UnassignRemovedMember, FindTaskReference, FindTaskReferences],
+  exports: [
+    UnassignRemovedMember,
+    FindTaskReference,
+    FindTaskReferences,
+    TrashDeletedListTasks,
+    PurgeTrashBatch,
+    ListOrganizationsWithTrashToPurge,
+    ListUntrashedTaskIds,
+  ],
 })
 export class TasksModule {}

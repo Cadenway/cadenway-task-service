@@ -27,7 +27,7 @@ export interface ListWithGrants {
    * Property space
    *
    * @description
-   * The visibility, the owner and whether the space of the list awaits an owner.
+   * The visibility, the owner, the tombstone and whether the space of the list awaits an owner.
    *
    * @type {AccessSpace}
    * @readonly

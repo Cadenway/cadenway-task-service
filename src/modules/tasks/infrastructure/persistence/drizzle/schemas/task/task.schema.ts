@@ -23,6 +23,7 @@ import {
   MAX_ESTIMATE_MINUTES,
   MAX_TASK_NUMBER,
 } from '../../../../../domain/value-objects/task/task-limits.value-object.js';
+import { trashEntries } from '../trash/trash-entry.schema.js';
 
 /**
  * Function toSqlList
@@ -42,7 +43,8 @@ function toSqlList(values: readonly string[]): string {
  * (`key_prefix`, `key_number`, unique per organization), so a task keeps its key when it moves to
  * another space or when its space changes prefix. `space_id` and `list_id` carry no foreign key:
  * the lists and spaces tables belong to the spaces module, whose schema this module cannot import;
- * the use cases keep both ids right (no list or space is deleted in this version). The parent is a
+ * the use cases keep both ids right (a deleted list or space stays as a tombstone until the last
+ * trash entry of its tasks is erased). The parent is a
  * foreign key to the same table. `id` and `created_at` come from PostgreSQL; the columns a page or
  * a comparison reads (`created_at`, `completed_at`) keep millisecond precision so that they
  * round-trip exactly through a JavaScript `Date`. `due_date` and `start_date` are `date` columns
@@ -62,7 +64,9 @@ function toSqlList(values: readonly string[]): string {
  * - `tasks_archive_root_index` (partial on `archive_root`) and `tasks_archive_member_index`
  *   (partial on `archive_root_id is not null`), on the archived tasks only: the roots of the
  *   archives the most recently archived first ("Archives", tab "Tâches"), and the members of one
- *   archive (its restoration, the count of its subtasks).
+ *   archive (its restoration, the count of its subtasks);
+ * - `tasks_trash_entry_index` (partial on `trash_entry_id is not null`), on the trashed tasks only:
+ *   the members of one trash entry (its restoration lock, its erasure, its counts).
  *
  * Archives (P3b-1): `archived_at`, `archived_by_*` and `archive_root_id` are all set or all null.
  * `archive_root_id` names the task an archive was made from (the root itself for the root), a
@@ -71,6 +75,12 @@ function toSqlList(values: readonly string[]): string {
  * its own, because PostgreSQL has no statistics for a comparison of two columns, and with
  * `archive_root_id = id` as the predicate of the partial index it misjudged the keyset of the
  * second page of the archives and read every root (`tests/archive-queries.int-spec.ts`).
+ *
+ * Trash (P3b-1 PR 3): `trash_entry_id` names the trash entry the task belongs to, a foreign key
+ * `(organization_id, trash_entry_id)` to `trash_entries`, and is null for a task that is not in
+ * the trash. An archived task in the trash keeps its archive columns (it went with its subtree or
+ * its list, and comes back in its archive): the statements of the archives leave the tasks in the
+ * trash out.
  */
 export const tasks = pgTable(
   'tasks',
@@ -108,6 +118,9 @@ export const tasks = pgTable(
     // A constant default: the expand-only migration adds it without rewriting the table, and the
     // running version, which never writes it, keeps every task live and not a root.
     archiveRoot: boolean('archive_root').notNull().default(false),
+    // The trash entry the task belongs to (P3b-1 PR 3): nullable, so the expand-only migration
+    // leaves every task of the running version out of the trash.
+    trashEntryId: uuid('trash_entry_id'),
   },
   (table) => [
     primaryKey({ name: 'tasks_pkey', columns: [table.organizationId, table.id] }),
@@ -194,6 +207,14 @@ export const tasks = pgTable(
       'tasks_archived_by_id_check',
       sql`${table.archivedById} is null or ${table.archivedById} <> ''`,
     ),
+    foreignKey({
+      name: 'tasks_trash_entry_fkey',
+      columns: [table.organizationId, table.trashEntryId],
+      foreignColumns: [trashEntries.organizationId, trashEntries.id],
+    }),
+    index('tasks_trash_entry_index')
+      .on(table.organizationId, table.trashEntryId)
+      .where(sql`${table.trashEntryId} is not null`),
     organizationPolicy('tasks_organization_isolation'),
   ],
 );

@@ -1,6 +1,6 @@
 import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
 import {
-  archiveHeight,
+  treeHeight,
   takesRestoredRoot,
 } from '../../../../../domain/policies/subtask/subtask-tree.policy.js';
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
@@ -278,7 +278,7 @@ export class UnarchiveTask {
     return takesRestoredRoot(
       { live: parent.live, listId: parent.listId, level, childCount },
       listId,
-      archiveHeight(
+      treeHeight(
         id,
         members.map((member: Task): TaskState => member.snapshot),
       ),

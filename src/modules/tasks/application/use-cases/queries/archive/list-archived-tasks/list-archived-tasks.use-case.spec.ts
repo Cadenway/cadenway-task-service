@@ -29,6 +29,7 @@ import {
   sprint14SharedWith,
   subtaskState,
   taskState,
+  trashIn,
 } from '../../../tasks.fixture.js';
 import type { ListArchivedTasksInput } from './list-archived-tasks.input.js';
 import { ListArchivedTasks } from './list-archived-tasks.use-case.js';
@@ -149,6 +150,21 @@ describe('ListArchivedTasks: the roots of the archives the actor sees, the lates
     expect(first.next).toEqual({ archivedAt: LATER, id: CAD_490 });
     expect(second.items.map((item) => item.task.key)).toEqual(['CAD-482']);
     expect(second.total).toBe(3);
+  });
+
+  it('leaves an archive in the trash out of the page and the total', async () => {
+    const { tasks, useCase } = atelierNord();
+    for (const id of [CAD_482, CAD_483]) {
+      const state: TaskState | undefined = tasks.tasks.get(id);
+      if (state !== undefined) {
+        tasks.tasks.set(id, { ...state, trash: trashIn() });
+      }
+    }
+
+    const page = await useCase.execute(read());
+
+    expect(page.items.map((item) => item.task.key)).toEqual(['CAD-490', 'CAD-801']);
+    expect(page.total).toBe(2);
   });
 
   it('leaves the archives of a list closed to the actor out of the page and the total', async () => {

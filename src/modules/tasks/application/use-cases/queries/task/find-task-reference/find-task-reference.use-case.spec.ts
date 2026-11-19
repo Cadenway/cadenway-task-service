@@ -11,6 +11,7 @@ import {
   PRODUIT,
   SPRINT_14,
   taskState,
+  trashIn,
 } from '../../../tasks.fixture.js';
 import { FindTaskReference } from './find-task-reference.use-case.js';
 
@@ -99,5 +100,18 @@ describe('FindTaskReference: one read in the transaction of the caller', () => {
     expect(tasks.readOnlyRuns).toBe(0);
     expect(tasks.trace).toEqual(['reader.locationByKey']);
     expect(tasks.events).toEqual([]);
+  });
+});
+
+describe('FindTaskReference: a task in the trash is not found', () => {
+  it('answers null for a task in the trash, so its requests are hidden at once', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState({ trash: trashIn(), version: 13 })] });
+
+    expect(
+      await new FindTaskReference(tasks).execute({
+        organizationId: ATELIER_NORD,
+        taskKey: 'CAD-482',
+      }),
+    ).toBeNull();
   });
 });

@@ -16,6 +16,7 @@ import {
   sameArchiveAsParent,
 } from '../../mappers/task/same-archive.mapper.js';
 import { toTaskLocation, toTaskReference } from '../../mappers/task/task-summary.mapper.js';
+import { untrashedTask } from '../../mappers/task/untrashed-task.mapper.js';
 import type { TaskRow } from '../../mappers/task/task.mapper.js';
 import { tasks } from '../../schemas/task/task.schema.js';
 import { DrizzleTaskCollections } from './task-collections.repository.js';
@@ -194,7 +195,8 @@ export class DrizzleTaskReader implements TaskReader {
    * Method references
    *
    * @description
-   * Reads the key, the name, the status and the list of tasks in one query by primary key.
+   * Reads the key, the name, the status, the list and the trash of tasks in one query by primary
+   * key.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} taskIds - The tasks.
@@ -209,20 +211,27 @@ export class DrizzleTaskReader implements TaskReader {
     if (taskIds.length === 0) {
       return references;
     }
-    const rows: Pick<TaskRow, 'id' | 'keyPrefix' | 'keyNumber' | 'name' | 'status' | 'listId'>[] =
-      await this.db
-        .select({
-          id: tasks.id,
-          keyPrefix: tasks.keyPrefix,
-          keyNumber: tasks.keyNumber,
-          name: tasks.name,
-          status: tasks.status,
-          listId: tasks.listId,
-        })
-        .from(tasks)
-        .where(and(eq(tasks.organizationId, organizationId), anyOf(tasks.id, taskIds, 'uuid')));
+    const rows: Pick<
+      TaskRow,
+      'id' | 'keyPrefix' | 'keyNumber' | 'name' | 'status' | 'listId' | 'trashEntryId'
+    >[] = await this.db
+      .select({
+        id: tasks.id,
+        keyPrefix: tasks.keyPrefix,
+        keyNumber: tasks.keyNumber,
+        name: tasks.name,
+        status: tasks.status,
+        listId: tasks.listId,
+        trashEntryId: tasks.trashEntryId,
+      })
+      .from(tasks)
+      .where(and(eq(tasks.organizationId, organizationId), anyOf(tasks.id, taskIds, 'uuid')));
     for (const row of rows) {
-      references.set(row.id, { ...toTaskReference(row), listId: row.listId });
+      references.set(row.id, {
+        ...toTaskReference(row),
+        listId: row.listId,
+        inTrash: row.trashEntryId !== null,
+      });
     }
     return references;
   }
@@ -232,11 +241,12 @@ export class DrizzleTaskReader implements TaskReader {
    *
    * @description
    * Reads where a task is by its key, in one statement through `tasks_key_unique`, without its
-   * collections and without a lock.
+   * collections and without a lock; a task in the trash is left out (`trash_entry_id is null`).
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {TaskKey} key - The key.
-   * @returns {Promise<TaskLocation | null>} The task, or `null` when the organization has none.
+   * @returns {Promise<TaskLocation | null>} The task, or `null` when the organization has none or
+   * it is in the trash.
    * @throws {Error} When the stored status is outside the status keys.
    */
   public async locationByKey(organizationId: string, key: TaskKey): Promise<TaskLocation | null> {
@@ -248,6 +258,7 @@ export class DrizzleTaskReader implements TaskReader {
           eq(tasks.organizationId, organizationId),
           eq(tasks.keyPrefix, key.prefix),
           eq(tasks.keyNumber, key.number),
+          untrashedTask(),
         ),
       )
       .limit(1);
@@ -260,7 +271,8 @@ export class DrizzleTaskReader implements TaskReader {
    *
    * @description
    * Reads where tasks are by their ids, in one statement by primary key (`= ANY($ids)`), without
-   * their collections and without a lock. No id reads nothing.
+   * their collections and without a lock; the tasks in the trash are left out. No id reads
+   * nothing.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} taskIds - The ids of the tasks, UUIDs.
@@ -277,7 +289,13 @@ export class DrizzleTaskReader implements TaskReader {
     const rows: TaskLocationRow[] = await this.db
       .select(LOCATION_COLUMNS)
       .from(tasks)
-      .where(and(eq(tasks.organizationId, organizationId), anyOf(tasks.id, taskIds, 'uuid')));
+      .where(
+        and(
+          eq(tasks.organizationId, organizationId),
+          anyOf(tasks.id, taskIds, 'uuid'),
+          untrashedTask(),
+        ),
+      );
     return rows.map((row: TaskLocationRow): TaskLocation => toTaskLocation(row));
   }
   // #endregion

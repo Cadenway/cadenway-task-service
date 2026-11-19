@@ -23,10 +23,13 @@ import type { GetTaskDetailOutput } from './get-task-detail.output.js';
  * transaction on one snapshot (repeatable read), so that the task, its space, its list, its parent
  * and its subtasks agree even while writers commit, without a lock. The
  * parent is read as a reference, with its name and status as they are now, once for the reference
- * and the `parentKey` of the task; an archived root whose live parent moved to another list since
- * reads as detached (`showsParent`): `parent: null` and `parentKey: null`, so the parent of a list
- * the actor may not see never shows. The subtasks are the direct ones of its archive, in the order
- * of their creation (at most 25). Visibility is that of `GetTask`.
+ * and the `parentKey` of the task; an archived root whose live parent moved to another list since,
+ * or whose parent is in the trash, reads as detached (`showsParent`): `parent: null` and
+ * `parentKey: null`, so the parent of a list the actor may not see, or a task in the trash, never
+ * shows. The subtasks are the direct ones of its archive, those in the trash left out, in the
+ * order of their creation (at most 25). Visibility is that of `GetTask`; a task in the trash
+ * answers `task-trashed` or `task-not-found` (`TaskLocator`).
+
  */
 export class GetTaskDetail {
   // #region Properties
@@ -99,7 +102,7 @@ export class GetTaskDetail {
         const reference: TaskReferenceInListView | null =
           parentId === null ? null : (references.get(parentId) ?? null);
         const parent: TaskReferenceView | null =
-          reference === null || !showsParent(listId, reference.listId)
+          reference === null || !showsParent(listId, reference.listId, reference.inTrash)
             ? null
             : { key: reference.key, name: reference.name, status: reference.status };
         const subtasks: readonly TaskSummaryView[] = await store.reader.childrenOf(

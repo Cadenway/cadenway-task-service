@@ -20,6 +20,7 @@ import { appConfigSchema } from './config/app-config.js';
 import type { AppConfig } from './config/app-config.js';
 import { jobQueues } from './config/job-queues.js';
 import { AccessRequestsModule } from './modules/access-requests/access-requests.module.js';
+import { DeletionLifecycleModule } from './modules/deletion-lifecycle/deletion-lifecycle.module.js';
 import { MemberLifecycleModule } from './modules/member-lifecycle/member-lifecycle.module.js';
 import { OrganizationMembersModule } from './modules/organization-members/organization-members.module.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
@@ -105,7 +106,11 @@ function runJobInOrganization(
  *   shutdown (`shutdownTimeoutMs`), under the 10 second default grace period of Docker, since the
  *   deploy definition may not set `stop_grace_period`: a batch of the clean-up job takes about a
  *   second and the handler starts no batch once its signal aborts, so it stops at a batch boundary;
- *   an attempt still running after that is failed and retried.
+ *   an attempt still running after that is failed and retried. The queues are the clean-up of a
+ *   removed member (`MemberLifecycleModule`) and the four of the deletions and the trash
+ *   (`DeletionLifecycleModule`); the one durable schedule, `task.schedule-trash-purge` at 03:00
+ *   UTC, is registered at start-up by every replica (the same row) and creates its job without
+ *   organization.
  * - `PlatformModule`: the owner of the kit tables in the migrations of the service.
  * - `OrganizationMembersModule`: the copy of the memberships of organization-service, the source of
  *   the members and roles of the service.
@@ -130,6 +135,17 @@ function runJobInOrganization(
  *   member over to the owner and removes their grants through `SpacesModule`, drops their pending
  *   access requests through `AccessRequestsModule`, then unassigns them from their tasks through
  *   `TasksModule`, batch after batch.
+ * - `DeletionLifecycleModule`: the workers of the deletions and of the trash. The deletion of a
+ *   list or a space (`SpacesModule`) enqueues `task.trash-deleted-tasks`, whose worker moves the
+ *   tasks of each deleted list to the trash through `TasksModule`, batch after batch, dropping
+ *   through `AccessRequestsModule` the pending requests of the space, of each list and of the tasks
+ *   it moves in transactions that read them still deleted, and erases a deleted space left without
+ *   a list through `SpacesModule`; "Supprimer la tâche" (`TasksModule`) enqueues
+ *   `task.drop-trashed-task-requests` for the requests of the tasks of its entry still in the
+ *   trash; "Vider la corbeille" (`TasksModule`) and the daily `task.schedule-trash-purge`, whose
+ *   enqueue is a system transaction that inserts job rows only, enqueue `task.purge-trash`, whose
+ *   worker erases the entries handed over or due, then the tombstones left without a task, batch
+ *   after batch. None of these modules depends on it.
  *
  * Business modules under `src/modules/` are registered here as they are created.
  */
@@ -180,6 +196,7 @@ function runJobInOrganization(
     TasksModule,
     AccessRequestsModule,
     MemberLifecycleModule,
+    DeletionLifecycleModule,
   ],
 })
 export class AppModule {}

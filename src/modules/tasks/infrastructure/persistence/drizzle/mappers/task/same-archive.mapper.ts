@@ -3,6 +3,7 @@ import type { SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 
 import { tasks } from '../../schemas/task/task.schema.js';
+import { untrashedTask } from './untrashed-task.mapper.js';
 
 /**
  * Constant parentTasks
@@ -37,11 +38,13 @@ export function parentOfTask(): SQL {
  * The one rule of the subtask reads ("Tasks" of `openapi/public/archives.yaml`; the subtask counts
  * of `Task` and `TaskSummary`, `GET /tasks/{taskKey}/subtasks` and the subtasks of the detail): the
  * subtasks shown of a task are those of its archive, `archive_root_id IS NOT DISTINCT FROM` the
- * one of the parent. A live task shows its live subtasks; an archived task shows the subtasks
- * archived with it, not those of an older archive.
+ * one of the parent, and not in the trash ("those archived or in the trash left out"). A live task
+ * shows its live subtasks; an archived task shows the subtasks archived with it, not those of an
+ * older archive. A subtask in the trash has no archive, so the same-archive rule alone would keep
+ * it under a live parent: the trash condition leaves it out.
  *
  * @returns {SQL} The condition on `tasks` joined with `parentTasks` (`parentOfTask`).
  */
 export function sameArchiveAsParent(): SQL {
-  return sql`${tasks.archiveRootId} is not distinct from ${parentTasks.archiveRootId}`;
+  return sql`(${tasks.archiveRootId} is not distinct from ${parentTasks.archiveRootId} and ${untrashedTask()})`;
 }

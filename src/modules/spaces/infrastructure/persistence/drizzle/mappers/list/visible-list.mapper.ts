@@ -9,7 +9,9 @@ import { taskLists } from '../../schemas/list/task-list.schema.js';
 import { spaces } from '../../schemas/space/space.schema.js';
 import { toAccessRole } from '../access/stored-grant.mapper.js';
 import { toVisibility } from '../space/space.mapper.js';
+import { undeletedSpaceCondition } from '../space/space-tombstone.mapper.js';
 import { viewerSpaceGrant } from '../space/visible-space.mapper.js';
+import { undeletedListCondition } from './list-tombstone.mapper.js';
 import { toTaskList } from './task-list.mapper.js';
 import type { TaskListRow } from './task-list.mapper.js';
 
@@ -65,6 +67,17 @@ export interface VisibleListRow {
    * @readonly
    */
   readonly awaitingOwner: boolean;
+
+  /**
+   * Property spaceDeletedAt
+   *
+   * @description
+   * When the space of the list was deleted, `null` for a live one.
+   *
+   * @type {Date | null}
+   * @readonly
+   */
+  readonly spaceDeletedAt: Date | null;
 
   /**
    * Property spaceGrantRole
@@ -123,19 +136,36 @@ export function viewerListGrantJoin(organizationId: string, viewerUserId: string
  *
  * @description
  * The ONE condition that keeps the lists a member has a role on ("Access" of
- * `openapi/public/spaces.yaml`, `listRoleOf` of the domain), never one of a space awaiting an
- * owner: a grant of the list, for anyone, guests included; for a member who is not a guest, also
- * the ownership of the space, a space `organization` with the switch "Accès de l’organisation" of
- * the list on, and a grant of the space. Every query that lists lists applies it over `lists`
- * joined to `spaces` on `(organization_id, id)` and left joined to `viewerSpaceGrant` and
- * `viewerListGrant`, and selects the same two grants, from which the application computes the role
- * of each row with `listRoleOf`. It is parenthesized as a whole, so it stays one term under `not`
- * or `or`. The caller names `organization_id` of `lists`.
+ * `openapi/public/spaces.yaml`, `listRoleOf` of the domain): neither the list nor its space is
+ * deleted (`undeletedListCondition`, `undeletedSpaceCondition`), and `listAccessCondition`. Every
+ * query that lists lists applies it over `lists` joined to `spaces` on `(organization_id, id)` and
+ * left joined to `viewerSpaceGrant` and `viewerListGrant`, and selects the same two grants, from
+ * which the application computes the role of each row with `listRoleOf`. It is parenthesized as a
+ * whole, so it stays one term under `not` or `or`. The caller names `organization_id` of `lists`.
  *
  * @param {Viewer} viewer - The member and its role in the organization.
  * @returns {SQL} The condition, over the columns of `lists`, `spaces` and the two joins.
  */
 export function visibleListCondition(viewer: Viewer): SQL {
+  return sql`(${undeletedListCondition()} and ${undeletedSpaceCondition()} and ${listAccessCondition(viewer)})`;
+}
+
+/**
+ * Function listAccessCondition
+ *
+ * @description
+ * The condition that keeps the lists a member has, or would have if neither the list nor its space
+ * were deleted, a role on (`listRoleAsIfNotDeletedOf` of the domain, "Who" of
+ * `openapi/public/trash.yaml`), never one of a space awaiting an owner: a grant of the list, for
+ * anyone, guests included; for a member who is not a guest, also the ownership of the space, a
+ * space `organization` with the switch "Accès de l’organisation" of the list on, and a grant of the
+ * space. `visibleListCondition` adds the tombstones to it; the trash reads it alone. It is
+ * parenthesized as a whole, over the same joins as `visibleListCondition`.
+ *
+ * @param {Viewer} viewer - The member and its role in the organization.
+ * @returns {SQL} The condition, over the columns of `lists`, `spaces` and the two joins.
+ */
+export function listAccessCondition(viewer: Viewer): SQL {
   const listGrant: SQL = sql`${viewerListGrant.role} is not null`;
   if (viewer.role === 'guest') {
     return sql`(not ${spaces.awaitingOwner} and ${listGrant})`;
@@ -157,6 +187,7 @@ export function visibleListColumns(): {
   visibility: typeof spaces.visibility;
   ownerUserId: typeof spaces.ownerUserId;
   awaitingOwner: typeof spaces.awaitingOwner;
+  spaceDeletedAt: typeof spaces.deletedAt;
   spaceGrantRole: typeof viewerSpaceGrant.role;
   listGrantRole: typeof viewerListGrant.role;
 } {
@@ -165,6 +196,7 @@ export function visibleListColumns(): {
     visibility: spaces.visibility,
     ownerUserId: spaces.ownerUserId,
     awaitingOwner: spaces.awaitingOwner,
+    spaceDeletedAt: spaces.deletedAt,
     spaceGrantRole: viewerSpaceGrant.role,
     listGrantRole: viewerListGrant.role,
   };
@@ -188,6 +220,7 @@ export function toListWithGrants(row: VisibleListRow): ListWithGrants {
       visibility: toVisibility(row.visibility),
       ownerUserId: row.ownerUserId,
       awaitingOwner: row.awaitingOwner,
+      deletedAt: row.spaceDeletedAt,
     },
     grants: {
       space: toAccessRole(row.spaceGrantRole),

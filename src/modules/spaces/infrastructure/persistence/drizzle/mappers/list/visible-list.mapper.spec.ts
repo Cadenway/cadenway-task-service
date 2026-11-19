@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { InvalidListError } from '../../../../../domain/errors/list/invalid-list.error.js';
 import {
+  listAccessCondition,
   toListWithGrants,
   viewerListGrantJoin,
   visibleListCondition,
@@ -35,6 +36,9 @@ function sprint14Row(overrides: Partial<VisibleListRow> = {}): VisibleListRow {
       archivedByType: null,
       archivedById: null,
       restoredAt: null,
+      deletedAt: null,
+      deletedByType: null,
+      deletedById: null,
       createdAt: new Date('2026-10-20T09:00:00Z'),
       updatedAt: new Date('2026-10-20T09:00:00Z'),
       version: 4,
@@ -42,11 +46,15 @@ function sprint14Row(overrides: Partial<VisibleListRow> = {}): VisibleListRow {
     visibility: 'organization',
     ownerUserId: '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b30',
     awaitingOwner: false,
+    spaceDeletedAt: null,
     spaceGrantRole: null,
     listGrantRole: 'comment',
     ...overrides,
   };
 }
+
+/** The access condition of a member, as if neither the list nor its space were deleted. */
+const MEMBER_ACCESS = `(not "spaces"."awaiting_owner" and ("viewer_list_grant"."role" is not null or "spaces"."owner_user_id" = $1 or ("spaces"."visibility" = 'organization' and "lists"."organization_access") or "viewer_space_grant"."role" is not null))`;
 
 describe('visibleListCondition: the lists a member has a role on', () => {
   it('keeps for a member a grant of the list, the owner, the switch of a space of the organization and a grant of the space', () => {
@@ -55,7 +63,7 @@ describe('visibleListCondition: the lists a member has a role on', () => {
     );
 
     expect(text).toBe(
-      `(not "spaces"."awaiting_owner" and ("viewer_list_grant"."role" is not null or "spaces"."owner_user_id" = $1 or ("spaces"."visibility" = 'organization' and "lists"."organization_access") or "viewer_space_grant"."role" is not null))`,
+      `("lists"."deleted_at" is null and "spaces"."deleted_at" is null and ${MEMBER_ACCESS})`,
     );
     expect(params).toEqual(['viewer']);
   });
@@ -65,10 +73,36 @@ describe('visibleListCondition: the lists a member has a role on', () => {
       visibleListCondition({ userId: 'viewer', role: 'guest' }),
     );
 
-    expect(text).toBe(`(not "spaces"."awaiting_owner" and "viewer_list_grant"."role" is not null)`);
+    expect(text).toBe(
+      `("lists"."deleted_at" is null and "spaces"."deleted_at" is null and (not "spaces"."awaiting_owner" and "viewer_list_grant"."role" is not null))`,
+    );
     expect(params).toEqual([]);
   });
 
+  it('leaves out a deleted list and every list of a deleted space, whatever the role', () => {
+    const { sql: text } = new PgDialect().sqlToQuery(
+      visibleListCondition({ userId: 'viewer', role: 'owner' }),
+    );
+
+    expect(
+      text.startsWith('("lists"."deleted_at" is null and "spaces"."deleted_at" is null and ('),
+    ).toBe(true);
+  });
+});
+
+describe('listAccessCondition: the trash reads the role a member would have as if not deleted', () => {
+  it('keeps the same sources of a role as the collections, without the tombstones', () => {
+    const { sql: text, params } = new PgDialect().sqlToQuery(
+      listAccessCondition({ userId: 'viewer', role: 'member' }),
+    );
+
+    expect(text).toBe(MEMBER_ACCESS);
+    expect(text).not.toContain('deleted_at');
+    expect(params).toEqual(['viewer']);
+  });
+});
+
+describe('the join of the grant of the viewer on the lists', () => {
   it('joins the grant of the list on the full primary key of list_grants', () => {
     const { sql: text, params } = new PgDialect().sqlToQuery(
       viewerListGrantJoin(ORGANIZATION, 'viewer'),
@@ -90,6 +124,7 @@ describe('toListWithGrants: a row of a collection of lists', () => {
       visibility: 'organization',
       ownerUserId: '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b30',
       awaitingOwner: false,
+      deletedAt: null,
     });
     expect(row.grants).toEqual({ space: null, list: 'comment' });
   });
@@ -118,6 +153,38 @@ describe('toListWithGrants: a row of a collection of lists', () => {
       archivedBy: { type: 'user', id: '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b30' },
       restoredAt: new Date('2026-10-30T09:00:00Z'),
     });
+  });
+
+  it('maps the tombstone of a deleted list and of its space, which the policies fail closed on', () => {
+    const base: VisibleListRow = sprint14Row({
+      spaceDeletedAt: new Date('2026-11-08T16:00:00Z'),
+    });
+    const deleted = toListWithGrants({
+      ...base,
+      list: {
+        ...base.list,
+        deletedAt: new Date('2026-11-08T16:00:00Z'),
+        deletedByType: 'user',
+        deletedById: '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b30',
+      },
+    });
+
+    expect(deleted.list.snapshot).toMatchObject({
+      deletedAt: new Date('2026-11-08T16:00:00Z'),
+      deletedBy: { type: 'user', id: '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b30' },
+    });
+    expect(deleted.space.deletedAt).toEqual(new Date('2026-11-08T16:00:00Z'));
+  });
+
+  it('refuses a tombstone stored by halves, as the domain does', () => {
+    const base: VisibleListRow = sprint14Row();
+
+    expect(() =>
+      toListWithGrants({
+        ...base,
+        list: { ...base.list, deletedAt: new Date('2026-11-08T16:00:00Z') },
+      }),
+    ).toThrow(InvalidListError);
   });
 
   it('refuses a stored actor type outside those of Actor', () => {

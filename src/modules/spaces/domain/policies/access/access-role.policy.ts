@@ -9,9 +9,10 @@ import type { SpaceState } from '../../value-objects/space/space-state.value-obj
  * Type AccessSpace
  *
  * @description
- * What the access rules read of a space: its visibility, its owner and whether it awaits one.
+ * What the access rules read of a space: its visibility, its owner, whether it is deleted and
+ * whether it awaits an owner.
  */
-export type AccessSpace = Pick<SpaceState, 'visibility' | 'ownerUserId'> &
+export type AccessSpace = Pick<SpaceState, 'visibility' | 'ownerUserId' | 'deletedAt'> &
   Partial<Pick<SpaceState, 'awaitingOwner'>>;
 
 /**
@@ -43,8 +44,10 @@ export function highestRole(roles: readonly (AccessRole | null)[]): AccessRole |
  * owner, admin and member of the organization in a space `organization` (the P3a rule), and the
  * grant of the space. A guest has none: a space grant held as a member gives nothing while the
  * person is a guest (decision beyond the brief of the contract), and the rule of the organization
- * never reaches guests. A space awaiting an owner gives nobody a role (fail closed, P3a). Any
- * visibility other than `organization` reads as private, so an unexpected value fails closed.
+ * never reaches guests. A space awaiting an owner gives nobody a role (fail closed, P3a), nor does a
+ * deleted space, which answers as an unknown one ("Who sees a space" of
+ * `openapi/public/spaces.yaml`). Any visibility other than `organization` reads as private, so an
+ * unexpected value fails closed.
  *
  * @param {AccessSpace} space - The space.
  * @param {Viewer} viewer - The member who asks.
@@ -57,7 +60,7 @@ export function spaceRoleOf(
   viewer: Viewer,
   spaceGrant: AccessRole | null,
 ): AccessRole | null {
-  if (space.awaitingOwner === true || viewer.role === 'guest') {
+  if (space.awaitingOwner === true || space.deletedAt !== null || viewer.role === 'guest') {
     return null;
   }
   return highestRole([
@@ -72,20 +75,50 @@ export function spaceRoleOf(
  *
  * @description
  * The effective role of a member on a list (`callerRole` of `TaskList`, decision 2 of P3b-1 as
- * the contract fixed it): the highest of the grant of the list, which reaches guests too ("Elle ne
- * verra que cette liste"), and, for a member who is not a guest, `edit` as owner of the space
- * ("Propriétaire", whatever the switch), `edit` in a space `organization` while the switch "Accès
- * de l’organisation" of the list is on, and the grant of the space (whatever the switch). A list
- * of a space awaiting an owner gives nobody a role. `null`: the member does not see the list,
- * which answers as an unknown one.
+ * the contract fixed it): the role of `listRoleAsIfNotDeletedOf`, and none on a deleted list or a
+ * list of a deleted space, which answers as an unknown one ("Who sees a list" and "Deletion" of
+ * `openapi/public/lists.yaml`: fail closed on a tombstone). `null`: the member does not see the
+ * list, which answers as an unknown one.
  *
  * @param {AccessSpace} space - The space of the list.
- * @param {Pick<TaskListState, 'organizationAccess'>} list - The list.
+ * @param {Pick<TaskListState, 'organizationAccess' | 'deletedAt'>} list - The list.
  * @param {Viewer} viewer - The member who asks.
  * @param {ListGrants} grants - The grants of the viewer on the space and on the list.
  * @returns {AccessRole | null} The role, or `null` when the viewer does not see the list.
  */
 export function listRoleOf(
+  space: AccessSpace,
+  list: Pick<TaskListState, 'organizationAccess' | 'deletedAt'>,
+  viewer: Viewer,
+  grants: ListGrants,
+): AccessRole | null {
+  if (space.deletedAt !== null || list.deletedAt !== null) {
+    return null;
+  }
+  return listRoleAsIfNotDeletedOf(space, list, viewer, grants);
+}
+
+/**
+ * Function listRoleAsIfNotDeletedOf
+ *
+ * @description
+ * The role a member has on a list, or would have if neither the list nor its space were deleted
+ * ("for a deleted list, the role they would have on it" of "Who" of `openapi/public/trash.yaml`):
+ * the highest of the grant of the list, which reaches guests too ("Elle ne verra que cette
+ * liste"), and, for a member who is not a guest, `edit` as owner of the space ("Propriétaire",
+ * whatever the switch), `edit` in a space `organization` while the switch "Accès de
+ * l’organisation" of the list is on, and the grant of the space (whatever the switch). A list of a
+ * space awaiting an owner gives nobody a role. The grants of a tombstone stay with it, so they
+ * still count. Only the trash and the restoration of a deleted list read this role; every other
+ * reading goes through `listRoleOf`.
+ *
+ * @param {AccessSpace} space - The space of the list, deleted or not.
+ * @param {Pick<TaskListState, 'organizationAccess'>} list - The list, deleted or not.
+ * @param {Viewer} viewer - The member who asks.
+ * @param {ListGrants} grants - The grants of the viewer on the space and on the list.
+ * @returns {AccessRole | null} The role, or `null` when the viewer would have none.
+ */
+export function listRoleAsIfNotDeletedOf(
   space: AccessSpace,
   list: Pick<TaskListState, 'organizationAccess'>,
   viewer: Viewer,
@@ -111,8 +144,9 @@ export function listRoleOf(
  * @description
  * Whether a member sees a space ("Access" of `openapi/public/spaces.yaml`): when they have a role
  * on it, or a grant of one of its lists, which shows the space with `callerRole: null` and those
- * lists only. Nobody sees a space awaiting an owner. A space the member does not see answers as an
- * unknown one and is left out of every collection and count (P3a promise).
+ * lists only. Nobody sees a space awaiting an owner, nor a deleted space ("Deletion" of
+ * `openapi/public/spaces.yaml`). A space the member does not see answers as an unknown one and is
+ * left out of every collection and count (P3a promise).
  *
  * @param {AccessSpace} space - The space.
  * @param {Viewer} viewer - The member who asks.
@@ -125,7 +159,7 @@ export function canSeeSpace(
   viewer: Viewer,
   grants: Pick<ListGrants, 'space'> & { readonly anyList: boolean },
 ): boolean {
-  if (space.awaitingOwner === true) {
+  if (space.awaitingOwner === true || space.deletedAt !== null) {
     return false;
   }
   return spaceRoleOf(space, viewer, grants.space) !== null || grants.anyList;
@@ -138,16 +172,16 @@ export function canSeeSpace(
  * Whether a member manages a space (`callerCanManage`, decision 3 of P3b-1 as the contract fixed
  * it): changes its visibility (`403 space.visibility-forbidden`), shares it and deletes it
  * (`403 space.manage-forbidden`). The owner of the space, and for a space `organization` the owner
- * and the admins of the organization; never a guest, and nobody for a space awaiting an owner. The
- * owner and the admins of the organization do not manage a private space, even one shared with
- * them (they never saw one in P3a).
+ * and the admins of the organization; never a guest, and nobody for a space awaiting an owner or
+ * a deleted space. The owner and the admins of the organization do not manage a private space,
+ * even one shared with them (they never saw one in P3a).
  *
  * @param {AccessSpace} space - The space.
  * @param {Viewer} viewer - The member who asks.
  * @returns {boolean} Whether the member manages the space.
  */
 export function canManageSpace(space: AccessSpace, viewer: Viewer): boolean {
-  if (space.awaitingOwner === true || viewer.role === 'guest') {
+  if (space.awaitingOwner === true || space.deletedAt !== null || viewer.role === 'guest') {
     return false;
   }
   if (space.ownerUserId === viewer.userId) {

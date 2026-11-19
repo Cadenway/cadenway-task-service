@@ -131,20 +131,24 @@ export function checkAttachment(
  *
  * @description
  * The depth of each task of a tree under its root, read from their parent links: 0 for the root,
- * 1 for its subtasks, 2 below. The tree is an archive, or the live subtree an archive takes; the
- * events of both go root first, then by depth (`asyncapi/task-service.yaml`, "Archives, trash and
- * deletions").
+ * 1 for its subtasks, 2 below. The tree is an archive or the live subtree an archive or a move
+ * takes, within 3 levels; or a trash entry, whose archived subtasks may hang deeper (the depth of
+ * an attachment counts the live subtree only), so its callers pass the number of its tasks as the
+ * bound. The events of all go root first, then by depth (`asyncapi/task-service.yaml`, "Archives,
+ * trash and deletions").
  *
  * @param {string} rootId - The id of the root.
  * @param {readonly Pick<TaskState, 'id' | 'parentId'>[]} tasks - The tasks of the tree, the root
  * included, in any order.
+ * @param {number} [maxLevels] - The levels a tree may have; the 3 levels of a tree when left out.
  * @returns {ReadonlyMap<string, number>} The depth by task id.
  * @throws {InvalidTaskError} When the root is not among the tasks, a task is given twice, or a
- * task other than the root has no parent among them within the 3 levels of a tree.
+ * task other than the root has no parent among them within the levels of the tree.
  */
 export function depthsUnder(
   rootId: string,
   tasks: readonly Pick<TaskState, 'id' | 'parentId'>[],
+  maxLevels: number = MAX_LEVELS,
 ): ReadonlyMap<string, number> {
   const parents = new Map<string, string | null>();
   for (const task of tasks) {
@@ -163,9 +167,10 @@ export function depthsUnder(
     while (current !== rootId) {
       const parentId: string | null | undefined = parents.get(current);
       depth += 1;
-      if (parentId === null || parentId === undefined || depth >= MAX_LEVELS) {
-        throw new InvalidTaskError('every task of a tree hangs from its root within 3 levels');
+      if (parentId === null || parentId === undefined || depth >= maxLevels) {
+        throw new InvalidTaskError('every task of a tree hangs from its root within its levels');
       }
+
       current = parentId;
     }
     depths.set(task.id, depth);
@@ -174,19 +179,20 @@ export function depthsUnder(
 }
 
 /**
- * Function archiveHeight
+ * Function treeHeight
  *
  * @description
- * The number of levels of an archive, the root included: 1 for a root alone, 2 with subtasks, 3
- * with sub-subtasks. Its parent takes it back only when the level of the parent plus this height
- * is 3 at most (`takesRestoredRoot`).
+ * The number of levels of a tree of tasks, the root included: 1 for a root alone, 2 with
+ * subtasks, 3 with sub-subtasks. The tree is an archive or a trash entry, read from the parent
+ * links of its tasks; the parent the root had takes it back only when the level of the parent plus
+ * this height is 3 at most (`takesRestoredRoot`).
  *
- * @param {string} rootId - The id of the root of the archive.
- * @param {readonly Pick<TaskState, 'id' | 'parentId'>[]} members - The tasks of the archive.
+ * @param {string} rootId - The id of the root of the tree.
+ * @param {readonly Pick<TaskState, 'id' | 'parentId'>[]} members - The tasks of the tree.
  * @returns {number} The height.
  * @throws {InvalidTaskError} When the members are not a tree under the root (`depthsUnder`).
  */
-export function archiveHeight(
+export function treeHeight(
   rootId: string,
   members: readonly Pick<TaskState, 'id' | 'parentId'>[],
 ): number {
@@ -199,22 +205,31 @@ export function archiveHeight(
  * @description
  * Whether a task reads with its parent (`parentKey` of `Task` and of every `TaskSummary`,
  * `parent` of the detail) or as detached: it shows its parent only when the parent is in its
- * list, so that "a subtask is always in the list of its parent" (`listId` of `Task`,
- * `openapi/public/tasks.yaml`) holds in every answer. A live task always shares the list of its
- * parent, and so does every member of an archive under the root; only the root of an archive can
- * be elsewhere, when its live parent moved since (a move carries the live subtree only, "Tasks"
- * of `openapi/public/archives.yaml`). That root reads as detached, as its restoration leaves it
- * (`takesRestoredRoot`), and the parent of another list, its key, name and status, never reaches
- * a viewer of the list of the root who may not see that list: a decision of this service beyond
- * the contract (P3b-1, PR 2). The stored link is not changed: the restoration reads it.
+ * list and not in the trash, so that "a subtask is always in the list of its parent" (`listId` of
+ * `Task`, `openapi/public/tasks.yaml`) holds in every answer, and a task in the trash, "left out of
+ * every collection and count" (`openapi/public/trash.yaml`), never shows through another. A live
+ * task always shares the list of its live parent, and so does every member of an archive under
+ * the root; only the root of an archive can be elsewhere, when its live parent moved since (a move
+ * carries the live subtree only, "Tasks" of `openapi/public/archives.yaml`). A deletion takes every
+ * subtask of its list, archived ones included, and a restoration detaches a root whose parent is
+ * not live, so a task out of the trash is not expected under a parent in the trash of its list;
+ * the reads keep the rule all the same. Such a task reads as detached, as its restoration leaves
+ * it (`takesRestoredRoot`), and the parent, its key, name and status, never reaches a viewer who
+ * may not see it: decisions of this service beyond the contract (P3b-1, PR 2 and PR 3). The
+ * stored link is not changed: the restoration reads it.
  *
  * @param {string} taskListId - The list of the task.
  * @param {string} parentListId - The list its parent is in now.
+ * @param {boolean} parentInTrash - Whether its parent is in the trash now.
  * @returns {boolean} `true` when the task reads with its parent, `false` when it reads as
  * detached.
  */
-export function showsParent(taskListId: string, parentListId: string): boolean {
-  return taskListId === parentListId;
+export function showsParent(
+  taskListId: string,
+  parentListId: string,
+  parentInTrash: boolean,
+): boolean {
+  return taskListId === parentListId && !parentInTrash;
 }
 
 /**
@@ -229,11 +244,14 @@ export function showsParent(taskListId: string, parentListId: string): boolean {
  * takes it when it is live, in the list of the root (an archived task never moves, a live parent
  * may have), with fewer than 25 live direct subtasks, and when its level plus the height of the
  * archive is 3 at most (`openapi/public/tasks.yaml:28-30`). A detachment is a decision, not a
- * refusal: the restoration goes on either way.
+ * refusal: the restoration goes on either way. The restoration of a trash entry follows the same
+ * rule ("a parent that is no longer live, or can no longer take it (25 subtasks, 3 levels),
+ * detaches its root", "Restoring" of `openapi/public/trash.yaml`): a parent in the trash is not
+ * live.
  *
  * @param {RestoredRootParent} parent - The parent, read under lock.
  * @param {string} rootListId - The list of the root.
- * @param {number} height - The height of the archive (`archiveHeight`).
+ * @param {number} height - The height of the archive or the trash entry (`treeHeight`).
  * @returns {boolean} `true` when the root keeps its parent, `false` when it is detached.
  * @throws {InvalidTaskError} When the level, the count or the height is impossible.
  */

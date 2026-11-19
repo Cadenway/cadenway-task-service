@@ -1,4 +1,5 @@
 import type { Space } from '../../../../../domain/aggregates/space/space.aggregate.js';
+import { announcesChanges } from '../../../../../domain/policies/list/list-state.policy.js';
 import type { SpaceUpdate } from '../../../../../domain/value-objects/space/space-update.value-object.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
 import type { SpacesStore } from '../../../../models/transactions/spaces-store.model.js';
@@ -50,7 +51,8 @@ const SYSTEM_ACTOR: EventActor = { type: 'system', id: 'task-service' };
  * 3. otherwise it gives each space to the owner of the organization (`Space.handOver`) and appends
  *    `space.updated.v1` (field `ownerUserId`, actor `{ type: 'system', id: 'task-service' }`); while
  *    the copy does not hold that owner, it marks the spaces awaiting one, seen by nobody, without
- *    event, and `HandOverAwaitingSpaces` gives them to the owner once the copy learns it;
+ *    event, and `HandOverAwaitingSpaces` gives them to the owner once the copy learns it; a deleted
+ *    space (a tombstone) is handed over all the same, without event until it comes back;
  * 4. a grant the owner of the organization held on a space handed over to them, or on one of its
  *    lists, is removed with its access event (`OwnerGrantsRemover`): an owner holds no grant.
  *
@@ -162,7 +164,10 @@ export class HandOverPrivateSpaces {
         const { space, changed }: SpaceUpdate = stored.handOver(ownerUserId);
         if (changed.length > 0) {
           await store.spaces.update(space);
-          await store.events.spaceUpdated(space, changed, SYSTEM_ACTOR);
+          // A tombstone changes owner all the same, and emits nothing until it comes back.
+          if (announcesChanges(space.snapshot)) {
+            await store.events.spaceUpdated(space, changed, SYSTEM_ACTOR);
+          }
           handed.push({ space, formerOwnerUserId: input.formerOwnerUserId });
         }
       }

@@ -429,3 +429,41 @@ describe('HandOverPrivateSpaces: the new owner keeps no grant on the spaces hand
     expect(spaces.events.map((event) => event.kind)).toEqual(['spaceUpdated']);
   });
 });
+
+describe('HandOverPrivateSpaces: the clean-up treats a deleted space and its deleted lists like any other', () => {
+  /** A list of the private space "Design". */
+  const MAQUETTES = '019a7100-0000-7000-8000-000000000003';
+
+  /** When Hugo Dubois deleted "Design", before he left. */
+  const DELETED: Date = new Date('2026-11-08T16:10:00Z');
+
+  it('hands a deleted private space over and removes the grant of the new owner on its deleted list, without event', async () => {
+    const tombstone = { deletedAt: DELETED, deletedBy: { type: 'user', id: HUGO } } as const;
+    const spaces = new InMemorySpaces({
+      spaces: [designState(tombstone)],
+      lists: [
+        backlogState({
+          id: MAQUETTES,
+          spaceId: DESIGN,
+          name: 'Maquettes',
+          version: 2,
+          ...tombstone,
+        }),
+      ],
+      grants: [listGrantOf(DESIGN, MAQUETTES, CAMILLE, 'edit')],
+    });
+
+    const outcome = await new HandOverPrivateSpaces(
+      spaces,
+      atelierNordMembers({ removed: [HUGO] }),
+    ).execute(input);
+
+    expect(outcome).toEqual({ outcome: 'handed-over', handedOver: 1, awaitingOwner: 0 });
+    expect(spaces.spaces.get(DESIGN)).toEqual(
+      designState({ ...tombstone, ownerUserId: CAMILLE, version: 2 }),
+    );
+    expect(spaces.grantsOf({ kind: 'list', spaceId: DESIGN, listId: MAQUETTES })).toEqual([]);
+    expect(spaces.lists.get(MAQUETTES)).toMatchObject({ deletedAt: DELETED, version: 3 });
+    expect(spaces.events).toEqual([]);
+  });
+});

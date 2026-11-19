@@ -45,6 +45,12 @@ export const CREATED_AT: Date = new Date('2026-10-20T09:00:00Z');
 /** When the specs archive a list ("archivée le 3 nov."). */
 export const ARCHIVED_AT: Date = new Date('2026-11-03T09:00:00Z');
 
+/** When the specs delete a list or a space ("Liste « Bugs » supprimée"). */
+export const DELETED_AT: Date = new Date('2026-11-08T16:10:00Z');
+
+/** When the specs bring a deleted list or space back from the trash. */
+export const RESTORED_FROM_TRASH_AT: Date = new Date('2026-11-09T09:05:00Z');
+
 /** Camille Martin acting as the owner of the organization. */
 export const CAMILLE_VIEWER: Viewer = { userId: CAMILLE, role: 'owner' };
 
@@ -81,6 +87,9 @@ export function spaceState(overrides: Partial<SpaceState> = {}): SpaceState {
     awaitingOwner: false,
     statuses: DEFAULT_SPACE_STATUSES,
     createdAt: CREATED_AT,
+    deletedAt: null,
+    deletedBy: null,
+    restoredAt: null,
     version: 1,
     ...overrides,
   };
@@ -125,6 +134,8 @@ export function sprintState(overrides: Partial<TaskListState> = {}): TaskListSta
     archivedAt: null,
     archivedBy: null,
     restoredAt: null,
+    deletedAt: null,
+    deletedBy: null,
     version: 1,
     ...overrides,
   };

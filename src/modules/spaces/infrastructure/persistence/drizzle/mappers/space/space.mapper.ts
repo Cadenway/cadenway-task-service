@@ -5,6 +5,7 @@ import type { StatusKey } from '../../../../../domain/value-objects/status/statu
 import { STATUS_KEYS } from '../../../../../domain/value-objects/status/status-key.value-object.js';
 import type { Visibility } from '../../../../../domain/value-objects/space/visibility.value-object.js';
 import type { spaces } from '../../schemas/space/space.schema.js';
+import { toStoredActor } from '../actor/stored-actor.mapper.js';
 import { toLookColor, toLookIcon } from '../look/look.mapper.js';
 
 /**
@@ -94,12 +95,13 @@ export function toVisibility(value: string): Visibility {
  * Function toSpace
  *
  * @description
- * Maps a row to the space it stores. The statuses are parsed and completed, and the color, icon
- * and visibility narrowed, before the domain restores the aggregate.
+ * Maps a row to the space it stores, its tombstone and its last restoration from the trash
+ * included. The statuses are parsed and completed, and the color, icon, visibility and actor type
+ * narrowed, before the domain restores the aggregate.
  *
  * @param {SpaceRow} row - The row.
  * @returns {Space} The space.
- * @throws {Error} When the color, icon or visibility is outside its set.
+ * @throws {Error} When the color, icon, visibility or actor type is outside its set.
  */
 export function toSpace(row: SpaceRow): Space {
   return Space.restore({
@@ -115,6 +117,9 @@ export function toSpace(row: SpaceRow): Space {
     awaitingOwner: row.awaitingOwner,
     statuses: toSpaceStatuses(row.statuses),
     createdAt: row.createdAt,
+    deletedAt: row.deletedAt,
+    deletedBy: toStoredActor(row.deletedByType, row.deletedById),
+    restoredAt: row.restoredAt,
     version: row.version,
   });
 }

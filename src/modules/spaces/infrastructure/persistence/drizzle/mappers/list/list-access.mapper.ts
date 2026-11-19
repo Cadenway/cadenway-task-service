@@ -49,6 +49,17 @@ export interface ListAccessRow {
   readonly organizationAccess: boolean;
 
   /**
+   * Property deletedAt
+   *
+   * @description
+   * `lists.deleted_at`.
+   *
+   * @type {Date | null}
+   * @readonly
+   */
+  readonly deletedAt: Date | null;
+
+  /**
    * Property visibility
    *
    * @description
@@ -80,6 +91,17 @@ export interface ListAccessRow {
    * @readonly
    */
   readonly awaitingOwner: boolean;
+
+  /**
+   * Property spaceDeletedAt
+   *
+   * @description
+   * When the space of the list was deleted, `null` for a live one.
+   *
+   * @type {Date | null}
+   * @readonly
+   */
+  readonly spaceDeletedAt: Date | null;
 
   /**
    * Property spaceGrantRole
@@ -118,9 +140,11 @@ export function listAccessColumns(): {
   listId: typeof taskLists.id;
   spaceId: typeof taskLists.spaceId;
   organizationAccess: typeof taskLists.organizationAccess;
+  deletedAt: typeof taskLists.deletedAt;
   visibility: typeof spaces.visibility;
   ownerUserId: typeof spaces.ownerUserId;
   awaitingOwner: typeof spaces.awaitingOwner;
+  spaceDeletedAt: typeof spaces.deletedAt;
   spaceGrantRole: typeof viewerSpaceGrant.role;
   listGrantRole: typeof viewerListGrant.role;
 } {
@@ -128,9 +152,11 @@ export function listAccessColumns(): {
     listId: taskLists.id,
     spaceId: taskLists.spaceId,
     organizationAccess: taskLists.organizationAccess,
+    deletedAt: taskLists.deletedAt,
     visibility: spaces.visibility,
     ownerUserId: spaces.ownerUserId,
     awaitingOwner: spaces.awaitingOwner,
+    spaceDeletedAt: spaces.deletedAt,
     spaceGrantRole: viewerSpaceGrant.role,
     listGrantRole: viewerListGrant.role,
   };
@@ -151,10 +177,12 @@ export function toListAccess(row: ListAccessRow): ListAccess {
     listId: row.listId,
     spaceId: row.spaceId,
     organizationAccess: row.organizationAccess,
+    deletedAt: row.deletedAt,
     space: {
       visibility: toVisibility(row.visibility),
       ownerUserId: row.ownerUserId,
       awaitingOwner: row.awaitingOwner,
+      deletedAt: row.spaceDeletedAt,
     },
     grants: {
       space: toAccessRole(row.spaceGrantRole),

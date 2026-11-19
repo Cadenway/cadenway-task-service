@@ -4,7 +4,9 @@ import type {
   TaskArchivedV1,
   TaskAssignedV1,
   TaskCreatedV1,
+  TaskPurgedV1,
   TaskStatusChangedV1,
+  TaskTrashedV1,
   TaskUpdatedV1,
 } from '@cadenway/contracts/events/task-service';
 import type { DatabaseSchema, TransactionScope } from '@cadenway/nest-common/database';
@@ -26,9 +28,11 @@ import {
   PRODUIT,
   SPRINT_14,
   CAD_482,
+  CAD_482_ENTRY,
   archiveFrom,
   subtaskState,
   taskState,
+  trashIn,
 } from '../../../../domain/tasks.fixture.js';
 import type { TaskField } from '../../../../domain/value-objects/task/task-field.value-object.js';
 import { TaskKey } from '../../../../domain/value-objects/task/task-key.value-object.js';
@@ -446,6 +450,95 @@ describe('OutboxTaskEvents: the task.* events on the outbox, as the contract def
         version: 3,
       });
       expect(log).toEqual(['append task.unarchived.v1', 'wake']);
+    });
+  });
+
+  describe('task.trashed.v1, task.restored.v1 and task.purged.v1', () => {
+    it('carries a task of a trash entry as it was, with the entry, the key of the root and the purge instant', async () => {
+      await events.taskTrashed(
+        Task.restore(subtaskState({ trash: trashIn(), version: 2 })),
+        CAD_482_ENTRY,
+        TaskKey.of('CAD', 482),
+        new Date('2026-12-08T10:20:00.000Z'),
+        camille,
+      );
+
+      const expected: TaskTrashedV1 = {
+        id: EVENT_ID,
+        occurredAt: OCCURRED_AT,
+        ...cad482,
+        version: 2,
+        key: 'CAD-483',
+        entryId: CAD_482_ENTRY,
+        rootKey: 'CAD-482',
+        purgeAt: '2026-12-08T10:20:00.000Z',
+        parentKey: 'CAD-482',
+        name: 'Ajouter le bouton SSO',
+        status: 'todo',
+        priority: 'moyenne',
+        assigneeIds: [CAMILLE],
+        dueDate: null,
+        startDate: null,
+        estimateMinutes: null,
+        labels: [],
+      };
+      expect(parsed(outbox.appends[0], 'task.trashed.v1')).toStrictEqual(expected);
+      expect(outbox.appends[0]?.data).not.toHaveProperty('changed');
+      expect(log).toEqual(['append task.trashed.v1', 'wake']);
+    });
+
+    it('carries a root restored and detached, with the entry it came from', async () => {
+      await events.taskRestored(
+        Task.restore(subtaskState({ parentId: null, parentKey: null, version: 3 })),
+        CAD_482_ENTRY,
+        TaskKey.of('CAD', 483),
+        camille,
+      );
+
+      expect(parsed(outbox.appends[0], 'task.restored.v1')).toMatchObject({
+        key: 'CAD-483',
+        entryId: CAD_482_ENTRY,
+        rootKey: 'CAD-483',
+        parentKey: null,
+        version: 3,
+      });
+    });
+
+    it('carries only the key, the version, the entry, the root, the list, the space and the parent of a task erased', async () => {
+      await events.taskPurged(
+        Task.restore(subtaskState({ trash: trashIn(), version: 3 })),
+        CAD_482_ENTRY,
+        TaskKey.of('CAD', 482),
+        taskService,
+      );
+
+      const expected: TaskPurgedV1 = {
+        id: EVENT_ID,
+        occurredAt: OCCURRED_AT,
+        organizationId: ATELIER_NORD,
+        actor: { type: 'system', id: 'task-service' },
+        version: 3,
+        key: 'CAD-483',
+        entryId: CAD_482_ENTRY,
+        rootKey: 'CAD-482',
+        spaceId: PRODUIT,
+        listId: SPRINT_14,
+        parentKey: 'CAD-482',
+      };
+      expect(parsed(outbox.appends[0], 'task.purged.v1')).toStrictEqual(expected);
+      expect(Object.keys(outbox.appends[0]?.data ?? {}).sort()).toEqual(
+        [
+          'actor',
+          'entryId',
+          'key',
+          'listId',
+          'organizationId',
+          'parentKey',
+          'rootKey',
+          'spaceId',
+          'version',
+        ].sort(),
+      );
     });
   });
 

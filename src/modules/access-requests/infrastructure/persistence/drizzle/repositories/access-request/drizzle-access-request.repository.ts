@@ -2,6 +2,7 @@ import type { TransactionDatabase } from '@cadenway/nest-common/database';
 import { and, asc, count, desc, eq, or, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 
+import type { DroppedRequestTarget } from '../../../../../application/models/access-request/dropped-request-target.model.js';
 import type { PendingScope } from '../../../../../application/models/access-request/pending-scope.model.js';
 import type { PagePosition } from '../../../../../application/models/page/page-position.model.js';
 import type { AccessRequestRepository } from '../../../../../application/ports/outbound/persistence/access-request/access-request-repository.port.js';
@@ -65,6 +66,27 @@ function scopeCondition(organizationId: string, scope: PendingScope): SQL | unde
       and(eq(accessRequests.target, 'task'), anyOf(accessRequests.taskId, scope.taskIds)),
     ),
   );
+}
+
+/**
+ * Function targetCondition
+ *
+ * @description
+ * The requests of a deleted target, pending or not: the task requests of the tasks, the list
+ * requests of the list, or the space requests of the space.
+ *
+ * @param {DroppedRequestTarget} target - The deleted target.
+ * @returns {SQL | undefined} The condition.
+ */
+function targetCondition(target: DroppedRequestTarget): SQL | undefined {
+  switch (target.kind) {
+    case 'tasks':
+      return and(eq(accessRequests.target, 'task'), anyOf(accessRequests.targetId, target.taskIds));
+    case 'list':
+      return and(eq(accessRequests.target, 'list'), eq(accessRequests.targetId, target.listId));
+    case 'space':
+      return and(eq(accessRequests.target, 'space'), eq(accessRequests.targetId, target.spaceId));
+  }
 }
 
 /**
@@ -351,6 +373,40 @@ export class DrizzleAccessRequestRepository implements AccessRequestRepository {
     const deleted: { id: string }[] = await this.db
       .delete(accessRequests)
       .where(and(eq(accessRequests.organizationId, organizationId), anyOf(accessRequests.id, ids)))
+      .returning({ id: accessRequests.id });
+    return deleted.length;
+  }
+
+  /**
+   * Method deletePendingOf
+   *
+   * @description
+   * `DELETE FROM access_requests WHERE organization_id = $1 AND state = 'pending' AND <target>
+   * RETURNING id`, one statement: `target = 'task' AND target_id = ANY($tasks)`, `target = 'list'
+   * AND target_id = $list`, or `target = 'space' AND target_id = $space` (`target_id` is the task,
+   * the list or the space of its target, `access_requests_target_shape_check`). No index serves
+   * `target_id` alone: the statement reads the pending requests of the organization
+   * (`access_requests_pending_index`), O(pending requests of the organization), as the listing
+   * does, which the hourly limit of each requester bounds. A row an answer locked is waited for (5 s
+   * at most, the lock timeout of the application role), then evaluated again: answered meanwhile,
+   * it stays. No task deletes nothing without a statement.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {DroppedRequestTarget} target - The deleted target.
+   * @returns {Promise<number>} How many were deleted.
+   */
+  public async deletePendingOf(
+    organizationId: string,
+    target: DroppedRequestTarget,
+  ): Promise<number> {
+    if (target.kind === 'tasks' && target.taskIds.length === 0) {
+      return 0;
+    }
+    const deleted: { id: string }[] = await this.db
+      .delete(accessRequests)
+      .where(
+        and(eq(accessRequests.organizationId, organizationId), PENDING, targetCondition(target)),
+      )
       .returning({ id: accessRequests.id });
     return deleted.length;
   }

@@ -5,7 +5,7 @@ import { assignedPageStatement } from './assigned-task-statements.mapper.js';
 
 const FROM: string =
   'from "task_assignees" join "tasks" on "tasks"."organization_id" = "task_assignees"."organization_id" and "tasks"."id" = "task_assignees"."task_id" ' +
-  'where ("task_assignees"."organization_id" = $1 and "task_assignees"."user_id" = $2 and "tasks"."organization_id" = $3 and "tasks"."list_id" = any($4::uuid[]) and "tasks"."archived_at" is null)';
+  'where ("task_assignees"."organization_id" = $1 and "task_assignees"."user_id" = $2 and "tasks"."organization_id" = $3 and "tasks"."list_id" = any($4::uuid[]) and ("tasks"."archived_at" is null and "tasks"."trash_entry_id" is null))';
 const DUE_ORDER: string =
   'order by coalesce("tasks"."due_date", \'infinity\'::date), "tasks"."created_at", "tasks"."id"';
 

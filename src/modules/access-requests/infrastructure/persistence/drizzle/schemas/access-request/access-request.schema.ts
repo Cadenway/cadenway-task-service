@@ -18,8 +18,9 @@ import {
  * list or a task target, `null` for a space) are what the people who manage the target filter on;
  * `task_id` and `task_key` name a task target (a key never changes). `space_id`, `list_id` and
  * `task_id` name rows of other modules without a foreign key: the strict layout forbids importing
- * their schemas, and none is deleted in this version (the deletions of PR 3 drop the requests of
- * what they delete). A request changes once, from `pending` to `approved` (with `role`) or
+ * their schemas, and an answered request outlives an erased target (the jobs of deletion-lifecycle
+ * drop the pending requests of a deleted list or space and of a task moved to the trash). A request
+ * changes once, from `pending` to `approved` (with `role`) or
  * `refused`, which the checks keep whole. `access_requests_pending_unique` keeps one pending
  * request per requester and target ("asking again changes nothing");
  * `access_requests_requester_index` serves the clean-up of a removed member, who loses their

@@ -20,6 +20,7 @@ import {
   subtaskState,
   taskState,
   archiveFrom,
+  trashIn,
 } from '../../../tasks.fixture.js';
 import type { ListListTasksInput } from './list-list-tasks.input.js';
 import { ListListTasks } from './list-list-tasks.use-case.js';
@@ -248,6 +249,35 @@ describe('ListListTasks: an archived task is left out of the page and the total'
         }),
         queryTask(2, { assigneeIds: [CAMILLE], dueDate: '2026-11-08' }),
       ],
+    });
+    const useCase = new ListListTasks(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
+
+    const page = await useCase.execute({
+      organizationId: ATELIER_NORD,
+      actorUserId: CAMILLE,
+      listId: SPRINT_14,
+      filter: {
+        statuses: null,
+        priorities: null,
+        assignees: null,
+        labels: null,
+        search: null,
+        dueFrom: null,
+        dueTo: null,
+        level: 'all',
+      },
+      order: { key: 'manual', descending: false },
+      after: null,
+      limit: 50,
+    });
+
+    expect(page.items.map((item) => item.key)).toEqual(['CAD-482', 'CAD-802']);
+    expect(page.total).toBe(2);
+  });
+
+  it('leaves the tasks in the trash out of the page and the total too', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [taskState(), queryTask(1, { trash: trashIn(), version: 2 }), queryTask(2)],
     });
     const useCase = new ListListTasks(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
 

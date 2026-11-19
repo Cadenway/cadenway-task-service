@@ -1,5 +1,6 @@
 import type { StatusKey } from '../../../domain/value-objects/task/status-key.value-object.js';
 import type { AccessRole } from '../../../domain/value-objects/access/access-role.value-object.js';
+import type { TaskActor } from '../../../domain/value-objects/task/task-actor.value-object.js';
 
 /**
  * Type TaskRefusalReason
@@ -16,6 +17,12 @@ import type { AccessRole } from '../../../domain/value-objects/access/access-rol
  *   a task is created in or moved to, the list of the new parent) with `role`, and needs `edit`.
  * - `task-archived`: the task a change acts on, or the parent a new subtask or an attachment
  *   names, is archived ("Tasks" of `openapi/public/archives.yaml`); `key` is its key.
+ * - `task-trashed`: the task of the key is in the trash and the actor could change its list, as if
+ *   the list and its space were not deleted (`TaskNotFound` of `openapi/public/tasks.yaml`): its
+ *   key and name, its entry, the root of the entry, when and by whom it was deleted and when it is
+ *   erased. Anyone else gets `task-not-found`.
+ * - `trash-entry-not-found`: no entry with this id that the actor may restore: unknown, handed to
+ *   the purge by "Vider la corbeille", or of a list the actor could not change.
  * - `version-mismatch`: `If-Match` names another version than the stored one.
  * - `status-hidden`: the status is hidden in the space the task is in after the operation.
  * - `cancel-reason-required`, `cancel-reason-unexpected`: the cancellation rules.
@@ -35,6 +42,17 @@ export type TaskRefusalReason =
   | { readonly reason: 'checklist-item-not-found' }
   | { readonly reason: 'role-insufficient'; readonly role: AccessRole }
   | { readonly reason: 'task-archived'; readonly key: string }
+  | {
+      readonly reason: 'task-trashed';
+      readonly key: string;
+      readonly name: string;
+      readonly entryId: string;
+      readonly rootKey: string;
+      readonly trashedAt: Date;
+      readonly trashedBy: TaskActor;
+      readonly purgeAt: Date;
+    }
+  | { readonly reason: 'trash-entry-not-found' }
   | { readonly reason: 'version-mismatch'; readonly version: number }
   | { readonly reason: 'status-hidden'; readonly status: StatusKey }
   | { readonly reason: 'cancel-reason-required' }

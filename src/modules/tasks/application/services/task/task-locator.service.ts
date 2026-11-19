@@ -1,12 +1,15 @@
 import { InvalidTaskError } from '../../../domain/errors/task/invalid-task.error.js';
 import type { Task } from '../../../domain/aggregates/task/task.aggregate.js';
+import { purgeAtOf } from '../../../domain/policies/trash/trash-retention.policy.js';
 import { TaskKey } from '../../../domain/value-objects/task/task-key.value-object.js';
 import type { ListPlacement } from '../../models/placement/list-placement.model.js';
 import type { LocateRequest } from '../../models/task/locate-request.model.js';
 import type { LocatedTask } from '../../models/task/located-task.model.js';
 import { TaskRefusal } from '../../models/task/task-refusal.model.js';
 import type { TasksStore } from '../../models/transactions/tasks-store.model.js';
+import type { TrashEntryRecord } from '../../models/trash/trash-entry-record.model.js';
 import type { SpaceDirectory } from '../../ports/outbound/spaces/space/space-directory.port.js';
+import { TrashEntryLocator } from '../trash/trash-entry-locator.service.js';
 import { TaskEditGuard } from './task-edit-guard.service.js';
 import { TaskRuleGuard } from './task-rule-guard.service.js';
 
@@ -15,10 +18,15 @@ import { TaskRuleGuard } from './task-rule-guard.service.js';
  *
  * @description
  * Finds a task by its key for an actor, in the order the writes of the module follow: the task,
- * its visibility through the list it is in, the role a change needs on that list, the archive,
- * then the `If-Match` check (`404` → `403` → `409` → `412`). A task that does not exist, and a task
- * of a list the actor has no role on (a guest has a role on the lists shared with them only), get
- * the same answer, `task-not-found`. A change (`edit`) of a task the actor sees without `edit` on
+ * the trash, its visibility through the list it is in, the role a change needs on that list, the
+ * archive, then the `If-Match` check (`404` → `403` → `409` → `412`). A task that does not exist,
+ * and a task of a list the actor has no role on (a guest has a role on the lists shared with them
+ * only, and a deleted list is seen by nobody), get the same answer, `task-not-found`. A task in the
+ * trash answers `task-trashed` with its entry when the actor may restore that entry (`edit` on its
+ * list as if the list and its space were not deleted, the entry not handed to the purge by "Vider
+ * la corbeille"), and `task-not-found` otherwise (`TaskNotFound` of `openapi/public/tasks.yaml`:
+ * "every route of its key answers `404 task.trashed`"), for a read and a write alike, before the
+ * role a change needs. A change (`edit`) of a task the actor sees without `edit` on
  * its list answers `role-insufficient`, before `If-Match`. A change of an archived task
  * (`archived: 'refuse'`) answers `task-archived` with its key ("Tasks" of
  * `openapi/public/archives.yaml`: an archived task "refuses every change with `409
@@ -29,8 +37,8 @@ import { TaskRuleGuard } from './task-rule-guard.service.js';
  * A write (`lock`) does not lock before it knows the actor may see, and change, the task: it reads
  * the task without a lock and checks its list, then locks the task and reads it again. If another
  * transaction moved the task to another list in between, the list the locked task is in is checked
- * again, so what the actor is allowed to change is decided on the state the write applies to. A
- * refusal is the same as without the lock.
+ * again, so what the actor is allowed to change is decided on the state the write applies to; a
+ * task deleted in between answers as in the trash. A refusal is the same as without the lock.
  */
 export class TaskLocator {
   // #region Properties
@@ -42,6 +50,9 @@ export class TaskLocator {
 
   /** Maps the refusal of an archived task. */
   private readonly rules: TaskRuleGuard;
+
+  /** Finds the entry of a task in the trash, when the actor may restore it. */
+  private readonly entries: TrashEntryLocator;
   // #endregion
 
   // #region Constructor
@@ -58,6 +69,7 @@ export class TaskLocator {
     this.spaces = spaces;
     this.editing = new TaskEditGuard();
     this.rules = new TaskRuleGuard();
+    this.entries = new TrashEntryLocator(spaces);
   }
   // #endregion
 
@@ -72,16 +84,19 @@ export class TaskLocator {
    * @param {LocateRequest} request - The organization, the viewer, the key, whether the task
    * changes, the lock, whether an archived task is refused and `If-Match`.
    * @returns {Promise<LocatedTask>} The task and its list and space.
-   * @throws {TaskRefusal} `task-not-found`, `role-insufficient` with the role of the actor on the
-   * list, `task-archived` with the key of the task, or `version-mismatch` with the stored version.
+   * @throws {TaskRefusal} `task-not-found`, `task-trashed` with its entry, `role-insufficient`
+   * with the role of the actor on the list, `task-archived` with the key of the task, or
+   * `version-mismatch` with the stored version.
    */
   public async locate(store: TasksStore, request: LocateRequest): Promise<LocatedTask> {
     const key: TaskKey = this.parse(request.taskKey);
     let task: Task = await this.find(store, request, key, false);
+    await this.refuseTrashed(store, request, task);
     let placement: ListPlacement = await this.see(request, task);
     if (request.lock) {
       const read: string = task.snapshot.listId;
       task = await this.find(store, request, key, true);
+      await this.refuseTrashed(store, request, task);
       if (task.snapshot.listId !== read) {
         placement = await this.see(request, task);
       }
@@ -171,7 +186,52 @@ export class TaskLocator {
   }
 
   /**
+   * Method refuseTrashed
+   *
+   * @description
+   * Refuses a task in the trash: `task-trashed` with its key and name, its entry, the key of the
+   * root of the entry, when and by whom it was deleted and when it is erased, when the actor may
+   * restore the entry; `task-not-found` otherwise. A task that is not in the trash passes.
+   *
+   * @param {TasksStore} store - The store of the transaction.
+   * @param {LocateRequest} request - The organization and the viewer.
+   * @param {Task} task - The task, as read.
+   * @returns {Promise<void>} Resolves when the task is not in the trash.
+   * @throws {TaskRefusal} `task-trashed` or `task-not-found`.
+   */
+  private async refuseTrashed(
+    store: TasksStore,
+    request: LocateRequest,
+    task: Task,
+  ): Promise<void> {
+    const { trash, key, name } = task.snapshot;
+    if (trash === null) {
+      return;
+    }
+    const entry: TrashEntryRecord | null = await this.entries.findRestorable(
+      store,
+      request.organizationId,
+      request.viewer,
+      trash.entryId,
+    );
+    if (entry === null) {
+      throw new TaskRefusal({ reason: 'task-not-found' });
+    }
+    throw new TaskRefusal({
+      reason: 'task-trashed',
+      key: key.format(),
+      name,
+      entryId: entry.id,
+      rootKey: entry.root.key,
+      trashedAt: entry.trashedAt,
+      trashedBy: entry.trashedBy,
+      purgeAt: purgeAtOf(entry.trashedAt),
+    });
+  }
+
+  /**
    * Method parse
+
    *
    * @description
    * Parses a key; a text that is not a key names no task.

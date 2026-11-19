@@ -193,3 +193,52 @@ describe('RemoveMemberGrants: a grant on a row the batch did not lock is a defec
     expect(spaces.grants).toHaveLength(1);
   });
 });
+
+describe('RemoveMemberGrants: a tombstone loses the grant and takes its version, without event', () => {
+  /** When the space or the list was deleted. */
+  const DELETED: Date = new Date('2026-11-08T16:10:00Z');
+
+  /** The tombstone of a deletion by Inès Robert. */
+  const TOMBSTONE = { deletedAt: DELETED, deletedBy: { type: 'user', id: INES } } as const;
+
+  it('removes the grant of a deleted list and of a deleted space, and appends nothing for them', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState(), designState({ ...TOMBSTONE, version: 3 })],
+      lists: [sprintState({ ...TOMBSTONE, version: 2 })],
+      grants: [spaceGrantOf(DESIGN, LEA, 'edit'), listGrantOf(PRODUIT, SPRINT_14, LEA, 'view')],
+    });
+
+    const outcome = await new RemoveMemberGrants(
+      spaces,
+      atelierNordMembers({ removed: [LEA] }),
+    ).execute(input);
+
+    expect(outcome).toEqual({ outcome: 'removed', removed: 2 });
+    expect(spaces.grants).toEqual([]);
+    expect(spaces.spaces.get(DESIGN)?.version).toBe(4);
+    expect(spaces.lists.get(SPRINT_14)?.version).toBe(3);
+    expect(spaces.events).toEqual([]);
+  });
+
+  it('still appends the access event of a live list beside a deleted one', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [
+        sprintState({ ...TOMBSTONE }),
+        sprintState({ id: '019a7100-0000-7000-8000-000000000001', name: 'Backlog' }),
+      ],
+      grants: [
+        listGrantOf(PRODUIT, SPRINT_14, LEA, 'view'),
+        listGrantOf(PRODUIT, '019a7100-0000-7000-8000-000000000001', LEA, 'view'),
+      ],
+    });
+
+    await new RemoveMemberGrants(spaces, atelierNordMembers({ removed: [LEA] })).execute(input);
+
+    expect(
+      spaces.events.map((event) =>
+        event.kind === 'listAccessChanged' ? event.listId : event.kind,
+      ),
+    ).toEqual(['019a7100-0000-7000-8000-000000000001']);
+  });
+});

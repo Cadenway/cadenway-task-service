@@ -6,8 +6,8 @@ import type { TaskListDraft } from './task-list-draft.value-object.js';
  *
  * @description
  * A stored list or sprint (`TaskList` of `openapi/internal/task-service.yaml`): the members of its
- * draft, what PostgreSQL assigned, its archive ("Lists" of `openapi/public/archives.yaml`) and the
- * version that orders its changes.
+ * draft, what PostgreSQL assigned, its archive ("Lists" of `openapi/public/archives.yaml`), its
+ * tombstone ("Deletion" of `openapi/public/lists.yaml`) and the version that orders its changes.
  */
 export interface TaskListState extends TaskListDraft {
   // #region Properties
@@ -61,9 +61,9 @@ export interface TaskListState extends TaskListDraft {
    * Property restoredAt
    *
    * @description
-   * When the list last came back from the archives, `null` when it never did: a restored list goes
-   * to the end of its space, which orders its lists by this instant or, without one, by
-   * `createdAt`.
+   * When the list last came back from the archives or from the trash, `null` when it never did: a
+   * restored list goes to the end of its space, which orders its lists by this instant or, without
+   * one, by `createdAt`.
    *
    * @type {Date | null}
    * @readonly
@@ -71,11 +71,38 @@ export interface TaskListState extends TaskListDraft {
   readonly restoredAt: Date | null;
 
   /**
+   * Property deletedAt
+   *
+   * @description
+   * When the list was deleted ("Supprimer la liste"), on its own or with its space, the instant of
+   * the transaction of the deletion; `null` for a list that is not. A deleted list is a tombstone
+   * that nobody sees, kept with its settings and its grants until the last trash entry of its
+   * tasks is erased. Set together with `deletedBy`.
+   *
+   * @type {Date | null}
+   * @readonly
+   */
+  readonly deletedAt: Date | null;
+
+  /**
+   * Property deletedBy
+   *
+   * @description
+   * Who deleted the list, or its space; `null` for a list that is not deleted. Set together with
+   * `deletedAt`.
+   *
+   * @type {ListActor | null}
+   * @readonly
+   */
+  readonly deletedBy: ListActor | null;
+
+  /**
    * Property version
    *
    * @description
    * Version of the list, a positive integer: 1 at its creation, one more at each change that
-   * changes something (an archive and a restoration included); also sent as `ETag`.
+   * changes something (an archive, a restoration, a deletion on its own and a restoration from the
+   * trash included; a deletion with its space keeps it); also sent as `ETag`.
    *
    * @type {number}
    * @readonly

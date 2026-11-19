@@ -3,12 +3,14 @@ import type {
   TransactionOptions,
   TransactionScope,
 } from '@cadenway/nest-common/database';
+import type { JobProducer } from '@cadenway/nest-jobs/runtime';
 import type { OutboxRelay, OutboxWriter } from '@cadenway/nest-messaging/outbox';
 
 import type { ReadOptions } from '../../../../../application/models/transactions/read-options.model.js';
 import type { TasksStore } from '../../../../../application/models/transactions/tasks-store.model.js';
 import type { TasksUnitOfWork } from '../../../../../application/ports/outbound/transactions/task/tasks-unit-of-work.port.js';
 import { PostgresqlTransactionClock } from '../../../../adapters/postgresql/transaction-clock.adapter.js';
+import { JobsTrashJobs } from '../../../../jobs/pg-boss/trash/jobs-trash-jobs.adapter.js';
 import { OutboxTaskEvents } from '../../../../messaging/outbox/task/outbox-task-events.adapter.js';
 import { DrizzleActivityRepository } from '../../repositories/activity/drizzle-activity.repository.js';
 import { DrizzleArchiveReader } from '../../repositories/archive/drizzle-archive-reader.repository.js';
@@ -18,6 +20,7 @@ import { DrizzleLabelReader } from '../../repositories/label/drizzle-label-reade
 import { DrizzleTaskQueryReader } from '../../repositories/query/drizzle-task-query-reader.repository.js';
 import { DrizzleTaskReader } from '../../repositories/task/drizzle-task-reader.repository.js';
 import { DrizzleTaskRepository } from '../../repositories/task/drizzle-task.repository.js';
+import { DrizzleTrashEntryRepository } from '../../repositories/trash/drizzle-trash-entry.repository.js';
 
 /**
  * Class TenantTasksUnitOfWork
@@ -28,7 +31,8 @@ import { DrizzleTaskRepository } from '../../repositories/task/drizzle-task.repo
  * `@Idempotent()` runs in the transaction a kit interceptor opened: `run` joins it. A batch of the
  * clean-up job of a removed member opens its own. The store of each run is bound to that run's transaction, the clock
  * included (the instant of the transaction is read once per run). The events appended go to the
- * outbox of the same transaction.
+ * outbox of the same transaction, and the jobs the trash enqueues (`JobsTrashJobs` on the
+ * `JobProducer` of the kit) are inserted in it too, so they commit with the change or not at all.
  *
  * Once a run that appended events resolves, the relay is woken so they leave now instead of at
  * its next poll. A run joined to an outer transaction resolves before that one commits: the pass
@@ -73,6 +77,17 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
    * @readonly
    */
   private readonly relay: OutboxRelay;
+
+  /**
+   * Property jobs
+   *
+   * @description
+   * The job producer of the kit, bound to the transaction of each run.
+   *
+   * @type {JobProducer}
+   * @readonly
+   */
+  private readonly jobs: JobProducer;
   // #endregion
 
   // #region Constructor
@@ -80,17 +95,24 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
    * Constructor
    *
    * @description
-   * Takes the runner, the outbox writer and the relay of the kit.
+   * Takes the runner, the outbox writer, the relay and the job producer of the kit.
    *
    * @param {TenantTransactionRunner} runner - The tenant transaction runner.
    * @param {OutboxWriter} outbox - The outbox writer.
    * @param {OutboxRelay} relay - The outbox relay.
+   * @param {JobProducer} jobs - The job producer.
    * @constructor
    */
-  public constructor(runner: TenantTransactionRunner, outbox: OutboxWriter, relay: OutboxRelay) {
+  public constructor(
+    runner: TenantTransactionRunner,
+    outbox: OutboxWriter,
+    relay: OutboxRelay,
+    jobs: JobProducer,
+  ) {
     this.runner = runner;
     this.outbox = outbox;
     this.relay = relay;
+    this.jobs = jobs;
   }
   // #endregion
 
@@ -159,6 +181,9 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
           assigned: new DrizzleAssignedTaskReader(transaction.db),
           labels: new DrizzleLabelReader(transaction.db),
           archives: new DrizzleArchiveReader(transaction.db),
+          trash: new DrizzleTrashEntryRepository(transaction.db),
+          jobs: new JobsTrashJobs(transaction, this.jobs),
+
           events: new OutboxTaskEvents(transaction, this.outbox, (): void => {
             appends.count += 1;
           }),

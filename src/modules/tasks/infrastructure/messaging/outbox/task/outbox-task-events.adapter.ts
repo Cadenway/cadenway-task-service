@@ -236,6 +236,108 @@ export class OutboxTaskEvents implements TaskEvents {
   }
 
   /**
+   * Method taskTrashed
+   *
+   * @description
+   * Appends `task.trashed.v1` for one task of a trash entry: the task as it was, as
+   * `task.updated.v1` carries it without `changed` (its stored parent, as `task.archived.v1`), at
+   * the version of its move, with the entry, the key of the root and the purge instant
+   * (`asyncapi/task-service.yaml`). Its `occurredAt`, the instant PostgreSQL gives the row, is the
+   * transaction instant, the `trashedAt` of the entry.
+   *
+   * @param {Task} task - The task, in the trash, at its version 2 or more.
+   * @param {string} entryId - The entry.
+   * @param {TaskKey} rootKey - The key of the root of the entry.
+   * @param {Date} purgeAt - When the entry is erased for good unless restored.
+   * @param {EventActor} actor - Who deleted it.
+   * @returns {Promise<void>} Resolves once appended.
+   * @throws {Error} When the payload does not match the schema of the contract: a defect, which
+   * rolls the transaction back.
+   */
+  public async taskTrashed(
+    task: Task,
+    entryId: string,
+    rootKey: TaskKey,
+    purgeAt: Date,
+    actor: EventActor,
+  ): Promise<void> {
+    await this.outbox.append(this.transaction, eventSchemas, 'task.trashed.v1', {
+      ...this.payloadOf(task.snapshot, actor),
+      entryId,
+      rootKey: rootKey.format(),
+      purgeAt: purgeAt.toISOString(),
+    });
+    this.onAppend();
+  }
+
+  /**
+   * Method taskRestored
+   *
+   * @description
+   * Appends `task.restored.v1` for one task a restoration from the trash brought back: the task
+   * after it, its `parentKey` `null` for a root detached, with the entry it came from and the key
+   * of the root.
+   *
+   * @param {Task} task - The task, live, at its version 3 or more.
+   * @param {string} entryId - The entry, which no longer exists.
+   * @param {TaskKey} rootKey - The key of the root of the entry.
+   * @param {EventActor} actor - Who restored it.
+   * @returns {Promise<void>} Resolves once appended.
+   * @throws {Error} When the payload does not match the schema of the contract: a defect, which
+   * rolls the transaction back.
+   */
+  public async taskRestored(
+    task: Task,
+    entryId: string,
+    rootKey: TaskKey,
+    actor: EventActor,
+  ): Promise<void> {
+    await this.outbox.append(this.transaction, eventSchemas, 'task.restored.v1', {
+      ...this.payloadOf(task.snapshot, actor),
+      entryId,
+      rootKey: rootKey.format(),
+    });
+    this.onAppend();
+  }
+
+  /**
+   * Method taskPurged
+   *
+   * @description
+   * Appends `task.purged.v1` for one task erased for good: its key, its version with the erasure,
+   * the entry, the key of the root, its space, its list and its parent as stored, and the actor;
+   * nothing else of the task travels, since it is gone.
+   *
+   * @param {Task} task - The task at the version of its erasure.
+   * @param {string} entryId - The entry.
+   * @param {TaskKey} rootKey - The key of the root of the entry.
+   * @param {EventActor} actor - Who erased it.
+   * @returns {Promise<void>} Resolves once appended.
+   * @throws {Error} When the payload does not match the schema of the contract: a defect, which
+   * rolls the transaction back.
+   */
+  public async taskPurged(
+    task: Task,
+    entryId: string,
+    rootKey: TaskKey,
+    actor: EventActor,
+  ): Promise<void> {
+    const state: TaskState = task.snapshot;
+    await this.outbox.append(this.transaction, eventSchemas, 'task.purged.v1', {
+      organizationId: state.organizationId,
+      actor: { type: actor.type, id: actor.id },
+      version: state.version,
+      key: state.key.format(),
+      entryId,
+      rootKey: rootKey.format(),
+      spaceId: state.spaceId,
+      listId: state.listId,
+      parentKey: state.parentKey === null ? null : state.parentKey.format(),
+    });
+    this.onAppend();
+  }
+
+  /**
    * Method payloadOf
    *
    * @description

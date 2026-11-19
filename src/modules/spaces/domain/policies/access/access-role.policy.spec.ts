@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CAMILLE,
   CAMILLE_VIEWER,
+  DELETED_AT,
   HUGO,
   HUGO_VIEWER,
   INES_VIEWER,
@@ -28,6 +29,7 @@ import {
   canSeeSpace,
   highestRole,
   isHighestRole,
+  listRoleAsIfNotDeletedOf,
   listRoleOf,
   spaceRoleOf,
 } from './access-role.policy.js';
@@ -310,6 +312,98 @@ describe('isHighestRole: no source raises edit, so a reading of the grants can s
     'is the role no other role ranks above',
     (role: AccessRole | null) => {
       expect(isHighestRole(role)).toBe(highestRole([role, 'edit']) === role);
+    },
+  );
+});
+
+describe('the policies fail closed on a tombstone ("Deletion" of lists.yaml and spaces.yaml)', () => {
+  /** A deleted space "Produit". */
+  const DELETED_SPACE: SpaceState = spaceState({
+    deletedAt: DELETED_AT,
+    deletedBy: { type: 'user', id: CAMILLE },
+  });
+
+  /** Sprint 14, deleted on its own. */
+  const DELETED_LIST = sprintState({
+    deletedAt: DELETED_AT,
+    deletedBy: { type: 'user', id: CAMILLE },
+  });
+
+  it('gives nobody a role on a deleted space, its owner and the admins included', () => {
+    for (const viewer of [CAMILLE_VIEWER, INES_VIEWER, HUGO_VIEWER]) {
+      expect(spaceRoleOf(DELETED_SPACE, viewer, 'edit')).toBeNull();
+    }
+  });
+
+  it('lets nobody see or manage a deleted space, a grant of one of its lists included', () => {
+    expect(canSeeSpace(DELETED_SPACE, CAMILLE_VIEWER, { space: 'edit', anyList: true })).toBe(
+      false,
+    );
+    expect(canManageSpace(DELETED_SPACE, CAMILLE_VIEWER)).toBe(false);
+  });
+
+  it('gives nobody a role on a deleted list, nor on a list of a deleted space, whatever the grants', () => {
+    const grants: ListGrants = { space: 'edit', list: 'edit' };
+
+    expect(listRoleOf(spaceState(), DELETED_LIST, CAMILLE_VIEWER, grants)).toBeNull();
+    expect(listRoleOf(DELETED_SPACE, SWITCH_ON, CAMILLE_VIEWER, grants)).toBeNull();
+    expect(listRoleOf(DELETED_SPACE, SWITCH_ON, NADIA_VIEWER, grants)).toBeNull();
+  });
+});
+
+describe('listRoleAsIfNotDeletedOf: the trash reads the role a member would have ("Who" of trash.yaml)', () => {
+  /** A deleted private space "Design" of Hugo Dubois. */
+  const DELETED_DESIGN: SpaceState = designState({
+    deletedAt: DELETED_AT,
+    deletedBy: { type: 'user', id: HUGO },
+  });
+
+  it('gives the role of a live list to a deleted one and to a list of a deleted space', () => {
+    expect(listRoleAsIfNotDeletedOf(DELETED_DESIGN, SWITCH_ON, HUGO_VIEWER, NONE)).toBe('edit');
+    expect(listRoleAsIfNotDeletedOf(DELETED_DESIGN, SWITCH_ON, LEA_VIEWER, NONE)).toBeNull();
+    expect(
+      listRoleAsIfNotDeletedOf(DELETED_DESIGN, SWITCH_ON, LEA_VIEWER, {
+        space: 'view',
+        list: null,
+      }),
+    ).toBe('view');
+    expect(
+      listRoleAsIfNotDeletedOf(DELETED_DESIGN, SWITCH_ON, NADIA_VIEWER, {
+        space: null,
+        list: 'edit',
+      }),
+    ).toBe('edit');
+  });
+
+  it('gives nobody a role in a space awaiting an owner, deleted or not', () => {
+    expect(
+      listRoleAsIfNotDeletedOf(designState({ awaitingOwner: true }), SWITCH_ON, HUGO_VIEWER, {
+        space: null,
+        list: 'edit',
+      }),
+    ).toBeNull();
+  });
+
+  test.prop([
+    fc.constantFrom(...memberRoles),
+    fc.constantFrom<AccessRole | null>(null, ...roles),
+    fc.constantFrom<AccessRole | null>(null, ...roles),
+    fc.boolean(),
+  ])(
+    'equals listRoleOf on a list and a space that are not deleted',
+    (
+      role: MemberRole,
+      spaceGrant: AccessRole | null,
+      listGrant: AccessRole | null,
+      on: boolean,
+    ) => {
+      const viewer: Viewer = { userId: LEA, role };
+      const list = sprintState({ organizationAccess: on });
+      const grants: ListGrants = { space: spaceGrant, list: listGrant };
+
+      expect(listRoleAsIfNotDeletedOf(spaceState(), list, viewer, grants)).toBe(
+        listRoleOf(spaceState(), list, viewer, grants),
+      );
     },
   );
 });

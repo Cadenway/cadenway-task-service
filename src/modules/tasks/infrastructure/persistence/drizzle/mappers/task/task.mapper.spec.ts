@@ -17,6 +17,7 @@ import {
   subtaskState,
   taskState,
   archiveFrom,
+  trashIn,
 } from '../../../../../domain/tasks.fixture.js';
 import type { TaskState } from '../../../../../domain/value-objects/task/task-state.value-object.js';
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
@@ -61,6 +62,7 @@ function rowOf(state: TaskState, overrides: Partial<TaskRow> = {}): TaskRow {
     archivedById: state.archive?.by.id ?? null,
     archiveRootId: state.archive?.rootId ?? null,
     archiveRoot: state.archive?.rootId === state.id,
+    trashEntryId: state.trash?.entryId ?? null,
     ...overrides,
   };
 }
@@ -165,6 +167,27 @@ describe('toTask: a stored row becomes the task it stores', () => {
     );
   });
 
+  it('restores the trash entry of a task in the trash, null for one that is not', () => {
+    const trashed: TaskState = taskState({ trash: trashIn(), version: 13 });
+
+    expect(toTask(rowOf(trashed), null, [], [], []).snapshot.trash).toEqual(trashIn());
+    expect(toTask(rowOf(taskState()), null, [], [], []).snapshot.trash).toBeNull();
+  });
+
+  it('maps an archived task in the trash with its archive and its entry', () => {
+    const archived: TaskState = taskState({ archive: archiveFrom(CAD_482) });
+    const { snapshot } = toTask(
+      rowOf(archived, { trashEntryId: trashIn().entryId }),
+      null,
+      [],
+      [],
+      [],
+    );
+
+    expect(snapshot.archive).toEqual(archiveFrom(CAD_482));
+    expect(snapshot.trash).toEqual({ entryId: trashIn().entryId });
+  });
+
   it('refuses a done task stored without its completion instant', () => {
     const state: TaskState = taskState({ status: 'done', completedAt: NOW });
 
@@ -235,7 +258,7 @@ describe('toTaskUpdate: a changed task becomes the columns to write', () => {
     });
   });
 
-  it('never writes the key, the organization, the id, the creation or the archive', () => {
+  it('never writes the key, the organization, the id, the creation, the archive or the trash', () => {
     const set = toTaskUpdate(cad482());
 
     for (const column of [
@@ -251,6 +274,7 @@ describe('toTaskUpdate: a changed task becomes the columns to write', () => {
       'archivedById',
       'archiveRootId',
       'archiveRoot',
+      'trashEntryId',
     ]) {
       expect(set).not.toHaveProperty(column);
     }

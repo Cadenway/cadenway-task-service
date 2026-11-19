@@ -208,3 +208,24 @@ describe('HandOverAwaitingSpaces: the same member event can be delivered again',
     expect(spaces.events).toHaveLength(1);
   });
 });
+
+describe('HandOverAwaitingSpaces: a deleted space awaiting an owner passes without event', () => {
+  it('gives the tombstone to the owner of the organization at the next version, and emits nothing', async () => {
+    const tombstone = {
+      deletedAt: new Date('2026-11-08T16:10:00Z'),
+      deletedBy: { type: 'user', id: HUGO },
+    } as const;
+    const spaces = new InMemorySpaces({
+      spaces: [designState({ ...tombstone, awaitingOwner: true })],
+    });
+
+    await new HandOverAwaitingSpaces(spaces, atelierNordMembers({ removed: [HUGO] })).execute({
+      organizationId: ATELIER_NORD,
+    });
+
+    expect(spaces.spaces.get(DESIGN)).toEqual(
+      designState({ ...tombstone, ownerUserId: CAMILLE, version: 2 }),
+    );
+    expect(spaces.events).toEqual([]);
+  });
+});

@@ -57,7 +57,10 @@ interface ProblemShape {
  * what does not exist, and what they see without the role a change needs `403
  * access.role-insufficient`, as "Visibility and roles" of the contract says. A change of an archived
  * task, or under an archived parent, answers `409 task.archived` with the key of the archived task
- * (`TaskArchived`, and `TaskCreationConflict` for a new subtask or checklist item).
+ * (`TaskArchived`, and `TaskCreationConflict` for a new subtask or checklist item). A task in the
+ * trash answers `404 task.trashed` with its entry in `details` (`TaskNotFound`: the instants as ISO
+ * 8601 texts, `trashedBy` an `Actor`), an entry the actor may not restore `404
+ * trash-entry.not-found` (`TrashEntryNotFound`).
  *
  * @param {TaskRefusalReason} refusal - The refusal.
  * @returns {ProblemShape} The problem of the contract.
@@ -84,6 +87,23 @@ function shapeOf(refusal: TaskRefusalReason): ProblemShape {
       };
     case 'task-archived':
       return { status: 409, code: 'task.archived', details: { key: refusal.key } };
+    case 'task-trashed':
+      return {
+        status: 404,
+        code: 'task.trashed',
+        details: {
+          key: refusal.key,
+          name: refusal.name,
+          entryId: refusal.entryId,
+          rootKey: refusal.rootKey,
+          trashedAt: refusal.trashedAt.toISOString(),
+          trashedBy: { type: refusal.trashedBy.type, id: refusal.trashedBy.id },
+          purgeAt: refusal.purgeAt.toISOString(),
+        },
+      };
+    case 'trash-entry-not-found':
+      return { status: 404, code: 'trash-entry.not-found' };
+
     case 'version-mismatch':
       return {
         status: 412,

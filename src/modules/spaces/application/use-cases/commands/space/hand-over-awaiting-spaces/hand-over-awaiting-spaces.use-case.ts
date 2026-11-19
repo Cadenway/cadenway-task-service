@@ -1,4 +1,5 @@
 import type { Space } from '../../../../../domain/aggregates/space/space.aggregate.js';
+import { announcesChanges } from '../../../../../domain/policies/list/list-state.policy.js';
 import type { SpaceUpdate } from '../../../../../domain/value-objects/space/space-update.value-object.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
 import type { SpacesStore } from '../../../../models/transactions/spaces-store.model.js';
@@ -28,7 +29,8 @@ const SYSTEM_ACTOR: EventActor = Object.freeze({ type: 'system', id: 'task-servi
  * Called in the transaction of the member event that made the copy learn the owner, which `run`
  * joins; each space passes with `space.updated.v1` (`changed: ['ownerUserId']`, actor
  * `{ type: 'system', id: 'task-service' }`); a grant the owner held on such a space or on one of
- * its lists is removed with its access event, since an owner holds none (`OwnerGrantsRemover`).
+ * its lists is removed with its access event, since an owner holds none (`OwnerGrantsRemover`). A
+ * deleted space (a tombstone) passes all the same, without event until it comes back.
  * Idempotent: a second run finds nothing awaiting.
  */
 export class HandOverAwaitingSpaces {
@@ -108,7 +110,10 @@ export class HandOverAwaitingSpaces {
         const { space, changed }: SpaceUpdate = stored.handOver(ownerUserId);
         await store.spaces.update(space);
         if (changed.length > 0) {
-          await store.events.spaceUpdated(space, changed, SYSTEM_ACTOR);
+          // A tombstone changes owner all the same, and emits nothing until it comes back.
+          if (announcesChanges(space.snapshot)) {
+            await store.events.spaceUpdated(space, changed, SYSTEM_ACTOR);
+          }
           handed.push({ space, formerOwnerUserId: stored.snapshot.ownerUserId });
         }
       }

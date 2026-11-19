@@ -12,14 +12,14 @@ import {
 /** The organization of the transaction. */
 const ORGANIZATION = 'organization';
 
-describe('visibleSpaceCondition: the spaces a member sees', () => {
+describe('visibleSpaceCondition: the spaces a member sees, never a deleted one', () => {
   it('keeps for a member the spaces of the organization, owned or shared, and those of shared lists', () => {
     const { sql: text, params } = new PgDialect().sqlToQuery(
       visibleSpaceCondition({ userId: 'viewer', role: 'member' }),
     );
 
     expect(text).toBe(
-      `(not "spaces"."awaiting_owner" and ("spaces"."visibility" = 'organization' or "spaces"."owner_user_id" = $1 or "viewer_space_grant"."role" is not null or "viewer_list_spaces"."space_id" is not null))`,
+      `("spaces"."deleted_at" is null and not "spaces"."awaiting_owner" and ("spaces"."visibility" = 'organization' or "spaces"."owner_user_id" = $1 or "viewer_space_grant"."role" is not null or "viewer_list_spaces"."space_id" is not null))`,
     );
     expect(params).toEqual(['viewer']);
   });
@@ -30,7 +30,7 @@ describe('visibleSpaceCondition: the spaces a member sees', () => {
     );
 
     expect(text).toBe(
-      `(not "spaces"."awaiting_owner" and "viewer_list_spaces"."space_id" is not null)`,
+      `("spaces"."deleted_at" is null and not "spaces"."awaiting_owner" and "viewer_list_spaces"."space_id" is not null)`,
     );
     expect(params).toEqual([]);
   });
@@ -40,7 +40,9 @@ describe('visibleSpaceCondition: the spaces a member sees', () => {
       sql`not ${visibleSpaceCondition({ userId: 'viewer', role: 'owner' })}`,
     );
 
-    expect(text.startsWith('not (not "spaces"."awaiting_owner" and (')).toBe(true);
+    expect(
+      text.startsWith('not ("spaces"."deleted_at" is null and not "spaces"."awaiting_owner" and ('),
+    ).toBe(true);
     expect(text.endsWith('))')).toBe(true);
   });
 });
@@ -57,12 +59,12 @@ describe('the joins of the grants of the viewer on the spaces', () => {
     expect(params).toEqual([ORGANIZATION, 'viewer']);
   });
 
-  it('reads the spaces of the lists shared with the viewer once, by organization and account', () => {
+  it('reads the spaces of the lists shared with the viewer once, by organization and account, deleted lists left out', () => {
     const subquery = new PgDialect().sqlToQuery(viewerListSpaces(ORGANIZATION, 'viewer'));
     const join = new PgDialect().sqlToQuery(viewerListSpacesJoin());
 
     expect(subquery.sql).toBe(
-      `(select distinct "list_grants"."space_id" from "list_grants" where "list_grants"."organization_id" = $1 and "list_grants"."user_id" = $2) as "viewer_list_spaces"`,
+      `(select distinct "list_grants"."space_id" from "list_grants" inner join "lists" on "lists"."organization_id" = "list_grants"."organization_id" and "lists"."id" = "list_grants"."list_id" where "list_grants"."organization_id" = $1 and "list_grants"."user_id" = $2 and "lists"."deleted_at" is null) as "viewer_list_spaces"`,
     );
     expect(subquery.params).toEqual([ORGANIZATION, 'viewer']);
     expect(join.sql).toBe(`"viewer_list_spaces"."space_id" = "spaces"."id"`);

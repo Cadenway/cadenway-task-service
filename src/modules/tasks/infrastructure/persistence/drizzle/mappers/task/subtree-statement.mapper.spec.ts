@@ -9,10 +9,12 @@ describe('subtreeStatement: the live descendants of a task, three levels at most
 
   it('keeps the live subtasks of the first level and of every recursive step, through liveTask', () => {
     expect(sql).toContain(
-      '"tasks"."parent_id" = $2::uuid\n        and "tasks"."archived_at" is null',
+      '"tasks"."parent_id" = $2::uuid\n        and ("tasks"."archived_at" is null and "tasks"."trash_entry_id" is null)',
     );
     expect(sql).toContain('join "tasks" as "child"');
-    expect(sql).toContain('where tree.depth < 3 and "child"."archived_at" is null');
+    expect(sql).toContain(
+      'where tree.depth < 3 and ("child"."archived_at" is null and "child"."trash_entry_id" is null)',
+    );
   });
 
   it('scopes both levels to the organization and walks the children by their parent', () => {

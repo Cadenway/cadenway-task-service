@@ -13,7 +13,7 @@ export interface RestoredRootParent {
    * Property live
    *
    * @description
-   * `false` when the parent is archived itself.
+   * `false` when the parent is archived itself or in the trash.
    *
    * @type {boolean}
    * @readonly

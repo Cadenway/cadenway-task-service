@@ -371,5 +371,125 @@ export class OutboxSpaceEvents implements SpaceEvents {
     });
     this.onAppend();
   }
+
+  /**
+   * Method spaceDeleted
+   *
+   * @description
+   * Appends `space.deleted.v1`: the space and its version after the deletion, once for the space
+   * and all its lists. The outbox takes `occurredAt` from `now()` of the transaction, the instant
+   * the deletion stored as `deleted_at`.
+   *
+   * @param {Space} space - The tombstone at its version after the deletion.
+   * @param {EventActor} actor - Who deleted it.
+   * @returns {Promise<void>} Resolves once appended.
+   * @throws {Error} When the payload does not match the schema of the contract: a defect, which
+   * rolls the transaction back.
+   */
+  public async spaceDeleted(space: Space, actor: EventActor): Promise<void> {
+    const state: SpaceState = space.snapshot;
+    await this.outbox.append(this.transaction, eventSchemas, 'space.deleted.v1', {
+      organizationId: state.organizationId,
+      actor: { type: actor.type, id: actor.id },
+      version: state.version,
+      spaceId: state.id,
+    });
+    this.onAppend();
+  }
+
+  /**
+   * Method spaceRestored
+   *
+   * @description
+   * Appends `space.restored.v1`, the whole space after it came back from the trash, as
+   * `space.updated.v1` carries it, without `changed`.
+   *
+   * @param {Space} space - The space at its version after the restoration.
+   * @param {EventActor} actor - Who restored the task that brought it back.
+   * @returns {Promise<void>} Resolves once appended.
+   * @throws {Error} When the payload does not match the schema of the contract: a defect, which
+   * rolls the transaction back.
+   */
+  public async spaceRestored(space: Space, actor: EventActor): Promise<void> {
+    const state: SpaceState = space.snapshot;
+    await this.outbox.append(this.transaction, eventSchemas, 'space.restored.v1', {
+      organizationId: state.organizationId,
+      actor: { type: actor.type, id: actor.id },
+      version: state.version,
+      spaceId: state.id,
+      name: state.name,
+      prefix: state.prefix,
+      description: state.description,
+      icon: state.icon,
+      color: state.color,
+      visibility: state.visibility,
+      ownerUserId: state.ownerUserId,
+      statuses: state.statuses,
+    });
+    this.onAppend();
+  }
+
+  /**
+   * Method listDeleted
+   *
+   * @description
+   * Appends `list.deleted.v1`: the list, its space and its version after a deletion on its own.
+   * The outbox takes `occurredAt` from `now()` of the transaction, the instant the deletion stored
+   * as `deleted_at`.
+   *
+   * @param {TaskList} list - The tombstone at its version after the deletion.
+   * @param {EventActor} actor - Who deleted it.
+   * @returns {Promise<void>} Resolves once appended.
+   * @throws {Error} When the payload does not match the schema of the contract: a defect, which
+   * rolls the transaction back.
+   */
+  public async listDeleted(list: TaskList, actor: EventActor): Promise<void> {
+    const state: TaskListState = list.snapshot;
+    await this.outbox.append(this.transaction, eventSchemas, 'list.deleted.v1', {
+      organizationId: state.organizationId,
+      actor: { type: actor.type, id: actor.id },
+      version: state.version,
+      listId: state.id,
+      spaceId: state.spaceId,
+    });
+    this.onAppend();
+  }
+
+  /**
+   * Method listRestored
+   *
+   * @description
+   * Appends `list.restored.v1`, the whole list after it came back from the trash, its switch
+   * "Accès de l’organisation" included.
+   *
+   * @param {TaskList} list - The list at its version after the restoration.
+   * @param {EventActor} actor - Who restored the task that brought it back.
+   * @returns {Promise<void>} Resolves once appended.
+   * @throws {Error} When the payload does not match the schema of the contract: a defect, which
+   * rolls the transaction back.
+   */
+  public async listRestored(list: TaskList, actor: EventActor): Promise<void> {
+    const state: TaskListState = list.snapshot;
+    await this.outbox.append(this.transaction, eventSchemas, 'list.restored.v1', {
+      organizationId: state.organizationId,
+      actor: { type: actor.type, id: actor.id },
+      version: state.version,
+      listId: state.id,
+      spaceId: state.spaceId,
+      name: state.name,
+      icon: state.icon,
+      color: state.color,
+      sprint:
+        state.sprint === null
+          ? null
+          : {
+              startDate: state.sprint.startDate,
+              endDate: state.sprint.endDate,
+              goal: state.sprint.goal,
+            },
+      organizationAccess: state.organizationAccess,
+    });
+    this.onAppend();
+  }
   // #endregion
 }

@@ -11,6 +11,7 @@ import {
   SPRINT_14,
   cad490State,
   taskState,
+  trashIn,
 } from '../../../tasks.fixture.js';
 import { FindTaskReferences } from './find-task-references.use-case.js';
 
@@ -112,5 +113,20 @@ describe('FindTaskReferences: one statement for at most 100 ids', () => {
       new FindTaskReferences(store).execute({ organizationId: ATELIER_NORD, taskIds: ids }),
     ).rejects.toThrow('At most 100 tasks');
     expect(store.runs).toBe(0);
+  });
+});
+
+describe('FindTaskReferences: the tasks in the trash are left out', () => {
+  it('leaves out a task in the trash, as an unknown one', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [taskState({ trash: trashIn(), version: 13 }), cad490State({ listId: BUGS })],
+    });
+
+    const { tasks: found } = await new FindTaskReferences(tasks).execute({
+      organizationId: ATELIER_NORD,
+      taskIds: [CAD_482, CAD_490],
+    });
+
+    expect(found.map((task) => task.key)).toEqual(['CAD-490']);
   });
 });

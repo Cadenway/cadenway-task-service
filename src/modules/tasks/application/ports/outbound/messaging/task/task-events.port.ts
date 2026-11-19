@@ -92,5 +92,58 @@ export interface TaskEvents {
    * @returns {Promise<void>} Resolves once appended.
    */
   taskUnarchived(task: Task, rootKey: TaskKey, actor: EventActor): Promise<void>;
+
+  /**
+   * Method taskTrashed
+   *
+   * @description
+   * Appends `task.trashed.v1` for one task of a trash entry, the task as it was, at the version of
+   * its move to the trash, with its entry, the key of the root and the purge instant.
+   *
+   * @param {Task} task - The task, in the trash, at its version 2 or more.
+   * @param {string} entryId - The entry.
+   * @param {TaskKey} rootKey - The key of the root of the entry, the task's own for the root.
+   * @param {Date} purgeAt - When the entry is erased for good unless restored.
+   * @param {EventActor} actor - Who deleted it, or its list or space.
+   * @returns {Promise<void>} Resolves once appended.
+   */
+  taskTrashed(
+    task: Task,
+    entryId: string,
+    rootKey: TaskKey,
+    purgeAt: Date,
+    actor: EventActor,
+  ): Promise<void>;
+
+  /**
+   * Method taskRestored
+   *
+   * @description
+   * Appends `task.restored.v1` for one task a restoration from the trash brought back, the task
+   * after it (its parent `null` for a root detached), with its entry, which no longer exists.
+   *
+   * @param {Task} task - The task, live, at its version 3 or more.
+   * @param {string} entryId - The entry it came from.
+   * @param {TaskKey} rootKey - The key of the root of the entry, the task's own for the root.
+   * @param {EventActor} actor - Who restored it.
+   * @returns {Promise<void>} Resolves once appended.
+   */
+  taskRestored(task: Task, entryId: string, rootKey: TaskKey, actor: EventActor): Promise<void>;
+
+  /**
+   * Method taskPurged
+   *
+   * @description
+   * Appends `task.purged.v1` for one task erased for good, at the version of its erasure, with its
+   * entry, its list, its space and its parent as stored.
+   *
+   * @param {Task} task - The task at the version of its erasure (`Task.purge`).
+   * @param {string} entryId - The entry.
+   * @param {TaskKey} rootKey - The key of the root of the entry, the task's own for the root.
+   * @param {EventActor} actor - Who erased it: the person, the requester of "Vider la corbeille",
+   * or task-service for the daily purge.
+   * @returns {Promise<void>} Resolves once appended.
+   */
+  taskPurged(task: Task, entryId: string, rootKey: TaskKey, actor: EventActor): Promise<void>;
   // #endregion
 }

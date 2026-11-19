@@ -1,9 +1,20 @@
 import type { TaskList } from '@cadenway/contracts/types/internal/task-service';
 import { InternalAccess } from '@cadenway/nest-common';
-import { Body, Controller, Get, Headers, HttpCode, Param, Patch, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Headers,
+  HttpCode,
+  Param,
+  Patch,
+  Post,
+} from '@nestjs/common';
 
 import type { ArchiveListOutput } from '../../../../application/use-cases/commands/list/archive-list/archive-list.output.js';
 import { ArchiveList } from '../../../../application/use-cases/commands/list/archive-list/archive-list.use-case.js';
+import { DeleteList } from '../../../../application/use-cases/commands/list/delete-list/delete-list.use-case.js';
 import type { UnarchiveListOutput } from '../../../../application/use-cases/commands/list/unarchive-list/unarchive-list.output.js';
 import { UnarchiveList } from '../../../../application/use-cases/commands/list/unarchive-list/unarchive-list.use-case.js';
 import type { UpdateListOutput } from '../../../../application/use-cases/commands/list/update-list/update-list.output.js';
@@ -26,7 +37,8 @@ import { toExpectedVersions } from '../../mappers/version/expected-versions.mapp
  *
  * @description
  * The lists of `openapi/internal/task-service.yaml`, which the gateway calls for `GET` and `PATCH
- * /v1/lists/{listId}` and for its actions `archive` and `unarchive` (`openapi/public/archives.yaml`).
+ * /v1/lists/{listId}`, for its actions `archive` and `unarchive` (`openapi/public/archives.yaml`)
+ * and for `DELETE /v1/lists/{listId}`.
  * They accept the issuer `api-gateway` only, with the actor `user` and an organization. The actor
  * and the organization come from the verified internal token, never from the request. The `ETag`
  * (`"<version>"`) is set by the `EtagInterceptor` of the kit from the `version` of the body. The
@@ -80,6 +92,17 @@ export class ListsController {
    * @readonly
    */
   private readonly unarchiveList: UnarchiveList;
+
+  /**
+   * Property deleteList
+   *
+   * @description
+   * Use case of the deletion.
+   *
+   * @type {DeleteList}
+   * @readonly
+   */
+  private readonly deleteList: DeleteList;
   // #endregion
 
   // #region Constructor
@@ -93,6 +116,7 @@ export class ListsController {
    * @param {UpdateList} updateList - Use case of the change.
    * @param {ArchiveList} archiveList - Use case of the archive.
    * @param {UnarchiveList} unarchiveList - Use case of the restoration.
+   * @param {DeleteList} deleteList - Use case of the deletion.
    * @constructor
    */
   public constructor(
@@ -100,11 +124,13 @@ export class ListsController {
     updateList: UpdateList,
     archiveList: ArchiveList,
     unarchiveList: UnarchiveList,
+    deleteList: DeleteList,
   ) {
     this.getList = getList;
     this.updateList = updateList;
     this.archiveList = archiveList;
     this.unarchiveList = unarchiveList;
+    this.deleteList = deleteList;
   }
   // #endregion
 
@@ -227,6 +253,35 @@ export class ListsController {
       this.unarchiveList.execute({ ...caller, listId: path.listId, expectedVersions }),
     );
     return toTaskList(state);
+  }
+
+  /**
+   * Method delete
+   *
+   * @description
+   * `DELETE /internal/v1/lists/{listId}` (`deleteListInternal`): `204` without a body, once the
+   * list is a tombstone and the job that moves its tasks to the trash is enqueued. `If-Match` is
+   * optional. `404 list.not-found` (a deleted list included), `403 access.role-insufficient`
+   * without `edit` on the list, archived or not, and `412 request.version-mismatch` with
+   * `details.version`, in this order, come from the use case.
+   *
+   * @param {ListPath} path - The id of the list.
+   * @param {string | undefined} ifMatch - The `If-Match` header, optional.
+   * @returns {Promise<void>} Resolves once deleted.
+   * @throws {ProblemException} The refusals above, or `400 request.invalid` for a malformed
+   * `If-Match`.
+   */
+  @Delete(':listId')
+  @HttpCode(204)
+  public async delete(
+    @Param() path: ListPath,
+    @Headers('if-match') ifMatch: string | undefined,
+  ): Promise<void> {
+    const caller: Caller = toCaller();
+    const expectedVersions: readonly number[] | null = toExpectedVersions(ifMatch);
+    await answerRefusals(() =>
+      this.deleteList.execute({ ...caller, listId: path.listId, expectedVersions }),
+    );
   }
   // #endregion
 }

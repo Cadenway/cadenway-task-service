@@ -28,6 +28,30 @@ describe('answerRefusals', () => {
       { role: 'comment', requiredRole: 'edit' },
     ],
     [{ reason: 'task-archived', key: 'CAD-430' }, 409, 'task.archived', { key: 'CAD-430' }],
+    [
+      {
+        reason: 'task-trashed',
+        key: 'CAD-452',
+        name: 'Ancien écran de connexion',
+        entryId: '019a7006-7a8b-7c9d-8e0f-1a2b3c4d5e01',
+        rootKey: 'CAD-452',
+        trashedAt: new Date('2026-11-06T16:20:00.000Z'),
+        trashedBy: { type: 'user', id: user },
+        purgeAt: new Date('2026-12-06T16:20:00.000Z'),
+      },
+      404,
+      'task.trashed',
+      {
+        key: 'CAD-452',
+        name: 'Ancien écran de connexion',
+        entryId: '019a7006-7a8b-7c9d-8e0f-1a2b3c4d5e01',
+        rootKey: 'CAD-452',
+        trashedAt: '2026-11-06T16:20:00.000Z',
+        trashedBy: { type: 'user', id: user },
+        purgeAt: '2026-12-06T16:20:00.000Z',
+      },
+    ],
+    [{ reason: 'trash-entry-not-found' }, 404, 'trash-entry.not-found', undefined],
     [{ reason: 'version-mismatch', version: 13 }, 412, 'request.version-mismatch', { version: 13 }],
     [
       { reason: 'status-hidden', status: 'review' },
@@ -58,8 +82,8 @@ describe('answerRefusals', () => {
     [{ reason: 'subtask-limit-reached' }, 422, 'task.subtask-limit-reached', undefined],
   ];
 
-  it('covers the twenty-one reasons of a refusal', () => {
-    expect(new Set(answers.map(([refusal]) => refusal.reason)).size).toBe(21);
+  it('covers the twenty-three reasons of a refusal', () => {
+    expect(new Set(answers.map(([refusal]) => refusal.reason)).size).toBe(23);
   });
 
   it.each(answers)(

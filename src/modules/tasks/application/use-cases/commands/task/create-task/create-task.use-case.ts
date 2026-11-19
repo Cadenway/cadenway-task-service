@@ -7,6 +7,7 @@ import type { TaskDraft } from '../../../../../domain/value-objects/task/task-dr
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import type { TaskPlacement } from '../../../../../domain/value-objects/task/task-placement.value-object.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
+import type { HeldList } from '../../../../models/placement/held-list.model.js';
 import type { KeyAllocation } from '../../../../models/placement/key-allocation.model.js';
 import type { ListPlacement } from '../../../../models/placement/list-placement.model.js';
 import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
@@ -34,7 +35,10 @@ import type { CreateTaskOutput } from './create-task.output.js';
  * spaces module (`list-not-found` for an unknown list or a list the actor has no role on,
  * `role-insufficient` for a list they see without `edit`), the memberships of the assignees are
  * locked in id order, the domain drafts the task (`Task.create`
- * decides every rule and its refusals), then the keys are allocated, one for the task and one per
+ * decides every rule and its refusals), then the list is held `FOR SHARE` (`HoldList`), so that a
+ * deletion of the list either committed first, and the creation answers `list-not-found` as for an
+ * unseen list, or waits for it and its job moves the new task to the trash too, then the keys are
+ * allocated, one for the task and one per
  * subtask in body order, so that the counter of the prefix stays locked for the shortest time:
  * after the key counter only statements remain, one for the task and, whatever the number of
  * subtasks, one multi-row statement for the subtasks, one for their assignees and one for their
@@ -164,11 +168,16 @@ export class CreateTask {
           now,
         ),
       );
+      const held: HeldList = await this.spaces.holdList(input.organizationId, placement.list.id);
+      if (held.outcome !== 'live') {
+        throw new TaskRefusal({ reason: 'list-not-found' });
+      }
       const keys: KeyAllocation = await this.spaces.allocateKeys(
         input.organizationId,
         placement.space.id,
         1 + input.subtaskNames.length,
       );
+
       const task: Task = await store.tasks.insert(draft, TaskKey.of(keys.prefix, keys.firstNumber));
       const firstAssignee: readonly AssigneeCandidate[] = candidates.slice(0, 1);
       const subtaskDrafts: readonly TaskDraft[] = input.subtaskNames.map(

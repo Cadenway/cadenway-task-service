@@ -17,6 +17,7 @@ import {
   RECRUTEMENT,
   ROADMAP,
 } from '../../domain/access-requests.fixture.js';
+import type { DroppedRequestTarget } from '../models/access-request/dropped-request-target.model.js';
 import type { PendingScope } from '../models/access-request/pending-scope.model.js';
 import type { RequestedTarget } from '../models/access-request/requested-target.model.js';
 import type { GrantOutcome } from '../models/grant/grant-outcome.model.js';
@@ -121,6 +122,25 @@ function inScope(state: AccessRequestState, scope: PendingScope): boolean {
     (scope.spaceId === null || state.spaceId === scope.spaceId) &&
     (scope.listId === null || state.listId === scope.listId)
   );
+}
+
+/**
+ * Whether a request is one of a deleted target, as the SQL of the repository decides it: by its
+ * target and its `target_id`.
+ *
+ * @param state - The request.
+ * @param target - The deleted target.
+ * @returns `true` when the target holds it.
+ */
+function ofTarget(state: AccessRequestState, target: DroppedRequestTarget): boolean {
+  switch (target.kind) {
+    case 'tasks':
+      return state.target === 'task' && target.taskIds.includes(state.targetId);
+    case 'list':
+      return state.target === 'list' && state.targetId === target.listId;
+    case 'space':
+      return state.target === 'space' && state.targetId === target.spaceId;
+  }
 }
 
 /**
@@ -383,6 +403,21 @@ export class InMemoryAccessRequests implements AccessRequestsUnitOfWork {
           for (const id of ids) {
             if (this.requests.get(id)?.organizationId === organizationId) {
               this.requests.delete(id);
+              deleted += 1;
+            }
+          }
+          return Promise.resolve(deleted);
+        },
+        deletePendingOf: (organizationId: string, target: DroppedRequestTarget) => {
+          write(`requests.deletePendingOf:${target.kind}`);
+          let deleted: number = 0;
+          for (const state of [...this.requests.values()]) {
+            if (
+              state.organizationId === organizationId &&
+              state.status === 'pending' &&
+              ofTarget(state, target)
+            ) {
+              this.requests.delete(state.id);
               deleted += 1;
             }
           }

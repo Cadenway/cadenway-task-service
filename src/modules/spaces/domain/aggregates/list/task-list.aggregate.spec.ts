@@ -6,7 +6,9 @@ import {
   ARCHIVED_AT,
   ATELIER_NORD,
   CAMILLE,
+  DELETED_AT,
   PRODUIT,
+  RESTORED_FROM_TRASH_AT,
   SPRINT_14_GOAL,
   backlogState,
   sprintState,
@@ -671,5 +673,139 @@ describe('TaskList.restore: a stored archive is whole', () => {
       InvalidListError,
     );
     expect(() => sprint14({ restoredAt: new Date(Number.NaN) })).toThrow(InvalidListError);
+  });
+});
+
+/** Inès Robert, who deletes the space "Produit", as the actor of the tombstones of its lists. */
+const BY_INES: ListActor = { type: 'user', id: '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b31' };
+
+/**
+ * Restores Sprint 14 deleted by Camille Martin, at version 5.
+ *
+ * @param overrides - Fields to replace.
+ * @returns The tombstone.
+ */
+function deletedSprint14(overrides: Partial<TaskListState> = {}): TaskList {
+  return sprint14({ deletedAt: DELETED_AT, deletedBy: BY_CAMILLE, version: 5, ...overrides });
+}
+
+describe('TaskList.delete: a deletion on its own records when and by whom, at the next version', () => {
+  it('makes a tombstone of a live list at the next version and keeps everything else', () => {
+    const deleted: TaskList = sprint14({ version: 4 }).delete(BY_CAMILLE, DELETED_AT);
+
+    expect(deleted.isDeleted).toBe(true);
+    expect(deleted.snapshot).toEqual(
+      sprintState({ deletedAt: DELETED_AT, deletedBy: BY_CAMILLE, version: 5 }),
+    );
+  });
+
+  it('deletes an archived list and keeps its archive in the tombstone', () => {
+    const deleted: TaskList = archivedSprint14().delete(BY_CAMILLE, DELETED_AT);
+
+    expect(deleted.snapshot).toMatchObject({
+      archivedAt: ARCHIVED_AT,
+      deletedAt: DELETED_AT,
+      version: 5,
+    });
+  });
+
+  it('refuses to delete a deleted list again', () => {
+    expect(() => deletedSprint14().delete(BY_CAMILLE, DELETED_AT)).toThrow(InvalidListError);
+  });
+
+  it('refuses an invalid actor or instant', () => {
+    expect(() => sprint14().delete({ type: 'user', id: '' }, DELETED_AT)).toThrow(InvalidListError);
+    expect(() => sprint14().delete(BY_CAMILLE, new Date(Number.NaN))).toThrow(InvalidListError);
+  });
+});
+
+describe('TaskList.deleteWithSpace: a list deleted with its space keeps its version', () => {
+  it('takes the instant and the actor of the space, at the same version', () => {
+    const deleted: TaskList = sprint14({ version: 4 }).deleteWithSpace(BY_INES, DELETED_AT);
+
+    expect(deleted.snapshot).toEqual(
+      sprintState({ deletedAt: DELETED_AT, deletedBy: BY_INES, version: 4 }),
+    );
+  });
+
+  it('keeps the tombstone of a list deleted on its own before: the same instance', () => {
+    const deleted: TaskList = deletedSprint14();
+
+    expect(deleted.deleteWithSpace(BY_INES, new Date('2026-11-10T08:00:00Z'))).toBe(deleted);
+  });
+
+  it('refuses an invalid actor or instant', () => {
+    expect(() => sprint14().deleteWithSpace({ type: 'user', id: '' }, DELETED_AT)).toThrow(
+      InvalidListError,
+    );
+    expect(() => sprint14().deleteWithSpace(BY_INES, new Date(Number.NaN))).toThrow(
+      InvalidListError,
+    );
+  });
+});
+
+describe('TaskList.restoreFromTrash: a deleted list comes back live at the end of its space', () => {
+  it('clears the tombstone, records when it came back and takes the next version', () => {
+    const back: TaskList = deletedSprint14().restoreFromTrash(RESTORED_FROM_TRASH_AT);
+
+    expect(back.isDeleted).toBe(false);
+    expect(back.snapshot).toEqual(sprintState({ restoredAt: RESTORED_FROM_TRASH_AT, version: 6 }));
+  });
+
+  it('brings back live a list archived before its deletion, its archive cleared', () => {
+    const back: TaskList = deletedSprint14({
+      archivedAt: ARCHIVED_AT,
+      archivedBy: BY_CAMILLE,
+    }).restoreFromTrash(RESTORED_FROM_TRASH_AT);
+
+    expect(back.snapshot).toMatchObject({
+      archivedAt: null,
+      archivedBy: null,
+      deletedAt: null,
+      restoredAt: RESTORED_FROM_TRASH_AT,
+    });
+  });
+
+  it('brings back a list deleted with its space at the version after the one it kept', () => {
+    const back: TaskList = sprint14({ version: 1 })
+      .deleteWithSpace(BY_INES, DELETED_AT)
+      .restoreFromTrash(RESTORED_FROM_TRASH_AT);
+
+    expect(back.snapshot.version).toBe(2);
+  });
+
+  it('refuses a live list', () => {
+    expect(() => sprint14().restoreFromTrash(RESTORED_FROM_TRASH_AT)).toThrow(InvalidListError);
+  });
+
+  it('refuses an invalid instant', () => {
+    expect(() => deletedSprint14().restoreFromTrash(new Date(Number.NaN))).toThrow(
+      InvalidListError,
+    );
+  });
+});
+
+describe('TaskList.restore: a stored tombstone is whole', () => {
+  it('restores a deleted list unchanged', () => {
+    expect(deletedSprint14().snapshot).toEqual(
+      sprintState({ deletedAt: DELETED_AT, deletedBy: BY_CAMILLE, version: 5 }),
+    );
+  });
+
+  it('refuses a deletion with an instant and no actor, or an actor and no instant', () => {
+    expect(() => sprint14({ deletedAt: DELETED_AT })).toThrow(InvalidListError);
+    expect(() => sprint14({ deletedBy: BY_CAMILLE })).toThrow(InvalidListError);
+  });
+
+  it('refuses a stored actor of an unknown type, or an invalid instant', () => {
+    expect(() =>
+      sprint14({
+        deletedAt: DELETED_AT,
+        deletedBy: { type: 'robot', id: CAMILLE } as unknown as ListActor,
+      }),
+    ).toThrow(InvalidListError);
+    expect(() => sprint14({ deletedAt: new Date(Number.NaN), deletedBy: BY_CAMILLE })).toThrow(
+      InvalidListError,
+    );
   });
 });

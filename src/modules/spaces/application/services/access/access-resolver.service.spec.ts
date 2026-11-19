@@ -109,3 +109,79 @@ describe('AccessResolver: one reading of the grants, only when it can change the
     expect(spaces.viewerGrantsCalls).toEqual([]);
   });
 });
+
+describe('AccessResolver: a tombstone gives nothing, the trash reads the role as if not deleted', () => {
+  const access = new AccessResolver();
+
+  /** Who deleted the space or the list in these specs. */
+  const BY_CAMILLE = { type: 'user', id: CAMILLE } as const;
+
+  /** When the space or the list was deleted. */
+  const DELETED: Date = new Date('2026-11-08T16:10:00Z');
+
+  it('reads nothing for a deleted space or a deleted list, which nobody reaches', async () => {
+    const spaces = new InMemorySpaces({ grants: [listGrantOf(PRODUIT, SPRINT_14, LEA, 'edit')] });
+
+    const ofSpace: ViewerAccess = await spaces.run((store: SpacesStore) =>
+      access.resolve(
+        store.grants,
+        { userId: CAMILLE, role: 'owner' },
+        spaceState({ deletedAt: DELETED, deletedBy: BY_CAMILLE }),
+        sprintState(),
+      ),
+    );
+    const ofList: ViewerAccess = await spaces.run((store: SpacesStore) =>
+      access.resolve(
+        store.grants,
+        { userId: LEA, role: 'member' },
+        spaceState(),
+        sprintState({ deletedAt: DELETED, deletedBy: BY_CAMILLE }),
+      ),
+    );
+
+    expect(ofSpace).toEqual({
+      seesSpace: false,
+      spaceRole: null,
+      canManage: false,
+      listRole: null,
+    });
+    expect(ofList.listRole).toBeNull();
+    expect(spaces.viewerGrantsCalls).toEqual([]);
+  });
+
+  it('gives the role a member would have, without reading the grants when the rules give edit', async () => {
+    const spaces = new InMemorySpaces();
+
+    const role = await spaces.run((store: SpacesStore) =>
+      access.listRoleAsIfNotDeleted(
+        store.grants,
+        { userId: LEA, role: 'member' },
+        spaceState({ deletedAt: DELETED, deletedBy: BY_CAMILLE }),
+        sprintState({ deletedAt: DELETED, deletedBy: BY_CAMILLE }),
+      ),
+    );
+
+    expect(role).toBe('edit');
+    expect(spaces.viewerGrantsCalls).toEqual([]);
+  });
+
+  it('reads the grants a tombstone kept, in one call', async () => {
+    const spaces = new InMemorySpaces({
+      grants: [listGrantOf(DESIGN, SPRINT_14, NADIA, 'comment')],
+    });
+
+    const role = await spaces.run((store: SpacesStore) =>
+      access.listRoleAsIfNotDeleted(
+        store.grants,
+        { userId: NADIA, role: 'guest' },
+        designState({ deletedAt: DELETED, deletedBy: BY_CAMILLE }),
+        sprintState({ spaceId: DESIGN, deletedAt: DELETED, deletedBy: BY_CAMILLE }),
+      ),
+    );
+
+    expect(role).toBe('comment');
+    expect(spaces.viewerGrantsCalls).toEqual([
+      { viewerUserId: NADIA, spaceId: DESIGN, listId: SPRINT_14 },
+    ]);
+  });
+});

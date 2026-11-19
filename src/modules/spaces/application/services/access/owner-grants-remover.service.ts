@@ -1,6 +1,7 @@
 import type { ResourceGrants } from '../../../domain/aggregates/access/resource-grants.aggregate.js';
 import type { TaskList } from '../../../domain/aggregates/list/task-list.aggregate.js';
 import type { Space } from '../../../domain/aggregates/space/space.aggregate.js';
+import { announcesChanges } from '../../../domain/policies/list/list-state.policy.js';
 import type { GrantsUpdate } from '../../../domain/value-objects/access/grants-update.value-object.js';
 import type { EventActor } from '../../models/actor/event-actor.model.js';
 import type { GrantedResource } from '../../models/access/granted-resource.model.js';
@@ -19,7 +20,10 @@ import { GrantKeeper } from './grant-keeper.service.js';
  * locked the spaces; each list is locked after its space, the lock order of the module. A space
  * grant removed emits `space.access-changed.v1` with the version the handover took (one change,
  * one version, as for the switch of a list); a list grant takes the next version of its list and
- * emits `list.access-changed.v1`. Nothing is read beyond one statement when the owner held none.
+ * emits `list.access-changed.v1`. A deleted space or list is locked and changed like any other
+ * (the grants a tombstone keeps come back with it, and none may name the owner), but emits nothing
+ * until it comes back: a consumer dropped it at `space.deleted.v1` or `list.deleted.v1`. Nothing is
+ * read beyond one statement when the owner held none.
  */
 export class OwnerGrantsRemover {
   // #region Properties
@@ -96,27 +100,35 @@ export class OwnerGrantsRemover {
       await store.grants.remove(organizationId, resource, ownerUserId);
       removed += 1;
       if (resource.kind === 'space') {
-        await store.events.spaceAccessChanged(
-          entry.space,
-          update.grants.snapshot.grants,
-          [ownerUserId],
-          actor,
-        );
+        if (announcesChanges(entry.space.snapshot)) {
+          await store.events.spaceAccessChanged(
+            entry.space,
+            update.grants.snapshot.grants,
+            [ownerUserId],
+            actor,
+          );
+        }
         continue;
       }
-      const list: TaskList | null = await store.lists.lock(organizationId, resource.listId);
+      const list: TaskList | null = await store.lists.lockIncludingDeleted(
+        organizationId,
+        resource.listId,
+        'update',
+      );
       if (list === null) {
         continue;
       }
       const next: TaskList = list.recordAccessChange();
       await store.lists.update(next);
-      await store.events.listAccessChanged(
-        next,
-        update.grants.snapshot.grants,
-        ['grants'],
-        [ownerUserId],
-        actor,
-      );
+      if (announcesChanges(entry.space.snapshot, next.snapshot)) {
+        await store.events.listAccessChanged(
+          next,
+          update.grants.snapshot.grants,
+          ['grants'],
+          [ownerUserId],
+          actor,
+        );
+      }
     }
     return removed;
   }

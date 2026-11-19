@@ -50,8 +50,11 @@ const LOOK_COLOR_VALUES: string = LOOK_COLORS.map((color: string): string => `'$
  * "Accès de l’organisation" of the list (P3b-1). `archived_at` and `archived_by_*` mark an
  * archived list ("Archives", P3b-1), all three set or all three null; `restored_at` is when the
  * list last came back from the archives, which puts it at the end of its space: the order of the
- * sidebar is `(coalesce(restored_at, created_at), id)`. A tenant table: `organization_id`
- * carries the policy of the kit, which the migration forces by hand
+ * sidebar is `(coalesce(restored_at, created_at), id)`. `deleted_at` and `deleted_by_*` mark a
+ * deleted list ("Corbeille", P3b-1 PR 3), all three set or all three null: the tombstone of a list
+ * deleted on its own, or with its space (then the same instant and actor as the space). A
+ * restoration from the trash reuses `restored_at`. A tenant table: `organization_id` carries the
+ * policy of the kit, which the migration forces by hand
  * (`ALTER TABLE "lists" FORCE ROW LEVEL SECURITY;`).
  */
 export const taskLists = pgTable(
@@ -77,6 +80,11 @@ export const taskLists = pgTable(
     archivedByType: text('archived_by_type'),
     archivedById: text('archived_by_id'),
     restoredAt: timestamp('restored_at', { withTimezone: true, precision: 3 }),
+    // The tombstone of a deleted list (P3b-1 PR 3): nullable, so the expand-only migration leaves
+    // every list of the running version live. `restored_at` above also serves the trash.
+    deletedAt: timestamp('deleted_at', { withTimezone: true, precision: 3 }),
+    deletedByType: text('deleted_by_type'),
+    deletedById: text('deleted_by_id'),
     createdAt: timestamp('created_at', { withTimezone: true, precision: 3 }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     version: integer('version').notNull().default(1),
@@ -110,6 +118,18 @@ export const taskLists = pgTable(
     check(
       'lists_archived_by_id_check',
       sql`${table.archivedById} is null or ${table.archivedById} <> ''`,
+    ),
+    check(
+      'lists_deleted_check',
+      sql`(${table.deletedAt} is null) = (${table.deletedByType} is null) and (${table.deletedAt} is null) = (${table.deletedById} is null)`,
+    ),
+    check(
+      'lists_deleted_by_type_check',
+      sql`${table.deletedByType} is null or ${table.deletedByType} in ('user', 'automation', 'git', 'system')`,
+    ),
+    check(
+      'lists_deleted_by_id_check',
+      sql`${table.deletedById} is null or ${table.deletedById} <> ''`,
     ),
     check(
       'lists_sprint_dates_check',

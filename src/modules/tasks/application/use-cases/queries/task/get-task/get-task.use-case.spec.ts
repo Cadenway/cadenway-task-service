@@ -26,7 +26,9 @@ import {
   archiveFrom,
   ARCHIVED_AT,
   HUGO_ACTOR,
+  trashIn,
 } from '../../../tasks.fixture.js';
+
 import type { GetTaskInput } from './get-task.input.js';
 import { GetTask } from './get-task.use-case.js';
 
@@ -234,6 +236,25 @@ describe('GetTask: an archived task reads by its key', () => {
     });
 
     expect(view).toMatchObject({ key: 'CAD-483', parentKey: null, listId: SPRINT_14 });
+    expect(tasks.stored(CAD_483).parentId).toBe(CAD_482);
+  });
+
+  it('reads an archived root whose parent is in the trash as detached, its stored parent kept', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [
+        taskState({ trash: trashIn(), version: 13 }),
+        subtaskState({ archive: archiveFrom(CAD_483), version: 2 }),
+      ],
+    });
+    const useCase = new GetTask(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
+
+    const view = await useCase.execute({
+      organizationId: ATELIER_NORD,
+      actorUserId: CAMILLE,
+      taskKey: 'CAD-483',
+    });
+
+    expect(view).toMatchObject({ key: 'CAD-483', parentKey: null });
     expect(tasks.stored(CAD_483).parentId).toBe(CAD_482);
   });
 

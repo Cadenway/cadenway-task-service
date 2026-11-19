@@ -2,6 +2,7 @@ import type {
   AllocateTaskKeys,
   AllocateTaskKeysOutput,
 } from '../../../../spaces/public/space/allocate-task-keys.js';
+import type { FindTrashList } from '../../../../spaces/public/list/find-trash-list.js';
 import type {
   FindVisibleList,
   FindVisibleListOutput,
@@ -18,6 +19,7 @@ import type {
   ListArchivedLists,
   ListArchivedListsOutput,
 } from '../../../../spaces/public/list/list-archived-lists.js';
+import type { HoldList } from '../../../../spaces/public/list/hold-list.js';
 import type {
   ListCurrentSprints,
   ListCurrentSprintsOutput,
@@ -27,22 +29,91 @@ import type {
   ListSidebarListsOutput,
   VisibleList,
 } from '../../../../spaces/public/list/list-sidebar-lists.js';
+import type { ListTrashLists } from '../../../../spaces/public/list/list-trash-lists.js';
 import type {
   ListVisibleListIds,
   ListVisibleListIdsOutput,
 } from '../../../../spaces/public/list/list-visible-list-ids.js';
+import type { PurgeDeletedList } from '../../../../spaces/public/list/purge-deleted-list.js';
 import type {
   RestoreArchivedList,
   RestoreArchivedListOutput,
 } from '../../../../spaces/public/list/restore-archived-list.js';
+import type { RestoreDeletedList } from '../../../../spaces/public/list/restore-deleted-list.js';
 import type { ArchivePosition } from '../../../application/models/archive/archive-position.model.js';
 import type { ArchivedLists } from '../../../application/models/placement/archived-lists.model.js';
+import type { DeletedListPurge } from '../../../application/models/placement/deleted-list-purge.model.js';
+import type { DeletedListRestoration } from '../../../application/models/placement/deleted-list-restoration.model.js';
+import type { HeldList } from '../../../application/models/placement/held-list.model.js';
 import type { KeyAllocation } from '../../../application/models/placement/key-allocation.model.js';
 import type { ListPlacement } from '../../../application/models/placement/list-placement.model.js';
 import type { ListRestoration } from '../../../application/models/placement/list-restoration.model.js';
 import type { PlacedList } from '../../../application/models/placement/placed-list.model.js';
+import type { TrashListAccess } from '../../../application/models/placement/trash-list-access.model.js';
+import type { TrashList } from '../../../application/models/placement/trash-list.model.js';
 import type { SpaceDirectory } from '../../../application/ports/outbound/spaces/space/space-directory.port.js';
 import type { Viewer } from '../../../domain/value-objects/member/viewer.value-object.js';
+
+/**
+ * Type SpacesTrashListAccessItem
+ *
+ * @description
+ * A list of the trash with the role of the viewer, as `ListTrashLists` of the spaces module answers
+ * it.
+ *
+ * @type {Awaited<ReturnType<ListTrashLists['execute']>>['lists'][number]}
+ */
+type SpacesTrashListAccessItem = Awaited<ReturnType<ListTrashLists['execute']>>['lists'][number];
+
+/**
+ * Type SpacesTrashList
+ *
+ * @description
+ * A list of the trash as the spaces module answers it.
+ *
+ * @type {SpacesTrashListAccessItem['list']}
+ */
+type SpacesTrashList = SpacesTrashListAccessItem['list'];
+
+/**
+ * Type SpacesTrashListAccess
+ *
+ * @description
+ * What `FindTrashList` of the spaces module answers.
+ *
+ * @type {Awaited<ReturnType<FindTrashList['execute']>>}
+ */
+type SpacesTrashListAccess = Awaited<ReturnType<FindTrashList['execute']>>;
+
+/**
+ * Type SpacesDeletedListRestoration
+ *
+ * @description
+ * What `RestoreDeletedList` of the spaces module answers.
+ *
+ * @type {Awaited<ReturnType<RestoreDeletedList['execute']>>}
+ */
+type SpacesDeletedListRestoration = Awaited<ReturnType<RestoreDeletedList['execute']>>;
+
+/**
+ * Type SpacesDeletedListPurge
+ *
+ * @description
+ * What `PurgeDeletedList` of the spaces module answers.
+ *
+ * @type {Awaited<ReturnType<PurgeDeletedList['execute']>>}
+ */
+type SpacesDeletedListPurge = Awaited<ReturnType<PurgeDeletedList['execute']>>;
+
+/**
+ * Type SpacesHeldList
+ *
+ * @description
+ * What `HoldList` of the spaces module answers.
+ *
+ * @type {Awaited<ReturnType<HoldList['execute']>>}
+ */
+type SpacesHeldList = Awaited<ReturnType<HoldList['execute']>>;
 
 /**
  * Class SpacesSpaceDirectory
@@ -50,7 +121,9 @@ import type { Viewer } from '../../../domain/value-objects/member/viewer.value-o
  * @description
  * `SpaceDirectory` over the public operations `FindVisibleList`, `ListVisibleListIds`,
  * `FindVisibleSpaceLists`, `ListCurrentSprints`, `ListSidebarLists`, `AllocateTaskKeys`,
- * `RestoreArchivedList`, `ListArchivedLists` and `FindVisibleLists` of the spaces module, which join the tenant transaction of the calling use case and decide every role
+ * `RestoreArchivedList`, `ListArchivedLists` and `FindVisibleLists` of the spaces module, and the
+ * five of the trash (`ListTrashLists`, `FindTrashList`, `RestoreDeletedList`, `PurgeDeletedList`,
+ * `HoldList`), which join the tenant transaction of the calling use case and decide every role
  * of the viewer. The projections of the spaces module are copied member by member to the models of
  * the tasks module, the roles of the viewer included, so neither module shares a type with the
  * other. The viewer's role in the organization is the one the copy of the memberships gave, passed
@@ -156,6 +229,61 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
    * @readonly
    */
   private readonly findVisibleListsOperation: FindVisibleLists;
+
+  /**
+   * Property listTrashLists
+   *
+   * @description
+   * The reading of the lists whose trash entries a viewer may restore.
+   *
+   * @type {ListTrashLists}
+   * @readonly
+   */
+  private readonly listTrashLists: ListTrashLists;
+
+  /**
+   * Property findTrashListOperation
+   *
+   * @description
+   * The reading of a list, deleted or not, with the role a viewer would have on it.
+   *
+   * @type {FindTrashList}
+   * @readonly
+   */
+  private readonly findTrashListOperation: FindTrashList;
+
+  /**
+   * Property restoreDeletedListOperation
+   *
+   * @description
+   * The restoration of a deleted list and its deleted space with a trash entry.
+   *
+   * @type {RestoreDeletedList}
+   * @readonly
+   */
+  private readonly restoreDeletedListOperation: RestoreDeletedList;
+
+  /**
+   * Property purgeDeletedListOperation
+   *
+   * @description
+   * The erasure of a deleted list left without a task, and of its deleted space with its last list.
+   *
+   * @type {PurgeDeletedList}
+   * @readonly
+   */
+  private readonly purgeDeletedListOperation: PurgeDeletedList;
+
+  /**
+   * Property holdListOperation
+   *
+   * @description
+   * The hold of a list `FOR SHARE` until the commit.
+   *
+   * @type {HoldList}
+   * @readonly
+   */
+  private readonly holdListOperation: HoldList;
   // #endregion
 
   // #region Constructor
@@ -163,7 +291,7 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
    * Constructor
    *
    * @description
-   * Takes the nine public operations of the spaces module.
+   * Takes the fourteen public operations of the spaces module.
    *
    * @param {FindVisibleList} findVisibleList - The reading of a visible list.
    * @param {ListVisibleListIds} listVisibleListIds - The reading of the visible lists.
@@ -174,6 +302,11 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
    * @param {RestoreArchivedList} restoreArchivedList - The restoration of an archived list.
    * @param {ListArchivedLists} listArchivedLists - The reading of the archived lists.
    * @param {FindVisibleLists} findVisibleLists - The reading of visible lists by id.
+   * @param {ListTrashLists} listTrashLists - The reading of the lists of the trash of a viewer.
+   * @param {FindTrashList} findTrashList - The reading of a list of the trash.
+   * @param {RestoreDeletedList} restoreDeletedList - The restoration of a deleted list.
+   * @param {PurgeDeletedList} purgeDeletedList - The erasure of a deleted list.
+   * @param {HoldList} holdList - The hold of a list.
    * @constructor
    */
   public constructor(
@@ -186,6 +319,11 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
     restoreArchivedList: RestoreArchivedList,
     listArchivedLists: ListArchivedLists,
     findVisibleLists: FindVisibleLists,
+    listTrashLists: ListTrashLists,
+    findTrashList: FindTrashList,
+    restoreDeletedList: RestoreDeletedList,
+    purgeDeletedList: PurgeDeletedList,
+    holdList: HoldList,
   ) {
     this.findVisibleListOperation = findVisibleList;
     this.listVisibleListIds = listVisibleListIds;
@@ -196,6 +334,11 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
     this.restoreArchivedListOperation = restoreArchivedList;
     this.listArchivedLists = listArchivedLists;
     this.findVisibleListsOperation = findVisibleLists;
+    this.listTrashLists = listTrashLists;
+    this.findTrashListOperation = findTrashList;
+    this.restoreDeletedListOperation = restoreDeletedList;
+    this.purgeDeletedListOperation = purgeDeletedList;
+    this.holdListOperation = holdList;
   }
   // #endregion
 
@@ -475,7 +618,162 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
   }
 
   /**
+   * Method trashLists
+   *
+   * @description
+   * Runs `ListTrashLists` for the viewer and maps its lists with the role of the viewer.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {Viewer} viewer - The acting member, with the role of the copy.
+   * @returns {Promise<readonly TrashListAccess[]>} The lists the viewer has a role on, as if not
+   * deleted, with that role.
+   */
+  public async trashLists(
+    organizationId: string,
+    viewer: Viewer,
+  ): Promise<readonly TrashListAccess[]> {
+    const output: Awaited<ReturnType<ListTrashLists['execute']>> =
+      await this.listTrashLists.execute({
+        organizationId,
+        viewerUserId: viewer.userId,
+        viewerRole: viewer.role,
+      });
+    return output.lists.map((access: SpacesTrashListAccessItem): TrashListAccess => ({
+      list: this.toTrashList(access.list),
+      role: access.role,
+    }));
+  }
+
+  /**
+   * Method findTrashList
+   *
+   * @description
+   * Runs `FindTrashList` for the viewer and maps its list and the role.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {Viewer} viewer - The acting member, with the role of the copy.
+   * @param {string} listId - The list.
+   * @returns {Promise<TrashListAccess | null>} The list and the role the viewer would have on it, or
+   * `null`.
+   */
+  public async findTrashList(
+    organizationId: string,
+    viewer: Viewer,
+    listId: string,
+  ): Promise<TrashListAccess | null> {
+    const found: SpacesTrashListAccess = await this.findTrashListOperation.execute({
+      organizationId,
+      viewerUserId: viewer.userId,
+      viewerRole: viewer.role,
+      listId,
+    });
+    return found === null ? null : { list: this.toTrashList(found.list), role: found.role };
+  }
+
+  /**
+   * Method restoreDeletedList
+   *
+   * @description
+   * Runs `RestoreDeletedList` with the viewer as the actor of `space.restored.v1` and
+   * `list.restored.v1`, and maps its outcome.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {Viewer} viewer - The acting member.
+   * @param {string} listId - The list.
+   * @returns {Promise<DeletedListRestoration>} What came back, or the refusal.
+   */
+  public async restoreDeletedList(
+    organizationId: string,
+    viewer: Viewer,
+    listId: string,
+  ): Promise<DeletedListRestoration> {
+    const output: SpacesDeletedListRestoration = await this.restoreDeletedListOperation.execute({
+      organizationId,
+      actorUserId: viewer.userId,
+      viewerRole: viewer.role,
+      listId,
+    });
+    switch (output.outcome) {
+      case 'restored':
+        return {
+          outcome: 'restored',
+          listRestored: output.listRestored,
+          spaceRestored: output.spaceRestored,
+        };
+      case 'role-insufficient':
+        return { outcome: 'role-insufficient', role: output.role };
+      case 'not-found':
+        return { outcome: 'not-found' };
+    }
+  }
+
+  /**
+   * Method purgeDeletedList
+   *
+   * @description
+   * Runs `PurgeDeletedList` and maps its outcome.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} listId - The list.
+   * @returns {Promise<DeletedListPurge>} What was erased.
+   */
+  public async purgeDeletedList(organizationId: string, listId: string): Promise<DeletedListPurge> {
+    const output: SpacesDeletedListPurge = await this.purgeDeletedListOperation.execute({
+      organizationId,
+      listId,
+    });
+    switch (output.outcome) {
+      case 'purged':
+        return { outcome: 'purged', spacePurged: output.spacePurged };
+      case 'not-deleted':
+        return { outcome: 'not-deleted' };
+      case 'not-found':
+        return { outcome: 'not-found' };
+    }
+  }
+
+  /**
+   * Method holdList
+   *
+   * @description
+   * Runs `HoldList` and maps its outcome.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} listId - The list.
+   * @returns {Promise<HeldList>} Whether the list is live, deleted or gone.
+   */
+  public async holdList(organizationId: string, listId: string): Promise<HeldList> {
+    const output: SpacesHeldList = await this.holdListOperation.execute({ organizationId, listId });
+    switch (output.outcome) {
+      case 'live':
+        return { outcome: 'live' };
+      case 'deleted':
+        return {
+          outcome: 'deleted',
+          deletedBy: { type: output.deletedBy.type, id: output.deletedBy.id },
+        };
+      case 'not-found':
+        return { outcome: 'not-found' };
+    }
+  }
+
+  /**
+   * Method toTrashList
+   *
+   * @description
+   * Copies a list of the trash of the spaces module member by member to the model of the tasks
+   * module.
+   *
+   * @param {SpacesTrashList} list - The list as the spaces module answers it.
+   * @returns {TrashList} The list.
+   */
+  private toTrashList(list: SpacesTrashList): TrashList {
+    return { id: list.id, spaceId: list.spaceId, name: list.name, state: list.state };
+  }
+
+  /**
    * Method toPlacedList
+
    *
    * @description
    * Copies a list of the spaces module member by member to the model of the tasks module, with

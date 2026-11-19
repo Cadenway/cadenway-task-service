@@ -17,9 +17,9 @@ import type { TaskView } from '../../projections/task/task-view.projection.js';
  * subtasks for a live task, the subtasks archived with it for an archived one). The checklist
  * counts come from the checklist itself; the archive gives `archivedAt` and `archivedBy`. The
  * parent key is the one the task reads with (`showsParent`): an archived root whose live parent
- * moved to another list since reads as detached, `parentKey: null`, in every answer that builds
- * its view (`GET /tasks/{taskKey}`, the detail, the archive and the restoration); the stored link
- * is kept for the restoration.
+ * moved to another list since, or whose parent is in the trash, reads as detached,
+ * `parentKey: null`, in every answer that builds its view (`GET /tasks/{taskKey}`, the detail, the
+ * archive and the restorations); the stored link is kept for the restoration.
  */
 export class TaskViewBuilder {
   // #region Methods
@@ -56,8 +56,10 @@ export class TaskViewBuilder {
    *
    * @description
    * The key of the parent the task reads with: its parent's for a live subtask; for an archived
-   * one, its parent's only when the parent is in its list (`showsParent`), `null` otherwise, as
-   * for a top-level task.
+   * one, its parent's only when the parent is in its list and not in the trash (`showsParent`),
+   * `null` otherwise, as for a top-level task. A live task always has a live parent (a deletion
+   * takes the live subtree with it), so nothing is read for it.
+
    *
    * @param {TaskReader} reader - The read side of the transaction.
    * @param {Task} task - The task.
@@ -81,7 +83,9 @@ export class TaskViewBuilder {
       parent === undefined
         ? (await reader.references(organizationId, [parentId])).get(parentId)
         : parent;
-    return reference !== undefined && reference !== null && showsParent(listId, reference.listId)
+    return reference !== undefined &&
+      reference !== null &&
+      showsParent(listId, reference.listId, reference.inTrash)
       ? parentKey.format()
       : null;
   }

@@ -1,0 +1,17 @@
+/**
+ * Type PurgeTrashBatchOutput
+ *
+ * @description
+ * What one batch of the purge did: `none-left` when no entry is handed over or due (or every one
+ * is locked by another batch); `purged` with the entries and tasks it erased, and the deleted
+ * lists and spaces it left without a task, which the spaces module erased.
+ */
+export type PurgeTrashBatchOutput =
+  | { readonly outcome: 'none-left' }
+  | {
+      readonly outcome: 'purged';
+      readonly entries: number;
+      readonly tasks: number;
+      readonly listsPurged: number;
+      readonly spacesPurged: number;
+    };

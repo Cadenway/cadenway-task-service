@@ -7,16 +7,18 @@ import { tasks } from '../../schemas/task/task.schema.js';
 import { anyOf } from '../page/any-of.mapper.js';
 import { instantText, taskPageColumns } from '../query/task-page-row.mapper.js';
 import { liveTask } from '../task/live-task.mapper.js';
+import { untrashedTask } from '../task/untrashed-task.mapper.js';
 
 /**
  * Function archivedRootsCondition
  *
  * @description
- * The roots of the archives of some lists: `archive_root`, the exact predicate of the partial
- * index `tasks_archive_root_index` on `(organization_id, archived_at, id)`, so a page is an ordered
- * scan of that index walked backwards from the keyset. A column with statistics of its own, not
- * `archive_root_id = id`, which PostgreSQL cannot estimate: with it, the page after the first read
- * every root (`tests/archive-queries.int-spec.ts`).
+ * The roots of the archives of some lists, out of the trash: `archive_root`, the exact predicate of
+ * the partial index `tasks_archive_root_index` on `(organization_id, archived_at, id)`, so a page is
+ * an ordered scan of that index walked backwards from the keyset, `untrashedTask` a filter of its
+ * rows (an archive in the trash keeps its archive, and leaves the archives while there). A column
+ * with statistics of its own, not `archive_root_id = id`, which PostgreSQL cannot estimate: with
+ * it, the page after the first read every root (`tests/archive-queries.int-spec.ts`).
  *
  * @param {string} organizationId - The organization of the transaction.
  * @param {readonly string[]} listIds - The lists the actor has a role on.
@@ -28,6 +30,7 @@ function archivedRootsCondition(organizationId: string, listIds: readonly string
       eq(tasks.organizationId, organizationId),
       sql`${tasks.archiveRoot}`,
       anyOf(tasks.listId, listIds, 'uuid'),
+      untrashedTask(),
     ) ?? sql`false`
   );
 }
@@ -81,8 +84,8 @@ export function archivedRootsCountStatement(
  * Function archiveMemberCountsStatement
  *
  * @description
- * The members of archives, their roots included, one row per root, in one grouped scan of
- * `tasks_archive_member_index` (partial on `archive_root_id is not null`).
+ * The members of archives out of the trash, their roots included, one row per root, in one grouped
+ * scan of `tasks_archive_member_index` (partial on `archive_root_id is not null`).
  *
  * @param {string} organizationId - The organization of the transaction.
  * @param {readonly string[]} rootIds - The roots of the archives.
@@ -96,6 +99,7 @@ export function archiveMemberCountsStatement(
     eq(tasks.organizationId, organizationId),
     sql`${tasks.archiveRootId} is not null`,
     anyOf(tasks.archiveRootId, rootIds, 'uuid'),
+    untrashedTask(),
   )} group by ${tasks.archiveRootId}`;
 }
 

@@ -12,6 +12,7 @@ import type { TaskArchive } from './value-objects/task/task-archive.value-object
 import { TaskKey } from './value-objects/task/task-key.value-object.js';
 import type { TaskPlacement } from './value-objects/task/task-placement.value-object.js';
 import type { TaskState } from './value-objects/task/task-state.value-object.js';
+import type { TaskTrash } from './value-objects/task/task-trash.value-object.js';
 
 /** Organization "Atelier Nord". */
 export const ATELIER_NORD = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b2f';
@@ -87,6 +88,22 @@ export const HUGO_ACTOR: TaskActor = { type: 'user', id: HUGO };
 
 /** When Hugo Dubois made the archives of the specs ("archivée le 5 nov."). */
 export const ARCHIVED_AT: Date = new Date('2026-11-05T11:30:00.000Z');
+
+/** The trash entry CAD-482 and its subtasks make once Camille Martin deletes them. */
+export const CAD_482_ENTRY = '019a7006-7a8b-7c9d-8e0f-1a2b3c4d5e03';
+
+/** When CAD-482 went to the trash, "Supprimée il y a 2 jours" on 2026-11-08. */
+export const TRASHED_AT: Date = new Date('2026-11-06T16:20:00.000Z');
+
+/**
+ * Builds the trash of a task.
+ *
+ * @param entryId - The entry; the entry of CAD-482 when left out.
+ * @returns The trash.
+ */
+export function trashIn(entryId: string = CAD_482_ENTRY): TaskTrash {
+  return { entryId };
+}
 
 /**
  * Builds an archive of the specs: made by Hugo Dubois on 2026-11-05, from a root.
@@ -175,6 +192,7 @@ export function taskState(overrides: Partial<TaskState> = {}): TaskState {
     updatedAt: UPDATED_AT,
     version: 12,
     archive: null,
+    trash: null,
     ...overrides,
   };
 }

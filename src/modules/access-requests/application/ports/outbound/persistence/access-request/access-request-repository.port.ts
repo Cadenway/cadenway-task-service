@@ -1,5 +1,6 @@
 import type { AccessRequest } from '../../../../../domain/aggregates/access-request/access-request.aggregate.js';
 import type { AccessRequestDraft } from '../../../../../domain/value-objects/access-request/access-request-draft.value-object.js';
+import type { DroppedRequestTarget } from '../../../../models/access-request/dropped-request-target.model.js';
 import type { PendingScope } from '../../../../models/access-request/pending-scope.model.js';
 import type { PagePosition } from '../../../../models/page/page-position.model.js';
 
@@ -131,5 +132,19 @@ export interface AccessRequestRepository {
    * @returns {Promise<number>} How many were deleted.
    */
   deleteRequests(organizationId: string, ids: readonly string[]): Promise<number>;
+
+  /**
+   * Method deletePendingOf
+   *
+   * @description
+   * Deletes the pending requests of a deleted target in one statement: the task requests of the
+   * tasks, the list requests of the list, or the space requests of the space. An answered request stays; a pending one an answer holds is waited for, then kept
+   * once answered.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {DroppedRequestTarget} target - The deleted target.
+   * @returns {Promise<number>} How many were deleted.
+   */
+  deletePendingOf(organizationId: string, target: DroppedRequestTarget): Promise<number>;
   // #endregion
 }

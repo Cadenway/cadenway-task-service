@@ -2,6 +2,7 @@ import type { ChecklistItemState } from './checklist-item-state.value-object.js'
 import type { TaskArchive } from './task-archive.value-object.js';
 import type { TaskDraft } from './task-draft.value-object.js';
 import type { TaskKey } from './task-key.value-object.js';
+import type { TaskTrash } from './task-trash.value-object.js';
 
 /**
  * Interface TaskState
@@ -96,5 +97,19 @@ export interface TaskState extends TaskDraft {
    * @readonly
    */
   readonly archive: TaskArchive | null;
+
+  /**
+   * Property trash
+   *
+   * @description
+   * The trash entry the task belongs to, `null` for a task that is not in the trash
+   * (`openapi/public/trash.yaml`). A task in the trash is never archived: an archived task leaves
+   * its archive when its list goes to the trash (`task.trashed.v1`). It never changes until its
+   * entry is restored, but for the removal of a member from its assignees.
+   *
+   * @type {TaskTrash | null}
+   * @readonly
+   */
+  readonly trash: TaskTrash | null;
   // #endregion
 }

@@ -45,10 +45,22 @@ export interface ListAccess {
   readonly organizationAccess: boolean;
 
   /**
+   * Property deletedAt
+   *
+   * @description
+   * When the list was deleted, `null` for a list that is not: the collections leave the
+   * tombstones out, and the policies fail closed on one all the same.
+   *
+   * @type {Date | null}
+   * @readonly
+   */
+  readonly deletedAt: Date | null;
+
+  /**
    * Property space
    *
    * @description
-   * The visibility, the owner and whether the space of the list awaits an owner.
+   * The visibility, the owner, the tombstone and whether the space of the list awaits an owner.
    *
    * @type {AccessSpace}
    * @readonly
