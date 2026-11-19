@@ -2400,7 +2400,7 @@ describe('the access model: grants, the switch, the effective role and access re
   });
 
   describe('without grants, every route answers as in P3a, with the access of the caller added', () => {
-    it('answers a space and its lists with the members of P3a plus callerRole, callerCanManage and organizationAccess', async () => {
+    it('answers a space and its lists with the members of P3a plus callerRole, callerCanManage, organizationAccess and the archive members of PR 2', async () => {
       for (const [viewer, manages] of [
         [camille, true],
         [ines, true],
@@ -2414,9 +2414,20 @@ describe('the access model: grants, the switch, the effective role and access re
         expect(space).toMatchObject({ callerRole: 'edit', callerCanManage: manages });
         const list = await readList(viewer, backlog.id);
         expect(Object.keys(list).sort()).toEqual(
-          [...p3aListMembers, 'organizationAccess', 'callerRole'].sort(),
+          [
+            ...p3aListMembers,
+            'organizationAccess',
+            'callerRole',
+            'archivedAt',
+            'archivedBy',
+          ].sort(),
         );
-        expect(list).toMatchObject({ organizationAccess: true, callerRole: 'edit' });
+        expect(list).toMatchObject({
+          organizationAccess: true,
+          callerRole: 'edit',
+          archivedAt: null,
+          archivedBy: null,
+        });
         const lists = await listsSeenBy(viewer, produit.id);
         expect(
           lists

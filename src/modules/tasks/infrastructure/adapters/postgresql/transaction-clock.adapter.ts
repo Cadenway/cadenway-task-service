@@ -7,10 +7,12 @@ import type { TransactionClock } from '../../../application/ports/outbound/time/
  * Class PostgresqlTransactionClock
  *
  * @description
- * `TransactionClock` on the clock of the database: `select now()::timestamptz(3)` in the
- * transaction of the unit of work. PostgreSQL gives the same `now()` to every statement of a
- * transaction, rounded here to the millisecond as the `timestamptz(3)` columns store it, so the
- * activity window, the stored instants and the events agree. One store, hence one clock, serves
+ * `TransactionClock` on the clock of the database: `now()` in the transaction of the unit of
+ * work, truncated to the millisecond exactly as the outbox writer of `@cadenway/nest-messaging`
+ * stamps `occurredAt` (`to_char(now() at time zone 'UTC', '…SS.MS"Z"')`). PostgreSQL gives the same
+ * `now()` to every statement of a transaction, so the activity window, the stored instants (a
+ * millisecond value stores unchanged in a `timestamptz(3)` column) and the events agree: the
+ * `archivedAt` of an archive is the `occurredAt` of its `task.archived.v1`. One store, hence one clock, serves
  * one run: the instant is read once and kept for the run, which joins the transaction of its
  * caller when there is one. A run never reuses the clock of another run.
  */
@@ -71,7 +73,7 @@ export class PostgresqlTransactionClock implements TransactionClock {
     // it is read.
     const result = await this.db.execute<{ instant: string }>(sql`
       select to_char(
-        now()::timestamptz(3) at time zone 'utc',
+        now() at time zone 'utc',
         'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
       ) as instant
     `);
