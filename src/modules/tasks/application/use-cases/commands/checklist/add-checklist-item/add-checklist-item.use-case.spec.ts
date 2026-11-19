@@ -13,6 +13,7 @@ import {
   refusalOf,
   sprint14SharedWith,
   taskState,
+  archiveFrom,
 } from '../../../tasks.fixture.js';
 import type { AddChecklistItemInput } from './add-checklist-item.input.js';
 import { AddChecklistItem } from './add-checklist-item.use-case.js';
@@ -147,4 +148,33 @@ describe('AddChecklistItem: a change needs edit on the list of the task', () => 
       expect(tasks.events).toEqual([]);
     },
   );
+});
+
+describe('AddChecklistItem: an archived task refuses the change with task-archived', () => {
+  it('answers task-archived with its key, after the role, and writes nothing', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState({ archive: archiveFrom(CAD_482) })] });
+    const useCase = new AddChecklistItem(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
+
+    expect(await refusalOf(useCase.execute(addItem()))).toEqual({
+      reason: 'task-archived',
+      key: 'CAD-482',
+    });
+    expect(tasks.stored(CAD_482)).toEqual(taskState({ archive: archiveFrom(CAD_482) }));
+    expect(tasks.events).toEqual([]);
+    expect(tasks.activity.size).toBe(0);
+  });
+
+  it('answers role-insufficient before task-archived', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState({ archive: archiveFrom(CAD_482) })] });
+    const useCase = new AddChecklistItem(
+      tasks,
+      atelierNordMembers(),
+      sprint14SharedWith({ [HUGO]: 'view' }),
+    );
+
+    expect(await refusalOf(useCase.execute(addItem({ actorUserId: HUGO })))).toEqual({
+      reason: 'role-insufficient',
+      role: 'view',
+    });
+  });
 });

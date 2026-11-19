@@ -1,3 +1,4 @@
+import { positionInSpaceOf } from '../../../domain/policies/list/list-position.policy.js';
 import type { AccessRole } from '../../../domain/value-objects/access/access-role.value-object.js';
 import type { TaskListState } from '../../../domain/value-objects/list/task-list-state.value-object.js';
 import type { VisibleList } from '../../projections/list/visible-list.projection.js';
@@ -6,9 +7,9 @@ import type { VisibleList } from '../../projections/list/visible-list.projection
  * Function toVisibleList
  *
  * @description
- * Copies a stored list and the role of the member on it into its public projection, so that no
- * type of the domain crosses the public entry points. Shared by every operation that hands lists
- * to another module.
+ * Copies a stored list, its archive, its position in its space (`positionInSpaceOf`) and the role
+ * of the member on it into its public projection, so that no type of the domain crosses the public
+ * entry points. Shared by every operation that hands lists to another module.
  *
  * @param {TaskListState} state - The stored list.
  * @param {AccessRole} callerRole - The effective role of the member on the list.
@@ -30,8 +31,12 @@ export function toVisibleList(state: TaskListState, callerRole: AccessRole): Vis
             goal: state.sprint.goal,
           },
     createdAt: state.createdAt,
+    position: positionInSpaceOf(state),
     version: state.version,
     organizationAccess: state.organizationAccess,
+    archivedAt: state.archivedAt,
+    archivedBy:
+      state.archivedBy === null ? null : { type: state.archivedBy.type, id: state.archivedBy.id },
     callerRole,
   };
 }

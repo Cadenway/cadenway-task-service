@@ -1,6 +1,7 @@
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 
+import { InvalidListError } from '../../../../../domain/errors/list/invalid-list.error.js';
 import {
   toListWithGrants,
   viewerListGrantJoin,
@@ -30,6 +31,10 @@ function sprint14Row(overrides: Partial<VisibleListRow> = {}): VisibleListRow {
       sprintEndDate: '2026-11-17',
       sprintGoal: null,
       organizationAccess: false,
+      archivedAt: null,
+      archivedByType: null,
+      archivedById: null,
+      restoredAt: null,
       createdAt: new Date('2026-10-20T09:00:00Z'),
       updatedAt: new Date('2026-10-20T09:00:00Z'),
       version: 4,
@@ -87,6 +92,59 @@ describe('toListWithGrants: a row of a collection of lists', () => {
       awaitingOwner: false,
     });
     expect(row.grants).toEqual({ space: null, list: 'comment' });
+  });
+
+  it('maps a live list with no archive and no restoration', () => {
+    const { list } = toListWithGrants(sprint14Row());
+
+    expect(list.snapshot).toMatchObject({ archivedAt: null, archivedBy: null, restoredAt: null });
+  });
+
+  it('maps the archive of an archived list and the restoration of a restored one', () => {
+    const base: VisibleListRow = sprint14Row();
+    const archived = toListWithGrants({
+      ...base,
+      list: {
+        ...base.list,
+        archivedAt: new Date('2026-11-03T09:00:00Z'),
+        archivedByType: 'user',
+        archivedById: '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b30',
+        restoredAt: new Date('2026-10-30T09:00:00Z'),
+      },
+    });
+
+    expect(archived.list.snapshot).toMatchObject({
+      archivedAt: new Date('2026-11-03T09:00:00Z'),
+      archivedBy: { type: 'user', id: '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b30' },
+      restoredAt: new Date('2026-10-30T09:00:00Z'),
+    });
+  });
+
+  it('refuses a stored actor type outside those of Actor', () => {
+    const base: VisibleListRow = sprint14Row();
+
+    expect(() =>
+      toListWithGrants({
+        ...base,
+        list: {
+          ...base.list,
+          archivedAt: new Date('2026-11-03T09:00:00Z'),
+          archivedByType: 'robot',
+          archivedById: 'r2d2',
+        },
+      }),
+    ).toThrow('A stored actor type is not user, automation, git or system.');
+  });
+
+  it('refuses an archive stored by halves, as the domain does', () => {
+    const base: VisibleListRow = sprint14Row();
+
+    expect(() =>
+      toListWithGrants({
+        ...base,
+        list: { ...base.list, archivedAt: new Date('2026-11-03T09:00:00Z') },
+      }),
+    ).toThrow(InvalidListError);
   });
 
   it('refuses a stored role outside the three roles', () => {

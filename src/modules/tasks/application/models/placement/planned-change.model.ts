@@ -17,7 +17,7 @@ export interface PlannedChange {
   /** The statuses of the space the task is in after the patch: the new parent, else the new list, else the current one. */
   readonly statuses: SpaceStatusUse;
 
-  /** The locked descendants of the task, in id order; empty when the task does not change list. */
+  /** The locked live descendants of the task; empty when the task does not change list. */
   readonly descendants: readonly Task[];
   // #endregion
 }

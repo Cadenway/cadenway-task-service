@@ -9,7 +9,8 @@ import type { PlacedList } from '../../../../application/models/placement/placed
  * Maps the list of a task, as the spaces module showed it to the viewer, to the `TaskList` of
  * `openapi/internal/task-service.yaml`: the sprint with its two dates and its goal, `null` for a
  * list that is not a sprint, the creation instant in ISO 8601, the switch "Accès de
- * l’organisation" and the role of the viewer on the list (`callerRole`).
+ * l’organisation", the archive (`archivedAt` and `archivedBy`, always present, `null` for a live
+ * list) and the role of the viewer on the list (`callerRole`).
  *
  * @param {PlacedList} list - The list.
  * @returns {TaskList} The list of the contract.
@@ -32,6 +33,9 @@ export function toPlacedList(list: PlacedList): TaskList {
     createdAt: list.createdAt.toISOString(),
     version: list.version,
     organizationAccess: list.organizationAccess,
+    archivedAt: list.archivedAt === null ? null : list.archivedAt.toISOString(),
+    archivedBy:
+      list.archivedBy === null ? null : { type: list.archivedBy.type, id: list.archivedBy.id },
     callerRole: list.callerRole,
   };
 }

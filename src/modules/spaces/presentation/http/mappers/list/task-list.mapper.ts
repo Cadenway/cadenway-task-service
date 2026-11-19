@@ -8,8 +8,10 @@ import type { ListView } from '../../../../application/projections/list/list-vie
  * @description
  * Maps a list of the use cases to the `TaskList` of `openapi/internal/task-service.yaml`: the
  * sprint with its two dates and its goal, `null` for a list that is not a sprint, the creation
- * instant in ISO 8601, the switch "Accès de l’organisation" and the role of the caller. The
- * organization of the list is not part of the contract and does not leave the service.
+ * instant in ISO 8601, the switch "Accès de l’organisation", the archive (`archivedAt` in ISO 8601
+ * and `archivedBy`, both always present, `null` for a live list) and the role of the caller. The
+ * organization of the list and when it was restored are not part of the contract and do not leave
+ * the service.
  *
  * @param {ListView} view - The list and the role of the caller.
  * @returns {TaskList} The list of the contract.
@@ -33,6 +35,9 @@ export function toTaskList(view: ListView): TaskList {
     createdAt: list.createdAt.toISOString(),
     version: list.version,
     organizationAccess: list.organizationAccess,
+    archivedAt: list.archivedAt === null ? null : list.archivedAt.toISOString(),
+    archivedBy:
+      list.archivedBy === null ? null : { type: list.archivedBy.type, id: list.archivedBy.id },
     callerRole: view.callerRole,
   };
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ARCHIVED_AT,
   ATELIER_NORD,
   BACKLOG,
   CAMILLE,
@@ -77,6 +78,36 @@ describe('ListSidebarLists: the first lists of the sidebar of a member', () => {
     expect(output.lists.map((list) => list.id)).toEqual([BACKLOG, SPRINT_14, ROADMAP, CAMPAGNES]);
   });
 
+  it('leaves an archived list out of the sidebar', async () => {
+    const spaces = atelierNord();
+    const sprint = spaces.lists.get(SPRINT_14);
+    if (sprint === undefined) {
+      throw new Error('Sprint 14 is seeded.');
+    }
+    spaces.lists.set(SPRINT_14, {
+      ...sprint,
+      archivedAt: ARCHIVED_AT,
+      archivedBy: { type: 'user', id: CAMILLE },
+    });
+
+    const output = await new ListSidebarLists(spaces).execute(sidebar());
+
+    expect(output.lists.map((list) => list.id)).toEqual([BACKLOG, ROADMAP, CAMPAGNES]);
+  });
+
+  it('puts a restored list at the end of its space, before the lists of the next space', async () => {
+    const spaces = atelierNord();
+    const backlog = spaces.lists.get(BACKLOG);
+    if (backlog === undefined) {
+      throw new Error('Backlog is seeded.');
+    }
+    spaces.lists.set(BACKLOG, { ...backlog, restoredAt: new Date('2026-11-08T17:00:00Z') });
+
+    const output = await new ListSidebarLists(spaces).execute(sidebar());
+
+    expect(output.lists.map((list) => list.id)).toEqual([SPRINT_14, ROADMAP, BACKLOG, CAMPAGNES]);
+  });
+
   it('maps a list to its public projection', async () => {
     const output = await new ListSidebarLists(atelierNord()).execute(sidebar({ limit: 1 }));
 
@@ -89,8 +120,11 @@ describe('ListSidebarLists: the first lists of the sidebar of a member', () => {
         color: 'gris',
         sprint: null,
         createdAt: new Date('2026-10-21T09:00:00Z'),
+        position: new Date('2026-10-21T09:00:00Z'),
         version: 1,
         organizationAccess: true,
+        archivedAt: null,
+        archivedBy: null,
         callerRole: 'edit',
       },
     ]);

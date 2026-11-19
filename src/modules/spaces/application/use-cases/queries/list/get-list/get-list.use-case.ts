@@ -18,7 +18,8 @@ import type { GetListOutput } from './get-list.output.js';
  * Reads one list or sprint (`GET /internal/v1/lists/{listId}`) with the effective role of the actor
  * on it (`listRoleOf`, decision 2 of P3b-1). A list that does not exist and a list the actor has no
  * role on (its space private to another, its switch "Accès de l’organisation" off and not shared
- * with them, a guest without its grant) get the same answer, `list-not-found`. It runs in one
+ * with them, a guest without its grant) get the same answer, `list-not-found`. An archived list
+ * reads by its id with its archive ("Lists" of `openapi/public/archives.yaml`). It runs in one
  * tenant transaction, scoped to the organization of the context; the grants of the actor are read
  * in one statement when the rule of the organization does not already give `edit`.
  */

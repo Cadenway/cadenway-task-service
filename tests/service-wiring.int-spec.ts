@@ -88,9 +88,9 @@ const publicTables = [
 /**
  * Migrations of the journal: the platform tables, the copy of the memberships, the spaces and their
  * lists, then the tasks, then the two indexes of the task queries, then the grants, the switch of
- * the lists and the access requests.
+ * the lists and the access requests, then the archives of lists and tasks.
  */
-const appliedMigrations = 6;
+const appliedMigrations = 7;
 
 /**
  * Runs `docker compose` on the throwaway project.

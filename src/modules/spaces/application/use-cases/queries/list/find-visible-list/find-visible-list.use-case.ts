@@ -22,7 +22,9 @@ import type { FindVisibleListOutput } from './find-visible-list.output.js';
  * `callerCanManage`). A list that does not exist, a list of another organization and a list the
  * member has no role on (`listRoleOf`: a private space of another not shared with them, a switch
  * "Accès de l’organisation" off, a guest without the grant of the list, a space awaiting an owner)
- * all answer `null`; the caller turns it into its own refusal, so no case tells another apart. The
+ * all answer `null`; the caller turns it into its own refusal, so no case tells another apart. An
+ * archived list is found, with its archive: it still reads, changes and takes tasks ("Lists" of
+ * `openapi/public/archives.yaml`). The
  * role of the member in the organization comes from the caller, which read it from the copy of the
  * memberships. It runs in `SpacesUnitOfWork.run`, which joins the tenant transaction of the
  * caller, scoped to the organization of the input; it reads the grants of the member in one

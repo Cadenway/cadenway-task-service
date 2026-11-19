@@ -8,6 +8,7 @@ import type { SpaceStatusUse } from './value-objects/task/space-status-use.value
 import type { StatusKey } from './value-objects/task/status-key.value-object.js';
 import { STATUS_KEYS } from './value-objects/task/status-key.value-object.js';
 import type { TaskActor } from './value-objects/task/task-actor.value-object.js';
+import type { TaskArchive } from './value-objects/task/task-archive.value-object.js';
 import { TaskKey } from './value-objects/task/task-key.value-object.js';
 import type { TaskPlacement } from './value-objects/task/task-placement.value-object.js';
 import type { TaskState } from './value-objects/task/task-state.value-object.js';
@@ -80,6 +81,23 @@ export const CAMILLE_ACTOR: TaskActor = { type: 'user', id: CAMILLE };
 
 /** Inès Robert as the actor of a change. */
 export const INES_ACTOR: TaskActor = { type: 'user', id: INES };
+
+/** Hugo Dubois as the actor of a change. */
+export const HUGO_ACTOR: TaskActor = { type: 'user', id: HUGO };
+
+/** When Hugo Dubois made the archives of the specs ("archivée le 5 nov."). */
+export const ARCHIVED_AT: Date = new Date('2026-11-05T11:30:00.000Z');
+
+/**
+ * Builds an archive of the specs: made by Hugo Dubois on 2026-11-05, from a root.
+ *
+ * @param rootId - The root of the archive.
+ * @param overrides - Fields to replace.
+ * @returns The archive.
+ */
+export function archiveFrom(rootId: string, overrides: Partial<TaskArchive> = {}): TaskArchive {
+  return { at: ARCHIVED_AT, by: HUGO_ACTOR, rootId, ...overrides };
+}
 
 /** Sprint 14, in the space "Produit". */
 export const SPRINT_14_PLACEMENT: TaskPlacement = { listId: SPRINT_14, spaceId: PRODUIT };
@@ -156,6 +174,7 @@ export function taskState(overrides: Partial<TaskState> = {}): TaskState {
     createdAt: CREATED_AT,
     updatedAt: UPDATED_AT,
     version: 12,
+    archive: null,
     ...overrides,
   };
 }

@@ -35,6 +35,7 @@ import {
   sprint14SharedWith,
   subtaskState,
   taskState,
+  archiveFrom,
 } from '../../../tasks.fixture.js';
 import type { UpdateTaskInput } from './update-task.input.js';
 import { UpdateTask } from './update-task.use-case.js';
@@ -977,5 +978,175 @@ describe('UpdateTask: an attachment needs edit on the list of the new parent', (
         ),
       ),
     ).toEqual({ reason: 'role-insufficient', role: 'comment' });
+  });
+});
+
+describe('UpdateTask: an archived task refuses every patch with task-archived', () => {
+  it.each<[string, UpdateTaskInput['patch']]>([
+    ['a rename', { name: 'Autre' }],
+    ['a patch that changes nothing', {}],
+    ['a move', { listId: BUGS }],
+    ['a detachment with parentKey null', { parentKey: null }],
+    ['an attachment to a live parent', { parentKey: 'CAD-490' }],
+  ])(
+    'refuses %s with its key before a stale If-Match, and writes nothing',
+    async (_case, patch) => {
+      const { tasks, useCase } = atelierNord([
+        taskState({ archive: archiveFrom(CAD_482) }),
+        cad490State(),
+      ]);
+
+      expect(await refusalOf(useCase.execute(patchOf(patch, { expectedVersions: [3] })))).toEqual({
+        reason: 'task-archived',
+        key: 'CAD-482',
+      });
+      expect(tasks.stored(CAD_482)).toEqual(taskState({ archive: archiveFrom(CAD_482) }));
+      expect(tasks.events).toEqual([]);
+    },
+  );
+
+  it('answers role-insufficient before task-archived', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState({ archive: archiveFrom(CAD_482) })] });
+    const useCase = new UpdateTask(
+      tasks,
+      atelierNordMembers(),
+      sprint14SharedWith({ [HUGO]: 'view' }),
+    );
+
+    expect(
+      await refusalOf(useCase.execute(patchOf({ name: 'Autre' }, { actorUserId: HUGO }))),
+    ).toEqual({ reason: 'role-insufficient', role: 'view' });
+  });
+});
+
+describe('UpdateTask: an archived parent takes no attached task', () => {
+  /**
+   * Attaches CAD-490 to CAD-482 by Hugo Dubois.
+   *
+   * @param stored - The tasks.
+   * @param spaces - The fake spaces.
+   * @returns The refusal.
+   */
+  async function attach(
+    stored: readonly TaskState[],
+    spaces: InMemorySpaceDirectory = new InMemorySpaceDirectory(),
+  ): ReturnType<typeof refusalOf> {
+    const tasks = new InMemoryTasks({ tasks: stored });
+    return refusalOf(
+      new UpdateTask(tasks, atelierNordMembers(), spaces).execute(
+        patchOf({ parentKey: 'CAD-482' }, { actorUserId: HUGO, taskKey: 'CAD-490' }),
+      ),
+    );
+  }
+
+  /**
+   * Builds the spaces with "Bugs" closed to the organization and shared with some accounts.
+   *
+   * @param grants - The role of each account on "Bugs".
+   * @returns The fake spaces.
+   */
+  function bugsSharedWith(
+    grants: Readonly<Record<string, 'view' | 'comment' | 'edit'>>,
+  ): InMemorySpaceDirectory {
+    return new InMemorySpaceDirectory({
+      lists: atelierNordLists().map((list) =>
+        list.id === BUGS ? { ...list, organizationAccess: false } : list,
+      ),
+      listGrants: { [BUGS]: grants },
+    });
+  }
+
+  it('refuses an attachment to an archived parent with the key of the parent', async () => {
+    expect(await attach([taskState({ archive: archiveFrom(CAD_482) }), cad490State()])).toEqual({
+      reason: 'task-archived',
+      key: 'CAD-482',
+    });
+  });
+
+  it('answers the 422 of an unseen parent, then the 403 of its list, before task-archived', async () => {
+    const inBugs: readonly TaskState[] = [
+      taskState({ listId: BUGS, archive: archiveFrom(CAD_482) }),
+      cad490State(),
+    ];
+
+    expect(await attach(inBugs, bugsSharedWith({}))).toEqual({
+      reason: 'parent-invalid',
+      parentKey: 'CAD-482',
+    });
+    expect(await attach(inBugs, bugsSharedWith({ [HUGO]: 'view' }))).toEqual({
+      reason: 'role-insufficient',
+      role: 'view',
+    });
+  });
+
+  it('answers task-archived before the rules of the tree', async () => {
+    const atThirdLevel: readonly TaskState[] = [
+      taskState({
+        parentId: CAD_483,
+        parentKey: TaskKey.of('CAD', 483),
+        archive: archiveFrom(CAD_482),
+      }),
+      subtaskState({
+        parentId: CAD_484,
+        parentKey: TaskKey.of('CAD', 484),
+        archive: archiveFrom(CAD_484),
+      }),
+      subtaskState({
+        id: CAD_484,
+        key: TaskKey.of('CAD', 484),
+        parentId: null,
+        parentKey: null,
+        archive: archiveFrom(CAD_484),
+      }),
+      cad490State(),
+    ];
+
+    expect(await attach(atThirdLevel)).toEqual({ reason: 'task-archived', key: 'CAD-482' });
+  });
+});
+
+describe('UpdateTask: archived subtasks stay out of the live tree of a patch', () => {
+  it('leaves an archived subtask in its list and under its parent when the parent moves', async () => {
+    const { tasks, useCase } = atelierNord([
+      taskState(),
+      subtaskState({ archive: archiveFrom(CAD_483), version: 2 }),
+    ]);
+
+    await useCase.execute(patchOf({ listId: BUGS }));
+
+    expect(tasks.stored(CAD_482).listId).toBe(BUGS);
+    expect(tasks.stored(CAD_483)).toMatchObject({
+      listId: SPRINT_14,
+      parentId: CAD_482,
+      version: 2,
+    });
+    expect(tasks.events.map((event) => event.key)).toEqual(['CAD-482']);
+  });
+
+  it('measures an attachment with the live subtree only', async () => {
+    const archivedBelow = archiveFrom(CAD_483);
+    const { tasks, useCase } = atelierNord([
+      taskState(),
+      cad490State(),
+      subtaskState({
+        parentId: CAD_490,
+        parentKey: TaskKey.of('CAD', 490),
+        archive: archivedBelow,
+        version: 2,
+      }),
+      subtaskState({
+        id: CAD_484,
+        key: TaskKey.of('CAD', 484),
+        parentId: CAD_483,
+        parentKey: TaskKey.of('CAD', 483),
+        archive: archivedBelow,
+        version: 2,
+      }),
+    ]);
+
+    const view = await useCase.execute(patchOf({ parentKey: 'CAD-482' }, { taskKey: 'CAD-490' }));
+
+    expect(view.parentKey).toBe('CAD-482');
+    expect(tasks.stored(CAD_483)).toMatchObject({ parentId: CAD_490, version: 2 });
   });
 });

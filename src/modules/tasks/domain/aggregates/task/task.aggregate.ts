@@ -4,6 +4,7 @@ import { ChecklistItemNotFoundError } from '../../errors/task/checklist-item-not
 import { ChecklistLimitReachedError } from '../../errors/task/checklist-limit-reached.error.js';
 import { InvalidTaskError } from '../../errors/task/invalid-task.error.js';
 import { LabelLimitReachedError } from '../../errors/task/label-limit-reached.error.js';
+import { TaskArchivedError } from '../../errors/task/task-archived.error.js';
 import { checkAttachment, checkNewSubtask } from '../../policies/subtask/subtask-tree.policy.js';
 import { isAssignable, refuseUnassignable } from '../../policies/task/assignability.policy.js';
 import {
@@ -26,6 +27,7 @@ import { STATUS_KEYS } from '../../value-objects/task/status-key.value-object.js
 import type { StatusKey } from '../../value-objects/task/status-key.value-object.js';
 import { ACTOR_TYPES } from '../../value-objects/task/task-actor.value-object.js';
 import type { TaskActor } from '../../value-objects/task/task-actor.value-object.js';
+import type { TaskArchive } from '../../value-objects/task/task-archive.value-object.js';
 import type { TaskDraft } from '../../value-objects/task/task-draft.value-object.js';
 import { TASK_FIELDS } from '../../value-objects/task/task-field.value-object.js';
 import type { TaskField } from '../../value-objects/task/task-field.value-object.js';
@@ -356,7 +358,27 @@ function checkStoredState(state: TaskState): void {
   if (state.parentId === state.id || state.parentKey?.equals(state.key) === true) {
     throw new InvalidTaskError('a task is not its own parent');
   }
+  checkStoredArchive(state.archive);
   checkStoredCollections(state);
+}
+
+/**
+ * Function checkStoredArchive
+ *
+ * @description
+ * Refuses a stored archive no archive can produce ("Tasks" of `openapi/public/archives.yaml`): a
+ * valid instant, a known actor and the id of its root; `null` for a live task.
+ *
+ * @param {TaskArchive | null} archive - The stored archive.
+ * @throws {InvalidTaskError} When the instant, the actor or the root is invalid.
+ */
+function checkStoredArchive(archive: TaskArchive | null): void {
+  if (archive === null) {
+    return;
+  }
+  requireInstant(archive.at);
+  checkActor(archive.by);
+  requireId(archive.rootId);
 }
 
 /**
@@ -380,7 +402,11 @@ function checkStoredState(state: TaskState): void {
  *   (`subtask-tree.policy.ts`);
  * - each change that changes something takes the next version and `updatedAt`, once, whatever
  *   it changes; one that changes nothing keeps the same instance and `changed: []`, so nothing is
- *   written, recorded or emitted (`openapi/public/tasks.yaml:455-456`).
+ *   written, recorded or emitted (`openapi/public/tasks.yaml:455-456`);
+ * - an archived task ("Tasks" of `openapi/public/archives.yaml`) refuses every change and every
+ *   new or attached subtask with `TaskArchivedError` (`requireChangeable`), until its archive is
+ *   restored; only the removal of a former member from its assignees (`unassign`, a system
+ *   change) still applies. `archive` and `unarchive` take the next version and `updatedAt` too.
  *
  * Who may see or change the task is decided by the application from its space; the instant of a
  * change comes in as an argument, the transaction instant.
@@ -409,6 +435,21 @@ export class Task {
    */
   public get snapshot(): TaskState {
     return this.state;
+  }
+
+  /**
+   * Property isLive
+   *
+   * @description
+   * Whether the task is live, in no archive ("An archived task is left out of every collection
+   * and count", "Tasks" of `openapi/public/archives.yaml`): the application decides on it, not on
+   * the stored archive.
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  public get isLive(): boolean {
+    return this.state.archive === null;
   }
   // #endregion
 
@@ -534,10 +575,12 @@ export class Task {
    * application read about its tree.
    *
    * @param {number} level - Its level: the number of its ancestors plus one.
-   * @param {number} childCount - The number of its direct subtasks.
+   * @param {number} childCount - The number of its live direct subtasks.
    * @returns {SubtaskParent} The parent.
+   * @throws {TaskArchivedError} When this task is archived: it takes no subtask.
    */
   public asParent(level: number, childCount: number): SubtaskParent {
+    this.requireChangeable();
     return {
       id: this.state.id,
       key: this.state.key,
@@ -588,8 +631,10 @@ export class Task {
    * `cancelled` after the patch.
    * @throws {StartDateInvalidError} When the start is without a due date or after it, or a shift
    * would move it before 0001-01-01.
+   * @throws {TaskArchivedError} When the task is archived.
    */
   public update(patch: TaskPatch, statuses: SpaceStatusUse, now: Date): TaskUpdate {
+    this.requireChangeable();
     requireInstant(now);
     const current: TaskState = this.state;
     const name: string = patch.name === undefined ? current.name : normalizeName(patch.name);
@@ -669,8 +714,11 @@ export class Task {
    * @returns {TaskUpdate} The subtask at the next version with `listId` and, when it changes,
    * `spaceId`, or this same subtask and `changed: []` when it is already there.
    * @throws {InvalidTaskError} When an id is empty or the instant invalid.
+   * @throws {TaskArchivedError} When the subtask is archived: an archived subtask stays where it
+   * is when the task above it moves.
    */
   public followMove(placement: TaskPlacement, now: Date): TaskUpdate {
+    this.requireChangeable();
     requireInstant(now);
     const listId: string = requireId(placement.listId);
     const spaceId: string = requireId(placement.spaceId);
@@ -700,8 +748,10 @@ export class Task {
    * @throws {InvalidTaskError} When the account is empty or the instant invalid.
    * @throws {AssigneeInvalidError} When the account may not be assigned, with that account.
    * @throws {AssigneeLimitReachedError} When the task already has 20 assignees.
+   * @throws {TaskArchivedError} When the task is archived.
    */
   public assign(candidate: AssigneeCandidate, now: Date): TaskUpdate {
+    this.requireChangeable();
     requireInstant(now);
     const userId: string = requireId(candidate.userId);
     const { assigneeIds } = this.state;
@@ -727,7 +777,10 @@ export class Task {
    * @description
    * Removes a person from the assignees (`DELETE …/assignees/{userId}`,
    * `openapi/public/tasks.yaml:1093-1101`), also when a removed member leaves every task
-   * (`openapi/internal/task-service.yaml:66-69`). The others keep their order.
+   * (`openapi/internal/task-service.yaml:66-69`). The others keep their order. It applies to an
+   * archived task too: the removal of a former member is a change of task-service itself, not of
+   * a user, and leaves every task; the route of a user refuses an archived task before it comes
+   * here.
    *
    * @param {string} userId - The account.
    * @param {Date} now - The transaction instant.
@@ -763,8 +816,10 @@ export class Task {
    * and `changed: []` when it has the label already.
    * @throws {InvalidTaskError} When the label is empty or longer than 32 characters once trimmed.
    * @throws {LabelLimitReachedError} When the task already has 20 labels.
+   * @throws {TaskArchivedError} When the task is archived.
    */
   public addLabel(name: string, now: Date): TaskUpdate {
+    this.requireChangeable();
     requireInstant(now);
     const label: string = normalizeLabelName(name);
     const key: string = labelKey(label);
@@ -794,8 +849,10 @@ export class Task {
    * @returns {TaskUpdate} The task at the next version with `changed: ['labels']`, or this same task
    * and `changed: []` when it does not have the label.
    * @throws {InvalidTaskError} When the label is empty or longer than 32 characters once trimmed.
+   * @throws {TaskArchivedError} When the task is archived.
    */
   public removeLabel(name: string, now: Date): TaskUpdate {
+    this.requireChangeable();
     requireInstant(now);
     const key: string = labelKey(normalizeLabelName(name));
     const { labels } = this.state;
@@ -821,8 +878,10 @@ export class Task {
    * @returns {ChecklistItemDraft} The item to insert.
    * @throws {InvalidTaskError} When the text is empty or longer than 300 characters once trimmed.
    * @throws {ChecklistLimitReachedError} When the checklist already holds 100 items.
+   * @throws {TaskArchivedError} When the task is archived.
    */
   public draftChecklistItem(text: string): ChecklistItemDraft {
+    this.requireChangeable();
     const normalized: string = normalizeChecklistText(text);
     const { checklist } = this.state;
     if (checklist.length >= MAX_CHECKLIST_ITEMS) {
@@ -846,8 +905,10 @@ export class Task {
    * @throws {InvalidTaskError} When the item is not a draft of this checklist: an empty or known
    * id, a text not normalized, ticked, or not after the last item.
    * @throws {ChecklistLimitReachedError} When the checklist already holds 100 items.
+   * @throws {TaskArchivedError} When the task is archived.
    */
   public addChecklistItem(item: ChecklistItemState, now: Date): TaskUpdate {
+    this.requireChangeable();
     requireInstant(now);
     requireId(item.id);
     const { checklist } = this.state;
@@ -885,8 +946,10 @@ export class Task {
    * task and `changed: []` when the item already has that state.
    * @throws {InvalidTaskError} When the instant is invalid.
    * @throws {ChecklistItemNotFoundError} When the checklist has no item with this id.
+   * @throws {TaskArchivedError} When the task is archived, checked before the item.
    */
   public setChecklistItemDone(checklistItemId: string, done: boolean, now: Date): TaskUpdate {
+    this.requireChangeable();
     requireInstant(now);
     const { checklist } = this.state;
     const item: ChecklistItemState | undefined = checklist.find(
@@ -909,6 +972,94 @@ export class Task {
       new Set<TaskField>(['checklist']),
       now,
     );
+  }
+
+  /**
+   * Method requireChangeable
+   *
+   * @description
+   * Refuses a change of an archived task ("An archived task ... refuses every change with
+   * `409 task.archived`", "Tasks" of `openapi/public/archives.yaml`): the task itself, a new
+   * subtask under it, an attachment to it. The application calls it after the visibility and the
+   * role, before `If-Match`; the methods that change the task call it too.
+   *
+   * @throws {TaskArchivedError} With the key of the task, when it is archived.
+   */
+  public requireChangeable(): void {
+    if (!this.isLive) {
+      throw new TaskArchivedError(this.state.key.format());
+    }
+  }
+
+  /**
+   * Method archive
+   *
+   * @description
+   * Puts the task in an archive ("Archiving a task archives its subtree, its subtasks at every
+   * level, whatever their status", "Tasks" of `openapi/public/archives.yaml`): the root and each of
+   * its live descendants take the same instant, actor and root, the next version and `updatedAt`
+   * = `at` (`version` of `Task`: "an archive and a restoration included"). Nothing else changes:
+   * the status, the list and the parent stay. An archive is not recorded in the activity log.
+   *
+   * @param {string} rootId - The id of the root of the archive: this task's own id for the root.
+   * @param {TaskActor} by - Who archives it.
+   * @param {Date} at - The transaction instant.
+   * @returns {Task} The task, archived, at the next version.
+   * @throws {InvalidTaskError} When the task is archived already, the instant or the actor is
+   * invalid, the root is empty, or a task archived from another root has no parent.
+   */
+  public archive(rootId: string, by: TaskActor, at: Date): Task {
+    requireInstant(at);
+    checkActor(by);
+    requireId(rootId);
+    const { state } = this;
+    if (state.archive !== null) {
+      throw new InvalidTaskError('an archived task is not archived again');
+    }
+    if (rootId !== state.id && state.parentId === null) {
+      throw new InvalidTaskError('a task archived with another root is one of its subtasks');
+    }
+    return new Task({
+      ...state,
+      archive: Object.freeze({ at, by: Object.freeze({ type: by.type, id: by.id }), rootId }),
+      updatedAt: at,
+      version: state.version + 1,
+    });
+  }
+
+  /**
+   * Method unarchive
+   *
+   * @description
+   * Brings the task back from its archive ("Restoring any task of an archive restores the whole
+   * archive, from its root, to its list", "Tasks" of `openapi/public/archives.yaml`): the archive
+   * cleared, the next version and `updatedAt` = `at`. The root leaves its parent when the parent
+   * can no longer take it (`detach`, decided by `takesRestoredRoot`) and becomes a top-level task of
+   * its list; every other member keeps its parent, a member of the same archive.
+   *
+   * @param {Date} at - The transaction instant.
+   * @param {boolean} detach - `true` to detach the root from its parent.
+   * @returns {Task} The task, live, at the next version.
+   * @throws {InvalidTaskError} When the task is live, the instant invalid, or `detach` names a
+   * task that is not the root of its archive or has no parent.
+   */
+  public unarchive(at: Date, detach: boolean): Task {
+    requireInstant(at);
+    const { state } = this;
+    if (state.archive === null) {
+      throw new InvalidTaskError('a live task is not restored');
+    }
+    if (detach && (state.archive.rootId !== state.id || state.parentId === null)) {
+      throw new InvalidTaskError('only the root of an archive leaves its parent');
+    }
+    return new Task({
+      ...state,
+      archive: null,
+      parentId: detach ? null : state.parentId,
+      parentKey: detach ? null : state.parentKey,
+      updatedAt: at,
+      version: state.version + 1,
+    });
   }
 
   /**

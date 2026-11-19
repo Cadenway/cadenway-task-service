@@ -24,14 +24,14 @@ import type { UpdateTaskOutput } from './update-task.output.js';
  * Patches a task the actor sees (`PATCH /internal/v1/tasks/{taskKey}`). Locks follow the order of
  * the module: the membership of the actor, the task `FOR NO KEY UPDATE`, then, for a move or an
  * attach, the new parent and the descendants in one ordered statement. Visibility comes first
- * (`task-not-found`), then `edit` on the list of the task (`role-insufficient`), then `If-Match`
- * (`version-mismatch` with the stored version), then the target of a move or an attach
- * (`list-invalid`, `parent-invalid` when not seen, `role-insufficient` when seen without `edit`),
- * then the domain, which decides every other rule (`Task.update`). A patch that changes nothing writes nothing, records nothing,
+ * (`task-not-found`), then `edit` on the list of the task (`role-insufficient`), then the archive
+ * (`task-archived`), then `If-Match` (`version-mismatch` with the stored version), then the target
+ * of a move or an attach (`list-invalid`, `parent-invalid` when not seen, `role-insufficient` when
+ * seen without `edit`, `task-archived` for an archived parent), then the domain, which decides every other rule (`Task.update`). A patch that changes nothing writes nothing, records nothing,
  * emits nothing and answers the stored version. A change writes the task, records the activity
  * entries of the status, priority and due date (merged by the coalescing policy) and appends
  * `task.updated.v1` (and `task.status-changed.v1`); every descendant that follows a move or an
- * attach changes list, version and `task.updated.v1` of its own. The parent of a subtask created,
+ * attach changes list, version and `task.updated.v1` of its own; an archived subtask stays where it is. The parent of a subtask created,
  * attached or detached is not changed.
  */
 export class UpdateTask {
@@ -96,6 +96,7 @@ export class UpdateTask {
    * patch.
    * @returns {Promise<UpdateTaskOutput>} The task after the patch.
    * @throws {TaskRefusal} `organization-not-found`, `task-not-found`, `role-insufficient`,
+   * `task-archived` (the task, or after the 422 and 403 of the parent, an archived parent),
    * `version-mismatch`, `list-invalid`, `parent-invalid`, `subtask-depth-exceeded`,
    * `subtask-limit-reached`, `status-hidden`, `cancel-reason-required`,
    * `cancel-reason-unexpected` or `start-date-invalid`. `role-insufficient` also comes after
@@ -114,6 +115,7 @@ export class UpdateTask {
         taskKey: input.taskKey,
         edit: true,
         lock: true,
+        archived: 'refuse',
         expectedVersions: input.expectedVersions,
       });
       const { task } = located;

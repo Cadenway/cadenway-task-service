@@ -6,6 +6,7 @@ import type { LabelPosition } from '../../../../../application/models/label/labe
 import { taskLabels } from '../../schemas/task/task-label.schema.js';
 import { tasks } from '../../schemas/task/task.schema.js';
 import { anyOf } from '../page/any-of.mapper.js';
+import { liveTask } from '../task/live-task.mapper.js';
 import { foldText } from '../query/text-fold.mapper.js';
 
 /**
@@ -15,8 +16,8 @@ import { foldText } from '../query/text-fold.mapper.js';
  * A page of the labels of the tasks in some lists, any level, one row per `label_key`, by the
  * first `SORT_KEY_PREFIX_LENGTH` code points of the folded key then the key, both in the `C`
  * collation. The name is the spelling that comes first (`min` in code point order, so `Auth` before
- * `auth`) among the rows of the visible tasks only, so a list the actor has no role on leaks no
- * spelling.
+ * `auth`) among the rows of the visible live tasks only (`liveTask`), so a list the actor has no role on,
+ * or an archived task, leaks no spelling.
  *
  * The visible label rows are grouped first, in a materialized CTE that also folds the key once per
  * group; the search, the keyset and the order then work on the groups, so the fold runs once per
@@ -43,6 +44,7 @@ export function labelPageStatement(
     eq(taskLabels.organizationId, organizationId),
     eq(tasks.organizationId, organizationId),
     anyOf(tasks.listId, listIds, 'uuid'),
+    liveTask(),
   )} group by ${taskLabels.labelKey}`;
   const sortKey: SQL = sql`left("foldedKey", ${sql.raw(String(SORT_KEY_PREFIX_LENGTH))})`;
   const conditions: (SQL | undefined)[] = [

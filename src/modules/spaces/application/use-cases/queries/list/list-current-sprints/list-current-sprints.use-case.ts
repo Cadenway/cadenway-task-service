@@ -12,9 +12,10 @@ import type { ListCurrentSprintsOutput } from './list-current-sprints.output.js'
  * Class ListCurrentSprints
  *
  * @description
- * Public operation of the spaces module for the tasks module: the sprints under way that a member
- * has a role on, that is those whose start is on or before `today` and whose end is on or after
- * it, ordered by end date, then creation, at most `limit`, each with the role of the member. A
+ * Public operation of the spaces module for the tasks module: the live sprints under way that a
+ * member has a role on, that is those whose start is on or before `today` and whose end is on or
+ * after it, ordered by end date, then creation, at most `limit`, each with the role of the member;
+ * an archived sprint leaves "Accueil" ("Lists" of `openapi/public/archives.yaml`). A
  * guest gets the sprints shared with them; any other member those of the spaces of the whole
  * organization whose switch "Accès de l’organisation" is on, those of the spaces they own, and
  * those shared with them through their space or themselves, never one of a space awaiting an

@@ -16,6 +16,7 @@ import {
   refusalOf,
   sprint14SharedWith,
   taskState,
+  archiveFrom,
 } from '../../../tasks.fixture.js';
 import type { AssignTaskInput } from './assign-task.input.js';
 import { AssignTask } from './assign-task.use-case.js';
@@ -239,5 +240,34 @@ describe('AssignTask: a change needs edit on the list of the task', () => {
       { type: 'user', id: NADIA },
       { type: 'user', id: NADIA },
     ]);
+  });
+});
+
+describe('AssignTask: an archived task refuses the change with task-archived', () => {
+  it('answers task-archived with its key, after the role and before If-Match, and writes nothing', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState({ archive: archiveFrom(CAD_482) })] });
+    const useCase = new AssignTask(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
+
+    expect(await refusalOf(useCase.execute(assign({ expectedVersions: [3] })))).toEqual({
+      reason: 'task-archived',
+      key: 'CAD-482',
+    });
+    expect(tasks.stored(CAD_482)).toEqual(taskState({ archive: archiveFrom(CAD_482) }));
+    expect(tasks.events).toEqual([]);
+    expect(tasks.activity.size).toBe(0);
+  });
+
+  it('answers role-insufficient before task-archived', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState({ archive: archiveFrom(CAD_482) })] });
+    const useCase = new AssignTask(
+      tasks,
+      atelierNordMembers(),
+      sprint14SharedWith({ [HUGO]: 'view' }),
+    );
+
+    expect(await refusalOf(useCase.execute(assign({ actorUserId: HUGO })))).toEqual({
+      reason: 'role-insufficient',
+      role: 'view',
+    });
   });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ARCHIVED_AT,
   ATELIER_NORD,
   CAMILLE,
   HUGO,
@@ -41,6 +42,24 @@ function atelierNord(): InMemorySpaces {
 describe('CheckListAccess: the realtime gateway reads the role of a person on a list', () => {
   it('answers the role of the person, the space and the list', async () => {
     const access = await new CheckListAccess(atelierNord(), atelierNordMembers()).execute(check());
+
+    expect(access).toEqual({ role: 'comment', spaceId: PRODUIT, listId: SPRINT_14 });
+  });
+
+  it('answers the role on an archived list as on a live one', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [
+        sprintState({
+          organizationAccess: false,
+          archivedAt: ARCHIVED_AT,
+          archivedBy: { type: 'user', id: CAMILLE },
+        }),
+      ],
+      grants: [listGrantOf(PRODUIT, SPRINT_14, NADIA, 'comment')],
+    });
+
+    const access = await new CheckListAccess(spaces, atelierNordMembers()).execute(check());
 
     expect(access).toEqual({ role: 'comment', spaceId: PRODUIT, listId: SPRINT_14 });
   });

@@ -12,8 +12,8 @@ export interface FindVisibleSpaceListsOutput {
    * Property lists
    *
    * @description
-   * The lists and sprints of the space the member has a role on, each with that role, in the
-   * order of their creation.
+   * The live lists and sprints of the space the member has a role on, each with that role, in
+   * their order in the space (their last restoration, or else their creation).
    *
    * @type {readonly VisibleList[]}
    * @readonly

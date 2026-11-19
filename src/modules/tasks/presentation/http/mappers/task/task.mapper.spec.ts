@@ -44,6 +44,8 @@ const CAD_482: TaskView = {
   ],
   createdBy: { type: 'user', id: CAMILLE },
   updatedAt: new Date('2026-11-18T10:15:30.123Z'),
+  archivedAt: null,
+  archivedBy: null,
 };
 
 describe('toTask', () => {
@@ -60,6 +62,24 @@ describe('toTask', () => {
     expect(task.completedAt).toBeNull();
     expect(task.createdBy).toEqual({ type: 'user', id: CAMILLE });
     expect(task.version).toBe(4);
+  });
+
+  it('always carries archivedAt and archivedBy, null for a live task', () => {
+    expect(toTask(CAD_482)).toMatchObject({ archivedAt: null, archivedBy: null });
+  });
+
+  it('carries the archive of an archived task, which the contract accepts', () => {
+    const task = toTask({
+      ...CAD_482,
+      archivedAt: new Date('2026-11-05T11:30:00.000Z'),
+      archivedBy: { type: 'user', id: HUGO },
+    });
+
+    expect(task).toMatchObject({
+      archivedAt: '2026-11-05T11:30:00.000Z',
+      archivedBy: { type: 'user', id: HUGO },
+    });
+    expect(() => CreateTaskInternalResponse.parse(task)).not.toThrow();
   });
 
   it('keeps the labels and the checklist in their order and drops the internal id', () => {

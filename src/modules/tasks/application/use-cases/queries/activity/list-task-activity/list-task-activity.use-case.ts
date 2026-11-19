@@ -88,6 +88,7 @@ export class ListTaskActivity {
           taskKey: input.taskKey,
           edit: false,
           lock: false,
+          archived: 'allow',
           expectedVersions: null,
         });
         const rows: readonly ActivityEntryState[] = await store.activity.pageOfTask(

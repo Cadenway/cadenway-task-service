@@ -1,3 +1,4 @@
+import { showsParent } from '../../../../../domain/policies/subtask/subtask-tree.policy.js';
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
 import { MAX_DIRECT_SUBTASKS } from '../../../../../domain/value-objects/task/task-limits.value-object.js';
 import type { LocatedTask } from '../../../../models/task/located-task.model.js';
@@ -5,6 +6,7 @@ import type { TasksStore } from '../../../../models/transactions/tasks-store.mod
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
+import type { TaskReferenceInListView } from '../../../../projections/task/task-reference-in-list.projection.js';
 import type { TaskReferenceView } from '../../../../projections/task/task-reference.projection.js';
 import type { TaskSummaryView } from '../../../../projections/task/task-summary.projection.js';
 import { ViewerResolver } from '../../../../services/member/viewer-resolver.service.js';
@@ -20,8 +22,11 @@ import type { GetTaskDetailOutput } from './get-task-detail.output.js';
  * Reads the detail of a task (`GET /internal/v1/tasks/{taskKey}/detail`) in one read-only
  * transaction on one snapshot (repeatable read), so that the task, its space, its list, its parent
  * and its subtasks agree even while writers commit, without a lock. The
- * parent is read as a reference, with its name and status as they are now; the subtasks are the
- * direct ones, in the order of their creation (at most 25). Visibility is that of `GetTask`.
+ * parent is read as a reference, with its name and status as they are now, once for the reference
+ * and the `parentKey` of the task; an archived root whose live parent moved to another list since
+ * reads as detached (`showsParent`): `parent: null` and `parentKey: null`, so the parent of a list
+ * the actor may not see never shows. The subtasks are the direct ones of its archive, in the order
+ * of their creation (at most 25). Visibility is that of `GetTask`.
  */
 export class GetTaskDetail {
   // #region Properties
@@ -83,13 +88,20 @@ export class GetTaskDetail {
           taskKey: input.taskKey,
           edit: false,
           lock: false,
+          archived: 'allow',
           expectedVersions: null,
         });
-        const { id, parentId } = task.snapshot;
-        const references: ReadonlyMap<string, TaskReferenceView> =
+        const { id, parentId, listId } = task.snapshot;
+        const references: ReadonlyMap<string, TaskReferenceInListView> =
           parentId === null
             ? new Map()
             : await store.reader.references(input.organizationId, [parentId]);
+        const reference: TaskReferenceInListView | null =
+          parentId === null ? null : (references.get(parentId) ?? null);
+        const parent: TaskReferenceView | null =
+          reference === null || !showsParent(listId, reference.listId)
+            ? null
+            : { key: reference.key, name: reference.name, status: reference.status };
         const subtasks: readonly TaskSummaryView[] = await store.reader.childrenOf(
           input.organizationId,
           id,
@@ -97,10 +109,10 @@ export class GetTaskDetail {
           MAX_DIRECT_SUBTASKS,
         );
         return {
-          task: await this.views.build(store.reader, task),
+          task: await this.views.build(store.reader, task, reference),
           space: placement.space,
           list: placement.list,
-          parent: parentId === null ? null : (references.get(parentId) ?? null),
+          parent,
           subtasks,
         };
       },

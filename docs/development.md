@@ -22,7 +22,9 @@ removes their grants of spaces and lists and drops their access requests, then u
 from their tasks, in batches. The grants of spaces and lists (`src/modules/spaces/MODULE.md`) and
 the access requests (`src/modules/access-requests/MODULE.md`) have their internal routes, and every
 route applies the effective role of the caller; the realtime gateway checks the access to a list or
-a task through two routes of its own. The tasks module also serves the seven task queries (the tasks of a list, the group counts, the counts of a list, the overview of a space, the labels, "Mes tâches" and "Accueil"). The target architecture in this guide is what
+a task through two routes of its own. Lists and tasks are archived and restored, a task with its
+subtree, and the pages "Archives" list them (`src/modules/spaces/MODULE.md`,
+`src/modules/tasks/MODULE.md`). The tasks module also serves the seven task queries (the tasks of a list, the group counts, the counts of a list, the overview of a space, the labels, "Mes tâches" and "Accueil"). The target architecture in this guide is what
 the next modules must follow.
 
 The commands below are the documented workflow. Inspect the repository's actual manifests and files before running them, and report unavailable checks rather than inventing replacements. Run Git, pnpm, build, and test commands with this repository as the working directory, never from the parent workspace.
@@ -187,7 +189,12 @@ the grants of spaces and lists and their rules, the switch of a list, the effect
 routes of P3a, the access requests (the existence oracle, the hourly limit, the answers), the two
 access checks of the realtime gateway, row-level security of the four tables, the clean-up of the
 grants and requests of a removed member, and the query plans of the access reads on a large
-organization. They move to the fixtures
+organization. `tests/archives.int-spec.ts` does the same for the archives: the archive and the
+restoration of lists and tasks, their refusals and events, what an archived list or task leaves and
+keeps, the `409 task.archived` of every change, the detachment of a restored root, the two pages
+"Archives", access requests for archived targets, isolation and concurrent restorations;
+`tests/archive-queries.int-spec.ts` takes the plans of the archive statements and of the live reads
+on 83,000 tasks, and compares "Mes tâches" and "Accueil" with their P3a and PR 1 shapes. They move to the fixtures
 of `@cadenway/nest-testing` once that package exports them.
 
 ## Minimum checks by change

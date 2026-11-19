@@ -14,8 +14,11 @@ import { LabelLimitReachedError } from '../../errors/task/label-limit-reached.er
 import { ListInvalidError } from '../../errors/task/list-invalid.error.js';
 import { StartDateInvalidError } from '../../errors/task/start-date-invalid.error.js';
 import { StatusHiddenError } from '../../errors/task/status-hidden.error.js';
+import { TaskArchivedError } from '../../errors/task/task-archived.error.js';
 import {
   ALL_STATUSES,
+  HUGO_ACTOR,
+  archiveFrom,
   ATELIER_NORD,
   BUGS,
   BUGS_PLACEMENT,
@@ -984,5 +987,169 @@ describe('Task.asParent: the task as the parent of a subtask', () => {
       level: 1,
       childCount: 2,
     });
+  });
+});
+
+describe('Task.archive: an archive takes the task and its live descendants', () => {
+  it('archives the root with the instant, the actor and its own id, at the next version', () => {
+    const archived: Task = cad482().archive(CAD_482, HUGO_ACTOR, NOW);
+
+    expect(archived.snapshot).toEqual({
+      ...taskState(),
+      archive: { at: NOW, by: HUGO_ACTOR, rootId: CAD_482 },
+      updatedAt: NOW,
+      version: 13,
+    });
+  });
+
+  it('archives a subtask under the root it was taken with, keeping its parent, list and status', () => {
+    const archived: Task = Task.restore(subtaskState()).archive(CAD_482, HUGO_ACTOR, NOW);
+
+    expect(archived.snapshot).toMatchObject({
+      parentId: CAD_482,
+      listId: SPRINT_14,
+      status: 'todo',
+      archive: { rootId: CAD_482 },
+      version: 2,
+    });
+  });
+
+  it('refuses a task archived already, which keeps its own archive', () => {
+    expect(() =>
+      cad482({ archive: archiveFrom(CAD_482) }).archive(CAD_482, HUGO_ACTOR, NOW),
+    ).toThrow(InvalidTaskError);
+  });
+
+  it('refuses a top-level task archived from another root, an empty root, actor or instant', () => {
+    expect(() => cad482().archive(CAD_490, HUGO_ACTOR, NOW)).toThrow(InvalidTaskError);
+    expect(() => cad482().archive('', HUGO_ACTOR, NOW)).toThrow(InvalidTaskError);
+    expect(() => cad482().archive(CAD_482, { type: 'user', id: '' }, NOW)).toThrow(
+      InvalidTaskError,
+    );
+    expect(() => cad482().archive(CAD_482, HUGO_ACTOR, new Date(Number.NaN))).toThrow(
+      InvalidTaskError,
+    );
+  });
+});
+
+describe('Task.unarchive: a restoration brings every member back', () => {
+  it('clears the archive at the next version and keeps the parent', () => {
+    const restored: Task = Task.restore(
+      subtaskState({ archive: archiveFrom(CAD_482), version: 2 }),
+    ).unarchive(NOW, false);
+
+    expect(restored.snapshot).toMatchObject({
+      archive: null,
+      parentId: CAD_482,
+      parentKey: TaskKey.of('CAD', 482),
+      updatedAt: NOW,
+      version: 3,
+    });
+  });
+
+  it('detaches the root from a parent that can no longer take it, in its list', () => {
+    const restored: Task = Task.restore(
+      subtaskState({ archive: archiveFrom(CAD_483), version: 2 }),
+    ).unarchive(NOW, true);
+
+    expect(restored.snapshot).toMatchObject({
+      archive: null,
+      parentId: null,
+      parentKey: null,
+      listId: SPRINT_14,
+      version: 3,
+    });
+  });
+
+  it('refuses a live task, and the detachment of a member or of a root without parent', () => {
+    expect(() => cad482().unarchive(NOW, false)).toThrow(InvalidTaskError);
+    expect(() =>
+      Task.restore(subtaskState({ archive: archiveFrom(CAD_482) })).unarchive(NOW, true),
+    ).toThrow(InvalidTaskError);
+    expect(() => cad482({ archive: archiveFrom(CAD_482) }).unarchive(NOW, true)).toThrow(
+      InvalidTaskError,
+    );
+  });
+});
+
+describe('Task.isLive: a task is live while it is in no archive', () => {
+  it('is live without an archive and not live in one', () => {
+    expect(cad482().isLive).toBe(true);
+    expect(cad482({ archive: archiveFrom(CAD_482) }).isLive).toBe(false);
+  });
+
+  it('follows the archive and the restoration', () => {
+    const archived: Task = cad482().archive(CAD_482, HUGO_ACTOR, NOW);
+
+    expect(archived.isLive).toBe(false);
+    expect(archived.unarchive(NOW, false).isLive).toBe(true);
+  });
+});
+
+describe('Task.requireChangeable: an archived task refuses every change until it is restored', () => {
+  const archived = (): Task => cad482({ archive: archiveFrom(CAD_482) });
+
+  it('lets a live task change', () => {
+    expect(() => {
+      cad482().requireChangeable();
+    }).not.toThrow();
+  });
+
+  it('refuses an archived task with its key', () => {
+    const error: unknown = errorOf(() => {
+      archived().requireChangeable();
+    });
+
+    expect(error).toBeInstanceOf(TaskArchivedError);
+    expect((error as TaskArchivedError).key).toBe('CAD-482');
+  });
+
+  it.each<[string, (task: Task) => unknown]>([
+    ['a patch', (task: Task) => task.update({ name: 'Autre' }, ALL_STATUSES, NOW)],
+    ['a patch that changes nothing', (task: Task) => task.update({}, ALL_STATUSES, NOW)],
+    ['a move with its parent', (task: Task) => task.followMove(BUGS_PLACEMENT, NOW)],
+    ['an assignment', (task: Task) => task.assign(candidate(HUGO), NOW)],
+    ['a label added', (task: Task) => task.addLabel('Sécurité', NOW)],
+    ['a label removed', (task: Task) => task.removeLabel('Auth', NOW)],
+    ['a checklist item drafted', (task: Task) => task.draftChecklistItem('Revue')],
+    [
+      'a checklist item added',
+      (task: Task) =>
+        task.addChecklistItem(
+          { id: '019a7300-0000-7000-8000-000000000003', text: 'Revue', done: false, position: 2 },
+          NOW,
+        ),
+    ],
+    ['a checklist item ticked', (task: Task) => task.setChecklistItemDone(RECETTE, true, NOW)],
+    ['a new or attached subtask', (task: Task) => task.asParent(1, 2)],
+  ])('refuses %s', (_case: string, change: (task: Task) => unknown) => {
+    expect(() => change(archived())).toThrow(TaskArchivedError);
+  });
+
+  it('still lets a removed member leave its assignees, a change of task-service itself', () => {
+    const update: TaskUpdate = archived().unassign(INES, NOW);
+
+    expect(update.changed).toEqual(['assigneeIds']);
+    expect(update.task.snapshot.archive).toEqual(archiveFrom(CAD_482));
+  });
+});
+
+describe('Task.restore: a stored archive', () => {
+  it('restores an archived task', () => {
+    expect(cad482({ archive: archiveFrom(CAD_482) }).snapshot.archive).toEqual(
+      archiveFrom(CAD_482),
+    );
+  });
+
+  it.each<[string, Partial<TaskState>]>([
+    ['an invalid instant', { archive: archiveFrom(CAD_482, { at: new Date(Number.NaN) }) }],
+    [
+      'an unknown actor type',
+      { archive: archiveFrom(CAD_482, { by: { type: 'robot' as 'user', id: HUGO } }) },
+    ],
+    ['an empty actor', { archive: archiveFrom(CAD_482, { by: { type: 'user', id: '' } }) }],
+    ['an empty root', { archive: archiveFrom('') }],
+  ])('refuses %s', (_case: string, overrides: Partial<TaskState>) => {
+    expect(() => Task.restore(taskState(overrides))).toThrow(InvalidTaskError);
   });
 });

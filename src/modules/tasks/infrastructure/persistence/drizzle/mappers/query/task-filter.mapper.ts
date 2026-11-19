@@ -6,6 +6,7 @@ import { taskAssignees } from '../../schemas/task/task-assignee.schema.js';
 import { taskLabels } from '../../schemas/task/task-label.schema.js';
 import { tasks } from '../../schemas/task/task.schema.js';
 import { anyOf } from '../page/any-of.mapper.js';
+import { liveTask } from '../task/live-task.mapper.js';
 import { foldText } from './text-fold.mapper.js';
 
 /**
@@ -85,8 +86,9 @@ function searchCondition(search: string): SQL {
  * Function taskFilterCondition
  *
  * @description
- * The `where` of every statement on the tasks of one list: the organization and the list, then
- * each filter that is set. Values of one filter add up (any of them), filters narrow each other
+ * The `where` of every statement on the tasks of one list: the organization, the list and the
+ * live tasks (`liveTask`: an archived task is left out of every collection and count), then each
+ * filter that is set. Values of one filter add up (any of them), filters narrow each other
  * (`openapi/public/tasks.yaml:216`). The page, the total and the groups all use it, so they agree.
  *
  * @param {string} organizationId - The organization of the transaction.
@@ -102,6 +104,7 @@ export function taskFilterCondition(
   const conditions: (SQL | undefined)[] = [
     eq(tasks.organizationId, organizationId),
     eq(tasks.listId, listId),
+    liveTask(),
     filter.rootsOnly ? sql`${tasks.parentId} is null` : undefined,
     filter.statuses === null ? undefined : anyOf(tasks.status, filter.statuses, 'text'),
     filter.priorities === null ? undefined : anyOf(tasks.priority, filter.priorities, 'text'),

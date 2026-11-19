@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ARCHIVED_AT,
   ATELIER_NORD,
   BACKLOG,
   CAMILLE,
@@ -130,6 +131,76 @@ describe('ListLists: a page holds the limit, and limit + 1 rows are read to know
 
     expect(second.items.map((item) => item.list.id)).toEqual([SPRINT_14]);
     expect(second.next).toBeNull();
+  });
+});
+
+describe('ListLists: an archived list leaves the lists of its space, a restored one comes last', () => {
+  /** When Backlog came back from the archives in these specs. */
+  const RESTORED_AT: Date = new Date('2026-11-08T17:00:00Z');
+
+  /**
+   * Atelier Nord with Sprint 14 archived, or with Backlog restored after Sprint 14 was created.
+   *
+   * @param archived - Whether Sprint 14 is archived.
+   * @param restored - Whether Backlog came back from the archives.
+   * @returns The fake store.
+   */
+  function produit(archived: boolean, restored: boolean): InMemorySpaces {
+    return new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [
+        sprintState(
+          archived ? { archivedAt: ARCHIVED_AT, archivedBy: { type: 'user', id: CAMILLE } } : {},
+        ),
+        backlogState(restored ? { restoredAt: RESTORED_AT } : {}),
+      ],
+    });
+  }
+
+  it('leaves an archived list out of the page', async () => {
+    const page = await new ListLists(produit(true, false), atelierNordMembers()).execute(
+      listProduit(),
+    );
+
+    expect(page.items.map((item) => item.list.id)).toEqual([BACKLOG]);
+  });
+
+  it('puts a restored list after the lists created before its restoration', async () => {
+    const page = await new ListLists(produit(false, true), atelierNordMembers()).execute(
+      listProduit(),
+    );
+
+    expect(page.items.map((item) => item.list.id)).toEqual([SPRINT_14, BACKLOG]);
+  });
+
+  it('continues across a restored list, and nothing follows its restoration', async () => {
+    const list = new ListLists(produit(false, true), atelierNordMembers());
+
+    const first = await list.execute(listProduit({ limit: 1 }));
+    const second = await list.execute(listProduit({ limit: 1, after: first.next }));
+    const after = await list.execute(
+      listProduit({ limit: 1, after: { createdAt: RESTORED_AT, id: BACKLOG } }),
+    );
+
+    expect(first.next).toEqual({ createdAt: sprintState().createdAt, id: SPRINT_14 });
+    expect(second.items.map((item) => item.list.id)).toEqual([BACKLOG]);
+    expect(after).toEqual({ items: [], next: null });
+  });
+
+  it('answers the restoration of the last list as the next position', async () => {
+    const page = await new ListLists(
+      new InMemorySpaces({
+        spaces: [spaceState()],
+        lists: [
+          backlogState({ restoredAt: RESTORED_AT }),
+          sprintState({ createdAt: new Date('2026-11-09T09:00:00Z') }),
+        ],
+      }),
+      atelierNordMembers(),
+    ).execute(listProduit({ limit: 1 }));
+
+    expect(page.items.map((item) => item.list.id)).toEqual([BACKLOG]);
+    expect(page.next).toEqual({ createdAt: RESTORED_AT, id: BACKLOG });
   });
 });
 

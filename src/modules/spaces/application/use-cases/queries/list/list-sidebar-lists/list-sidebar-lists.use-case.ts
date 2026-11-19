@@ -12,9 +12,11 @@ import type { ListSidebarListsOutput } from './list-sidebar-lists.output.js';
  * Class ListSidebarLists
  *
  * @description
- * Public operation of the spaces module for the tasks module: the first lists of the sidebar of a
- * member, in sidebar order (the spaces by creation, then the lists of each space by creation),
- * sprints included, at most `limit`, each with the role of the member. Only the lists the member
+ * Public operation of the spaces module for the tasks module: the first live lists of the sidebar
+ * of a member, in sidebar order (the spaces by creation, then the lists of each space by their
+ * position there, `positionInSpaceOf`), sprints included, at most `limit`, each with the role of
+ * the member; an archived list leaves the sidebar and "Accueil" ("Lists" of
+ * `openapi/public/archives.yaml`). Only the lists the member
  * has a role on: a guest gets the lists shared with them, any other member also those the rule of
  * the organization, the ownership of a space or a grant of a space gives them, never one of a
  * space awaiting an owner (the one visibility condition of the lists, then `listRoleOf`). The role

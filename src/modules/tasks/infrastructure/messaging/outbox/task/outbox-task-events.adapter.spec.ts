@@ -1,6 +1,7 @@
 import { eventSchemas } from '@cadenway/contracts/events/task-service';
 import type {
   EventName,
+  TaskArchivedV1,
   TaskAssignedV1,
   TaskCreatedV1,
   TaskStatusChangedV1,
@@ -24,10 +25,13 @@ import {
   MAQUETTES,
   PRODUIT,
   SPRINT_14,
+  CAD_482,
+  archiveFrom,
   subtaskState,
   taskState,
 } from '../../../../domain/tasks.fixture.js';
 import type { TaskField } from '../../../../domain/value-objects/task/task-field.value-object.js';
+import { TaskKey } from '../../../../domain/value-objects/task/task-key.value-object.js';
 import { OutboxTaskEvents } from './outbox-task-events.adapter.js';
 
 /** An append the fake writer received, in the order received. */
@@ -396,6 +400,52 @@ describe('OutboxTaskEvents: the task.* events on the outbox, as the contract def
         assigneeIds: [CAMILLE, INES, HUGO],
       };
       expect(parsed(outbox.appends[0], 'task.assigned.v1')).toStrictEqual(expected);
+    });
+  });
+
+  describe('task.archived.v1 and task.unarchived.v1', () => {
+    it('carries a task an archive took, as task.updated.v1 does without changed, with the key of the root', async () => {
+      await events.taskArchived(
+        Task.restore(subtaskState({ archive: archiveFrom(CAD_482), version: 2 })),
+        TaskKey.of('CAD', 482),
+        camille,
+      );
+
+      const expected: TaskArchivedV1 = {
+        id: EVENT_ID,
+        occurredAt: OCCURRED_AT,
+        ...cad482,
+        version: 2,
+        key: 'CAD-483',
+        rootKey: 'CAD-482',
+        parentKey: 'CAD-482',
+        name: 'Ajouter le bouton SSO',
+        status: 'todo',
+        priority: 'moyenne',
+        assigneeIds: [CAMILLE],
+        dueDate: null,
+        startDate: null,
+        estimateMinutes: null,
+        labels: [],
+      };
+      expect(parsed(outbox.appends[0], 'task.archived.v1')).toStrictEqual(expected);
+      expect(outbox.appends[0]?.data).not.toHaveProperty('changed');
+    });
+
+    it('carries a root restored and detached, its parentKey null and its own key as rootKey', async () => {
+      await events.taskUnarchived(
+        Task.restore(subtaskState({ parentId: null, parentKey: null, version: 3 })),
+        TaskKey.of('CAD', 483),
+        camille,
+      );
+
+      expect(parsed(outbox.appends[0], 'task.unarchived.v1')).toMatchObject({
+        key: 'CAD-483',
+        rootKey: 'CAD-483',
+        parentKey: null,
+        version: 3,
+      });
+      expect(log).toEqual(['append task.unarchived.v1', 'wake']);
     });
   });
 

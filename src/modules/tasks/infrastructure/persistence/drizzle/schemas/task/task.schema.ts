@@ -1,6 +1,7 @@
 import { organizationPolicy } from '@cadenway/nest-common/database';
 import { sql } from 'drizzle-orm';
 import {
+  boolean,
   check,
   date,
   foreignKey,
@@ -57,7 +58,19 @@ function toSqlList(values: readonly string[]): string {
  * - `tasks_list_created_index` on `(organization_id, list_id, created_at, id)` serves every
  *   statement on the tasks of one list (the page, the total, the groups and the counts) as one
  *   range of the list, and the pages in the order of creation (`manual`, `createdAt`), in both
- *   directions, as an ordered scan that stops at the limit.
+ *   directions, as an ordered scan that stops at the limit;
+ * - `tasks_archive_root_index` (partial on `archive_root`) and `tasks_archive_member_index`
+ *   (partial on `archive_root_id is not null`), on the archived tasks only: the roots of the
+ *   archives the most recently archived first ("Archives", tab "Tâches"), and the members of one
+ *   archive (its restoration, the count of its subtasks).
+ *
+ * Archives (P3b-1): `archived_at`, `archived_by_*` and `archive_root_id` are all set or all null.
+ * `archive_root_id` names the task an archive was made from (the root itself for the root), a
+ * foreign key to the same table; a task whose `archived_at` is null is live. `archive_root` is true
+ * exactly for the root of an archive (`archive_root_id = id`, which the check keeps): a column of
+ * its own, because PostgreSQL has no statistics for a comparison of two columns, and with
+ * `archive_root_id = id` as the predicate of the partial index it misjudged the keyset of the
+ * second page of the archives and read every root (`tests/archive-queries.int-spec.ts`).
  */
 export const tasks = pgTable(
   'tasks',
@@ -86,6 +99,15 @@ export const tasks = pgTable(
     createdById: text('created_by_id').notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     version: integer('version').notNull().default(1),
+    // The archive the task belongs to (P3b-1): nullable, so the expand-only migration leaves every
+    // task of the running version live.
+    archivedAt: timestamp('archived_at', { withTimezone: true, precision: 3 }),
+    archivedByType: text('archived_by_type'),
+    archivedById: text('archived_by_id'),
+    archiveRootId: uuid('archive_root_id'),
+    // A constant default: the expand-only migration adds it without rewriting the table, and the
+    // running version, which never writes it, keeps every task live and not a root.
+    archiveRoot: boolean('archive_root').notNull().default(false),
   },
   (table) => [
     primaryKey({ name: 'tasks_pkey', columns: [table.organizationId, table.id] }),
@@ -145,6 +167,33 @@ export const tasks = pgTable(
     check('tasks_created_by_id_check', sql`${table.createdById} <> ''`),
     check('tasks_parent_check', sql`${table.parentId} is null or ${table.parentId} <> ${table.id}`),
     check('tasks_version_check', sql`${table.version} >= 1`),
+    foreignKey({
+      name: 'tasks_archive_root_fkey',
+      columns: [table.organizationId, table.archiveRootId],
+      foreignColumns: [table.organizationId, table.id],
+    }),
+    index('tasks_archive_root_index')
+      .on(table.organizationId, table.archivedAt, table.id)
+      .where(sql`${table.archiveRoot}`),
+    index('tasks_archive_member_index')
+      .on(table.organizationId, table.archiveRootId)
+      .where(sql`${table.archiveRootId} is not null`),
+    check(
+      'tasks_archived_check',
+      sql`(${table.archivedAt} is null) = (${table.archivedByType} is null) and (${table.archivedAt} is null) = (${table.archivedById} is null) and (${table.archivedAt} is null) = (${table.archiveRootId} is null)`,
+    ),
+    check(
+      'tasks_archive_root_check',
+      sql`${table.archiveRoot} = coalesce(${table.archiveRootId} = ${table.id}, false)`,
+    ),
+    check(
+      'tasks_archived_by_type_check',
+      sql`${table.archivedByType} is null or ${table.archivedByType} in (${sql.raw(toSqlList(ACTOR_TYPES))})`,
+    ),
+    check(
+      'tasks_archived_by_id_check',
+      sql`${table.archivedById} is null or ${table.archivedById} <> ''`,
+    ),
     organizationPolicy('tasks_organization_isolation'),
   ],
 );

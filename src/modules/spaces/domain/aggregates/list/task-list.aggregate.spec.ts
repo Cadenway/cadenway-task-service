@@ -3,13 +3,17 @@ import { describe, expect, it } from 'vitest';
 import { InvalidListError } from '../../errors/list/invalid-list.error.js';
 import { SprintDatesInvalidError } from '../../errors/list/sprint-dates-invalid.error.js';
 import {
+  ARCHIVED_AT,
   ATELIER_NORD,
+  CAMILLE,
   PRODUIT,
   SPRINT_14_GOAL,
   backlogState,
   sprintState,
 } from '../../spaces.fixture.js';
+import type { ListActor } from '../../value-objects/list/list-actor.value-object.js';
 import type { NewTaskList } from '../../value-objects/list/new-task-list.value-object.js';
+import type { TaskListArchiveChange } from '../../value-objects/list/task-list-archive-change.value-object.js';
 import type { TaskListDraft } from '../../value-objects/list/task-list-draft.value-object.js';
 import type { TaskListState } from '../../value-objects/list/task-list-state.value-object.js';
 import type { TaskListUpdate } from '../../value-objects/list/task-list-update.value-object.js';
@@ -507,5 +511,165 @@ describe('TaskList.recordAccessChange: a change of the grants takes the next ver
     const list: TaskList = sprint14({ version: 5 }).recordAccessChange();
 
     expect(list.snapshot).toEqual(sprintState({ version: 6 }));
+  });
+});
+
+/** Camille Martin, who archives Sprint 14 in the specs. */
+const BY_CAMILLE: ListActor = { type: 'user', id: CAMILLE };
+
+/** When the specs restore a list ("Sprint 13 est de retour dans Produit."). */
+const RESTORED_AT: Date = new Date('2026-11-08T17:00:00Z');
+
+/**
+ * Restores Sprint 14 archived by Camille Martin on 3 November, at version 4.
+ *
+ * @param overrides - Fields to replace.
+ * @returns The archived list.
+ */
+function archivedSprint14(overrides: Partial<TaskListState> = {}): TaskList {
+  return sprint14({ archivedAt: ARCHIVED_AT, archivedBy: BY_CAMILLE, version: 4, ...overrides });
+}
+
+describe('TaskList.archive: an archive records when and by whom, at the next version', () => {
+  it('archives a live list at the next version and keeps everything else', () => {
+    const { list, changed }: TaskListArchiveChange = sprint14({ version: 3 }).archive(
+      BY_CAMILLE,
+      ARCHIVED_AT,
+    );
+
+    expect(changed).toBe(true);
+    expect(list.snapshot).toEqual(
+      sprintState({ archivedAt: ARCHIVED_AT, archivedBy: BY_CAMILLE, version: 4 }),
+    );
+  });
+
+  it('does not change the list it was called on', () => {
+    const live: TaskList = sprint14();
+
+    live.archive(BY_CAMILLE, ARCHIVED_AT);
+
+    expect(live.snapshot).toEqual(sprintState());
+  });
+
+  it('keeps when a list came back before, which an archive does not clear', () => {
+    const { list }: TaskListArchiveChange = sprint14({ restoredAt: RESTORED_AT }).archive(
+      BY_CAMILLE,
+      ARCHIVED_AT,
+    );
+
+    expect(list.snapshot.restoredAt).toEqual(RESTORED_AT);
+  });
+
+  it('keeps an archived list, its archive and its version: archiving again changes nothing', () => {
+    const archived: TaskList = archivedSprint14();
+
+    const change: TaskListArchiveChange = archived.archive(
+      { type: 'user', id: '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b33' },
+      RESTORED_AT,
+    );
+
+    expect(change.changed).toBe(false);
+    expect(change.list).toBe(archived);
+    expect(change.list.snapshot).toMatchObject({
+      archivedAt: ARCHIVED_AT,
+      archivedBy: BY_CAMILLE,
+      version: 4,
+    });
+  });
+
+  it.each<[string, ListActor]>([
+    ['an unknown type', { type: 'robot', id: CAMILLE } as unknown as ListActor],
+    ['an empty id', { type: 'user', id: '' }],
+  ])('refuses an actor with %s', (_why: string, by: ListActor) => {
+    expect(() => sprint14().archive(by, ARCHIVED_AT)).toThrow(InvalidListError);
+  });
+
+  it('refuses an invalid instant', () => {
+    expect(() => sprint14().archive(BY_CAMILLE, new Date(Number.NaN))).toThrow(InvalidListError);
+  });
+});
+
+describe('TaskList.unarchive: a restoration puts the list back at the end of its space', () => {
+  it('clears the archive, records when it came back and takes the next version', () => {
+    const { list, changed }: TaskListArchiveChange = archivedSprint14().unarchive(RESTORED_AT);
+
+    expect(changed).toBe(true);
+    expect(list.snapshot).toEqual(sprintState({ restoredAt: RESTORED_AT, version: 5 }));
+  });
+
+  it('keeps a live list and its version: restoring it changes nothing', () => {
+    const live: TaskList = sprint14({ version: 2 });
+
+    const change: TaskListArchiveChange = live.unarchive(RESTORED_AT);
+
+    expect(change.changed).toBe(false);
+    expect(change.list).toBe(live);
+    expect(change.list.snapshot.restoredAt).toBeNull();
+  });
+
+  it('refuses an invalid instant', () => {
+    expect(() => archivedSprint14().unarchive(new Date(Number.NaN))).toThrow(InvalidListError);
+  });
+
+  it('archives a restored list again with a new archive', () => {
+    const restored: TaskList = archivedSprint14().unarchive(RESTORED_AT).list;
+    const later: Date = new Date('2026-11-10T08:00:00Z');
+
+    const { list }: TaskListArchiveChange = restored.archive(BY_CAMILLE, later);
+
+    expect(list.snapshot).toMatchObject({ archivedAt: later, restoredAt: RESTORED_AT, version: 6 });
+  });
+});
+
+describe('TaskList: an archived list still changes', () => {
+  it('renames an archived list and keeps its archive', () => {
+    const { list, changed }: TaskListUpdate = archivedSprint14().update({ name: 'Sprint 13' });
+
+    expect(changed).toEqual(['name']);
+    expect(list.snapshot).toMatchObject({
+      name: 'Sprint 13',
+      archivedAt: ARCHIVED_AT,
+      archivedBy: BY_CAMILLE,
+      version: 5,
+    });
+  });
+
+  it('takes the next version for a change of the grants of an archived list', () => {
+    expect(archivedSprint14().recordAccessChange().snapshot).toMatchObject({
+      archivedAt: ARCHIVED_AT,
+      version: 5,
+    });
+  });
+});
+
+describe('TaskList.restore: a stored archive is whole', () => {
+  it('restores an archived list unchanged', () => {
+    expect(archivedSprint14().snapshot).toEqual(
+      sprintState({ archivedAt: ARCHIVED_AT, archivedBy: BY_CAMILLE, version: 4 }),
+    );
+  });
+
+  it('refuses an archive with an instant and no actor, or an actor and no instant', () => {
+    expect(() => sprint14({ archivedAt: ARCHIVED_AT, archivedBy: null })).toThrow(InvalidListError);
+    expect(() => sprint14({ archivedAt: null, archivedBy: BY_CAMILLE })).toThrow(InvalidListError);
+  });
+
+  it('refuses a stored actor of an unknown type or with an empty id', () => {
+    expect(() =>
+      sprint14({
+        archivedAt: ARCHIVED_AT,
+        archivedBy: { type: 'robot', id: CAMILLE } as unknown as ListActor,
+      }),
+    ).toThrow(InvalidListError);
+    expect(() =>
+      sprint14({ archivedAt: ARCHIVED_AT, archivedBy: { type: 'user', id: '' } }),
+    ).toThrow(InvalidListError);
+  });
+
+  it('refuses an invalid instant of the archive or of the restoration', () => {
+    expect(() => sprint14({ archivedAt: new Date(Number.NaN), archivedBy: BY_CAMILLE })).toThrow(
+      InvalidListError,
+    );
+    expect(() => sprint14({ restoredAt: new Date(Number.NaN) })).toThrow(InvalidListError);
   });
 });

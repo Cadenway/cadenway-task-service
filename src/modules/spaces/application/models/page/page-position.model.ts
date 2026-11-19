@@ -2,9 +2,11 @@
  * Interface PagePosition
  *
  * @description
- * Where a page of spaces or lists starts: after the row created at `createdAt` with the id `id`,
- * the order of their creation with the id as tie-breaker. The presentation layer encodes it in the
- * opaque cursor and checks the form of both values when it decodes one.
+ * Where a page of spaces or lists starts: after the row placed at `createdAt` with the id `id`,
+ * the id as tie-breaker. Spaces are placed by their creation; the lists of a space by their
+ * position there (`positionInSpaceOf`: their last restoration from the archives, or else their
+ * creation). The presentation layer encodes it in the opaque cursor and checks the form of both
+ * values when it decodes one.
  */
 export interface PagePosition {
   // #region Properties
@@ -12,7 +14,8 @@ export interface PagePosition {
    * Property createdAt
    *
    * @description
-   * Creation instant of the last row of the previous page.
+   * The instant that places the last row of the previous page: the creation of a space, the
+   * position of a list in its space.
    *
    * @type {Date}
    * @readonly

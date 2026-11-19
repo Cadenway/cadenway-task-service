@@ -15,9 +15,11 @@ import type { FindVisibleSpaceListsOutput } from './find-visible-space-lists.out
  * Class FindVisibleSpaceLists
  *
  * @description
- * Public operation of the spaces module for the tasks module: the lists and sprints of a space the
- * member sees that they have a role on, each with that role (`callerRole`), unpaged and in the
- * order of their creation (the tasks module counts them all, then pages). A space that does not
+ * Public operation of the spaces module for the tasks module: the live lists and sprints of a
+ * space the member sees that they have a role on, each with that role (`callerRole`), unpaged and
+ * in their order in the space (`positionInSpaceOf`; the tasks module counts them all, then pages);
+ * an archived list leaves the overview of its space ("Lists" of `openapi/public/archives.yaml`).
+ * A space that does not
  * exist, a space of another organization and a space the member does not see (`canSeeSpace`: a
  * private space of another not shared with them, a guest without a grant of one of its lists, a
  * space awaiting an owner) all answer `null`, so no case tells another apart; a member who sees

@@ -18,6 +18,10 @@ import {
   refusalOf,
   subtaskState,
   taskState,
+  archiveFrom,
+  ARCHIVED_AT,
+  HUGO_ACTOR,
+  atelierNordLists,
 } from '../../../tasks.fixture.js';
 import type { GetHomeInput } from './get-home.input.js';
 import { GetHome } from './get-home.use-case.js';
@@ -259,5 +263,56 @@ describe('GetHome: the read runs in one read-only transaction on one snapshot', 
     expect(tasks.runs).toBe(1);
     expect(tasks.readOnlyRuns).toBe(1);
     expect(tasks.snapshotRuns).toBe(1);
+  });
+});
+
+describe('GetHome: archived tasks and lists leave "Accueil", the tasks of an archived list stay', () => {
+  it('leaves an archived task out of the stats and the priorities', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [
+        queryTask(1, {
+          assigneeIds: [CAMILLE],
+          labels: ['Archivé'],
+          dueDate: '2026-11-08',
+          archive: archiveFrom(queryTask(1).id),
+          version: 2,
+        }),
+        queryTask(2, { assigneeIds: [CAMILLE], dueDate: '2026-11-08' }),
+      ],
+    });
+
+    const home = await new GetHome(
+      tasks,
+      atelierNordMembers(),
+      new InMemorySpaceDirectory(),
+    ).execute({
+      organizationId: ATELIER_NORD,
+      actorUserId: CAMILLE,
+      userId: CAMILLE,
+      today: '2026-11-08',
+    });
+
+    expect(home.stats).toMatchObject({ assigned: 1, dueToday: 1 });
+    expect(home.priorities.map((item) => item.key)).toEqual(['CAD-802']);
+  });
+
+  it('leaves an archived sprint out of the sprints and the lists, its tasks in the stats', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [queryTask(2, { assigneeIds: [CAMILLE], dueDate: '2026-11-08' })],
+    });
+    const spaces = new InMemorySpaceDirectory({
+      lists: atelierNordLists({ archivedAt: ARCHIVED_AT, archivedBy: HUGO_ACTOR }),
+    });
+
+    const home = await new GetHome(tasks, atelierNordMembers(), spaces).execute({
+      organizationId: ATELIER_NORD,
+      actorUserId: CAMILLE,
+      userId: CAMILLE,
+      today: '2026-11-08',
+    });
+
+    expect(home.sprints).toEqual([]);
+    expect(home.lists.map((item) => item.list.id)).not.toContain(SPRINT_14);
+    expect(home.stats.assigned).toBe(1);
   });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ARCHIVED_AT,
   ATELIER_NORD,
   BACKLOG,
   CAMILLE,
@@ -70,6 +71,35 @@ describe('ListVisibleListIds: every list a member has a role on, in sidebar orde
 
     expect(ofCamille.listIds).toEqual([BACKLOG, SPRINT_14, CAMPAGNES]);
     expect(ofHugo.listIds).toEqual([BACKLOG, MAQUETTES, CAMPAGNES]);
+  });
+
+  it('keeps an archived list, whose tasks stay in "Mes tâches" and "Accueil"', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [
+        sprintState(),
+        backlogState({ archivedAt: ARCHIVED_AT, archivedBy: { type: 'user', id: CAMILLE } }),
+      ],
+    });
+
+    const output = await new ListVisibleListIds(spaces).execute(visible());
+
+    expect(output.listIds).toEqual([BACKLOG, SPRINT_14]);
+  });
+
+  it('puts a restored list at the end of its space, before the next space', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState(), marketingState()],
+      lists: [
+        sprintState(),
+        backlogState({ restoredAt: new Date('2026-11-08T17:00:00Z') }),
+        backlogState({ id: CAMPAGNES, spaceId: MARKETING, name: 'Campagnes' }),
+      ],
+    });
+
+    const output = await new ListVisibleListIds(spaces).execute(visible());
+
+    expect(output.listIds).toEqual([SPRINT_14, BACKLOG, CAMPAGNES]);
   });
 
   it('gives a guest the lists shared with them only', async () => {

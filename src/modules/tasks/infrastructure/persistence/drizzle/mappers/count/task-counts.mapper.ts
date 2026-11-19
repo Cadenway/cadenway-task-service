@@ -4,14 +4,15 @@ import type { SQL } from 'drizzle-orm';
 import { tasks } from '../../schemas/task/task.schema.js';
 import { assignedTasksCondition, assignedTasksSource } from '../assignee/assigned-task.mapper.js';
 import { anyOf } from '../page/any-of.mapper.js';
+import { liveTask } from '../task/live-task.mapper.js';
 import { hasStatus, isClosed, isLateOn, isNotClosed } from './closed-status.mapper.js';
 
 /**
  * Function countsOfListsStatement
  *
  * @description
- * The counts of the top-level tasks of lists, one row per list that has a task, in one grouped
- * scan: all, not closed (`CLOSED_STATUS_KEYS`), `done`, `cancelled`, and late (`isLate` of the
+ * The counts of the live top-level tasks of lists (`liveTask`), one row per list that has one, in
+ * one grouped scan: all, not closed (`CLOSED_STATUS_KEYS`), `done`, `cancelled`, and late (`isLate` of the
  * lateness policy: not closed and due strictly before `today`).
  *
  * @param {string} organizationId - The organization of the transaction.
@@ -24,7 +25,7 @@ export function countsOfListsStatement(
   listIds: readonly string[],
   today: string,
 ): SQL {
-  return sql`select ${tasks.listId} as "listId", count(*)::int as "total", (count(*) filter (where ${isNotClosed()}))::int as "open", (count(*) filter (where ${hasStatus('done')}))::int as "done", (count(*) filter (where ${hasStatus('cancelled')}))::int as "cancelled", (count(*) filter (where ${isLateOn(today)}))::int as "late" from ${tasks} where ${and(eq(tasks.organizationId, organizationId), anyOf(tasks.listId, listIds, 'uuid'), isNull(tasks.parentId))} group by ${tasks.listId}`;
+  return sql`select ${tasks.listId} as "listId", count(*)::int as "total", (count(*) filter (where ${isNotClosed()}))::int as "open", (count(*) filter (where ${hasStatus('done')}))::int as "done", (count(*) filter (where ${hasStatus('cancelled')}))::int as "cancelled", (count(*) filter (where ${isLateOn(today)}))::int as "late" from ${tasks} where ${and(eq(tasks.organizationId, organizationId), anyOf(tasks.listId, listIds, 'uuid'), isNull(tasks.parentId), liveTask())} group by ${tasks.listId}`;
 }
 
 /**

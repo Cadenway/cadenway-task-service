@@ -1,18 +1,15 @@
-import { canEdit } from '../../../../../domain/policies/access/access-role.policy.js';
 import type { TaskList } from '../../../../../domain/aggregates/list/task-list.aggregate.js';
-import type { Space } from '../../../../../domain/aggregates/space/space.aggregate.js';
 import { SprintDatesInvalidError } from '../../../../../domain/errors/list/sprint-dates-invalid.error.js';
 import type { GrantEntry } from '../../../../../domain/value-objects/access/grant-entry.value-object.js';
 import type { TaskListUpdate } from '../../../../../domain/value-objects/list/task-list-update.value-object.js';
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
 import type { StoredGrant } from '../../../../models/access/stored-grant.model.js';
-import type { ViewerAccess } from '../../../../models/access/viewer-access.model.js';
 import { SpaceRefusal } from '../../../../models/space/space-refusal.model.js';
 import type { SpacesStore } from '../../../../models/transactions/spaces-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpacesUnitOfWork } from '../../../../ports/outbound/transactions/space/spaces-unit-of-work.port.js';
-import { AccessResolver } from '../../../../services/access/access-resolver.service.js';
+import { EditableListLocator } from '../../../../services/list/editable-list-locator.service.js';
 import { ViewerResolver } from '../../../../services/member/viewer-resolver.service.js';
 import type { UpdateListInput } from './update-list.input.js';
 import type { UpdateListOutput } from './update-list.output.js';
@@ -22,10 +19,11 @@ import type { UpdateListOutput } from './update-list.output.js';
  *
  * @description
  * Changes a list or sprint the actor has `edit` on (`PATCH /internal/v1/lists/{listId}`). The list
- * is locked until the end of the transaction, so two changes of one list apply one after the
- * other. Refusals, in this order: a list that does not exist, or that the actor does not see,
- * answers `list-not-found`; one they see without `edit` `role-insufficient` with their role; an
- * `If-Match` that does not name the stored version `version-mismatch` with it; the domain decides
+ * is locked until the end of the transaction by the guard of every write of a list
+ * (`EditableListLocator`), so two changes of one list apply one after the other. Refusals, in this
+ * order: a list that does not exist, or that the actor does not see, answers `list-not-found`; one
+ * they see without `edit` `role-insufficient` with their role; an `If-Match` that does not name the
+ * stored version `version-mismatch` with it; the domain decides
  * what changes (`TaskList.update`), and a sprint that ends before it starts answers
  * `sprint-dates-invalid`. A patch that changes nothing writes nothing, appends no event and
  * answers the stored version. A change writes the list at its next version, ONE for the whole
@@ -61,15 +59,15 @@ export class UpdateList {
   private readonly viewers: ViewerResolver;
 
   /**
-   * Property access
+   * Property lists
    *
    * @description
-   * Decides what the actor reaches of the list.
+   * Locks the list and applies the refusals of a write.
    *
-   * @type {AccessResolver}
+   * @type {EditableListLocator}
    * @readonly
    */
-  private readonly access: AccessResolver;
+  private readonly lists: EditableListLocator;
   // #endregion
 
   // #region Constructor
@@ -86,7 +84,7 @@ export class UpdateList {
   public constructor(unitOfWork: SpacesUnitOfWork, members: MemberDirectory) {
     this.unitOfWork = unitOfWork;
     this.viewers = new ViewerResolver(members);
-    this.access = new AccessResolver();
+    this.lists = new EditableListLocator();
   }
   // #endregion
 
@@ -111,33 +109,13 @@ export class UpdateList {
         input.actorUserId,
         true,
       );
-      const stored: TaskList | null = await store.lists.lock(input.organizationId, input.listId);
-      if (stored === null) {
-        throw new SpaceRefusal({ reason: 'list-not-found' });
-      }
-      const space: Space | null = await store.spaces.find(
-        input.organizationId,
-        stored.snapshot.spaceId,
-      );
-      if (space === null) {
-        throw new SpaceRefusal({ reason: 'list-not-found' });
-      }
-      const access: ViewerAccess = await this.access.resolve(
-        store.grants,
+      const stored: TaskList = await this.lists.lock(
+        store,
         viewer,
-        space.snapshot,
-        stored.snapshot,
+        input.organizationId,
+        input.listId,
+        input.expectedVersions,
       );
-      if (access.listRole === null) {
-        throw new SpaceRefusal({ reason: 'list-not-found' });
-      }
-      if (!canEdit(access.listRole)) {
-        throw new SpaceRefusal({ reason: 'role-insufficient', role: access.listRole });
-      }
-      const storedVersion: number = stored.snapshot.version;
-      if (input.expectedVersions !== null && !input.expectedVersions.includes(storedVersion)) {
-        throw new SpaceRefusal({ reason: 'version-mismatch', version: storedVersion });
-      }
       const { list, changed, accessChanged }: TaskListUpdate = this.applyPatch(stored, input);
       if (changed.length > 0 || accessChanged) {
         const actor: EventActor = { type: 'user', id: input.actorUserId };

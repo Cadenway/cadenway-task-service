@@ -17,8 +17,11 @@ const SPRINT_14: ListSummaryView = {
     color: 'bleu',
     sprint: { startDate: '2026-11-02', endDate: '2026-11-15', goal: null },
     createdAt: new Date('2026-11-01T08:00:00.000Z'),
+    position: new Date('2026-11-01T08:00:00.000Z'),
     version: 2,
     organizationAccess: true,
+    archivedAt: null,
+    archivedBy: null,
     callerRole: 'edit',
   },
   counts: { total: 98, open: 72, done: 24, cancelled: 2, late: 3 },
@@ -39,7 +42,7 @@ describe('the overview of a space', () => {
   });
 
   it('gives the next page a cursor of this space that decodes to its position', () => {
-    const next = { createdAt: SPRINT_14.list.createdAt, id: SPRINT_14.list.id };
+    const next = { position: SPRINT_14.list.position, id: SPRINT_14.list.id };
 
     const body = toSpaceOverview({
       spaceId: SPACE,

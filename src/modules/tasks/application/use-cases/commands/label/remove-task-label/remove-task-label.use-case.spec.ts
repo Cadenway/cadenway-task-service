@@ -12,6 +12,7 @@ import {
   refusalOf,
   sprint14SharedWith,
   taskState,
+  archiveFrom,
 } from '../../../tasks.fixture.js';
 import type { RemoveTaskLabelInput } from './remove-task-label.input.js';
 import { RemoveTaskLabel } from './remove-task-label.use-case.js';
@@ -108,4 +109,33 @@ describe('RemoveTaskLabel: a change needs edit on the list of the task', () => {
       expect(tasks.events).toEqual([]);
     },
   );
+});
+
+describe('RemoveTaskLabel: an archived task refuses the change with task-archived', () => {
+  it('answers task-archived with its key, after the role and before If-Match, and writes nothing', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState({ archive: archiveFrom(CAD_482) })] });
+    const useCase = new RemoveTaskLabel(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
+
+    expect(await refusalOf(useCase.execute(removeLabel({ expectedVersions: [3] })))).toEqual({
+      reason: 'task-archived',
+      key: 'CAD-482',
+    });
+    expect(tasks.stored(CAD_482)).toEqual(taskState({ archive: archiveFrom(CAD_482) }));
+    expect(tasks.events).toEqual([]);
+    expect(tasks.activity.size).toBe(0);
+  });
+
+  it('answers role-insufficient before task-archived', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState({ archive: archiveFrom(CAD_482) })] });
+    const useCase = new RemoveTaskLabel(
+      tasks,
+      atelierNordMembers(),
+      sprint14SharedWith({ [HUGO]: 'view' }),
+    );
+
+    expect(await refusalOf(useCase.execute(removeLabel({ actorUserId: HUGO })))).toEqual({
+      reason: 'role-insufficient',
+      role: 'view',
+    });
+  });
 });

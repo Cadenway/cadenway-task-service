@@ -1,5 +1,6 @@
-import type { PagePosition } from '../../../../application/models/page/page-position.model.js';
-import { toCursor, toPosition } from '../page/page-cursor.mapper.js';
+import type { ListPosition } from '../../../../application/models/placement/list-position.model.js';
+import { decodeInstantCursor, encodeInstantCursor } from '../page/page-cursor.mapper.js';
+import type { InstantPosition } from '../page/page-cursor.mapper.js';
 
 /**
  * Function spaceOverviewFilters
@@ -23,17 +24,22 @@ function spaceOverviewFilters(spaceId: string): {
  * Function toSpaceOverviewCursor
  *
  * @description
- * Encodes where the next page of the overview of a space starts as the opaque cursor of the kit.
+ * Encodes where the next page of the overview of a space starts as the opaque cursor of the kit:
+ * the position of the last list of the page in the order of the sidebar (its restoration, else
+ * its creation) and its id.
  *
- * @param {PagePosition | null} position - Where the next page starts, or `null`.
+ * @param {ListPosition | null} position - Where the next page starts, or `null`.
  * @param {string} spaceId - The space of the path.
  * @returns {string | null} The cursor, or `null` on the last page.
  */
 export function toSpaceOverviewCursor(
-  position: PagePosition | null,
+  position: ListPosition | null,
   spaceId: string,
 ): string | null {
-  return toCursor(position, spaceOverviewFilters(spaceId));
+  return encodeInstantCursor(
+    position === null ? null : { instant: position.position, id: position.id },
+    spaceOverviewFilters(spaceId),
+  );
 }
 
 /**
@@ -44,12 +50,16 @@ export function toSpaceOverviewCursor(
  *
  * @param {string | undefined} cursor - The `cursor` query parameter.
  * @param {string} spaceId - The space of the path.
- * @returns {PagePosition | null} Where the page starts, or `null` for the first page.
+ * @returns {ListPosition | null} Where the page starts, or `null` for the first page.
  * @throws {ProblemException} `400 request.invalid` for a cursor that is not one of this space.
  */
 export function toSpaceOverviewPosition(
   cursor: string | undefined,
   spaceId: string,
-): PagePosition | null {
-  return toPosition(cursor, spaceOverviewFilters(spaceId));
+): ListPosition | null {
+  const position: InstantPosition | null = decodeInstantCursor(
+    cursor,
+    spaceOverviewFilters(spaceId),
+  );
+  return position === null ? null : { position: position.instant, id: position.id };
 }

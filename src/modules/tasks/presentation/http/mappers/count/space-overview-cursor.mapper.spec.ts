@@ -1,7 +1,7 @@
 import { ProblemException } from '@cadenway/nest-common';
 import { describe, expect, it } from 'vitest';
 
-import type { PagePosition } from '../../../../application/models/page/page-position.model.js';
+import type { ListPosition } from '../../../../application/models/placement/list-position.model.js';
 import { toSpaceOverviewCursor, toSpaceOverviewPosition } from './space-overview-cursor.mapper.js';
 
 const spaceId = '019a7003-4d5e-7f6a-8b9c-0d1e2f3a4b02';
@@ -25,8 +25,8 @@ function refusalOf(decode: () => unknown): ProblemException {
 }
 
 describe('the cursor of the overview of a space', () => {
-  const position: PagePosition = {
-    createdAt: new Date('2026-11-18T10:15:30.123Z'),
+  const position: ListPosition = {
+    position: new Date('2026-11-18T10:15:30.123Z'),
     id: '019a7003-4d5e-7f6a-8b9c-0d1e2f3a4b01',
   };
 

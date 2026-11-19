@@ -8,6 +8,10 @@ import { spaceDirectoryProvider } from './composition/providers/adapters/space/s
 import { tasksUnitOfWorkProvider } from './composition/providers/adapters/task/tasks-unit-of-work.provider.js';
 import { listListActivityProvider } from './composition/providers/use-cases/activity/list-list-activity.provider.js';
 import { listTaskActivityProvider } from './composition/providers/use-cases/activity/list-task-activity.provider.js';
+import { archiveTaskProvider } from './composition/providers/use-cases/archive/archive-task.provider.js';
+import { listArchivedListsProvider } from './composition/providers/use-cases/archive/list-archived-lists.provider.js';
+import { listArchivedTasksProvider } from './composition/providers/use-cases/archive/list-archived-tasks.provider.js';
+import { unarchiveTaskProvider } from './composition/providers/use-cases/archive/unarchive-task.provider.js';
 import { assignTaskProvider } from './composition/providers/use-cases/assignee/assign-task.provider.js';
 import { unassignRemovedMemberProvider } from './composition/providers/use-cases/assignee/unassign-removed-member.provider.js';
 import { unassignTaskProvider } from './composition/providers/use-cases/assignee/unassign-task.provider.js';
@@ -39,6 +43,8 @@ import { UserTasksController } from './presentation/http/controllers/user/user-t
 import { ListActivityController } from './presentation/http/controllers/activity/list-activity.controller.js';
 import { TaskAccessController } from './presentation/http/controllers/access/task-access.controller.js';
 import { TaskActivityController } from './presentation/http/controllers/activity/task-activity.controller.js';
+import { ArchivesController } from './presentation/http/controllers/archive/archives.controller.js';
+import { TaskArchiveController } from './presentation/http/controllers/archive/task-archive.controller.js';
 import { TaskAssigneesController } from './presentation/http/controllers/assignee/task-assignees.controller.js';
 import { ChecklistItemsController } from './presentation/http/controllers/checklist/checklist-items.controller.js';
 import { TaskLabelsController } from './presentation/http/controllers/label/task-labels.controller.js';
@@ -86,7 +92,8 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
  * @description
  * Composition root of the tasks (P3a): their subtasks, assignees, labels and checklist, the activity
  * log of a task and of a list, and the queries (the tasks of a list with their filters, sorts and
- * groups, the counters of a list and of a space, the labels, "Mes tâches" and "Accueil"). The use
+ * groups, the counters of a list and of a space, the labels, "Mes tâches" and "Accueil") and the
+ * archives of the tasks (P3b-1: archive, restoration and the page "Archives"). The use
  * cases run on one tenant unit of work that appends
  * their events to the outbox in the same transaction. They read the role of the actor, and of the
  * people to assign, from `OrganizationMembersModule` through the `MemberDirectory` port, never from
@@ -114,6 +121,8 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
     SubtasksController,
     ChecklistItemsController,
     TaskActivityController,
+    TaskArchiveController,
+    ArchivesController,
     TaskAccessController,
   ],
   providers: [
@@ -145,6 +154,10 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
     checkTaskAccessProvider,
     findTaskReferenceProvider,
     findTaskReferencesProvider,
+    archiveTaskProvider,
+    unarchiveTaskProvider,
+    listArchivedTasksProvider,
+    listArchivedListsProvider,
   ],
   exports: [UnassignRemovedMember, FindTaskReference, FindTaskReferences],
 })

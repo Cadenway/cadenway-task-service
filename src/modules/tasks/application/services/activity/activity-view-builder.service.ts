@@ -1,7 +1,7 @@
 import type { ActivityEntryState } from '../../../domain/value-objects/activity/activity-entry-state.value-object.js';
 import type { TaskReader } from '../../ports/outbound/persistence/task/task-reader.port.js';
 import type { ActivityEntryView } from '../../projections/activity/activity-entry-view.projection.js';
-import type { TaskReferenceView } from '../../projections/task/task-reference.projection.js';
+import type { TaskReferenceInListView } from '../../projections/task/task-reference-in-list.projection.js';
 
 /**
  * Class ActivityViewBuilder
@@ -32,10 +32,10 @@ export class ActivityViewBuilder {
     const taskIds: readonly string[] = [
       ...new Set<string>(entries.map((entry: ActivityEntryState): string => entry.taskId)),
     ];
-    const references: ReadonlyMap<string, TaskReferenceView> =
+    const references: ReadonlyMap<string, TaskReferenceInListView> =
       taskIds.length === 0 ? new Map() : await reader.references(organizationId, taskIds);
     return entries.map((entry: ActivityEntryState): ActivityEntryView => {
-      const task: TaskReferenceView | undefined = references.get(entry.taskId);
+      const task: TaskReferenceInListView | undefined = references.get(entry.taskId);
       if (task === undefined) {
         throw new Error(
           `The activity entry ${entry.id} names the task ${entry.taskId}, which the organization does not hold.`,
@@ -46,7 +46,7 @@ export class ActivityViewBuilder {
         occurredAt: entry.occurredAt,
         kind: entry.change.kind,
         actor: entry.actor,
-        task,
+        task: { key: task.key, name: task.name, status: task.status },
         listId: entry.listId,
         change: entry.change,
       };

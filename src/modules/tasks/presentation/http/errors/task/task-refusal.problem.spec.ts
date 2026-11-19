@@ -27,6 +27,7 @@ describe('answerRefusals', () => {
       'access.role-insufficient',
       { role: 'comment', requiredRole: 'edit' },
     ],
+    [{ reason: 'task-archived', key: 'CAD-430' }, 409, 'task.archived', { key: 'CAD-430' }],
     [{ reason: 'version-mismatch', version: 13 }, 412, 'request.version-mismatch', { version: 13 }],
     [
       { reason: 'status-hidden', status: 'review' },
@@ -57,8 +58,8 @@ describe('answerRefusals', () => {
     [{ reason: 'subtask-limit-reached' }, 422, 'task.subtask-limit-reached', undefined],
   ];
 
-  it('covers the twenty reasons of a refusal', () => {
-    expect(new Set(answers.map(([refusal]) => refusal.reason)).size).toBe(20);
+  it('covers the twenty-one reasons of a refusal', () => {
+    expect(new Set(answers.map(([refusal]) => refusal.reason)).size).toBe(21);
   });
 
   it.each(answers)(

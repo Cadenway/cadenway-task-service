@@ -7,6 +7,7 @@ import type { TaskDraft } from '../../../../../domain/value-objects/task/task-dr
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
 import type { KeyAllocation } from '../../../../models/placement/key-allocation.model.js';
+import type { LocateRequest } from '../../../../models/task/locate-request.model.js';
 import type { LocatedTask } from '../../../../models/task/located-task.model.js';
 import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
@@ -28,12 +29,13 @@ import type { CreateSubtaskOutput } from './create-subtask.output.js';
  * @description
  * Creates a subtask under a task the actor sees (`POST /internal/v1/tasks/{taskKey}/subtasks`).
  * The subtask takes the list of its parent, on which the actor needs `edit`
- * (`role-insufficient`, after `task-not-found`). Locks follow the order of the module: the membership
+ * (`role-insufficient`, after `task-not-found`); an archived parent takes no subtask (`task-archived`, after
+ * `role-insufficient`). Locks follow the order of the module: the membership
  * of the actor, those of the assignees (explicit, or the first assignee of the parent, whose
  * account is read before the parent is locked), then the parent `FOR NO KEY UPDATE`, then the
  * key counter. A membership is never locked while the parent is: a removal locks the membership
  * and then the tasks, so the opposite order could deadlock with it. The domain decides the depth,
- * the limit of 25 and every other rule (`Task.create`). A parent whose first assignee is no
+ * the limit of 25 live subtasks and every other rule (`Task.create`). A parent whose first assignee is no
  * longer a member other than a guest gives a subtask without assignee, with no refusal. The
  * parent itself is not changed and emits nothing.
  *
@@ -112,7 +114,7 @@ export class CreateSubtask {
    * @param {CreateSubtaskInput} input - The actor, the parent and the subtask.
    * @returns {Promise<CreateSubtaskOutput>} The subtask created.
    * @throws {TaskRefusal} `organization-not-found`, `task-not-found`, `role-insufficient`,
-   * `subtask-depth-exceeded`, `subtask-limit-reached`, `status-hidden`, `cancel-reason-required`,
+   * `task-archived` (an archived parent), `subtask-depth-exceeded`, `subtask-limit-reached`, `status-hidden`, `cancel-reason-required`,
    * `cancel-reason-unexpected`, `start-date-invalid` or `assignee-invalid`.
    */
   public async execute(input: CreateSubtaskInput): Promise<CreateSubtaskOutput> {
@@ -120,11 +122,12 @@ export class CreateSubtask {
       const { organizationId } = input;
       const viewer: Viewer = await this.viewers.resolve(organizationId, input.actorUserId, true);
       // A subtask is created in the list of its parent: the actor needs `edit` on it.
-      const request = {
+      const request: Omit<LocateRequest, 'lock'> = {
         organizationId,
         viewer,
         taskKey: input.taskKey,
         edit: true,
+        archived: 'refuse',
         expectedVersions: null,
       };
       let inherited: readonly AssigneeCandidate[] = [];

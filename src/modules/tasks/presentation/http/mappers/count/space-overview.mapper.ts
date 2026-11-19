@@ -9,8 +9,8 @@ import { toSpaceOverviewCursor } from './space-overview-cursor.mapper.js';
  *
  * @description
  * Maps the overview of a space to the `SpaceOverview` of the contract: the space, the number of its
- * lists and of its top-level tasks (whole space, on every page), one page of its lists in order of
- * creation with their counters, and the cursor of the next page, `null` on the last one.
+ * lists and of its top-level tasks (whole space, on every page), one page of its lists in the order
+ * of the sidebar with their counters, and the cursor of the next page, `null` on the last one.
  *
  * @param {SpaceOverviewView} view - The overview.
  * @returns {SpaceOverview} The overview of the contract.

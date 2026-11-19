@@ -8,17 +8,23 @@ import { TaskRefusal } from '../../models/task/task-refusal.model.js';
 import type { TasksStore } from '../../models/transactions/tasks-store.model.js';
 import type { SpaceDirectory } from '../../ports/outbound/spaces/space/space-directory.port.js';
 import { TaskEditGuard } from './task-edit-guard.service.js';
+import { TaskRuleGuard } from './task-rule-guard.service.js';
 
 /**
  * Class TaskLocator
  *
  * @description
  * Finds a task by its key for an actor, in the order the writes of the module follow: the task,
- * its visibility through the list it is in, the role a change needs on that list, then the
- * `If-Match` check. A task that does not exist, and a task of a list the actor has no role on (a
- * guest has a role on the lists shared with them only), get the same answer, `task-not-found`. A
- * change (`edit`) of a task the actor sees without `edit` on its list answers `role-insufficient`,
- * before `If-Match`. The organization of the request scopes every read.
+ * its visibility through the list it is in, the role a change needs on that list, the archive,
+ * then the `If-Match` check (`404` → `403` → `409` → `412`). A task that does not exist, and a task
+ * of a list the actor has no role on (a guest has a role on the lists shared with them only), get
+ * the same answer, `task-not-found`. A change (`edit`) of a task the actor sees without `edit` on
+ * its list answers `role-insufficient`, before `If-Match`. A change of an archived task
+ * (`archived: 'refuse'`) answers `task-archived` with its key ("Tasks" of
+ * `openapi/public/archives.yaml`: an archived task "refuses every change with `409
+ * task.archived`"), decided by the domain (`Task.requireChangeable`) on the state the write applies
+ * to, the locked one. A read, the archive and the restoration ask `allow`. The organization of the
+ * request scopes every read.
  *
  * A write (`lock`) does not lock before it knows the actor may see, and change, the task: it reads
  * the task without a lock and checks its list, then locks the task and reads it again. If another
@@ -33,6 +39,9 @@ export class TaskLocator {
 
   /** Checks the role a change needs. */
   private readonly editing: TaskEditGuard;
+
+  /** Maps the refusal of an archived task. */
+  private readonly rules: TaskRuleGuard;
   // #endregion
 
   // #region Constructor
@@ -48,6 +57,7 @@ export class TaskLocator {
   public constructor(spaces: SpaceDirectory) {
     this.spaces = spaces;
     this.editing = new TaskEditGuard();
+    this.rules = new TaskRuleGuard();
   }
   // #endregion
 
@@ -60,10 +70,10 @@ export class TaskLocator {
    *
    * @param {TasksStore} store - The store of the transaction.
    * @param {LocateRequest} request - The organization, the viewer, the key, whether the task
-   * changes, the lock and `If-Match`.
+   * changes, the lock, whether an archived task is refused and `If-Match`.
    * @returns {Promise<LocatedTask>} The task and its list and space.
    * @throws {TaskRefusal} `task-not-found`, `role-insufficient` with the role of the actor on the
-   * list, or `version-mismatch` with the stored version.
+   * list, `task-archived` with the key of the task, or `version-mismatch` with the stored version.
    */
   public async locate(store: TasksStore, request: LocateRequest): Promise<LocatedTask> {
     const key: TaskKey = this.parse(request.taskKey);
@@ -76,11 +86,34 @@ export class TaskLocator {
         placement = await this.see(request, task);
       }
     }
+    if (request.archived === 'refuse') {
+      const located: Task = task;
+      this.rules.apply((): void => {
+        located.requireChangeable();
+      });
+    }
+    this.requireVersion(task, request.expectedVersions);
+    return { task, placement };
+  }
+
+  /**
+   * Method requireVersion
+   *
+   * @description
+   * The `If-Match` check of a task (`412 request.version-mismatch`): the one check of every write,
+   * which `locate` runs last and the restoration runs on the task of its path once it holds the
+   * lock of its archive. `*` and an absent header are `null` (`toExpectedVersions`).
+   *
+   * @param {Task} task - The task, as the write applies to it.
+   * @param {readonly number[] | null} expectedVersions - The versions `If-Match` accepts, `null`
+   * for any.
+   * @throws {TaskRefusal} `version-mismatch` with the stored version.
+   */
+  public requireVersion(task: Task, expectedVersions: readonly number[] | null): void {
     const { version } = task.snapshot;
-    if (request.expectedVersions !== null && !request.expectedVersions.includes(version)) {
+    if (expectedVersions !== null && !expectedVersions.includes(version)) {
       throw new TaskRefusal({ reason: 'version-mismatch', version });
     }
-    return { task, placement };
   }
 
   /**

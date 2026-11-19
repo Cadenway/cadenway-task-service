@@ -8,17 +8,18 @@ them (P3b-1):
 - a space: name, description, appearance (icon, color), visibility (`organization` or `private`),
   owner, prefix of its task keys, and how it names or hides each of the ten statuses;
 - the prefixes the spaces use or used, and the counter of task numbers of each prefix;
-- the lists and sprints of a space, in the order of their creation, with their switch "Accès de
-  l’organisation" (`organizationAccess`);
+- the lists and sprints of a space, in the order of their creation (a restored list goes last),
+  with their switch "Accès de l’organisation" (`organizationAccess`) and their archive
+  ("Archives", tab "Listes");
 - the grants of spaces and lists ("Partager", "Personnes ayant accès"): one role per person,
   `edit`, `comment` or `view`.
 
 It decides who sees a space or a list, with which role, and who changes what ("Access", "Who sees
 a space" and "Who changes what" of `openapi/public/spaces.yaml`, "Grants" of
 `openapi/public/access.yaml`), from the copy of the memberships of the organization-members
-module, never from the `role` claim of the internal token. Tasks, their counts and the activity
-log belong to the tasks module; access requests to the access-requests module; archives, the trash
-and deletions are not in this version.
+module, never from the `role` claim of the internal token. Tasks, their counts, the activity log,
+the archived tasks and the pages of the archives belong to the tasks module; access requests to
+the access-requests module; the trash and deletions are not in this version.
 
 ## Public entry points
 
@@ -29,10 +30,13 @@ and deletions are not in this version.
 | `public/space/hand-over-awaiting-spaces`    | member-lifecycle                         |
 | `public/space/allocate-task-keys`           | tasks                                    |
 | `public/list/find-visible-list`             | tasks                                    |
+| `public/list/find-visible-lists`            | tasks                                    |
 | `public/list/find-visible-space-lists`      | tasks                                    |
 | `public/list/list-current-sprints`          | tasks                                    |
 | `public/list/list-sidebar-lists`            | tasks                                    |
 | `public/list/list-visible-list-ids`         | tasks                                    |
+| `public/list/list-archived-lists`           | tasks                                    |
+| `public/list/restore-archived-list`         | tasks                                    |
 | `public/access/find-access-target`          | access-requests                          |
 | `public/access/list-managed-access-targets` | access-requests                          |
 | `public/access/grant-requested-access`      | access-requests                          |
@@ -54,18 +58,32 @@ copy of the memberships.
   `none-left` or `member-again`.
 - `AllocateTaskKeys` (`{ organizationId, spaceId, count }`, `count` 1 to 26): the prefix and the
   first of `count` consecutive task numbers.
+- Every `VisibleList` carries `organizationAccess`, `callerRole`, `archivedAt` (`Date | null`),
+  `archivedBy` (`{ type, id } | null`) and `position` (`Date`, `positionInSpaceOf`: its last
+  restoration, else its creation), the key of the order of its space with its id for a caller that
+  pages the lists of a space; `position` is not a member of `TaskList` and never leaves the service.
 - `FindVisibleList` (`{ organizationId, viewerUserId, viewerRole, listId }`): `{ list, space }`
-  (`VisibleList` with `organizationAccess` and `callerRole`, `VisibleSpace` with statuses, prefix,
-  `nextKey`, `callerRole` and `callerCanManage`), or `null` when the list is unknown or the viewer
-  has no role on it.
-- `FindVisibleSpaceLists` (`{ …, spaceId }`): `{ lists }`, the lists of the space the viewer has a
-  role on, unpaged, in creation order, each with `callerRole`; `null` when the viewer does not see
-  the space.
-- `ListCurrentSprints` (`{ …, today, limit }`) and `ListSidebarLists` (`{ …, limit }`): the sprints
-  under way and the first lists in sidebar order the viewer has a role on, each with `callerRole`.
+  (`VisibleList`, `VisibleSpace` with statuses, prefix, `nextKey`, `callerRole` and
+  `callerCanManage`), archived lists included, or `null` when the list is unknown or the viewer has
+  no role on it.
+- `FindVisibleLists` (`{ organizationId, viewerUserId, viewerRole, listIds }`, 100 ids at most,
+  more throws, ids that are not UUIDs left out): `{ lists }`, those the viewer has a role on,
+  archived ones included, in no particular order.
+- `FindVisibleSpaceLists` (`{ …, spaceId }`): `{ lists }`, the live lists of the space the viewer
+  has a role on, unpaged, in their order in the space, each with `callerRole`; `null` when the
+  viewer does not see the space.
+- `ListCurrentSprints` (`{ …, today, limit }`) and `ListSidebarLists` (`{ …, limit }`): the live
+  sprints under way and the first live lists in sidebar order the viewer has a role on.
 - `ListVisibleListIds` (`{ organizationId, viewerUserId, viewerRole }` to `{ listIds }`): every list
-  of the organization the viewer has a role on, in sidebar order (spaces by creation, then lists by
-  creation). It replaces `ListVisibleSpaceIds`, removed.
+  of the organization the viewer has a role on, archived ones included, in sidebar order (spaces by
+  creation, then the lists of each by their position). It replaces `ListVisibleSpaceIds`, removed.
+- `ListArchivedLists` (`{ organizationId, viewerUserId, viewerRole, after, limit }`, `after` a
+  `{ archivedAt, id }` or `null`, to `{ lists, total }`): the archived lists the viewer has a role
+  on, `(archivedAt desc, id desc)` after `after`, at most `limit`; `total` counts them all.
+- `RestoreArchivedList` (`{ organizationId, actorUserId, viewerRole, listId }` to `{ outcome }`,
+  `restored`, `not-archived`, `not-found` or `{ outcome: 'role-insufficient', role }`): restores the
+  list of an archived task the tasks module restores, with `edit` on it, and appends
+  `list.unarchived.v1` by the actor; every other outcome writes nothing.
 - `FindAccessTarget` (`{ …, target: { kind: 'space', spaceId } | { kind: 'list', listId } }`): the
   target with `spaceName`, `spaceOwnerUserId`, `listName`, `viewerRole` (on the space for a space,
   on the list for a list) and `viewerManages` (`canManageSpace` for a space,
@@ -94,8 +112,14 @@ copy of the memberships.
 | `space_grants`   | `(organization_id, space_id, user_id)` | `organization_id`, policy of the kit, enabled and forced |
 | `list_grants`    | `(organization_id, list_id, user_id)`  | `organization_id`, policy of the kit, enabled and forced |
 
-Created by `migrations/0002_spaces_and_lists.sql` and `migrations/0005_access_grants.sql`
-(`lists.organization_access` and the two grant tables), which force the policies by hand.
+Created by `migrations/0002_spaces_and_lists.sql`, `migrations/0005_access_grants.sql`
+(`lists.organization_access` and the two grant tables), which force the policies by hand, and
+`migrations/0006_archives.sql` (the archive columns of `lists`). Deploying `0006_archives.sql`
+holds ACCESS EXCLUSIVE on `lists` from its first `ALTER TABLE` until the migrator commits, and
+scans `lists` under it for its three CHECKs and the build of its partial index: the reads and
+writes of lists of the running version wait meanwhile, and fail after the 5 s `lock_timeout` of
+the application role. The measured cost, the timeouts and the rollback are in the tasks
+`MODULE.md`, since the same transaction takes that lock on `tasks` too.
 
 - `spaces.id` and `lists.id` come from `uuidv7()`; every `created_at` is `timestamptz(3)`, so that
   the position of a page round-trips exactly through the cursor. `statuses` is a `jsonb` of the ten
@@ -111,9 +135,18 @@ Created by `migrations/0002_spaces_and_lists.sql` and `migrations/0005_access_gr
   `granted_at` and `granted_by_type`/`granted_by_id` (when and by whom the current role was given,
   `grantedAt` and `grantedBy`). `list_grants.space_id` copies the space of the list, with a foreign
   key to `spaces`.
+- `lists.archived_at` (`timestamptz(3)`, the instant of the transaction of the archive) and
+  `archived_by_type`/`archived_by_id` (`archivedBy`, type CHECK `user`, `automation`, `git`,
+  `system`, id not empty) are all set or all null (`lists_archived_check`); `restored_at`
+  (`timestamptz(3)`) is when the list last came back from the archives, kept by a later archive.
+  All nullable, so the running version keeps every list live.
 - Indexes: `spaces (organization_id, created_at, id)` for the listing, `spaces (organization_id,
 owner_user_id)` for the handover, `lists (organization_id, space_id, created_at, id)` for the
-  lists of a space; `space_grants_user_index (organization_id, user_id, space_id)` and
+  lists of a space (sorted by `coalesce(restored_at, created_at)` after the read: no index orders
+  that expression, a space holds few lists), the partial `lists_organization_archived_index
+(organization_id, archived_at, id) where archived_at is not null` for the archives (a bitmap scan of
+  the archived lists of the organization, then a sort; plans in Decisions);
+  `space_grants_user_index (organization_id, user_id, space_id)` and
   `list_grants_user_index (organization_id, user_id, space_id, list_id)` for the grants of one
   person (the visibility conditions, the clean-up of a member who left); the primary keys of the
   grant tables serve the grants of one space or list and the grant of one person there. Plans of
@@ -148,6 +181,8 @@ required. Issuer `api-gateway`:
 | `GET /internal/v1/spaces/{spaceId}/lists`              | `listListsInternal`        |
 | `GET /internal/v1/lists/{listId}`                      | `getListInternal`          |
 | `PATCH /internal/v1/lists/{listId}`                    | `updateListInternal`       |
+| `POST /internal/v1/lists/{listId}/archive`             | `archiveListInternal`      |
+| `POST /internal/v1/lists/{listId}/unarchive`           | `unarchiveListInternal`    |
 | `GET /internal/v1/spaces/{spaceId}/grants`             | `listSpaceGrantsInternal`  |
 | `PUT /internal/v1/spaces/{spaceId}/grants/{userId}`    | `setSpaceGrantInternal`    |
 | `DELETE /internal/v1/spaces/{spaceId}/grants/{userId}` | `removeSpaceGrantInternal` |
@@ -159,8 +194,11 @@ Issuer `realtime-gateway` only, in a controller of its own: `GET /internal/v1/li
 (`checkListAccessInternal`), the role of the actor on a list they see, with `spaceId`, `listId` and
 `taskKey: null`; `404 list.not-found` for any other list. Read only, nothing emitted.
 
-- Every `Space` answers `callerRole` and `callerCanManage`, every `TaskList` `organizationAccess`
-  and `callerRole`. `archivedAt` and `archivedBy` are not served in this version.
+- Every `Space` answers `callerRole` and `callerCanManage`, every `TaskList` `organizationAccess`,
+  `callerRole`, and always `archivedAt` and `archivedBy` (`null` for a live list).
+- `archive` and `unarchive` take the `EmptyRequest` body (an object, its members dropped) and an
+  optional `If-Match`, and answer `200` with the `TaskList`, `callerRole: 'edit'`, and `ETag`; an
+  archived list archived again, or a live list restored, answers its stored version.
 - `PUT …/grants/{userId}` answers `200` with the `Grant` and `ETag`, the version of the space or the
   list after the change (the same one when the person already held that role); `DELETE` answers
   `204` with `ETag` (the same version when the person held no grant). The `userId` of the path is
@@ -186,6 +224,10 @@ Appended to the outbox in the transaction of the change (`asyncapi/task-service.
   `changed: ['grants']` for a grant of a list, `changed: ['organizationAccess']` and no
   `changedUserIds` for the switch. A `PATCH` of a list that changes its content and its switch
   emits `list.updated.v1` then `list.access-changed.v1` with the ONE version it took.
+- `list.archived.v1` and `list.unarchived.v1` (the whole list with `organizationAccess`) for an
+  archive and a restoration, by the actor; `RestoreArchivedList` appends its `list.unarchived.v1`
+  before the task events of its caller. An archive or a restoration that changes nothing emits
+  nothing. The `occurredAt` the outbox takes from `now()` is the stored `archived_at`.
 - The handovers emit `space.updated.v1` (`changed: ['ownerUserId']`) and the clean-up of a member's
   grants the access events, both with the actor `{ type: 'system', id: 'task-service' }`; a
   space left awaiting an owner emits nothing until its handover. An approved access request emits
@@ -228,6 +270,16 @@ gives an organization its owner.
   number is handed out once, by `AllocateTaskKeys`, and never again; `nextKey` previews it.
 - `todo` and `done` are never hidden (`422 space.status-required`); a sprint ends on or after its
   start (`422 list.sprint-dates-invalid`).
+- Archiving and restoring a list needs `edit` on it, with the refusal order of every write
+  (`404`, `403`, `412`). An archive sets `archivedAt` (the instant of the transaction) and
+  `archivedBy` (the actor), a restoration clears them and sets `restoredAt`; each adds one to the
+  version, its tasks do not change. An archived list is left out of `GET /spaces/{id}/lists`,
+  `FindVisibleSpaceLists`, `ListCurrentSprints` and `ListSidebarLists`, and stays everywhere else:
+  read by id, `PATCH`, its grants, the access check, `ListVisibleListIds`, the access targets and
+  `GrantRequestedAccess`.
+- The lists of a space are ordered by `(coalesce(restored_at, created_at), id)`
+  (`positionInSpaceOf`) in `GET /spaces/{id}/lists` and its cursor, `FindVisibleSpaceLists`, the
+  sidebar and `ListVisibleListIds`; the sprints under way keep `(sprint_end_date, created_at, id)`.
 - A list never changes space, and a space or a list is never deleted in this version: the tasks
   module and `list_grants.space_id` copy the space of a list, which stays right only while it holds.
 - A private space whose owner left passes to the owner of the organization through the clean-up
@@ -252,8 +304,13 @@ Locks are always taken in this order: memberships `FOR SHARE`, then spaces, then
 
 - A write reads the membership of the actor `FOR SHARE`, so that a concurrent removal waits for it.
 - A change of a space (`PATCH`, its grants) locks it `FOR NO KEY UPDATE`; a change of a list locks
-  the list. A `PUT` of a grant locks the membership of the person given access `FOR SHARE` after the
-  actor's, so that the clean-up of a removal sees the grant.
+  the list (`PATCH`, `archive`, `unarchive`). A `PUT` of a grant locks the membership of the person
+  given access `FOR SHARE` after the actor's, so that the clean-up of a removal sees the grant.
+  `RestoreArchivedList` reads no membership and locks the list `FOR NO KEY UPDATE` after the tasks
+  its caller locked.
+- An archive and a restoration store the instant of their transaction (`TransactionClock`: `now()`
+  truncated to the millisecond, as the outbox stamps `occurredAt`, read once per run), never the
+  system clock.
 - A change of the grants of a list (its routes, `GrantRequestedAccess`) reads the list, locks its
   space `FOR SHARE` (its owner, whom no grant may name, cannot change meanwhile), then the list
   `FOR NO KEY UPDATE`. `GrantRequestedAccess` checks on these locked rows, with the role of the
@@ -324,7 +381,27 @@ list_grants` by `list_grants_user_index`, which `list_grants.space_id` makes pos
   the version of the `space.updated.v1` of the handover (one change, one version); each list whose
   grant goes takes its own next version.
 - `If-Match` is optional; a stale one answers `412 request.version-mismatch` with the stored
-  version, after the access checks and before the rules of the domain.
+  version, after the access checks and before the rules of the domain (and before an archive or a
+  restoration that changes nothing answers `200`).
+- Archives of lists (decision 6 of P3b-1): ONE predicate keeps the live lists
+  (`liveListCondition`, `archived_at is null`, the one the trash will extend), applied by the four
+  collections only. A restored list stays in its space and goes to its end through `restored_at`,
+  which a later archive keeps; the domain refuses an archive stored by halves. The tasks module
+  serves the pages of the archives (they need task counts, and spaces never depends on tasks)
+  through `ListArchivedLists` and `FindVisibleLists`, and restores the list of a restored task
+  through `RestoreArchivedList`, whose refusals, those of the one guard of the writes of a list
+  (`EditableListLocator`, also behind `PATCH`, `archive` and `unarchive`), are outcomes so that the
+  caller answers them. A page of the archived lists and its total read
+  `lists_organization_archived_index` by a bitmap scan, then sort the archived lists the viewer
+  sees: not a walk stopped at the limit, O(archived lists of the organization). Plans of
+  `tests/archive-queries.int-spec.ts` (4,004 lists, 60 of them archived), the page and the total:
+  16 buffers, 0.3 ms for Camille; 107 buffers, 0.4 to 0.5 ms for a member with a role on 1,392
+  lists; `FindVisibleLists` reads its lists by `lists_pkey`, 19 buffers.
+- The trail of an archive of a list: while it is archived, `archived_at` and `archived_by_*` say
+  when and by whom; a restoration clears them and keeps only `restored_at` (when, not who). The
+  events `list.archived.v1` and `list.unarchived.v1` name the actor, and are kept 7 days (the sent
+  rows of the outbox and the stream `EVENTS`). Open point: a durable trail of who archived and
+  restored a list.
 - Lists live in this module (a space is created with its first list), and the tasks module depends
   on spaces through the public entries above, never the reverse; access-requests and
   member-lifecycle likewise.

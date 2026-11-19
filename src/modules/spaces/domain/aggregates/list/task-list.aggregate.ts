@@ -1,8 +1,11 @@
 import { InvalidListError } from '../../errors/list/invalid-list.error.js';
 import { SprintDatesInvalidError } from '../../errors/list/sprint-dates-invalid.error.js';
+import { LIST_ACTOR_TYPES } from '../../value-objects/list/list-actor.value-object.js';
+import type { ListActor } from '../../value-objects/list/list-actor.value-object.js';
 import type { NewTaskList } from '../../value-objects/list/new-task-list.value-object.js';
 import type { SprintInput } from '../../value-objects/list/sprint-input.value-object.js';
 import type { Sprint } from '../../value-objects/list/sprint.value-object.js';
+import type { TaskListArchiveChange } from '../../value-objects/list/task-list-archive-change.value-object.js';
 import type { TaskListDraft } from '../../value-objects/list/task-list-draft.value-object.js';
 import type { TaskListField } from '../../value-objects/list/task-list-field.value-object.js';
 import type { TaskListPatch } from '../../value-objects/list/task-list-patch.value-object.js';
@@ -271,6 +274,68 @@ function checkStoredSprint(sprint: Sprint | null): void {
 }
 
 /**
+ * Function checkInstant
+ *
+ * @description
+ * Refuses an instant that is not a valid `Date`: an archive or a restoration takes the instant of
+ * its transaction, which the application reads from the database.
+ *
+ * @param {Date} instant - The instant.
+ * @returns {Date} The same instant.
+ * @throws {InvalidListError} When it is not a valid date.
+ */
+function checkInstant(instant: Date): Date {
+  if (Number.isNaN(instant.getTime())) {
+    throw new InvalidListError('the instants of the archive of a list are valid dates');
+  }
+  return instant;
+}
+
+/**
+ * Function checkActor
+ *
+ * @description
+ * `Actor` of `openapi/internal/task-service.yaml`, as `archivedBy` carries it: a known type and a
+ * non-empty id.
+ *
+ * @param {ListActor} actor - Who archives the list.
+ * @returns {ListActor} The same actor.
+ * @throws {InvalidListError} When the type is unknown or the id empty.
+ */
+function checkActor(actor: ListActor): ListActor {
+  if (!LIST_ACTOR_TYPES.includes(actor.type) || actor.id === '') {
+    throw new InvalidListError('the actor of an archive has a known type and an id');
+  }
+  return actor;
+}
+
+/**
+ * Function checkStoredArchive
+ *
+ * @description
+ * Refuses a stored archive no archive or restoration can produce: `archivedAt` and `archivedBy`
+ * both set or both null (the check `lists_archived_check` of the table), a valid instant and a
+ * valid actor, and a valid `restoredAt` when set.
+ *
+ * @param {TaskListState} state - The stored state.
+ * @throws {InvalidListError} When the archive breaks an invariant.
+ */
+function checkStoredArchive(state: TaskListState): void {
+  if ((state.archivedAt === null) !== (state.archivedBy === null)) {
+    throw new InvalidListError('the instant and the actor of an archive are set together');
+  }
+  if (state.archivedAt !== null) {
+    checkInstant(state.archivedAt);
+  }
+  if (state.archivedBy !== null) {
+    checkActor(state.archivedBy);
+  }
+  if (state.restoredAt !== null) {
+    checkInstant(state.restoredAt);
+  }
+}
+
+/**
  * Class TaskList
  *
  * @description
@@ -287,7 +352,13 @@ function checkStoredSprint(sprint: Sprint | null): void {
  *   change turns it off; a change of the switch is a change of access, apart from the content;
  * - each change that changes something takes the next version, and a change of its grants too
  *   (`recordAccessChange`); one that changes nothing keeps the same instance, so nothing is
- *   emitted.
+ *   emitted;
+ * - whoever has `edit` on it archives it and restores it (decision 6 of P3b-1, "Lists" and "Who"
+ *   of `openapi/public/archives.yaml`): an archive sets when and by whom, a restoration clears
+ *   them and sets when it came back, which puts it at the end of its space; each takes the next
+ *   version, an archived list archived again or a live list restored keeps the same instance. An
+ *   archived list still changes (`update`, its grants): only the collections of its space leave
+ *   it out.
  *
  * The name of the first list of a new space is chosen by the application, not by this class.
  */
@@ -368,7 +439,7 @@ export class TaskList {
    * @param {TaskListState} state - The stored state.
    * @returns {TaskList} The list.
    * @throws {InvalidListError} When the version is not a positive integer, or a member breaks an
-   * invariant (the order of the sprint dates included).
+   * invariant (the order of the sprint dates and an archive set by halves included).
    */
   public static restore(state: TaskListState): TaskList {
     if (!Number.isInteger(state.version) || state.version < 1) {
@@ -383,6 +454,7 @@ export class TaskList {
     checkIcon(state.icon);
     checkColor(state.color);
     checkStoredSprint(state.sprint);
+    checkStoredArchive(state);
     return new TaskList(state);
   }
 
@@ -453,6 +525,67 @@ export class TaskList {
    */
   public recordAccessChange(): TaskList {
     return new TaskList({ ...this.state, version: this.state.version + 1 });
+  }
+
+  /**
+   * Method archive
+   *
+   * @description
+   * Archives the list ("Archiver la liste", "Lists" of `openapi/public/archives.yaml`, decision 6
+   * of P3b-1): it records when and by whom, at the next version; its tasks do not change. A list
+   * archived already keeps its archive, the same instance and the same version (`200` with the
+   * same version, nothing emitted).
+   *
+   * @param {ListActor} by - Who archives it.
+   * @param {Date} at - The instant of the transaction.
+   * @returns {TaskListArchiveChange} The archived list and whether it changed.
+   * @throws {InvalidListError} When the actor or the instant is invalid.
+   */
+  public archive(by: ListActor, at: Date): TaskListArchiveChange {
+    const archivedBy: ListActor = checkActor(by);
+    const archivedAt: Date = checkInstant(at);
+    if (this.state.archivedAt !== null) {
+      return { list: this, changed: false };
+    }
+    return {
+      list: new TaskList({
+        ...this.state,
+        archivedAt,
+        archivedBy: { type: archivedBy.type, id: archivedBy.id },
+        version: this.state.version + 1,
+      }),
+      changed: true,
+    };
+  }
+
+  /**
+   * Method unarchive
+   *
+   * @description
+   * Restores an archived list at the end of its space ("Restaurer la liste", "Restoring a list
+   * puts it back at the end of its space" of `openapi/public/archives.yaml`, decision 6 of
+   * P3b-1): it clears the archive and records when it came back, at the next version. A live list
+   * keeps the same instance and the same version (`200` with the same version, nothing emitted).
+   *
+   * @param {Date} at - The instant of the transaction.
+   * @returns {TaskListArchiveChange} The restored list and whether it changed.
+   * @throws {InvalidListError} When the instant is invalid.
+   */
+  public unarchive(at: Date): TaskListArchiveChange {
+    const restoredAt: Date = checkInstant(at);
+    if (this.state.archivedAt === null) {
+      return { list: this, changed: false };
+    }
+    return {
+      list: new TaskList({
+        ...this.state,
+        archivedAt: null,
+        archivedBy: null,
+        restoredAt,
+        version: this.state.version + 1,
+      }),
+      changed: true,
+    };
   }
   // #endregion
 }

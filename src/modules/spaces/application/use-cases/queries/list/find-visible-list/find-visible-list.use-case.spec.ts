@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ARCHIVED_AT,
   ATELIER_NORD,
   BACKLOG,
   CAMILLE,
@@ -72,8 +73,11 @@ describe('FindVisibleList: a member finds the list and its space', () => {
         color: 'indigo',
         sprint: { startDate: '2026-11-03', endDate: '2026-11-17', goal: SPRINT_14_GOAL },
         createdAt: sprintState().createdAt,
+        position: sprintState().createdAt,
         version: 1,
         organizationAccess: true,
+        archivedAt: null,
+        archivedBy: null,
         callerRole: 'edit',
       },
       space: {
@@ -93,6 +97,22 @@ describe('FindVisibleList: a member finds the list and its space', () => {
         callerCanManage: false,
       },
     } satisfies FindVisibleListOutput);
+  });
+
+  it('finds an archived list, with when and by whom it was archived', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [sprintState({ archivedAt: ARCHIVED_AT, archivedBy: { type: 'user', id: CAMILLE } })],
+    });
+
+    const found = await new FindVisibleList(spaces).execute(find());
+
+    expect(found?.list).toMatchObject({
+      id: SPRINT_14,
+      archivedAt: ARCHIVED_AT,
+      archivedBy: { type: 'user', id: CAMILLE },
+      callerRole: 'edit',
+    });
   });
 
   it('returns the list Backlog, which is no sprint', async () => {

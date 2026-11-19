@@ -1,4 +1,5 @@
 import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
+import type { TaskStanding } from '../../../../models/task/task-standing.model.js';
 import type { SubtreeShape } from '../../../../../domain/value-objects/subtask/subtree-shape.value-object.js';
 import type { ChecklistItemDraft } from '../../../../../domain/value-objects/task/checklist-item-draft.value-object.js';
 import type { ChecklistItemState } from '../../../../../domain/value-objects/task/checklist-item-state.value-object.js';
@@ -34,13 +35,35 @@ export interface TaskRepository {
    *
    * @description
    * Locks several tasks in one statement, `ORDER BY id FOR NO KEY UPDATE`, and reads them after the
-   * lock. Ids the organization does not hold are left out.
+   * lock. Ids the organization does not hold are left out. With `withChecklists` false the tasks
+   * carry an empty checklist, not loaded: only for a write that never reads, writes or emits it
+   * (the members of an archive).
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} ids - The ids of the tasks.
+   * @param {boolean} [withChecklists] - `false` to leave the checklists unloaded; `true` when left
+   * out.
    * @returns {Promise<readonly Task[]>} The tasks, in ascending id order.
    */
-  lockByIds(organizationId: string, ids: readonly string[]): Promise<readonly Task[]>;
+  lockByIds(
+    organizationId: string,
+    ids: readonly string[],
+    withChecklists?: boolean,
+  ): Promise<readonly Task[]>;
+
+  /**
+   * Method lockStanding
+   *
+   * @description
+   * Locks one task `FOR NO KEY UPDATE` and reads only whether it is live and its list, in one
+   * statement, without its collections: the parent of the root of an archive being restored.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} taskId - The task.
+   * @returns {Promise<TaskStanding | null>} Its standing, or `null` when the organization has no
+   * such task.
+   */
+  lockStanding(organizationId: string, taskId: string): Promise<TaskStanding | null>;
 
   /**
    * Method insert
@@ -117,11 +140,13 @@ export interface TaskRepository {
    * Method subtreeOf
    *
    * @description
-   * Reads the descendants of a task and the height of its tree.
+   * Reads the live descendants of a task and the height of its live tree: an archived subtask,
+   * and what hangs from it, is not part of it (it keeps its own archive and never moves).
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} taskId - The task.
-   * @returns {Promise<SubtreeShape>} Its descendants and the height (1 for a task without subtask).
+   * @returns {Promise<SubtreeShape>} Its live descendants and the height (1 for a task without
+   * live subtask).
    */
   subtreeOf(organizationId: string, taskId: string): Promise<SubtreeShape>;
 
@@ -129,13 +154,48 @@ export interface TaskRepository {
    * Method childCount
    *
    * @description
-   * Counts the direct subtasks of a task.
+   * Counts the live direct subtasks of a task, those the limit of 25 counts (an archived subtask
+   * is not counted, "Tasks" of `openapi/public/archives.yaml`).
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} parentId - The parent, locked by the caller when the count guards a write.
    * @returns {Promise<number>} The count.
    */
   childCount(organizationId: string, parentId: string): Promise<number>;
+
+  /**
+   * Method lockArchive
+   *
+   * @description
+   * Locks every member of an archive in one statement, `ORDER BY id FOR NO KEY UPDATE`, and reads
+   * them after the lock: the tasks whose archive was made from the root, the root included. A
+   * task restored by another transaction while the lock waited is not returned. The members carry
+   * an empty checklist, not loaded: a restoration never writes or emits it, and reads the root
+   * again for its answer.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} rootId - The root of the archive.
+   * @returns {Promise<readonly Task[]>} The members, in ascending id order; none when the archive
+   * was restored meanwhile.
+   */
+  lockArchive(organizationId: string, rootId: string): Promise<readonly Task[]>;
+
+  /**
+   * Method writeArchives
+   *
+   * @description
+   * Writes the archive or the restoration of tasks the caller holds locked, in one set-based
+   * statement: the archive (instant, actor, root), the parent (`null` for a root detached by a
+   * restoration), the version and the instant of each, guarded by the version before the change.
+   * Nothing else of the task changes, so its assignees, labels and checklist are not written.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} rootId - The root of the archive made or restored, which a failure names.
+   * @param {readonly Task[]} updated - The tasks after `archive` or `unarchive`, each one version
+   * after the one read under its lock.
+   * @returns {Promise<void>} Resolves once written.
+   */
+  writeArchives(organizationId: string, rootId: string, updated: readonly Task[]): Promise<void>;
 
   /**
    * Method lockAssignedTo

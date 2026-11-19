@@ -24,6 +24,8 @@ import {
   sprint14SharedWith,
   subtaskState,
   taskState,
+  archiveFrom,
+  queryTask,
 } from '../../../tasks.fixture.js';
 import type { CreateSubtaskInput } from './create-subtask.input.js';
 import { CreateSubtask } from './create-subtask.use-case.js';
@@ -370,5 +372,52 @@ describe('CreateSubtask: a subtask needs edit on the list of its parent', () => 
     const view = await useCase.execute(createSubtask({ actorUserId: NADIA }));
 
     expect(view).toMatchObject({ parentKey: 'CAD-482', assigneeIds: [CAMILLE] });
+  });
+});
+
+describe('CreateSubtask: an archived parent takes no subtask (task-archived)', () => {
+  it('answers task-archived with its key, after the role, and writes nothing', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState({ archive: archiveFrom(CAD_482) })] });
+    const useCase = new CreateSubtask(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
+
+    expect(await refusalOf(useCase.execute(createSubtask()))).toEqual({
+      reason: 'task-archived',
+      key: 'CAD-482',
+    });
+    expect(tasks.stored(CAD_482)).toEqual(taskState({ archive: archiveFrom(CAD_482) }));
+    expect(tasks.events).toEqual([]);
+    expect(tasks.activity.size).toBe(0);
+  });
+
+  it('answers role-insufficient before task-archived', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState({ archive: archiveFrom(CAD_482) })] });
+    const useCase = new CreateSubtask(
+      tasks,
+      atelierNordMembers(),
+      sprint14SharedWith({ [HUGO]: 'view' }),
+    );
+
+    expect(await refusalOf(useCase.execute(createSubtask({ actorUserId: HUGO })))).toEqual({
+      reason: 'role-insufficient',
+      role: 'view',
+    });
+  });
+});
+
+describe('CreateSubtask: the limit of 25 counts the live subtasks only', () => {
+  it('creates the subtask under a parent with 24 live subtasks and an archived one', async () => {
+    const children = Array.from({ length: 25 }, (_unused: unknown, index: number) =>
+      queryTask(index + 1, {
+        parentId: CAD_482,
+        parentKey: TaskKey.of('CAD', 482),
+        ...(index === 0 ? { archive: archiveFrom(queryTask(1).id), version: 2 } : {}),
+      }),
+    );
+    const tasks = new InMemoryTasks({ tasks: [taskState(), ...children] });
+    const useCase = new CreateSubtask(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
+
+    const created = await useCase.execute(createSubtask());
+
+    expect(created.parentKey).toBe('CAD-482');
   });
 });

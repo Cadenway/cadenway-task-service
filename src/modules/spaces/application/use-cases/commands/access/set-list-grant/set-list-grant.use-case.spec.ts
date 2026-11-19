@@ -112,6 +112,19 @@ describe('SetListGrant: who has edit on a list gives a person a role on it', () 
     expect(spaces.events).toEqual([]);
   });
 
+  it('shares an archived list as a live one, which stays archived', async () => {
+    const archivedAt: Date = new Date('2026-11-03T09:00:00Z');
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [sprintState({ archivedAt, archivedBy: { type: 'user', id: CAMILLE }, version: 5 })],
+    });
+
+    const set = await new SetListGrant(spaces, atelierNordMembers()).execute(invite());
+
+    expect(set.version).toBe(6);
+    expect(spaces.lists.get(SPRINT_14)).toMatchObject({ archivedAt, version: 6 });
+  });
+
   it('checks If-Match against the version of the list', async () => {
     const set = await new SetListGrant(atelierNord(), atelierNordMembers()).execute(
       invite({ expectedVersions: [5] }),

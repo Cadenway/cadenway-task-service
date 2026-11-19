@@ -91,6 +91,21 @@ export interface VisibleList {
   readonly createdAt: Date;
 
   /**
+   * Property position
+   *
+   * @description
+   * The instant that places the list in the order of its space (`positionInSpaceOf` of the
+   * domain): when it last came back from the archives, or else when it was created ("Restoring a
+   * list puts it back at the end of its space" of `openapi/public/archives.yaml`). The lists of a
+   * space are ordered by it, then by id, so a caller that pages them keys its pages on
+   * `(position, id)`. It is not a member of `TaskList` and never leaves the service.
+   *
+   * @type {Date}
+   * @readonly
+   */
+  readonly position: Date;
+
+  /**
    * Property version
    *
    * @description
@@ -111,6 +126,33 @@ export interface VisibleList {
    * @readonly
    */
   readonly organizationAccess: boolean;
+
+  /**
+   * Property archivedAt
+   *
+   * @description
+   * When the list was archived (`archivedAt` of `TaskList`); `null` for a live list. An archived
+   * list reads by its id and is left out of the lists of its space, of the overview and of
+   * "Accueil" ("Lists" of `openapi/public/archives.yaml`).
+   *
+   * @type {Date | null}
+   * @readonly
+   */
+  readonly archivedAt: Date | null;
+
+  /**
+   * Property archivedBy
+   *
+   * @description
+   * Who archived the list (`archivedBy` of `TaskList`, an `Actor`); `null` for a live list.
+   *
+   * @type {{ readonly type: 'user' | 'automation' | 'git' | 'system'; readonly id: string } | null}
+   * @readonly
+   */
+  readonly archivedBy: {
+    readonly type: 'user' | 'automation' | 'git' | 'system';
+    readonly id: string;
+  } | null;
 
   /**
    * Property callerRole

@@ -12,6 +12,9 @@ import {
   refusalOf,
   subtaskState,
   taskState,
+  archiveFrom,
+  CAD_482,
+  CAD_484,
 } from '../../../tasks.fixture.js';
 import type { ListSubtasksInput } from './list-subtasks.input.js';
 import { ListSubtasks } from './list-subtasks.use-case.js';
@@ -110,5 +113,63 @@ describe('ListSubtasks: the read runs in one read-only transaction', () => {
     expect(tasks.runs).toBe(1);
     expect(tasks.readOnlyRuns).toBe(1);
     expect(tasks.snapshotRuns).toBe(0);
+  });
+});
+
+describe('ListSubtasks: the subtasks of a task are those of its archive', () => {
+  /**
+   * Reads the subtasks of CAD-482 in a store.
+   *
+   * @param tasks - The fake store.
+   * @returns The page.
+   */
+  async function subtasksOf482(tasks: InMemoryTasks): ReturnType<ListSubtasks['execute']> {
+    return new ListSubtasks(tasks, atelierNordMembers(), new InMemorySpaceDirectory()).execute({
+      organizationId: ATELIER_NORD,
+      actorUserId: CAMILLE,
+      taskKey: 'CAD-482',
+      after: null,
+      limit: 50,
+    });
+  }
+
+  it('lists the live subtasks of a live task, an archived one left out of the page and the total', async () => {
+    const page = await subtasksOf482(
+      new InMemoryTasks({
+        tasks: [
+          taskState(),
+          subtaskState(),
+          subtaskState({
+            id: CAD_484,
+            key: TaskKey.of('CAD', 484),
+            archive: archiveFrom(CAD_484),
+            version: 2,
+          }),
+        ],
+      }),
+    );
+
+    expect(page.items.map((item) => item.key)).toEqual(['CAD-483']);
+    expect(page.total).toBe(1);
+  });
+
+  it('lists the subtasks archived with an archived task, not those of an older archive', async () => {
+    const page = await subtasksOf482(
+      new InMemoryTasks({
+        tasks: [
+          taskState({ archive: archiveFrom(CAD_482), version: 13 }),
+          subtaskState({ archive: archiveFrom(CAD_482), version: 2 }),
+          subtaskState({
+            id: CAD_484,
+            key: TaskKey.of('CAD', 484),
+            archive: archiveFrom(CAD_484),
+            version: 2,
+          }),
+        ],
+      }),
+    );
+
+    expect(page.items.map((item) => item.key)).toEqual(['CAD-483']);
+    expect(page.total).toBe(1);
   });
 });

@@ -35,7 +35,7 @@ const SELECTED: string = [
 ].join(', ');
 
 const WHERE: string =
-  '("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and "tasks"."parent_id" is null)';
+  '("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and "tasks"."archived_at" is null and "tasks"."parent_id" is null)';
 
 describe('pageStatement: one page of the tasks of a list', () => {
   it('selects the columns of a summary, filters, orders and limits in one statement', () => {

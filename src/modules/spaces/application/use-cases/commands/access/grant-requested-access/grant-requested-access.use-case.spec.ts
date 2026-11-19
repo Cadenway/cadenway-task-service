@@ -129,6 +129,27 @@ describe('GrantRequestedAccess: an approval creates or raises the grant', () => 
     ]);
   });
 
+  it('grants an approved request for an archived list, which stays archived', async () => {
+    const archivedAt: Date = new Date('2026-11-03T09:00:00Z');
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [sprintState({ archivedAt, archivedBy: { type: 'user', id: CAMILLE }, version: 2 })],
+    });
+
+    const outcome = await new GrantRequestedAccess(spaces, atelierNordMembers()).execute(
+      approve({
+        actorUserId: CAMILLE,
+        actorRole: 'owner',
+        target: { kind: 'list', listId: SPRINT_14 },
+        granteeUserId: NADIA,
+        role: 'comment',
+      }),
+    );
+
+    expect(outcome).toEqual({ outcome: 'granted', changed: true });
+    expect(spaces.lists.get(SPRINT_14)).toMatchObject({ archivedAt, version: 3 });
+  });
+
   it('locks the membership of the requester, then the space, or the space for share then the list', async () => {
     const spaces = atelierNord();
     const members = atelierNordMembers();

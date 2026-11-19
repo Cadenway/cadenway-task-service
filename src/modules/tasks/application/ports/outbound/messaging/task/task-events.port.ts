@@ -1,6 +1,7 @@
 import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
 import type { StatusKey } from '../../../../../domain/value-objects/task/status-key.value-object.js';
 import type { TaskField } from '../../../../../domain/value-objects/task/task-field.value-object.js';
+import type { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
 
 /**
@@ -64,5 +65,32 @@ export interface TaskEvents {
    * @returns {Promise<void>} Resolves once appended.
    */
   taskAssigned(task: Task, assigneeId: string, actor: EventActor): Promise<void>;
+
+  /**
+   * Method taskArchived
+   *
+   * @description
+   * Appends `task.archived.v1` for one task an archive took, the task after the archive.
+   *
+   * @param {Task} task - The task, archived, at its version 2 or more.
+   * @param {TaskKey} rootKey - The key of the root of the archive, the task's own for the root.
+   * @param {EventActor} actor - Who archived it.
+   * @returns {Promise<void>} Resolves once appended.
+   */
+  taskArchived(task: Task, rootKey: TaskKey, actor: EventActor): Promise<void>;
+
+  /**
+   * Method taskUnarchived
+   *
+   * @description
+   * Appends `task.unarchived.v1` for one task a restoration brought back, the task after it (its
+   * parent `null` for a root detached).
+   *
+   * @param {Task} task - The task, live, at its version 3 or more.
+   * @param {TaskKey} rootKey - The key of the root of the archive, the task's own for the root.
+   * @param {EventActor} actor - Who restored it.
+   * @returns {Promise<void>} Resolves once appended.
+   */
+  taskUnarchived(task: Task, rootKey: TaskKey, actor: EventActor): Promise<void>;
   // #endregion
 }

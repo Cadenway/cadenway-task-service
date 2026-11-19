@@ -1,6 +1,6 @@
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
-import type { PagePosition } from '../../../../models/page/page-position.model.js';
 import type { Slice } from '../../../../models/page/slice.model.js';
+import type { ListPosition } from '../../../../models/placement/list-position.model.js';
 import type { PlacedList } from '../../../../models/placement/placed-list.model.js';
 import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
 import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
@@ -19,7 +19,9 @@ import type { GetSpaceOverviewOutput } from './get-space-overview.output.js';
  *
  * @description
  * Reads the lists of a space the actor has a role on, each with that role and the counts of its
- * top-level tasks, in the order of their creation, one keyset page at a time
+ * top-level tasks, in the order of the sidebar (`GET /v1/spaces/{spaceId}/lists`: by the
+ * position of each list, its last restoration from the archives, else its creation, then by id),
+ * one keyset page at a time on that position and id
  * (`GET /internal/v1/spaces/{spaceId}/overview`), without a lock, in one read-only transaction on
  * one snapshot (repeatable read), so that the page, `listCount` and `taskCount` agree even while
  * writers commit ("4 listes · 108 tâches"). An unknown space and a space the actor does not see get
@@ -100,10 +102,10 @@ export class GetSpaceOverview {
           lists.map((list: PlacedList): string => list.id),
           input.today,
         );
-        const page: Slice<PlacedList, PagePosition> = this.pages.slice(
+        const page: Slice<PlacedList, ListPosition> = this.pages.slice(
           lists.filter((list: PlacedList): boolean => this.follows(list, input.after)),
           input.limit,
-          (list: PlacedList): PagePosition => ({ createdAt: list.createdAt, id: list.id }),
+          (list: PlacedList): ListPosition => ({ position: list.position, id: list.id }),
         );
         return {
           spaceId: input.spaceId,
@@ -124,17 +126,19 @@ export class GetSpaceOverview {
    * Method follows
    *
    * @description
-   * Whether a list comes after a position in the order of creation, the id breaking the ties.
+   * Whether a list comes after a position in the order of the sidebar, in which the spaces module
+   * answers the lists: by position (restoration, else creation), the id breaking the ties. A list
+   * restored between two pages moves to the end, so it is read on a later page, never lost.
    *
    * @param {PlacedList} list - The list.
-   * @param {PagePosition | null} after - The last list of the previous page, `null` for the first.
+   * @param {ListPosition | null} after - The last list of the previous page, `null` for the first.
    * @returns {boolean} Whether the list belongs to the page or a later one.
    */
-  private follows(list: PlacedList, after: PagePosition | null): boolean {
+  private follows(list: PlacedList, after: ListPosition | null): boolean {
     if (after === null) {
       return true;
     }
-    const delta: number = list.createdAt.getTime() - after.createdAt.getTime();
+    const delta: number = list.position.getTime() - after.position.getTime();
     return delta > 0 || (delta === 0 && list.id > after.id);
   }
   // #endregion

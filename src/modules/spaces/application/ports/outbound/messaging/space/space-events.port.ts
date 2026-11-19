@@ -65,6 +65,32 @@ export interface SpaceEvents {
   listUpdated(list: TaskList, changed: readonly TaskListField[], actor: EventActor): Promise<void>;
 
   /**
+   * Method listArchived
+   *
+   * @description
+   * Appends `list.archived.v1`, the whole list after the archive, its switch "Accès de
+   * l’organisation" included; its `occurredAt` is the `archivedAt` of the list.
+   *
+   * @param {TaskList} list - The list at its version after the archive.
+   * @param {EventActor} actor - Who archived it.
+   * @returns {Promise<void>} Resolves once appended.
+   */
+  listArchived(list: TaskList, actor: EventActor): Promise<void>;
+
+  /**
+   * Method listUnarchived
+   *
+   * @description
+   * Appends `list.unarchived.v1`, the whole list after the restoration, its switch "Accès de
+   * l’organisation" included.
+   *
+   * @param {TaskList} list - The list at its version after the restoration.
+   * @param {EventActor} actor - Who restored it, the list or a task of it.
+   * @returns {Promise<void>} Resolves once appended.
+   */
+  listUnarchived(list: TaskList, actor: EventActor): Promise<void>;
+
+  /**
    * Method spaceAccessChanged
    *
    * @description

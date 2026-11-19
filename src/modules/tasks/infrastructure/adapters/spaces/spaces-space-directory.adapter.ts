@@ -7,9 +7,17 @@ import type {
   FindVisibleListOutput,
 } from '../../../../spaces/public/list/find-visible-list.js';
 import type {
+  FindVisibleLists,
+  FindVisibleListsOutput,
+} from '../../../../spaces/public/list/find-visible-lists.js';
+import type {
   FindVisibleSpaceLists,
   FindVisibleSpaceListsOutput,
 } from '../../../../spaces/public/list/find-visible-space-lists.js';
+import type {
+  ListArchivedLists,
+  ListArchivedListsOutput,
+} from '../../../../spaces/public/list/list-archived-lists.js';
 import type {
   ListCurrentSprints,
   ListCurrentSprintsOutput,
@@ -23,8 +31,15 @@ import type {
   ListVisibleListIds,
   ListVisibleListIdsOutput,
 } from '../../../../spaces/public/list/list-visible-list-ids.js';
+import type {
+  RestoreArchivedList,
+  RestoreArchivedListOutput,
+} from '../../../../spaces/public/list/restore-archived-list.js';
+import type { ArchivePosition } from '../../../application/models/archive/archive-position.model.js';
+import type { ArchivedLists } from '../../../application/models/placement/archived-lists.model.js';
 import type { KeyAllocation } from '../../../application/models/placement/key-allocation.model.js';
 import type { ListPlacement } from '../../../application/models/placement/list-placement.model.js';
+import type { ListRestoration } from '../../../application/models/placement/list-restoration.model.js';
 import type { PlacedList } from '../../../application/models/placement/placed-list.model.js';
 import type { SpaceDirectory } from '../../../application/ports/outbound/spaces/space/space-directory.port.js';
 import type { Viewer } from '../../../domain/value-objects/member/viewer.value-object.js';
@@ -34,8 +49,8 @@ import type { Viewer } from '../../../domain/value-objects/member/viewer.value-o
  *
  * @description
  * `SpaceDirectory` over the public operations `FindVisibleList`, `ListVisibleListIds`,
- * `FindVisibleSpaceLists`, `ListCurrentSprints`, `ListSidebarLists` and `AllocateTaskKeys` of the
- * spaces module, which join the tenant transaction of the calling use case and decide every role
+ * `FindVisibleSpaceLists`, `ListCurrentSprints`, `ListSidebarLists`, `AllocateTaskKeys`,
+ * `RestoreArchivedList`, `ListArchivedLists` and `FindVisibleLists` of the spaces module, which join the tenant transaction of the calling use case and decide every role
  * of the viewer. The projections of the spaces module are copied member by member to the models of
  * the tasks module, the roles of the viewer included, so neither module shares a type with the
  * other. The viewer's role in the organization is the one the copy of the memberships gave, passed
@@ -108,6 +123,39 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
    * @readonly
    */
   private readonly allocateTaskKeys: AllocateTaskKeys;
+
+  /**
+   * Property restoreArchivedListOperation
+   *
+   * @description
+   * The restoration of the archived list of a restored task.
+   *
+   * @type {RestoreArchivedList}
+   * @readonly
+   */
+  private readonly restoreArchivedListOperation: RestoreArchivedList;
+
+  /**
+   * Property listArchivedLists
+   *
+   * @description
+   * The reading of a page of the archived lists a viewer has a role on.
+   *
+   * @type {ListArchivedLists}
+   * @readonly
+   */
+  private readonly listArchivedLists: ListArchivedLists;
+
+  /**
+   * Property findVisibleListsOperation
+   *
+   * @description
+   * The reading of the lists among some ids a viewer has a role on.
+   *
+   * @type {FindVisibleLists}
+   * @readonly
+   */
+  private readonly findVisibleListsOperation: FindVisibleLists;
   // #endregion
 
   // #region Constructor
@@ -115,7 +163,7 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
    * Constructor
    *
    * @description
-   * Takes the six public operations of the spaces module.
+   * Takes the nine public operations of the spaces module.
    *
    * @param {FindVisibleList} findVisibleList - The reading of a visible list.
    * @param {ListVisibleListIds} listVisibleListIds - The reading of the visible lists.
@@ -123,6 +171,9 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
    * @param {ListCurrentSprints} listCurrentSprints - The reading of the current sprints.
    * @param {ListSidebarLists} listSidebarLists - The reading of the lists of the sidebar.
    * @param {AllocateTaskKeys} allocateTaskKeys - The allocation of task numbers.
+   * @param {RestoreArchivedList} restoreArchivedList - The restoration of an archived list.
+   * @param {ListArchivedLists} listArchivedLists - The reading of the archived lists.
+   * @param {FindVisibleLists} findVisibleLists - The reading of visible lists by id.
    * @constructor
    */
   public constructor(
@@ -132,6 +183,9 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
     listCurrentSprints: ListCurrentSprints,
     listSidebarLists: ListSidebarLists,
     allocateTaskKeys: AllocateTaskKeys,
+    restoreArchivedList: RestoreArchivedList,
+    listArchivedLists: ListArchivedLists,
+    findVisibleLists: FindVisibleLists,
   ) {
     this.findVisibleListOperation = findVisibleList;
     this.listVisibleListIds = listVisibleListIds;
@@ -139,6 +193,9 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
     this.listCurrentSprints = listCurrentSprints;
     this.listSidebarLists = listSidebarLists;
     this.allocateTaskKeys = allocateTaskKeys;
+    this.restoreArchivedListOperation = restoreArchivedList;
+    this.listArchivedLists = listArchivedLists;
+    this.findVisibleListsOperation = findVisibleLists;
   }
   // #endregion
 
@@ -331,11 +388,99 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
   }
 
   /**
+   * Method restoreArchivedList
+   *
+   * @description
+   * Runs `RestoreArchivedList` for the viewer, who is the actor of the restoration: it locks the
+   * list, restores it when archived and appends `list.unarchived.v1` in the transaction of the
+   * caller.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {Viewer} viewer - The acting member, with the role of the copy.
+   * @param {string} listId - The list.
+   * @returns {Promise<ListRestoration>} What the spaces module answered.
+   */
+  public async restoreArchivedList(
+    organizationId: string,
+    viewer: Viewer,
+    listId: string,
+  ): Promise<ListRestoration> {
+    const output: RestoreArchivedListOutput = await this.restoreArchivedListOperation.execute({
+      organizationId,
+      actorUserId: viewer.userId,
+      viewerRole: viewer.role,
+      listId,
+    });
+    return output.outcome === 'role-insufficient'
+      ? { outcome: 'role-insufficient', role: output.role }
+      : { outcome: output.outcome };
+  }
+
+  /**
+   * Method archivedLists
+   *
+   * @description
+   * Runs `ListArchivedLists` for the viewer.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {Viewer} viewer - The acting member, with the role of the copy.
+   * @param {ArchivePosition | null} after - The last list of the previous page, `null` for the
+   * first.
+   * @param {number} limit - How many lists at most.
+   * @returns {Promise<ArchivedLists>} The lists, each with the role of the viewer, and the total.
+   */
+  public async archivedLists(
+    organizationId: string,
+    viewer: Viewer,
+    after: ArchivePosition | null,
+    limit: number,
+  ): Promise<ArchivedLists> {
+    const output: ListArchivedListsOutput = await this.listArchivedLists.execute({
+      organizationId,
+      viewerUserId: viewer.userId,
+      viewerRole: viewer.role,
+      after: after === null ? null : { archivedAt: after.archivedAt, id: after.id },
+      limit,
+    });
+    return {
+      lists: output.lists.map((list: VisibleList): PlacedList => this.toPlacedList(list)),
+      total: output.total,
+    };
+  }
+
+  /**
+   * Method findVisibleLists
+   *
+   * @description
+   * Runs `FindVisibleLists` for the viewer.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {Viewer} viewer - The acting member, with the role of the copy.
+   * @param {readonly string[]} listIds - The lists, 100 at most.
+   * @returns {Promise<readonly PlacedList[]>} The lists found, in no particular order.
+   * @throws {Error} With more than 100 ids, from the spaces module.
+   */
+  public async findVisibleLists(
+    organizationId: string,
+    viewer: Viewer,
+    listIds: readonly string[],
+  ): Promise<readonly PlacedList[]> {
+    const output: FindVisibleListsOutput = await this.findVisibleListsOperation.execute({
+      organizationId,
+      viewerUserId: viewer.userId,
+      viewerRole: viewer.role,
+      listIds,
+    });
+    return output.lists.map((list: VisibleList): PlacedList => this.toPlacedList(list));
+  }
+
+  /**
    * Method toPlacedList
    *
    * @description
    * Copies a list of the spaces module member by member to the model of the tasks module, with
-   * the switch of the organization and the role of the viewer.
+   * the switch of the organization, its archive, its position in its space (the order of the
+   * sidebar and the keyset of the overview) and the role of the viewer.
    *
    * @param {VisibleList} list - The list as the spaces module answers it.
    * @returns {PlacedList} The list.
@@ -356,8 +501,12 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
               goal: list.sprint.goal,
             },
       createdAt: list.createdAt,
+      position: list.position,
       version: list.version,
       organizationAccess: list.organizationAccess,
+      archivedAt: list.archivedAt,
+      archivedBy:
+        list.archivedBy === null ? null : { type: list.archivedBy.type, id: list.archivedBy.id },
       callerRole: list.callerRole,
     };
   }

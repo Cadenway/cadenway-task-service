@@ -81,7 +81,7 @@ export class UpdateChecklistItem {
    * versions `If-Match` accepts.
    * @returns {Promise<UpdateChecklistItemOutput>} The task after the change.
    * @throws {TaskRefusal} `organization-not-found`, `task-not-found`, `role-insufficient`,
-   * `version-mismatch` or `checklist-item-not-found`.
+   * `task-archived`, `version-mismatch` or `checklist-item-not-found`.
    */
   public async execute(input: UpdateChecklistItemInput): Promise<UpdateChecklistItemOutput> {
     return this.unitOfWork.run(async (store: TasksStore): Promise<UpdateChecklistItemOutput> => {
@@ -96,6 +96,7 @@ export class UpdateChecklistItem {
         taskKey: input.taskKey,
         edit: true,
         lock: true,
+        archived: 'refuse',
         expectedVersions: input.expectedVersions,
       });
       const now: Date = await store.clock.now();

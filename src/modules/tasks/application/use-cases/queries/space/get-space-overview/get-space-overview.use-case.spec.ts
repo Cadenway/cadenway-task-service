@@ -18,12 +18,28 @@ import {
   refusalOf,
   subtaskState,
   taskState,
+  archiveFrom,
+  ARCHIVED_AT,
+  HUGO_ACTOR,
+  atelierNordLists,
 } from '../../../tasks.fixture.js';
 import type { GetSpaceOverviewInput } from './get-space-overview.input.js';
 import { GetSpaceOverview } from './get-space-overview.use-case.js';
 
 /** A space id no space has. */
 const UNKNOWN_SPACE = '019a7000-0000-7000-8000-0000000000ff';
+
+/** The list "Notes" of "Produit", created after "Bugs". */
+const NOTES = '019a7100-0000-7000-8000-000000000006';
+
+/** When "Bugs" was created, the day after "Sprint 14". */
+const BUGS_CREATED_AT = new Date('2026-10-27T09:00:00Z');
+
+/** When "Notes" was created, the day after "Bugs". */
+const NOTES_CREATED_AT = new Date('2026-10-28T09:00:00Z');
+
+/** When "Sprint 14" came back from the archives, after the creation of every other list. */
+const RESTORED_AT = new Date('2026-11-10T09:00:00Z');
 
 /**
  * Builds the reading of the first page of the overview of "Produit" by Camille Martin on
@@ -122,11 +138,33 @@ describe('GetSpaceOverview: the lists of a space with the counts of their top-le
     const second = await useCase.execute(read({ limit: 1, after: first.next }));
 
     expect(first.items.map((item) => item.list.id)).toEqual([SPRINT_14]);
-    expect(first.next).toEqual({ createdAt: placedList().createdAt, id: SPRINT_14 });
+    expect(first.next).toEqual({ position: placedList().position, id: SPRINT_14 });
     expect(second.items.map((item) => item.list.id)).toEqual([BUGS]);
     expect(second.next).toBeNull();
     expect([first.listCount, second.listCount]).toEqual([2, 2]);
     expect([first.taskCount, second.taskCount]).toEqual([4, 4]);
+  });
+
+  it('pages by the position of the sidebar: a list restored after the others comes last, on a later page', async () => {
+    const spaces = new InMemorySpaceDirectory({
+      lists: [
+        placedList({ archivedAt: ARCHIVED_AT, archivedBy: HUGO_ACTOR }),
+        placedList({ id: BUGS, name: 'Bugs', sprint: null, createdAt: BUGS_CREATED_AT }),
+        placedList({ id: NOTES, name: 'Notes', sprint: null, createdAt: NOTES_CREATED_AT }),
+      ],
+      now: RESTORED_AT,
+    });
+    await spaces.restoreArchivedList(ATELIER_NORD, { userId: CAMILLE, role: 'owner' }, SPRINT_14);
+    const useCase = over(produit(), spaces);
+
+    const first = await useCase.execute(read({ limit: 2 }));
+    const second = await useCase.execute(read({ limit: 2, after: first.next }));
+
+    expect(first.items.map((item) => item.list.id)).toEqual([BUGS, NOTES]);
+    expect(first.next).toEqual({ position: NOTES_CREATED_AT, id: NOTES });
+    expect(second.items.map((item) => item.list.id)).toEqual([SPRINT_14]);
+    expect(second.next).toBeNull();
+    expect([first.listCount, second.listCount]).toEqual([3, 3]);
   });
 
   it('reads the counts of every list of the space in one statement, whatever the page', async () => {
@@ -204,5 +242,47 @@ describe('GetSpaceOverview: the read runs in one read-only transaction on one sn
     expect(tasks.runs).toBe(1);
     expect(tasks.readOnlyRuns).toBe(1);
     expect(tasks.snapshotRuns).toBe(1);
+  });
+});
+
+describe('GetSpaceOverview: archived tasks and lists are left out', () => {
+  it('leaves an archived task out of the counts and an archived list out of the lists', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [
+        taskState(),
+        queryTask(1, {
+          assigneeIds: [CAMILLE],
+          labels: ['Archivé'],
+          dueDate: '2026-11-08',
+          archive: archiveFrom(queryTask(1).id),
+          version: 2,
+        }),
+        queryTask(2, { assigneeIds: [CAMILLE], dueDate: '2026-11-08' }),
+        queryTask(3, { listId: BUGS }),
+      ],
+    });
+    const useCase = new GetSpaceOverview(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
+    const archivedSprint = new GetSpaceOverview(
+      tasks,
+      atelierNordMembers(),
+      new InMemorySpaceDirectory({
+        lists: atelierNordLists({ archivedAt: ARCHIVED_AT, archivedBy: HUGO_ACTOR }),
+      }),
+    );
+    const input = {
+      organizationId: ATELIER_NORD,
+      actorUserId: CAMILLE,
+      spaceId: PRODUIT,
+      today: '2026-11-08',
+      after: null,
+      limit: 50,
+    };
+
+    const live = await useCase.execute(input);
+    const withoutSprint = await archivedSprint.execute(input);
+
+    expect(live.taskCount).toBe(3);
+    expect(withoutSprint.items.map((item) => item.list.id)).toEqual([BUGS]);
+    expect(withoutSprint).toMatchObject({ listCount: 1, taskCount: 1 });
   });
 });

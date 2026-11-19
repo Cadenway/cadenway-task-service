@@ -1,4 +1,5 @@
 import type { ChecklistItemState } from './checklist-item-state.value-object.js';
+import type { TaskArchive } from './task-archive.value-object.js';
 import type { TaskDraft } from './task-draft.value-object.js';
 import type { TaskKey } from './task-key.value-object.js';
 
@@ -81,5 +82,19 @@ export interface TaskState extends TaskDraft {
    * @readonly
    */
   readonly version: number;
+
+  /**
+   * Property archive
+   *
+   * @description
+   * The archive the task belongs to, `null` for a live task (`archivedAt` and `archivedBy`,
+   * `openapi/internal/task-service.yaml`; "Tasks" of `openapi/public/archives.yaml`). An archived
+   * task never changes until its archive is restored, but for the removal of a member from its
+   * assignees.
+   *
+   * @type {TaskArchive | null}
+   * @readonly
+   */
+  readonly archive: TaskArchive | null;
   // #endregion
 }

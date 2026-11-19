@@ -22,6 +22,7 @@ import type { ActivityKind } from '../../domain/value-objects/activity/activity-
 import type { MemberRole } from '../../domain/value-objects/member/member-role.value-object.js';
 import type { Viewer } from '../../domain/value-objects/member/viewer.value-object.js';
 import { isLate } from '../../domain/policies/task/lateness.policy.js';
+import { showsParent } from '../../domain/policies/subtask/subtask-tree.policy.js';
 import type { SubtreeShape } from '../../domain/value-objects/subtask/subtree-shape.value-object.js';
 import type { ChecklistItemDraft } from '../../domain/value-objects/task/checklist-item-draft.value-object.js';
 import type { ChecklistItemState } from '../../domain/value-objects/task/checklist-item-state.value-object.js';
@@ -34,6 +35,7 @@ import type { TaskField } from '../../domain/value-objects/task/task-field.value
 import { TaskKey } from '../../domain/value-objects/task/task-key.value-object.js';
 import type { TaskState } from '../../domain/value-objects/task/task-state.value-object.js';
 import type { EventActor } from '../models/actor/event-actor.model.js';
+import type { ArchivePosition } from '../models/archive/archive-position.model.js';
 import type { ActivityPosition } from '../models/activity/activity-position.model.js';
 import type { ListActivityFilter } from '../models/activity/list-activity-filter.model.js';
 import type { LabelPosition } from '../models/label/label-position.model.js';
@@ -46,22 +48,27 @@ import type { TaskGrouping } from '../models/query/task-grouping.model.js';
 import type { TaskOrder } from '../models/query/task-order.model.js';
 import type { TaskPosition } from '../models/query/task-position.model.js';
 import type { MyTaskState } from '../models/user/my-task-state.model.js';
+import type { ArchivedLists } from '../models/placement/archived-lists.model.js';
 import type { KeyAllocation } from '../models/placement/key-allocation.model.js';
 import type { ListPlacement } from '../models/placement/list-placement.model.js';
+import type { ListRestoration } from '../models/placement/list-restoration.model.js';
 import type { AccessRole } from '../../domain/value-objects/access/access-role.value-object.js';
 import type { PlacedList } from '../models/placement/placed-list.model.js';
 import type { PlacedSpace } from '../models/placement/placed-space.model.js';
 import { TaskRefusal } from '../models/task/task-refusal.model.js';
+import type { TaskStanding } from '../models/task/task-standing.model.js';
 import type { TaskRefusalReason } from '../models/task/task-refusal-reason.model.js';
 import type { ReadOptions } from '../models/transactions/read-options.model.js';
 import type { TasksStore } from '../models/transactions/tasks-store.model.js';
 import type { MemberDirectory } from '../ports/outbound/members/membership/member-directory.port.js';
+import type { ArchiveReader } from '../ports/outbound/persistence/archive/archive-reader.port.js';
 import type { AssignedTaskReader } from '../ports/outbound/persistence/assignee/assigned-task-reader.port.js';
 import type { TaskCounter } from '../ports/outbound/persistence/count/task-counter.port.js';
 import type { LabelReader } from '../ports/outbound/persistence/label/label-reader.port.js';
 import type { TaskQueryReader } from '../ports/outbound/persistence/query/task-query-reader.port.js';
 import type { SpaceDirectory } from '../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
+import type { ArchivedRootView } from '../projections/archive/archived-root.projection.js';
 import type { TaskCountsView } from '../projections/count/task-counts.projection.js';
 import type { TaskGroupCountsView } from '../projections/query/task-group-counts.projection.js';
 import type { TaskGroupView } from '../projections/query/task-group.projection.js';
@@ -69,11 +76,12 @@ import type { HomeStatsView } from '../projections/user/home-stats.projection.js
 import type { MyTaskCountsView } from '../projections/user/my-task-counts.projection.js';
 import type { SubtaskCounts } from '../projections/task/subtask-counts.projection.js';
 import type { TaskLocation } from '../projections/task/task-location.projection.js';
-import type { TaskReferenceView } from '../projections/task/task-reference.projection.js';
+import type { TaskReferenceInListView } from '../projections/task/task-reference-in-list.projection.js';
 import type { TaskSummaryView } from '../projections/task/task-summary.projection.js';
 
 export {
   ALL_STATUSES,
+  ARCHIVED_AT,
   ATELIER_NORD,
   BUGS,
   CAD_482,
@@ -85,6 +93,7 @@ export {
   CREATED_AT,
   DESIGN,
   HUGO,
+  HUGO_ACTOR,
   INES,
   INES_ACTOR,
   LEA,
@@ -97,6 +106,7 @@ export {
   SPRINT_14,
   STRANGER,
   UPDATED_AT,
+  archiveFrom,
   cad490State,
   priorityEntry,
   statusesHiding,
@@ -144,6 +154,14 @@ export type RecordedEvent =
       readonly version: number;
       readonly assigneeId: string;
       readonly actor: EventActor;
+    }
+  | {
+      readonly kind: 'archived' | 'unarchived';
+      readonly key: string;
+      readonly version: number;
+      readonly rootKey: string;
+      readonly parentKey: string | null;
+      readonly actor: EventActor;
     };
 
 /**
@@ -179,12 +197,14 @@ export function placedSpace(overrides: Partial<PlacedSpace> = {}): PlacedSpace {
 }
 
 /**
- * Builds the list "Sprint 14" of the space "Produit".
+ * Builds the list "Sprint 14" of the space "Produit", placed in its space by its creation (never
+ * restored) unless the overrides give it a position.
  *
  * @param overrides - Fields to replace.
  * @returns The list.
  */
 export function placedList(overrides: Partial<PlacedList> = {}): PlacedList {
+  const createdAt: Date = overrides.createdAt ?? new Date('2026-10-26T09:00:00Z');
   return {
     id: SPRINT_14,
     spaceId: PRODUIT,
@@ -192,9 +212,12 @@ export function placedList(overrides: Partial<PlacedList> = {}): PlacedList {
     icon: null,
     color: 'bleu',
     sprint: { startDate: '2026-11-02', endDate: '2026-11-15', goal: 'Livrer le SSO' },
-    createdAt: new Date('2026-10-26T09:00:00Z'),
+    createdAt,
+    position: createdAt,
     version: 1,
     organizationAccess: true,
+    archivedAt: null,
+    archivedBy: null,
     callerRole: 'edit',
     ...overrides,
   };
@@ -316,8 +339,14 @@ export interface InMemorySpaceSeed {
 
   /** The calls of every fake, in order, shared with the other fakes. */
   readonly trace?: string[];
+
+  /** The instant a restoration of a list takes; `NOW` when left out. */
+  readonly now?: Date;
   // #endregion
 }
+
+/** How many lists `findVisibleLists` accepts, as the spaces module does. */
+const MAX_VISIBLE_LISTS: number = 100;
 
 /**
  * Class InMemorySpaceDirectory
@@ -330,7 +359,12 @@ export interface InMemorySpaceSeed {
  * A space is seen with a role on it (the owner, a space of the organization, a grant of the space;
  * never by a guest) or through a grant of one of its lists. With no grant seeded, every member
  * other than a guest has `edit` on every list of a space of the organization and the owner on
- * those of their private space: the rules before grants.
+ * those of their private space: the rules before grants. As the spaces module, it leaves archived
+ * lists out of the lists of a space, the current sprints and the sidebar, keeps them in
+ * `findVisibleList`, `visibleListIds` and `findVisibleLists`, and orders the lists of a space by
+ * their position (`(coalesce(restored_at, created_at), id)`): a restoration of a list
+ * (`restoreArchivedList`) moves it to the end of its space. It changes the fake at once and does
+ * not roll back with a unit of work, like the key counter.
  */
 export class InMemorySpaceDirectory implements SpaceDirectory {
   // #region Properties
@@ -359,8 +393,14 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
   /** The spaces by id. */
   private readonly spaces: ReadonlyMap<string, PlacedSpace>;
 
-  /** The lists by id. */
-  private readonly lists: ReadonlyMap<string, PlacedList>;
+  /** The `restoreArchivedList` calls, as list ids, the lists restored included. */
+  public readonly restoreCalls: string[] = [];
+
+  /** The lists by id; a restoration replaces its list, at the position of its restoration. */
+  private readonly lists: Map<string, PlacedList>;
+
+  /** The instant a restoration takes. */
+  private readonly now: Date;
 
   /** The grants of the spaces, by space id then account. */
   private readonly spaceGrants: Readonly<Record<string, Readonly<Record<string, AccessRole>>>>;
@@ -413,6 +453,7 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
     this.listGrants = seed.listGrants ?? {};
     this.lastNumbers = new Map(Object.entries(seed.lastNumbers ?? { CAD: 495 }));
     this.trace = seed.trace ?? [];
+    this.now = seed.now ?? NOW;
   }
   // #endregion
 
@@ -477,8 +518,8 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
    * Method findVisibleSpaceLists
    *
    * @description
-   * Lists the lists of a space of Atelier Nord the viewer sees that they have a role on, with that
-   * role, in the order of their creation.
+   * Lists the live lists of a space of Atelier Nord the viewer sees that they have a role on, with
+   * that role, in the order of the sidebar (position, then id).
    *
    * @param {string} organizationId - The organization.
    * @param {Viewer} viewer - The acting member.
@@ -496,7 +537,11 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
     if (organizationId !== ATELIER_NORD || space === undefined || !this.seesSpace(viewer, space)) {
       return Promise.resolve(null);
     }
-    return Promise.resolve(this.placedListsOf(viewer, space));
+    return Promise.resolve(
+      this.placedListsOf(viewer, space).filter(
+        (list: PlacedList): boolean => list.archivedAt === null,
+      ),
+    );
   }
 
   /**
@@ -524,7 +569,10 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
       this.visibleLists(organizationId, viewer)
         .filter(
           (list: PlacedList): boolean =>
-            list.sprint !== null && list.sprint.startDate <= today && today <= list.sprint.endDate,
+            list.archivedAt === null &&
+            list.sprint !== null &&
+            list.sprint.startDate <= today &&
+            today <= list.sprint.endDate,
         )
         .sort(
           (left: PlacedList, right: PlacedList): number =>
@@ -554,7 +602,11 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
   ): Promise<readonly PlacedList[]> {
     this.trace.push('spaces.sidebarLists');
     this.sidebarCalls.push({ limit });
-    return Promise.resolve(this.visibleLists(organizationId, viewer).slice(0, limit));
+    return Promise.resolve(
+      this.visibleLists(organizationId, viewer)
+        .filter((list: PlacedList): boolean => list.archivedAt === null)
+        .slice(0, limit),
+    );
   }
 
   /**
@@ -587,6 +639,139 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
   }
 
   /**
+   * Method restoreArchivedList
+   *
+   * @description
+   * Restores an archived list the viewer has `edit` on, as the spaces module does: `not-found`
+   * without a role, `role-insufficient` without `edit`, `not-archived` for a live list; a
+   * restored list takes the next version and goes to the end of its space, and the trace records
+   * `spaces.listUnarchived`, the event the spaces module appends. A live list is still looked up
+   * (the spaces module locks it) and answers `not-archived`.
+   *
+   * @param {string} organizationId - The organization.
+   * @param {Viewer} viewer - The acting member.
+   * @param {string} listId - The list.
+   * @returns {Promise<ListRestoration>} What the spaces module answers.
+   */
+  public restoreArchivedList(
+    organizationId: string,
+    viewer: Viewer,
+    listId: string,
+  ): Promise<ListRestoration> {
+    this.trace.push('spaces.restoreArchivedList');
+    this.restoreCalls.push(listId);
+    const list: PlacedList | undefined = this.lists.get(listId);
+    const placed: PlacedList | null =
+      organizationId !== ATELIER_NORD || list === undefined ? null : this.placed(viewer, list);
+    if (list === undefined || placed === null) {
+      return Promise.resolve({ outcome: 'not-found' });
+    }
+    if (placed.callerRole !== 'edit') {
+      return Promise.resolve({ outcome: 'role-insufficient', role: placed.callerRole });
+    }
+    if (list.archivedAt === null) {
+      return Promise.resolve({ outcome: 'not-archived' });
+    }
+    this.lists.set(listId, {
+      ...list,
+      archivedAt: null,
+      archivedBy: null,
+      version: list.version + 1,
+      position: this.now,
+    });
+    this.trace.push('spaces.listUnarchived');
+    return Promise.resolve({ outcome: 'restored' });
+  }
+
+  /**
+   * Method archivedLists
+   *
+   * @description
+   * Lists the archived lists the viewer has a role on, the most recently archived first, after a
+   * position, at most `limit`, and their number.
+   *
+   * @param {string} organizationId - The organization.
+   * @param {Viewer} viewer - The acting member.
+   * @param {ArchivePosition | null} after - The last list of the previous page.
+   * @param {number} limit - How many lists at most.
+   * @returns {Promise<ArchivedLists>} The lists and the total.
+   */
+  public archivedLists(
+    organizationId: string,
+    viewer: Viewer,
+    after: ArchivePosition | null,
+    limit: number,
+  ): Promise<ArchivedLists> {
+    this.trace.push('spaces.archivedLists');
+    const archived: PlacedList[] = this.visibleLists(organizationId, viewer)
+      .filter((list: PlacedList): boolean => list.archivedAt !== null)
+      .sort(
+        (left: PlacedList, right: PlacedList): number =>
+          (right.archivedAt?.getTime() ?? 0) - (left.archivedAt?.getTime() ?? 0) ||
+          compareText(right.id, left.id),
+      );
+    const start: number =
+      after === null
+        ? 0
+        : archived.findIndex(
+            (list: PlacedList): boolean =>
+              (list.archivedAt?.getTime() ?? 0) < after.archivedAt.getTime() ||
+              ((list.archivedAt?.getTime() ?? 0) === after.archivedAt.getTime() &&
+                compareText(list.id, after.id) < 0),
+          );
+    return Promise.resolve({
+      lists: start === -1 ? [] : archived.slice(start, start + limit),
+      total: archived.length,
+    });
+  }
+
+  /**
+   * Method findVisibleLists
+   *
+   * @description
+   * Finds the lists among some ids the viewer has a role on, archived ones included.
+   *
+   * @param {string} organizationId - The organization.
+   * @param {Viewer} viewer - The acting member.
+   * @param {readonly string[]} listIds - The lists, 100 at most.
+   * @returns {Promise<readonly PlacedList[]>} The lists found.
+   * @throws {Error} With more than 100 ids.
+   */
+  public findVisibleLists(
+    organizationId: string,
+    viewer: Viewer,
+    listIds: readonly string[],
+  ): Promise<readonly PlacedList[]> {
+    this.trace.push('spaces.findVisibleLists');
+    if (listIds.length > MAX_VISIBLE_LISTS) {
+      return Promise.reject(new Error('At most 100 lists are found at once.'));
+    }
+    return Promise.resolve(
+      this.visibleLists(organizationId, viewer).filter((list: PlacedList): boolean =>
+        listIds.includes(list.id),
+      ),
+    );
+  }
+
+  /**
+   * Method stateOf
+   *
+   * @description
+   * Reads a list as the fake holds it now, for the assertions of a spec.
+   *
+   * @param {string} listId - The list.
+   * @returns {PlacedList} The list.
+   * @throws {Error} When the fake holds no such list.
+   */
+  public stateOf(listId: string): PlacedList {
+    const list: PlacedList | undefined = this.lists.get(listId);
+    if (list === undefined) {
+      throw new Error('The list is not stored.');
+    }
+    return list;
+  }
+
+  /**
    * Method visibleLists
    *
    * @description
@@ -610,7 +795,8 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
    * Method placedListsOf
    *
    * @description
-   * Lists the lists of a space the viewer has a role on, by creation, each with that role.
+   * Lists the lists of a space the viewer has a role on, by position (restoration, else creation)
+   * then id, each with that role.
    *
    * @param {Viewer} viewer - The acting member.
    * @param {PlacedSpace} space - The space.
@@ -619,7 +805,10 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
   private placedListsOf(viewer: Viewer, space: PlacedSpace): PlacedList[] {
     return [...this.lists.values()]
       .filter((list: PlacedList): boolean => list.spaceId === space.id)
-      .sort(byCreation)
+      .sort(
+        (left: PlacedList, right: PlacedList): number =>
+          left.position.getTime() - right.position.getTime() || compareText(left.id, right.id),
+      )
       .flatMap((list: PlacedList): PlacedList[] => {
         const placed: PlacedList | null = this.placed(viewer, list);
         return placed === null ? [] : [placed];
@@ -858,9 +1047,14 @@ export interface InMemoryTasksSeed {
  *
  * @param state - The task.
  * @param subtaskCounts - Its direct subtasks.
+ * @param parentKey - The key of the parent it reads with; its stored parent's when left out.
  * @returns The summary.
  */
-export function summaryOf(state: TaskState, subtaskCounts: SubtaskCounts): TaskSummaryView {
+export function summaryOf(
+  state: TaskState,
+  subtaskCounts: SubtaskCounts,
+  parentKey: string | null = state.parentKey === null ? null : state.parentKey.format(),
+): TaskSummaryView {
   return {
     id: state.id,
     key: state.key.format(),
@@ -873,7 +1067,7 @@ export function summaryOf(state: TaskState, subtaskCounts: SubtaskCounts): TaskS
     startDate: state.startDate,
     estimateMinutes: state.estimateMinutes,
     labels: state.labels,
-    parentKey: state.parentKey === null ? null : state.parentKey.format(),
+    parentKey,
     listId: state.listId,
     spaceId: state.spaceId,
     subtaskCounts,
@@ -982,8 +1176,9 @@ function sortKeyOf(folded: string): string {
  * @description
  * A fake of the four read ports of the queries (`TaskQueryReader`, `TaskCounter`,
  * `AssignedTaskReader`, `LabelReader`) over the tasks of the unit of work, scoped to the
- * organization as the repositories are. It applies the filters, the closed and late rules and the
- * orders of the contract just enough for a use case to show its orchestration; the exact SQL
+ * organization as the repositories are, and to the live tasks (`liveTask` of the statements). It
+ * applies the filters, the closed and late rules and the orders of the contract just enough for a
+ * use case to show its orchestration; the exact SQL
  * semantics (folding, keyset, collations) are proven against PostgreSQL. It pages by the id of the
  * position it is given.
  */
@@ -1159,6 +1354,7 @@ export class InMemoryTaskReads
       if (
         state.organizationId !== organizationId ||
         state.parentId !== null ||
+        state.archive !== null ||
         !listIds.includes(state.listId)
       ) {
         continue;
@@ -1303,7 +1499,11 @@ export class InMemoryTaskReads
     this.records.labels.push({ listIds, search, limit });
     const names = new Map<string, string>();
     for (const state of this.rows()) {
-      if (state.organizationId !== organizationId || !listIds.includes(state.listId)) {
+      if (
+        state.organizationId !== organizationId ||
+        state.archive !== null ||
+        !listIds.includes(state.listId)
+      ) {
         continue;
       }
       for (const name of state.labels) {
@@ -1351,7 +1551,11 @@ export class InMemoryTaskReads
   private matching(organizationId: string, listId: string, filter: TaskFilter): TaskState[] {
     const { statuses, priorities, assignees, labelKeys, search, dueFrom, dueTo } = filter;
     return this.rows().filter((state: TaskState): boolean => {
-      if (state.organizationId !== organizationId || state.listId !== listId) {
+      if (
+        state.organizationId !== organizationId ||
+        state.listId !== listId ||
+        state.archive !== null
+      ) {
         return false;
       }
       if (filter.rootsOnly && state.parentId !== null) {
@@ -1410,6 +1614,7 @@ export class InMemoryTaskReads
     return this.rows().filter(
       (state: TaskState): boolean =>
         state.organizationId === organizationId &&
+        state.archive === null &&
         state.assigneeIds.includes(userId) &&
         listIds.includes(state.listId),
     );
@@ -1514,7 +1719,12 @@ export class InMemoryTaskReads
  * database: the work runs on a copy that is committed only when it resolves, as the tenant
  * transaction is, so a refusal leaves no row and no event. It scopes every read to the
  * organization as the repositories do, records the order of the locks and keeps the transaction
- * instant fixed.
+ * instant fixed. It applies the conditions of the statements: the live tasks only in every
+ * collection and count, the subtasks of a task those of its archive, the live subtree and child
+ * count of a write, the parent a task reads with (none when the parent is in another list,
+ * `showsParent`, in the summaries and the references), the locks without checklists (the members
+ * of an archive, `lockByIds` without them) and the bulk write of an archive, guarded by the
+ * versions, which keeps the stored checklists.
  */
 export class InMemoryTasks implements TasksUnitOfWork {
   // #region Properties
@@ -1698,13 +1908,35 @@ export class InMemoryTasks implements TasksUnitOfWork {
       [...tasks.values()].filter(
         (row: TaskState): boolean => row.organizationId === organizationId,
       );
+    const rootOf = (state: TaskState | undefined): string | null =>
+      state?.archive === null || state === undefined ? null : state.archive.rootId;
+    // The subtasks of a task are those of its archive (`sameArchiveAsParent`).
     const childrenOf = (organizationId: string, parentId: string): TaskState[] =>
       inOrganization(organizationId)
-        .filter((row: TaskState): boolean => row.parentId === parentId)
+        .filter(
+          (row: TaskState): boolean =>
+            row.parentId === parentId && rootOf(row) === rootOf(tasks.get(parentId)),
+        )
         .sort(
           (left: TaskState, right: TaskState): number =>
             left.createdAt.getTime() - right.createdAt.getTime() || left.id.localeCompare(right.id),
         );
+    // The live subtasks of a task, which a write moves, locks and counts (`liveTask`).
+    const liveChildrenOf = (organizationId: string, parentId: string): TaskState[] =>
+      childrenOf(organizationId, parentId).filter(
+        (row: TaskState): boolean => row.archive === null,
+      );
+    // The parent a task reads with: none when its parent is in another list (`showsParent`), as
+    // the summaries, the views and the detail read it from the list of the parent row.
+    const parentKeyShown = (state: TaskState): string | null => {
+      const parent: TaskState | undefined =
+        state.parentId === null ? undefined : tasks.get(state.parentId);
+      return state.parentKey === null ||
+        parent === undefined ||
+        !showsParent(state.listId, parent.listId)
+        ? null
+        : state.parentKey.format();
+    };
     const countsOf = (organizationId: string, taskId: string): SubtaskCounts => {
       const children: TaskState[] = childrenOf(organizationId, taskId);
       return {
@@ -1743,17 +1975,27 @@ export class InMemoryTasks implements TasksUnitOfWork {
         createdAt: this.now,
         updatedAt: this.now,
         version: 1,
+        archive: null,
       };
       tasks.set(state.id, state);
       return state;
     };
+    // The roots of the archives of some lists, the most recently archived first.
+    const rootsOf = (organizationId: string, listIds: readonly string[]): TaskState[] =>
+      inOrganization(organizationId)
+        .filter((row: TaskState): boolean => rootOf(row) === row.id && listIds.includes(row.listId))
+        .sort(
+          (left: TaskState, right: TaskState): number =>
+            (right.archive?.at.getTime() ?? 0) - (left.archive?.at.getTime() ?? 0) ||
+            compareText(right.id, left.id),
+        );
     const inList = (organizationId: string, filter: ListActivityFilter): ActivityEntryState[] =>
       [...activity.values()].filter((entry: ActivityEntryState): boolean => {
         const task: TaskState | undefined = tasks.get(entry.taskId);
         return (
           entry.organizationId === organizationId &&
           entry.listId === filter.listId &&
-          task !== undefined &&
+          task?.archive === null &&
           filter.listIds.includes(task.listId) &&
           matchesKinds(entry, filter.kinds) &&
           (filter.actorIds === null || filter.actorIds.includes(entry.actor.id))
@@ -1762,11 +2004,75 @@ export class InMemoryTasks implements TasksUnitOfWork {
     const reads = new InMemoryTaskReads(
       (): readonly TaskState[] => [...tasks.values()],
       (state: TaskState): TaskSummaryView =>
-        summaryOf(state, countsOf(state.organizationId, state.id)),
+        summaryOf(state, countsOf(state.organizationId, state.id), parentKeyShown(state)),
       this.reads,
       this.trace,
     );
+    const archives: ArchiveReader = {
+      pageOfRoots: (
+        organizationId: string,
+        listIds: readonly string[],
+        after: ArchivePosition | null,
+        limit: number,
+      ): Promise<readonly ArchivedRootView[]> => {
+        this.trace.push('archives.pageOfRoots');
+        return Promise.resolve(
+          rootsOf(organizationId, listIds)
+            .filter(
+              (row: TaskState): boolean =>
+                after === null ||
+                (row.archive?.at.getTime() ?? 0) < after.archivedAt.getTime() ||
+                ((row.archive?.at.getTime() ?? 0) === after.archivedAt.getTime() &&
+                  row.id < after.id),
+            )
+            .slice(0, limit)
+            .flatMap((row: TaskState): ArchivedRootView[] =>
+              row.archive === null
+                ? []
+                : [
+                    {
+                      task: summaryOf(row, countsOf(organizationId, row.id), parentKeyShown(row)),
+                      archivedAt: row.archive.at,
+                      archivedBy: row.archive.by,
+                    },
+                  ],
+            ),
+        );
+      },
+      countRoots: (organizationId: string, listIds: readonly string[]): Promise<number> => {
+        this.trace.push('archives.countRoots');
+        return Promise.resolve(rootsOf(organizationId, listIds).length);
+      },
+      memberCounts: (
+        organizationId: string,
+        rootIds: readonly string[],
+      ): Promise<ReadonlyMap<string, number>> => {
+        this.trace.push('archives.memberCounts');
+        const counts = new Map<string, number>();
+        for (const row of inOrganization(organizationId)) {
+          const rootId: string | null = rootOf(row);
+          if (rootId !== null && rootIds.includes(rootId)) {
+            counts.set(rootId, (counts.get(rootId) ?? 0) + 1);
+          }
+        }
+        return Promise.resolve(counts);
+      },
+      liveRootCounts: (
+        organizationId: string,
+        listIds: readonly string[],
+      ): Promise<ReadonlyMap<string, number>> => {
+        this.trace.push('archives.liveRootCounts');
+        const counts = new Map<string, number>();
+        for (const row of inOrganization(organizationId)) {
+          if (row.archive === null && row.parentId === null && listIds.includes(row.listId)) {
+            counts.set(row.listId, (counts.get(row.listId) ?? 0) + 1);
+          }
+        }
+        return Promise.resolve(counts);
+      },
+    };
     return {
+      archives,
       tasks: {
         findByKey: (organizationId: string, key: TaskKey, lock: boolean): Promise<Task | null> => {
           this.trace.push(lock ? 'tasks.findByKey:lock' : 'tasks.findByKey:read');
@@ -1775,13 +2081,28 @@ export class InMemoryTasks implements TasksUnitOfWork {
           );
           return Promise.resolve(state === undefined ? null : Task.restore(state));
         },
-        lockByIds: (organizationId: string, ids: readonly string[]): Promise<readonly Task[]> => {
+        lockByIds: (
+          organizationId: string,
+          ids: readonly string[],
+          withChecklists: boolean = true,
+        ): Promise<readonly Task[]> => {
           this.trace.push('tasks.lockByIds');
           return Promise.resolve(
             inOrganization(organizationId)
               .filter((row: TaskState): boolean => ids.includes(row.id))
               .sort((left: TaskState, right: TaskState): number => left.id.localeCompare(right.id))
-              .map((row: TaskState): Task => Task.restore(row)),
+              .map((row: TaskState): Task =>
+                Task.restore(withChecklists ? row : { ...row, checklist: [] }),
+              ),
+          );
+        },
+        lockStanding: (organizationId: string, taskId: string): Promise<TaskStanding | null> => {
+          this.trace.push('tasks.lockStanding');
+          const row: TaskState | undefined = inOrganization(organizationId).find(
+            (candidate: TaskState): boolean => candidate.id === taskId,
+          );
+          return Promise.resolve(
+            row === undefined ? null : { live: row.archive === null, listId: row.listId },
           );
         },
         insert: (draft: TaskDraft, key: TaskKey): Promise<Task> => {
@@ -1833,7 +2154,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
           let level: readonly string[] = [taskId];
           while (level.length > 0) {
             const next: string[] = level.flatMap((id: string): string[] =>
-              childrenOf(organizationId, id).map((row: TaskState): string => row.id),
+              liveChildrenOf(organizationId, id).map((row: TaskState): string => row.id),
             );
             if (next.length > 0) {
               height += 1;
@@ -1844,7 +2165,39 @@ export class InMemoryTasks implements TasksUnitOfWork {
           return Promise.resolve({ taskId, descendantIds, height });
         },
         childCount: (organizationId: string, parentId: string): Promise<number> =>
-          Promise.resolve(childrenOf(organizationId, parentId).length),
+          Promise.resolve(liveChildrenOf(organizationId, parentId).length),
+        lockArchive: (organizationId: string, rootId: string): Promise<readonly Task[]> => {
+          this.trace.push('tasks.lockArchive');
+          return Promise.resolve(
+            inOrganization(organizationId)
+              .filter((row: TaskState): boolean => row.archive?.rootId === rootId)
+              .sort((left: TaskState, right: TaskState): number => left.id.localeCompare(right.id))
+              // The members are locked without their checklists, as the statement loads them.
+              .map((row: TaskState): Task => Task.restore({ ...row, checklist: [] })),
+          );
+        },
+        writeArchives: (
+          _organizationId: string,
+          rootId: string,
+          updated: readonly Task[],
+        ): Promise<void> => {
+          this.trace.push('tasks.writeArchives');
+          for (const task of updated) {
+            if (tasks.get(task.snapshot.id)?.version !== task.snapshot.version - 1) {
+              return Promise.reject(
+                new Error(`A task of the archive of ${rootId} changed since it was locked.`),
+              );
+            }
+          }
+          for (const task of updated) {
+            // The statement writes neither the checklist nor the collections, which the rows keep.
+            tasks.set(task.snapshot.id, {
+              ...task.snapshot,
+              checklist: tasks.get(task.snapshot.id)?.checklist ?? [],
+            });
+          }
+          return Promise.resolve();
+        },
         lockAssignedTo: (
           organizationId: string,
           userId: string,
@@ -1908,7 +2261,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
               )
               .slice(0, limit)
               .map((row: TaskState): TaskSummaryView =>
-                summaryOf(row, countsOf(organizationId, row.id)),
+                summaryOf(row, countsOf(organizationId, row.id), parentKeyShown(row)),
               ),
           ),
         countChildren: (organizationId: string, parentId: string): Promise<number> =>
@@ -1916,14 +2269,14 @@ export class InMemoryTasks implements TasksUnitOfWork {
         references: (
           organizationId: string,
           taskIds: readonly string[],
-        ): Promise<ReadonlyMap<string, TaskReferenceView>> =>
+        ): Promise<ReadonlyMap<string, TaskReferenceInListView>> =>
           Promise.resolve(
             new Map(
               inOrganization(organizationId)
                 .filter((row: TaskState): boolean => taskIds.includes(row.id))
-                .map((row: TaskState): [string, TaskReferenceView] => [
+                .map((row: TaskState): [string, TaskReferenceInListView] => [
                   row.id,
-                  { key: row.key.format(), name: row.name, status: row.status },
+                  { key: row.key.format(), name: row.name, status: row.status, listId: row.listId },
                 ]),
             ),
           ),
@@ -2069,6 +2422,30 @@ export class InMemoryTasks implements TasksUnitOfWork {
             key: task.snapshot.key.format(),
             version: task.snapshot.version,
             assigneeId,
+            actor,
+          });
+          return Promise.resolve();
+        },
+        taskArchived: (task: Task, rootKey: TaskKey, actor: EventActor): Promise<void> => {
+          this.trace.push('events.archived');
+          events.push({
+            kind: 'archived',
+            key: task.snapshot.key.format(),
+            version: task.snapshot.version,
+            rootKey: rootKey.format(),
+            parentKey: task.snapshot.parentKey?.format() ?? null,
+            actor,
+          });
+          return Promise.resolve();
+        },
+        taskUnarchived: (task: Task, rootKey: TaskKey, actor: EventActor): Promise<void> => {
+          this.trace.push('events.unarchived');
+          events.push({
+            kind: 'unarchived',
+            key: task.snapshot.key.format(),
+            version: task.snapshot.version,
+            rootKey: rootKey.format(),
+            parentKey: task.snapshot.parentKey?.format() ?? null,
             actor,
           });
           return Promise.resolve();
