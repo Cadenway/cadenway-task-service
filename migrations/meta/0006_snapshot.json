@@ -1,5 +1,5 @@
 {
-  "id": "6b08a4f6-7596-4cb8-8103-9141ab22aebc",
+  "id": "c881cd1b-326b-49a4-af33-3161e773c482",
   "prevId": "91c96770-2d8b-46bd-be24-c0d27b4928c4",
   "version": "7",
   "dialect": "postgresql",
@@ -2403,6 +2403,13 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
+        },
+        "archive_root": {
+          "name": "archive_root",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         }
       },
       "indexes": {
@@ -2495,7 +2502,7 @@
             }
           ],
           "isUnique": false,
-          "where": "\"tasks\".\"archive_root_id\" = \"tasks\".\"id\"",
+          "where": "\"tasks\".\"archive_root\"",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -2647,6 +2654,10 @@
         "tasks_archived_check": {
           "name": "tasks_archived_check",
           "value": "(\"tasks\".\"archived_at\" is null) = (\"tasks\".\"archived_by_type\" is null) and (\"tasks\".\"archived_at\" is null) = (\"tasks\".\"archived_by_id\" is null) and (\"tasks\".\"archived_at\" is null) = (\"tasks\".\"archive_root_id\" is null)"
+        },
+        "tasks_archive_root_check": {
+          "name": "tasks_archive_root_check",
+          "value": "\"tasks\".\"archive_root\" = coalesce(\"tasks\".\"archive_root_id\" = \"tasks\".\"id\", false)"
         },
         "tasks_archived_by_type_check": {
           "name": "tasks_archived_by_type_check",

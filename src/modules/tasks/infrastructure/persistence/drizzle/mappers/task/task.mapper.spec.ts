@@ -60,6 +60,7 @@ function rowOf(state: TaskState, overrides: Partial<TaskRow> = {}): TaskRow {
     archivedByType: state.archive?.by.type ?? null,
     archivedById: state.archive?.by.id ?? null,
     archiveRootId: state.archive?.rootId ?? null,
+    archiveRoot: state.archive?.rootId === state.id,
     ...overrides,
   };
 }
@@ -249,6 +250,7 @@ describe('toTaskUpdate: a changed task becomes the columns to write', () => {
       'archivedByType',
       'archivedById',
       'archiveRootId',
+      'archiveRoot',
     ]) {
       expect(set).not.toHaveProperty(column);
     }

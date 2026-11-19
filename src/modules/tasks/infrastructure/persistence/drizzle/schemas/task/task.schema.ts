@@ -1,6 +1,7 @@
 import { organizationPolicy } from '@cadenway/nest-common/database';
 import { sql } from 'drizzle-orm';
 import {
+  boolean,
   check,
   date,
   foreignKey,
@@ -58,13 +59,18 @@ function toSqlList(values: readonly string[]): string {
  *   statement on the tasks of one list (the page, the total, the groups and the counts) as one
  *   range of the list, and the pages in the order of creation (`manual`, `createdAt`), in both
  *   directions, as an ordered scan that stops at the limit;
- * - `tasks_archive_root_index` and `tasks_archive_member_index`, partial on the archived tasks
- *   only: the roots of the archives the most recently archived first ("Archives", tab "Tâches"),
- *   and the members of one archive (its restoration, the count of its subtasks).
+ * - `tasks_archive_root_index` (partial on `archive_root`) and `tasks_archive_member_index`
+ *   (partial on `archive_root_id is not null`), on the archived tasks only: the roots of the
+ *   archives the most recently archived first ("Archives", tab "Tâches"), and the members of one
+ *   archive (its restoration, the count of its subtasks).
  *
  * Archives (P3b-1): `archived_at`, `archived_by_*` and `archive_root_id` are all set or all null.
  * `archive_root_id` names the task an archive was made from (the root itself for the root), a
- * foreign key to the same table; a task whose `archived_at` is null is live.
+ * foreign key to the same table; a task whose `archived_at` is null is live. `archive_root` is true
+ * exactly for the root of an archive (`archive_root_id = id`, which the check keeps): a column of
+ * its own, because PostgreSQL has no statistics for a comparison of two columns, and with
+ * `archive_root_id = id` as the predicate of the partial index it misjudged the keyset of the
+ * second page of the archives and read every root (`tests/archive-queries.int-spec.ts`).
  */
 export const tasks = pgTable(
   'tasks',
@@ -99,6 +105,9 @@ export const tasks = pgTable(
     archivedByType: text('archived_by_type'),
     archivedById: text('archived_by_id'),
     archiveRootId: uuid('archive_root_id'),
+    // A constant default: the expand-only migration adds it without rewriting the table, and the
+    // running version, which never writes it, keeps every task live and not a root.
+    archiveRoot: boolean('archive_root').notNull().default(false),
   },
   (table) => [
     primaryKey({ name: 'tasks_pkey', columns: [table.organizationId, table.id] }),
@@ -165,13 +174,17 @@ export const tasks = pgTable(
     }),
     index('tasks_archive_root_index')
       .on(table.organizationId, table.archivedAt, table.id)
-      .where(sql`${table.archiveRootId} = ${table.id}`),
+      .where(sql`${table.archiveRoot}`),
     index('tasks_archive_member_index')
       .on(table.organizationId, table.archiveRootId)
       .where(sql`${table.archiveRootId} is not null`),
     check(
       'tasks_archived_check',
       sql`(${table.archivedAt} is null) = (${table.archivedByType} is null) and (${table.archivedAt} is null) = (${table.archivedById} is null) and (${table.archivedAt} is null) = (${table.archiveRootId} is null)`,
+    ),
+    check(
+      'tasks_archive_root_check',
+      sql`${table.archiveRoot} = coalesce(${table.archiveRootId} = ${table.id}, false)`,
     ),
     check(
       'tasks_archived_by_type_check',

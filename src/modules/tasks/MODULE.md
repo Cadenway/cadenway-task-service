@@ -80,13 +80,17 @@ live).
 - `tasks.archived_at` (`timestamptz(3)`), `archived_by_type`, `archived_by_id` and
   `archive_root_id` are all set or all null (`tasks_archived_check`); `archive_root_id` names the
   task the archive was made from, the root itself for the root, a foreign key to
-  `(organization_id, id)`. A task whose `archived_at` is null is live. Partial indexes:
-  `tasks_archive_root_index`, on `(organization_id, archived_at, id)` where
-  `archive_root_id = id` (the tab "Tâches", walked backwards from the keyset), and
-  `tasks_archive_member_index`, on `(organization_id, archive_root_id)` where
-  `archive_root_id is not null` (the members of an archive: the restoration lock and the counts of
-  the tab). Rollback: drop the two indexes, the constraint and the four columns in a new
-  migration; the previous release reads none of them.
+  `(organization_id, id)`. A task whose `archived_at` is null is live. `archive_root` (`boolean not
+null default false`, added without a rewrite) is true exactly for the root of an archive
+  (`tasks_archive_root_check`: `archive_root = coalesce(archive_root_id = id, false)`): PostgreSQL
+  has no statistics for a comparison of two columns, so with `archive_root_id = id` as the
+  predicate of the partial index the second page of the archives sorted every root after a bitmap
+  scan (589 buffers, 11.7 ms at 12,310 roots, against 5 buffers for the walk). Partial indexes:
+  `tasks_archive_root_index`, on `(organization_id, archived_at, id)` where `archive_root` (the tab
+  "Tâches", every page walked backwards from its keyset), and `tasks_archive_member_index`, on
+  `(organization_id, archive_root_id)` where `archive_root_id is not null` (the members of an
+  archive: the restoration lock and the counts of the tab). Rollback: drop the two indexes, the
+  constraints and the five columns in a new migration; the previous release reads none of them.
 - `tasks.id`, `checklist_items.id` and `activity_entries.id` come from `uuidv7()`. The instants
   that order a page (`created_at`, `occurred_at`, `completed_at`) are `timestamptz(3)`, so that the
   position of a page round-trips exactly through the cursor. The key is stored on the task

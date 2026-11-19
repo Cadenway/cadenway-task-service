@@ -21,7 +21,7 @@ import { DrizzleTaskCollections } from '../task/task-collections.repository.js';
  * @description
  * `ArchiveReader` on `tasks`, in the transaction of its unit of work, without a lock. Every
  * statement names `organization_id`. A page of the roots of the archives is one statement on the
- * partial index `tasks_archive_root_index` (`archive_root_id = id`, walked backwards from the
+ * partial index `tasks_archive_root_index` (`archive_root`, walked backwards from the
  * keyset, the lists of the actor a filter of its rows), then the five statements of the summaries
  * of its rows (`DrizzleTaskCollections.summarize`), whatever its size; the total, the member counts
  * (`tasks_archive_member_index`) and the task counts of archived lists (`tasks_list_created_index`)

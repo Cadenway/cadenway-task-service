@@ -19,7 +19,7 @@ import {
 } from './archive-statements.mapper.js';
 
 const ROOTS: string =
-  '("tasks"."organization_id" = $1 and "tasks"."archive_root_id" = "tasks"."id" and "tasks"."list_id" = any($2::uuid[]))';
+  '("tasks"."organization_id" = $1 and "tasks"."archive_root" and "tasks"."list_id" = any($2::uuid[]))';
 const ARCHIVE_COLUMNS: string =
   `to_char("tasks"."archived_at" at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "archivedAt", ` +
   '"tasks"."archived_by_type" as "archivedByType", "tasks"."archived_by_id" as "archivedById"';
@@ -91,7 +91,7 @@ describe('writeArchivesStatement: an archive or a restoration in one statement',
 
     expect(rendered.sql).toBe(
       'update "tasks" set archived_at = changed.archived_at, archived_by_type = changed.archived_by_type, ' +
-        'archived_by_id = changed.archived_by_id, archive_root_id = changed.archive_root_id, parent_id = changed.parent_id, ' +
+        'archived_by_id = changed.archived_by_id, archive_root_id = changed.archive_root_id, archive_root = coalesce(changed.archive_root_id = changed.id, false), parent_id = changed.parent_id, ' +
         'version = changed.version, updated_at = changed.updated_at ' +
         'from unnest($1::uuid[], $2::timestamptz[], $3::text[], $4::text[], $5::uuid[], $6::uuid[], $7::int[], $8::timestamptz[]) ' +
         'as changed (id, archived_at, archived_by_type, archived_by_id, archive_root_id, parent_id, version, updated_at) ' +

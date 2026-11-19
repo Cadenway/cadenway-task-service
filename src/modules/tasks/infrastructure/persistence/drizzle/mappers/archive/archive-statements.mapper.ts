@@ -12,9 +12,11 @@ import { liveTask } from '../task/live-task.mapper.js';
  * Function archivedRootsCondition
  *
  * @description
- * The roots of the archives of some lists: `archive_root_id = id`, the exact predicate of the
- * partial index `tasks_archive_root_index` on `(organization_id, archived_at, id)`, so a page is an
- * ordered scan of that index walked backwards from the keyset.
+ * The roots of the archives of some lists: `archive_root`, the exact predicate of the partial
+ * index `tasks_archive_root_index` on `(organization_id, archived_at, id)`, so a page is an ordered
+ * scan of that index walked backwards from the keyset. A column with statistics of its own, not
+ * `archive_root_id = id`, which PostgreSQL cannot estimate: with it, the page after the first read
+ * every root (`tests/archive-queries.int-spec.ts`).
  *
  * @param {string} organizationId - The organization of the transaction.
  * @param {readonly string[]} listIds - The lists the actor has a role on.
@@ -24,7 +26,7 @@ function archivedRootsCondition(organizationId: string, listIds: readonly string
   return (
     and(
       eq(tasks.organizationId, organizationId),
-      sql`${tasks.archiveRootId} = ${tasks.id}`,
+      sql`${tasks.archiveRoot}`,
       anyOf(tasks.listId, listIds, 'uuid'),
     ) ?? sql`false`
   );
@@ -122,7 +124,8 @@ export function liveRootCountsStatement(organizationId: string, listIds: readonl
  *
  * @description
  * The archive or the restoration of tasks in one `UPDATE ... FROM unnest(...)` statement: the four
- * archive columns (all `null` for a restoration), the parent (`null` for a root detached), the
+ * archive columns (all `null` for a restoration) and `archive_root` (true for the task the archive
+ * is made from, which `tasks_archive_root_check` requires), the parent (`null` for a root detached), the
  * version and the instant of each, guarded by the version before the change
  * (`version = changed.version - 1`), scoped to the organization. The caller checks that every
  * row was written.
@@ -152,5 +155,5 @@ export function writeArchivesStatement(organizationId: string, states: readonly 
   const instants: string[] = states.map((state: TaskState): string =>
     state.updatedAt.toISOString(),
   );
-  return sql`update ${tasks} set archived_at = changed.archived_at, archived_by_type = changed.archived_by_type, archived_by_id = changed.archived_by_id, archive_root_id = changed.archive_root_id, parent_id = changed.parent_id, version = changed.version, updated_at = changed.updated_at from unnest(${sql.param(ids)}::uuid[], ${sql.param(archivedAt)}::timestamptz[], ${sql.param(byType)}::text[], ${sql.param(byId)}::text[], ${sql.param(rootIds)}::uuid[], ${sql.param(parentIds)}::uuid[], ${sql.param(versions)}::int[], ${sql.param(instants)}::timestamptz[]) as changed (id, archived_at, archived_by_type, archived_by_id, archive_root_id, parent_id, version, updated_at) where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.id} = changed.id and ${tasks.version} = changed.version - 1`;
+  return sql`update ${tasks} set archived_at = changed.archived_at, archived_by_type = changed.archived_by_type, archived_by_id = changed.archived_by_id, archive_root_id = changed.archive_root_id, archive_root = coalesce(changed.archive_root_id = changed.id, false), parent_id = changed.parent_id, version = changed.version, updated_at = changed.updated_at from unnest(${sql.param(ids)}::uuid[], ${sql.param(archivedAt)}::timestamptz[], ${sql.param(byType)}::text[], ${sql.param(byId)}::text[], ${sql.param(rootIds)}::uuid[], ${sql.param(parentIds)}::uuid[], ${sql.param(versions)}::int[], ${sql.param(instants)}::timestamptz[]) as changed (id, archived_at, archived_by_type, archived_by_id, archive_root_id, parent_id, version, updated_at) where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.id} = changed.id and ${tasks.version} = changed.version - 1`;
 }
