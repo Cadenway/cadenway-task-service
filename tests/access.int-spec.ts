@@ -55,6 +55,8 @@ import type {
 } from '@cadenway/nest-common';
 import { TenantTransactionRunner } from '@cadenway/nest-common/database';
 import type { TransactionClient, TransactionDatabase } from '@cadenway/nest-common/database';
+import { startTelemetry } from '@cadenway/nest-common/telemetry';
+import type { TelemetryHandle } from '@cadenway/nest-common/telemetry';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
@@ -75,6 +77,15 @@ import { DrizzleTaskListRepository } from '../src/modules/spaces/infrastructure/
 import { DrizzleSpaceRepository } from '../src/modules/spaces/infrastructure/persistence/drizzle/repositories/space/drizzle-space.repository.js';
 import { ListManagedAccessTargets } from '../src/modules/spaces/public/access/list-managed-access-targets.js';
 import type { ListManagedAccessTargetsOutput } from '../src/modules/spaces/public/access/list-managed-access-targets.js';
+import { ListVisibleListIds } from '../src/modules/spaces/public/list/list-visible-list-ids.js';
+import type { ListVisibleListIdsOutput } from '../src/modules/spaces/public/list/list-visible-list-ids.js';
+import { assignedPageStatement } from '../src/modules/tasks/infrastructure/persistence/drizzle/mappers/assignee/assigned-task-statements.mapper.js';
+import {
+  homeStatsStatement,
+  stateCountsStatement,
+} from '../src/modules/tasks/infrastructure/persistence/drizzle/mappers/count/task-counts.mapper.js';
+import { labelPageStatement } from '../src/modules/tasks/infrastructure/persistence/drizzle/mappers/label/label-statements.mapper.js';
+import { DrizzleActivityRepository } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/activity/drizzle-activity.repository.js';
 
 // The access model of P3b-1 on a disposable PostgreSQL and NATS: the grants of spaces and lists,
 // the switch "Accès de l’organisation", the effective role on every route of P3a, the access
@@ -89,7 +100,9 @@ import type { ListManagedAccessTargetsOutput } from '../src/modules/spaces/publi
 // against the validators generated from `openapi/internal/task-service.yaml`; the outbox rows are
 // checked against the schemas of `asyncapi/task-service.yaml`. Rows are read and seeded as the
 // migrator role with the system access of the policies, since row-level security is forced on every
-// table. The scenarios run in the order of the file and pass their state on.
+// table. The OpenTelemetry SDK of the kit runs as `src/telemetry.ts` starts it, without an exporter,
+// so that the rows the clean-up job appends carry the trace of the removal. The scenarios run in the
+// order of the file and pass their state on.
 
 /** Compose file of the development dependencies. */
 const composeFile: string = fileURLToPath(new URL('../compose.dev.yaml', import.meta.url));
@@ -155,6 +168,12 @@ const mathis: Person = {
 const chloe: Person = {
   userId: '01938f6e-8a42-7d5b-b2c9-5e1f3a6d9c2d',
   memberId: '01938f6e-9000-7000-8000-0000000000cc',
+};
+
+/** Noé Perrin, member of Atelier Nord, removed while his request waits for an answer. */
+const noe: Person = {
+  userId: '01938f6e-8a42-7d5b-b2c9-5e1f3a6d9c2e',
+  memberId: '01938f6e-9000-7000-8000-0000000000d1',
 };
 
 /** Solène Garnier, owner of the second organization. */
@@ -260,6 +279,14 @@ const accessTables: readonly string[] = [
   'list_grants',
   'access_requests',
   'access_request_attempts',
+];
+
+/** The tables of the tasks the cross-list statements read. */
+const taskTables: readonly string[] = [
+  'tasks',
+  'task_assignees',
+  'task_labels',
+  'activity_entries',
 ];
 
 /** A node of a plan of `EXPLAIN (FORMAT JSON)`. */
@@ -606,11 +633,7 @@ function summarize(label: string, document: PlanDocument): PlanLine {
     if (index !== undefined) {
       indexes.add(index);
     }
-    if (
-      node['Node Type'].includes('Seq Scan') &&
-      relation !== undefined &&
-      accessTables.includes(relation)
-    ) {
+    if (node['Node Type'].includes('Seq Scan') && relation !== undefined) {
       seqScans.push(relation);
     }
   });
@@ -632,6 +655,7 @@ describe('the access model: grants, the switch, the effective role and access re
   const signers = new Map<Issuer, InternalTokenSigner>();
   let migrator: pg.Pool;
   let application: pg.Pool;
+  let telemetry: TelemetryHandle | undefined;
 
   // State the scenarios pass on, in the order of the file.
   let produit: SpaceBody;
@@ -1126,6 +1150,7 @@ describe('the access model: grants, the switch, the effective role and access re
   interface CleanUpJob {
     readonly state: string;
     readonly retry_count: number;
+    readonly traceparent: string | null;
   }
 
   /**
@@ -1137,7 +1162,7 @@ describe('the access model: grants, the switch, the effective role and access re
    */
   async function cleanUpJobsOf(person: Person): Promise<CleanUpJob[]> {
     const result = await migrator.query<CleanUpJob>(
-      `select state, retry_count from pgboss.job
+      `select state, retry_count, data -> 'payload' ->> 'traceparent' as traceparent from pgboss.job
         where name = 'task.clean-up-removed-member'
           and data ->> 'organizationId' = $1 and data -> 'payload' ->> 'userId' = $2
         order by created_on, id`,
@@ -1236,6 +1261,7 @@ describe('the access model: grants, the switch, the effective role and access re
       }),
     );
 
+    telemetry = startTelemetry({ service: 'task-service', version: '0.0.0-test' });
     // As main.ts: the configuration is read inside the start-up, never when a module is imported.
     const config = loadConfig(appConfigSchema);
     app = await createApplication(AppModule, {
@@ -1275,6 +1301,7 @@ describe('the access model: grants, the switch, the effective role and access re
       toPublishedEvent('joined', atelierNordId, nadia, 'guest', 1),
       toPublishedEvent('joined', atelierNordId, mathis, 'member', 1),
       toPublishedEvent('joined', atelierNordId, chloe, 'member', 1),
+      toPublishedEvent('joined', atelierNordId, noe, 'member', 1),
       toPublishedEvent('joined', atelierDeltaId, solene, 'owner', 1),
     ];
     for (const join of joins) {
@@ -1283,7 +1310,9 @@ describe('the access model: grants, the switch, the effective role and access re
     await vi.waitFor(
       async () => {
         expect(await activeMembers(atelierNordId)).toEqual(
-          [camille, ines, hugo, lea, nadia, mathis, chloe].map((person) => person.userId).sort(),
+          [camille, ines, hugo, lea, nadia, mathis, chloe, noe]
+            .map((person) => person.userId)
+            .sort(),
         );
         expect(await activeMembers(atelierDeltaId)).toEqual([solene.userId]);
       },
@@ -1295,6 +1324,7 @@ describe('the access model: grants, the switch, the effective role and access re
     try {
       await app?.close();
       await application.end();
+      await telemetry?.shutdown();
       await migrator.end();
     } finally {
       vi.unstubAllEnvs();
@@ -3058,6 +3088,227 @@ describe('the access model: grants, the switch, the effective role and access re
       const ofHugo = await pendingSeenBy(hugo);
       expect(ofHugo.items.map((item: AccessRequestBody) => item.id)).toEqual([requestId('R6')]);
     });
+
+    it('follows a task request to the current list of its task: the editors of the new list read and approve it, the grant is on the new list, and the editors of the former list no longer answer it', async () => {
+      const achats = await createList(camille, produit.id, {
+        name: 'Achats',
+        organizationAccess: false,
+      });
+      const fournisseurs = await createList(camille, produit.id, {
+        name: 'Fournisseurs',
+        organizationAccess: false,
+      });
+      await grant(camille, 'lists', achats.id, ines.userId, 'edit');
+      await grant(camille, 'lists', fournisseurs.id, hugo.userId, 'edit');
+      const screens = await createTask(camille, achats.id, { name: 'Commander les écrans' });
+      await forgetAttempts(mathis);
+      await ask(mathis, { taskKey: screens.key, message: 'Pour suivre la commande' });
+      const [stored] = await asSystem<{ readonly id: string; readonly list_id: string }>(
+        `select id::text as id, list_id::text as list_id from access_requests
+          where organization_id = $1 and requester_user_id = $2 and target = 'task' and task_key = $3
+            and state = 'pending'`,
+        [atelierNordId, mathis.userId, screens.key],
+      );
+      const r7 = stored?.id ?? '';
+      expect(stored?.list_id).toBe(achats.id);
+      expect((await pendingSeenBy(ines)).items.find((item) => item.id === r7)).toMatchObject({
+        target: 'task',
+        spaceId: produit.id,
+        listId: achats.id,
+        task: { key: screens.key, name: 'Commander les écrans', status: 'todo' },
+      });
+      expect((await pendingSeenBy(hugo)).items.map((item) => item.id)).not.toContain(r7);
+
+      const moved = await send('patch', `/internal/v1/tasks/${screens.key}`, camille, {
+        body: { listId: fournisseurs.id },
+      });
+      expect(moved.status).toBe(200);
+      expect(conforms(UpdateTaskInternalResponse, bodyOf(moved)).listId).toBe(fournisseurs.id);
+
+      const ofHugo = await pendingSeenBy(hugo);
+      expect(ofHugo.items.map((item) => item.id)).toEqual([r7, requestId('R6')]);
+      expect(ofHugo.items[0]).toMatchObject({ listId: fournisseurs.id, spaceId: produit.id });
+      expect(await pendingSeenBy(hugo, `listId=${fournisseurs.id}`)).toMatchObject({
+        total: 1,
+        items: [{ id: r7 }],
+      });
+      expect((await pendingSeenBy(ines)).items.map((item) => item.id)).not.toContain(r7);
+      expect((await pendingSeenBy(camille, `listId=${achats.id}`)).total).toBe(0);
+      expectProblem(
+        await send('post', `/internal/v1/access-requests/${r7}/approval`, ines, {
+          body: { role: 'view' },
+        }),
+        404,
+        'access-request.not-found',
+      );
+      expectProblem(
+        await send('post', `/internal/v1/access-requests/${r7}/refusal`, ines, { body: {} }),
+        404,
+        'access-request.not-found',
+      );
+      const fournisseursEvents = (await outboxOf('listId', fournisseurs.id)).length;
+
+      const approved = await send('post', `/internal/v1/access-requests/${r7}/approval`, hugo, {
+        body: { role: 'view' },
+      });
+
+      expect(approved.status).toBe(200);
+      expect(conforms(ApproveAccessRequestInternalResponse, bodyOf(approved))).toMatchObject({
+        id: r7,
+        target: 'task',
+        spaceId: produit.id,
+        listId: fournisseurs.id,
+        task: { key: screens.key },
+        requester: { userId: mathis.userId },
+        state: 'approved',
+        role: 'view',
+        decidedBy: { type: 'user', id: hugo.userId },
+      });
+      expect(await readList(mathis, fournisseurs.id)).toMatchObject({ callerRole: 'view' });
+      expectProblem(
+        await send('get', `/internal/v1/lists/${achats.id}`, mathis),
+        404,
+        'list.not-found',
+      );
+      expect(
+        await read(GetTaskInternalResponse, `/internal/v1/tasks/${screens.key}`, mathis),
+      ).toMatchObject({ key: screens.key, listId: fournisseurs.id });
+      expect(
+        await countRows('list_grants', 'list_id = $2 and user_id = $3', achats.id, mathis.userId),
+      ).toBe(0);
+      const events = await outboxOf('accessRequestId', r7);
+      expect(events.map((event) => event.event_name)).toEqual([
+        'task.access-requested.v1',
+        'task.access-request-decided.v1',
+      ]);
+      expect(
+        conforms(taskEventSchemas['task.access-requested.v1'], events[0]?.payload),
+      ).toMatchObject({ listId: achats.id, key: screens.key, message: 'Pour suivre la commande' });
+      expect(
+        conforms(taskEventSchemas['task.access-request-decided.v1'], events[1]?.payload),
+      ).toMatchObject({
+        actor: { type: 'user', id: hugo.userId },
+        version: 2,
+        spaceId: produit.id,
+        listId: fournisseurs.id,
+        key: screens.key,
+        requesterUserId: mathis.userId,
+        decision: 'approved',
+        role: 'view',
+      });
+      const granted = await outboxSince('listId', fournisseurs.id, fournisseursEvents);
+      expect(granted.map((event) => event.event_name)).toEqual([
+        'list.access-changed.v1',
+        'task.access-request-decided.v1',
+      ]);
+      expect(
+        conforms(taskEventSchemas['list.access-changed.v1'], granted[0]?.payload),
+      ).toMatchObject({
+        actor: { type: 'user', id: hugo.userId },
+        listId: fournisseurs.id,
+        changed: ['grants'],
+        changedUserIds: [mathis.userId],
+      });
+    });
+
+    it('answers 404 access-request.not-found to the approval and the refusal of a request whose requester was removed meanwhile, while the clean-up has not dropped it yet', async () => {
+      await grant(hugo, 'spaces', carnet.id, noe.userId, 'view');
+      await ask(noe, { spaceId: direction.id, message: 'Pour préparer le comité' });
+      const id = await pendingRequestOf(noe, 'space', direction.id);
+      expect(id).toEqual(expect.any(String));
+
+      // The batch of his grants waits on "Carnet" while it is held, so his request is still there
+      // when Camille answers it.
+      await whileSpaceHeld(carnet.id, async () => {
+        await deliver(toPublishedEvent('removed', atelierNordId, noe, 'member', 2));
+
+        expectProblem(
+          await send('post', `/internal/v1/access-requests/${id ?? ''}/approval`, camille, {
+            body: { role: 'view' },
+          }),
+          404,
+          'access-request.not-found',
+        );
+        expectProblem(
+          await send('post', `/internal/v1/access-requests/${id ?? ''}/refusal`, camille, {
+            body: {},
+          }),
+          404,
+          'access-request.not-found',
+        );
+        expect(await pendingRequestOf(noe, 'space', direction.id)).toBe(id);
+        expect(
+          await countRows(
+            'space_grants',
+            'space_id = $2 and user_id = $3',
+            direction.id,
+            noe.userId,
+          ),
+        ).toBe(0);
+        expect(await outboxOf('accessRequestId', id ?? '')).toHaveLength(1);
+      });
+
+      await cleanUpsCompleted(noe, 1);
+      expect(await countRows('access_requests', 'requester_user_id = $2', noe.userId)).toBe(0);
+      expect(await countRows('space_grants', 'user_id = $2', noe.userId)).toBe(0);
+    }, 240_000);
+
+    it('refuses with 422 access.grant-limit-reached the approval of a request for a list that holds 200 grants, and keeps the request pending', async () => {
+      const salon = await createList(camille, produit.id, {
+        name: 'Salon professionnel',
+        organizationAccess: false,
+      });
+      await asSystem(
+        `insert into list_grants
+           (organization_id, list_id, space_id, user_id, role, granted_by_type, granted_by_id)
+         select $1, $2, $3, gen_random_uuid(), 'view', 'user', $4 from generate_series(1, 200)`,
+        [atelierNordId, salon.id, produit.id, camille.userId],
+      );
+      await forgetAttempts(chloe);
+      await ask(chloe, { listId: salon.id });
+      const id = await pendingRequestOf(chloe, 'list', salon.id);
+      expect(id).toEqual(expect.any(String));
+
+      expectProblem(
+        await send('post', `/internal/v1/access-requests/${id ?? ''}/approval`, camille, {
+          body: { role: 'view' },
+        }),
+        422,
+        'access.grant-limit-reached',
+      );
+
+      expect(await pendingRequestOf(chloe, 'list', salon.id)).toBe(id);
+      expect(await countRows('list_grants', 'list_id = $2', salon.id)).toBe(200);
+      expect(await outboxOf('accessRequestId', id ?? '')).toHaveLength(1);
+      expect((await readList(camille, salon.id)).version).toBe(1);
+      const refused = await send(
+        'post',
+        `/internal/v1/access-requests/${id ?? ''}/refusal`,
+        camille,
+        { body: {} },
+      );
+      expect(refused.status).toBe(200);
+      expect(conforms(RefuseAccessRequestInternalResponse, bodyOf(refused)).state).toBe('refused');
+    });
+
+    it('serializes the requests of one member: 15 sent at once answer exactly ten 202 and five 429, and count ten attempts', async () => {
+      await forgetAttempts(ines);
+
+      const responses = await Promise.all(
+        Array.from({ length: 15 }, () =>
+          send('post', '/internal/v1/access-requests', ines, { body: { spaceId: randomUUID() } }),
+        ),
+      );
+
+      expect(responses.filter((response) => response.status === 202)).toHaveLength(10);
+      const refused = responses.filter((response) => response.status === 429);
+      expect(refused).toHaveLength(5);
+      for (const response of refused) {
+        expectProblem(response, 429, 'access-request.limit-reached');
+      }
+      expect(await countRows('access_request_attempts', 'user_id = $2', ines.userId)).toBe(10);
+      await forgetAttempts(ines);
+    });
   });
 
   describe('the access checks of the realtime gateway', () => {
@@ -3286,7 +3537,7 @@ describe('the access model: grants, the switch, the effective role and access re
     });
   });
 
-  describe('when a member leaves, the clean-up job removes their grants and drops their pending requests', () => {
+  describe('when a member leaves, the clean-up job removes their grants and drops their access requests', () => {
     const outcomes: { readonly userId: string; readonly output: CleanUpRemovedMemberOutput }[] = [];
     let restore: (() => void) | undefined;
 
@@ -3294,7 +3545,7 @@ describe('the access model: grants, the switch, the effective role and access re
       restore?.();
     });
 
-    it('removes the 134 grants of Léa in batches, each with its access event by the system, drops her pending request and her attempts, and unassigns her tasks', async () => {
+    it('removes the 134 grants of Léa in batches, each with its access event by the system in the trace of the job, drops her requests, pending and answered, and her attempts, and unassigns her tasks', async () => {
       // The outcome of each run of the clean-up, as the job handler receives it.
       const useCase = service().get(CleanUpRemovedMember);
       const original = useCase.execute.bind(useCase);
@@ -3334,6 +3585,14 @@ describe('the access model: grants, the switch, the effective role and access re
           lea.userId,
         ),
       ).toBe(1);
+      // Her request for "Carnet" waits; the two the owners answered stay until she leaves.
+      expect(
+        await countRows(
+          'access_requests',
+          `requester_user_id = $2 and state = 'approved'`,
+          lea.userId,
+        ),
+      ).toBe(2);
       expect(
         await countRows('access_request_attempts', 'user_id = $2', lea.userId),
       ).toBeGreaterThan(0);
@@ -3355,23 +3614,27 @@ describe('the access model: grants, the switch, the effective role and access re
           lea.userId,
         ),
       ).toBe(0);
-      expect(
-        await countRows(
-          'access_requests',
-          `requester_user_id = $2 and state = 'approved'`,
-          lea.userId,
-        ),
-      ).toBe(2);
+      // The answered requests go too: they hold her message.
+      expect(await countRows('access_requests', 'requester_user_id = $2', lea.userId)).toBe(0);
       expect(await countRows('access_request_attempts', 'user_id = $2', lea.userId)).toBe(0);
       expect(await countRows('task_assignees', 'user_id = $2', lea.userId)).toBe(0);
 
-      const events = await asSystem<OutboxRow>(
-        `select id::text as id, event_name, payload from outbox_events
+      const events = await asSystem<OutboxRow & { readonly traceparent: string | null }>(
+        `select id::text as id, event_name, payload, traceparent from outbox_events
           where id > $1::uuid and event_name in ('space.access-changed.v1', 'list.access-changed.v1')
           order by id`,
         [lastBefore?.id],
       );
       expect(events).toHaveLength(134);
+      // The job stored the traceparent of the delivery of the removal, and the rows it appended
+      // continue that trace: the same trace id, another span.
+      const [job] = await cleanUpJobsOf(lea);
+      const stored = job?.traceparent ?? '';
+      expect(stored).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/u);
+      for (const event of events) {
+        expect(event.traceparent?.split('-')[1]).toBe(stored.split('-')[1]);
+        expect(event.traceparent).not.toBe(stored);
+      }
       for (const event of events) {
         const payload = conforms(
           event.event_name === 'space.access-changed.v1'
@@ -3411,7 +3674,7 @@ describe('the access model: grants, the switch, the effective role and access re
             spacesHandedOver: 0,
             spacesAwaitingOwner: 0,
             grantsRemoved: 134,
-            requestsDropped: 1,
+            requestsDropped: 3,
             tasksUnassigned: assigned,
             batches: 4,
           },
@@ -3472,36 +3735,37 @@ describe('the access model: grants, the switch, the effective role and access re
   });
 
   describe('the statements of the access model keep to their indexes on a realistic volume', () => {
+    /** How much of each a seeded organization holds. */
+    interface VolumeShape {
+      readonly owners: number;
+      readonly spaces: number;
+      readonly listsPerSpace: number;
+      readonly spaceGrants: number;
+      readonly listGrants: number;
+      readonly pending: number;
+      readonly decided: number;
+      readonly attempts: number;
+    }
+
+    /** The ranked lists of the seeded spaces of an organization, `$1`, as a subquery. */
+    const seededLists = `(select li.organization_id, li.id, li.space_id, li.created_at, sp.owner_user_id,
+                                 row_number() over (order by li.created_at, li.id) - 1 as rank
+                            from lists as li
+                            join spaces as sp on sp.organization_id = li.organization_id and sp.id = li.space_id
+                           where li.organization_id = $1 and sp.name like 'Volume %')`;
+
     /**
-     * Seeds a volume of spaces, lists, grants, access requests and attempts in an organization, as
-     * an import would, as the migrator role.
+     * Seeds spaces, lists and grants in an organization, as an import would, as the migrator role.
      *
      * @param organizationId - The organization.
      * @param accounts - The accounts: the first `owners` own the spaces, the others receive the
-     * grants of spaces; all of them receive grants of lists, ask and attempt.
+     * grants of spaces; all of them receive grants of lists.
      * @param shape - How much of each.
-     * @param shape.owners - How many accounts own spaces.
-     * @param shape.spaces - Spaces.
-     * @param shape.listsPerSpace - Lists of each space.
-     * @param shape.spaceGrants - Grants of each space.
-     * @param shape.listGrants - Grants of each list.
-     * @param shape.pending - Pending access requests.
-     * @param shape.decided - Answered access requests, the history.
-     * @param shape.attempts - Attempts of the last hour.
      */
-    async function seedVolume(
+    async function seedAccess(
       organizationId: string,
       accounts: readonly string[],
-      shape: {
-        readonly owners: number;
-        readonly spaces: number;
-        readonly listsPerSpace: number;
-        readonly spaceGrants: number;
-        readonly listGrants: number;
-        readonly pending: number;
-        readonly decided: number;
-        readonly attempts: number;
-      },
+      shape: VolumeShape,
     ): Promise<void> {
       await asSystem(
         `insert into spaces (organization_id, name, prefix, color, visibility, owner_user_id, statuses, created_at)
@@ -3548,27 +3812,118 @@ describe('the access model: grants, the switch, the effective role and access re
           where l.user_id <> l.owner_user_id`,
         [organizationId, accounts, shape.listGrants],
       );
-      const listsOf = `(select li.organization_id, li.id, li.space_id, sp.owner_user_id,
-                               row_number() over (order by li.created_at, li.id) - 1 as rank
-                          from lists as li
-                          join spaces as sp on sp.organization_id = li.organization_id and sp.id = li.space_id
-                         where li.organization_id = $1 and sp.name like 'Volume %')`;
+    }
+
+    /**
+     * Seeds the tasks of the seeded lists of an organization with their assignees, labels and
+     * activity, as an import would, as the migrator role: `perList` tasks per list keyed `VOL-n`,
+     * every tenth assigned to `member` (the first task of each list, a list of the switch on), the
+     * others to one of `others`, one or two labels each, a `create` entry for the first 15,000
+     * tasks and 5,000 status changes on the tasks of `activityListId`.
+     *
+     * @param organizationId - The organization.
+     * @param perList - Tasks per list.
+     * @param member - The account the statements are planned for.
+     * @param others - Other accounts, which never hold `member`.
+     * @param activityListId - The list with a long activity.
+     */
+    async function seedTasks(
+      organizationId: string,
+      perList: number,
+      member: string,
+      others: readonly string[],
+      activityListId: string,
+    ): Promise<void> {
+      await asSystem(
+        `insert into tasks (organization_id, space_id, list_id, key_prefix, key_number, name, status,
+                            priority, due_date, completed_at, created_at, created_by_type, created_by_id)
+         select l.organization_id, l.space_id, l.id, 'VOL', (l.rank * $2::int + k + 1)::int,
+                'Tâche importée ' || (l.rank * $2::int + k + 1),
+                case when (l.rank + k) % 10 in (7, 8) then 'done'
+                     else (array['todo', 'progress', 'review', 'backlog', 'triage', 'waiting', 'blocked'])[((l.rank + k) % 7)::int + 1]
+                end,
+                (array['urgente', 'haute', 'moyenne', 'basse'])[((l.rank + k) % 4)::int + 1],
+                case when k % 3 = 2 then null else date '2026-11-01' + ((l.rank + k) % 20)::int end,
+                case when (l.rank + k) % 10 in (7, 8) then now() end,
+                l.created_at + make_interval(secs => k), 'user', l.owner_user_id::text
+           from ${seededLists} as l cross join generate_series(0, $2::int - 1) as k`,
+        [organizationId, perList],
+      );
+      await asSystem(
+        `insert into task_assignees (organization_id, task_id, user_id, position)
+         select t.organization_id, t.id,
+                case when t.key_number % $4::int = 1 then $2::uuid
+                     else ($3::uuid[])[(t.key_number % array_length($3::uuid[], 1)) + 1] end,
+                0
+           from tasks as t where t.organization_id = $1 and t.key_prefix = 'VOL'`,
+        [organizationId, member, others, perList],
+      );
+      await asSystem(
+        `insert into task_labels (organization_id, task_id, label_key, name, position)
+         select t.organization_id, t.id, 'étiquette ' || (t.key_number % 40), 'Étiquette ' || (t.key_number % 40), 0
+           from tasks as t where t.organization_id = $1 and t.key_prefix = 'VOL'
+         union all
+         select t.organization_id, t.id, 'thème ' || (t.key_number % 7), 'Thème ' || (t.key_number % 7), 1
+           from tasks as t where t.organization_id = $1 and t.key_prefix = 'VOL' and t.key_number % 2 = 0`,
+        [organizationId],
+      );
+      await asSystem(
+        `insert into activity_entries (organization_id, task_id, list_id, kind, actor_type, actor_id, occurred_at)
+         select t.organization_id, t.id, t.list_id, 'create', 'user', t.created_by_id, t.created_at
+           from tasks as t where t.organization_id = $1 and t.key_prefix = 'VOL' and t.key_number <= 15000`,
+        [organizationId],
+      );
+      await asSystem(
+        `insert into activity_entries
+           (organization_id, task_id, list_id, kind, actor_type, actor_id, occurred_at, status_from, status_to)
+         select t.organization_id, t.id, t.list_id, 'status', 'user', $3, now() - make_interval(secs => n),
+                'todo', 'progress'
+           from generate_series(1, 5000) as n
+           join (select organization_id, id, list_id, row_number() over (order by key_number) - 1 as r
+                   from tasks where organization_id = $1 and list_id = $2) as t
+             on t.r = n % $4::int`,
+        [organizationId, activityListId, member, perList],
+      );
+    }
+
+    /**
+     * Seeds the access requests and the attempts of an organization, as the migrator role: one
+     * pending request in four for a space, one in four for a task of a seeded list when tasks were
+     * seeded, the others for a list; then answered requests (the history) and attempts of the last
+     * hour.
+     *
+     * @param organizationId - The organization.
+     * @param accounts - The requesters.
+     * @param shape - How much of each.
+     * @param tasksPerList - Tasks per seeded list, 0 when none was seeded.
+     */
+    async function seedRequests(
+      organizationId: string,
+      accounts: readonly string[],
+      shape: VolumeShape,
+      tasksPerList: number,
+    ): Promise<void> {
       const listCount = shape.spaces * shape.listsPerSpace;
       await asSystem(
         `insert into access_requests
-           (organization_id, target, target_id, space_id, list_id, requester_user_id, created_at)
+           (organization_id, target, target_id, space_id, list_id, task_id, task_key, requester_user_id, created_at)
          select l.organization_id,
-                case when i % 4 = 0 then 'space' else 'list' end,
-                case when i % 4 = 0 then l.space_id else l.id end,
+                case when i % 4 = 0 then 'space' when i % 4 = 1 and t.id is not null then 'task' else 'list' end,
+                case when i % 4 = 0 then l.space_id when i % 4 = 1 and t.id is not null then t.id else l.id end,
                 l.space_id,
                 case when i % 4 = 0 then null else l.id end,
+                case when i % 4 = 1 then t.id end,
+                case when i % 4 = 1 and t.id is not null then 'VOL-' || t.key_number end,
                 ($2::uuid[])[(i % array_length($2::uuid[], 1)) + 1],
                 now() - make_interval(secs => i)
            from generate_series(0, $3::int - 1) as i
-           join ${listsOf} as l on l.rank = (i * 13) % $4::int
+           join ${seededLists} as l on l.rank = (i * 13) % $4::int
+           left join tasks as t
+             on t.organization_id = l.organization_id and t.list_id = l.id and t.key_prefix = 'VOL'
+            and t.key_number = l.rank * $5::int + (i % greatest($5::int, 1)) + 1
          on conflict (organization_id, requester_user_id, target, target_id) where state = 'pending'
          do nothing`,
-        [organizationId, accounts, shape.pending, listCount],
+        [organizationId, accounts, shape.pending, listCount, tasksPerList],
       );
       await asSystem(
         `insert into access_requests
@@ -3581,7 +3936,7 @@ describe('the access model: grants, the switch, the effective role and access re
                 now() - make_interval(days => 2, secs => i), now() - make_interval(days => 1, secs => i),
                 'user', l.owner_user_id::text
            from generate_series(0, $3::int - 1) as i
-           join ${listsOf} as l on l.rank = (i * 7) % $4::int`,
+           join ${seededLists} as l on l.rank = (i * 7) % $4::int`,
         [organizationId, accounts, shape.decided, listCount],
       );
       await asSystem(
@@ -3596,16 +3951,18 @@ describe('the access model: grants, the switch, the effective role and access re
     /**
      * Runs work of the repositories in a tenant transaction of Atelier Nord as `task_app` (the
      * settings the tenant runner of the kit sets), records every statement they send through the
-     * Drizzle logger, takes the plan `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` of each after a first
-     * run that warms the cache, then rolls everything back.
+     * Drizzle logger, takes the plan `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` of the first `keep`
+     * of them after a first run that warms the cache, then rolls everything back.
      *
      * @param label - What the work is.
-     * @param work - The calls of the repositories.
-     * @returns One line per statement.
+     * @param work - The calls of the repositories, or statements run through `db.execute`.
+     * @param keep - How many of the statements to plan, all of them by default.
+     * @returns One line per statement planned.
      */
     async function plansOf(
       label: string,
       work: (db: TransactionDatabase) => Promise<unknown>,
+      keep = Number.POSITIVE_INFINITY,
     ): Promise<PlanLine[]> {
       const client = await application.connect();
       const captured: CapturedStatement[] = [];
@@ -3626,8 +3983,9 @@ describe('the access model: grants, the switch, the effective role and access re
           },
         });
         await work(db);
+        const planned = captured.slice(0, keep);
         const lines: PlanLine[] = [];
-        for (const [index, statement] of captured.entries()) {
+        for (const [index, statement] of planned.entries()) {
           const text = `explain (analyze, buffers, format json) ${statement.sql}`;
           await client.query(text, statement.params);
           const result = await client.query<{ readonly 'QUERY PLAN': readonly PlanDocument[] }>(
@@ -3649,10 +4007,46 @@ describe('the access model: grants, the switch, the effective role and access re
       }
     }
 
-    it('takes the plans of the grant lookups, the visible spaces and lists, the grants, the managed targets, the pending requests, the attempts and the clean-up batches without a Seq Scan of the four tables', async () => {
-      const accounts = Array.from({ length: 500 }, () => randomUUID());
-      const noise = Array.from({ length: 200 }, () => randomUUID());
-      await seedVolume(atelierNordId, accounts, {
+    /**
+     * Prints one compact line per plan, for the report of the pull request.
+     *
+     * @param plans - The plans.
+     */
+    function print(plans: readonly PlanLine[]): void {
+      for (const plan of plans) {
+        console.info(
+          `access plan | ${plan.label} | ${plan.nodes.join(' > ')} | indexes ${plan.indexes.join(', ') || 'none'} | ${String(plan.blocks)} shared buffers | ${plan.milliseconds.toFixed(3)} ms | ${String(plan.rows)} rows`,
+        );
+      }
+    }
+
+    /**
+     * The sequential scans of some tables in some plans.
+     *
+     * @param plans - The plans.
+     * @param tables - The tables.
+     * @returns `<label>: <table>` for each scan.
+     */
+    function seqScansOf(plans: readonly PlanLine[], tables: readonly string[]): string[] {
+      return plans.flatMap((plan) =>
+        plan.seqScans
+          .filter((table) => tables.includes(table))
+          .map((table) => `${plan.label}: ${table}`),
+      );
+    }
+
+    // A member who owns no space, holds about 30 grants of spaces and 60 grants of lists, asks,
+    // and is assigned to 3,000 tasks.
+    const accounts = Array.from({ length: 500 }, () => randomUUID());
+    const viewer = accounts[301] ?? '';
+    const member = { userId: viewer, role: 'member' } as const;
+    const guest = { userId: accounts[302] ?? '', role: 'guest' } as const;
+    const tasksPerList = 10;
+    let visibleListIds: readonly string[] = [];
+    let activityListId = '';
+
+    it('seeds a realistic organization and its noise in the second organization', async () => {
+      const atelierNord: VolumeShape = {
         owners: 300,
         spaces: 300,
         listsPerSpace: 10,
@@ -3661,8 +4055,8 @@ describe('the access model: grants, the switch, the effective role and access re
         pending: 2_000,
         decided: 8_000,
         attempts: 5_000,
-      });
-      await seedVolume(atelierDeltaId, noise, {
+      };
+      const delta: VolumeShape = {
         owners: 100,
         spaces: 100,
         listsPerSpace: 10,
@@ -3671,9 +4065,28 @@ describe('the access model: grants, the switch, the effective role and access re
         pending: 1_000,
         decided: 2_000,
         attempts: 2_000,
-      });
+      };
+      const noise = Array.from({ length: 200 }, () => randomUUID());
+      await seedAccess(atelierNordId, accounts, atelierNord);
+      await seedAccess(atelierDeltaId, noise, delta);
+      // The first list of the first space of the whole organization: on, seen by every member.
+      const [first] = await asSystem<{ readonly id: string }>(
+        `select l.id::text as id from ${seededLists} as l where l.rank = 0`,
+        [atelierNordId],
+      );
+      activityListId = first?.id ?? '';
+      await seedTasks(
+        atelierNordId,
+        tasksPerList,
+        viewer,
+        accounts.filter((account) => account !== viewer),
+        activityListId,
+      );
+      await seedRequests(atelierNordId, accounts, atelierNord, tasksPerList);
+      await seedRequests(atelierDeltaId, noise, delta, 0);
       await migrator.query(
-        'analyze spaces, lists, space_grants, list_grants, access_requests, access_request_attempts',
+        `analyze spaces, lists, space_grants, list_grants, access_requests, access_request_attempts,
+                 tasks, task_assignees, task_labels, activity_entries`,
       );
       const volume = await asSystem<Record<string, number>>(
         `select
@@ -3684,18 +4097,34 @@ describe('the access model: grants, the switch, the effective role and access re
            (select count(distinct user_id)::int from (select user_id from space_grants where organization_id = $1
               union all select user_id from list_grants where organization_id = $1) as g) as accounts,
            (select count(*)::int from access_requests where organization_id = $1 and state = 'pending') as pending,
+           (select count(*)::int from access_requests where organization_id = $1 and state = 'pending' and target = 'task') as "pendingTasks",
            (select count(*)::int from access_requests where organization_id = $1) as requests,
            (select count(*)::int from access_request_attempts where organization_id = $1) as attempts,
+           (select count(*)::int from tasks where organization_id = $1 and key_prefix = 'VOL') as tasks,
+           (select count(*)::int from task_assignees where organization_id = $1) as assignments,
+           (select count(*)::int from task_assignees where organization_id = $1 and user_id = $3) as "assignedToMember",
+           (select count(*)::int from task_labels where organization_id = $1) as labels,
+           (select count(*)::int from activity_entries where organization_id = $1) as activity,
            (select count(*)::int from list_grants where organization_id = $2) as "noiseListGrants",
            (select count(*)::int from access_requests where organization_id = $2) as "noiseRequests"`,
-        [atelierNordId, atelierDeltaId],
+        [atelierNordId, atelierDeltaId, viewer],
       );
       console.info(`access plans volume: ${JSON.stringify(volume[0])}`);
+      expect(volume[0]).toMatchObject({ tasks: 30_000, assignedToMember: 3_000 });
+      const visible: ListVisibleListIdsOutput = await runWithOrganizationContext(
+        contextOf(atelierNordId),
+        () =>
+          service()
+            .get(ListVisibleListIds)
+            .execute({ organizationId: atelierNordId, viewerUserId: viewer, viewerRole: 'member' }),
+      );
+      visibleListIds = visible.listIds;
+      console.info(`access plans: the member has a role on ${String(visibleListIds.length)} lists`);
+      expect(visibleListIds.length).toBeGreaterThan(1_000);
+      expect(visibleListIds).toContain(activityListId);
+    }, 300_000);
 
-      // A member who owns no space, holds about 30 grants of spaces and 60 grants of lists, and asks.
-      const viewer = accounts[301] ?? '';
-      const member = { userId: viewer, role: 'member' } as const;
-      const guest = { userId: accounts[302] ?? '', role: 'guest' } as const;
+    it('reads the visible lists and spaces, the grants, the managed targets, the pending requests, the attempts and the clean-up batches without a Seq Scan of the four tables', async () => {
       const [held] = await asSystem<{ readonly space_id: string; readonly list_id: string }>(
         `select g.space_id::text as space_id, l.id::text as list_id
            from space_grants as g join lists as l on l.organization_id = g.organization_id and l.space_id = g.space_id
@@ -3713,11 +4142,30 @@ describe('the access model: grants, the switch, the effective role and access re
             .execute({ organizationId: atelierNordId, viewerUserId: viewer, viewerRole: 'member' }),
       );
       expect(managed.listIds.length).toBeGreaterThan(100);
+      // The task requests the member answers: those whose task is now in a list they edit, as the
+      // listing finds them.
+      const answerable = await asSystem<{ readonly task_id: string }>(
+        `select distinct r.task_id::text as task_id
+           from access_requests as r
+           join tasks as t on t.organization_id = r.organization_id and t.id = r.task_id
+          where r.organization_id = $1 and r.state = 'pending' and r.target = 'task'
+            and t.list_id = any($2::uuid[])`,
+        [atelierNordId, managed.listIds],
+      );
+      const taskIds = answerable.map((row) => row.task_id);
+      expect(taskIds.length).toBeGreaterThan(0);
+      const scope = {
+        spaceIds: managed.spaceIds,
+        listIds: managed.listIds,
+        taskIds,
+        spaceId: null,
+        listId: null,
+      } as const;
       let resources: readonly GrantedResource[] = [];
       const batch = await plansOf('clean-up: grants of the account', async (db) => {
         resources = await new DrizzleGrantRepository(db).listOfMember(atelierNordId, viewer, 100);
       });
-      const batchSpaceIds = [...new Set(resources.map((resource) => resource.spaceId))].sort();
+      const batchSpaceIds = [...new Set(resources.map((resource) => resource.spaceId))];
       const batchListIds = resources
         .flatMap((resource) => (resource.kind === 'list' ? [resource.listId] : []))
         .sort();
@@ -3725,17 +4173,14 @@ describe('the access model: grants, the switch, the effective role and access re
       expect(batchListIds.length).toBeGreaterThan(0);
 
       const plans: PlanLine[] = [
-        ...(await plansOf('grant lookup of one viewer on one space and one list', (db) =>
-          new DrizzleGrantRepository(db).viewerGrants(atelierNordId, viewer, spaceId, listId),
-        )),
-        ...(await plansOf('grant lookup of one viewer on one space', (db) =>
-          new DrizzleGrantRepository(db).viewerGrants(atelierNordId, viewer, spaceId, null),
-        )),
         ...(await plansOf('visible lists of a member (ListVisibleListIds)', (db) =>
-          new DrizzleTaskListRepository(db).listAllVisibleTo(atelierNordId, member),
+          new DrizzleTaskListRepository(db).listAccessesVisibleTo(atelierNordId, member),
         )),
         ...(await plansOf('visible lists of a guest (ListVisibleListIds)', (db) =>
-          new DrizzleTaskListRepository(db).listAllVisibleTo(atelierNordId, guest),
+          new DrizzleTaskListRepository(db).listAccessesVisibleTo(atelierNordId, guest),
+        )),
+        ...(await plansOf('first lists of the sidebar of a member ("Accueil")', (db) =>
+          new DrizzleTaskListRepository(db).listFirstVisibleTo(atelierNordId, member, 6),
         )),
         ...(await plansOf('page of visible spaces of a member', (db) =>
           new DrizzleSpaceRepository(db).listVisible(atelierNordId, member, null, 51),
@@ -3752,6 +4197,12 @@ describe('the access model: grants, the switch, the effective role and access re
             51,
           ),
         )),
+        ...(await plansOf('grant lookup of one viewer on one space and one list', (db) =>
+          new DrizzleGrantRepository(db).viewerGrants(atelierNordId, viewer, spaceId, listId),
+        )),
+        ...(await plansOf('grant lookup of one viewer on one space', (db) =>
+          new DrizzleGrantRepository(db).viewerGrants(atelierNordId, viewer, spaceId, null),
+        )),
         ...(await plansOf('grants of a space', (db) =>
           new DrizzleGrantRepository(db).listOf(atelierNordId, { kind: 'space', spaceId }),
         )),
@@ -3761,26 +4212,19 @@ describe('the access model: grants, the switch, the effective role and access re
         ...(await plansOf('managed targets: spaces seen', (db) =>
           new DrizzleSpaceRepository(db).listAllVisible(atelierNordId, member),
         )),
+        ...(await plansOf('pending task requests of the organization (the listing)', (db) =>
+          new DrizzleAccessRequestRepository(db).listPendingTaskIds(atelierNordId),
+        )),
         ...(await plansOf('page of pending access requests', (db) =>
-          new DrizzleAccessRequestRepository(db).listPending(
-            atelierNordId,
-            { spaceIds: managed.spaceIds, listIds: managed.listIds, spaceId: null, listId: null },
-            null,
-            51,
-          ),
+          new DrizzleAccessRequestRepository(db).listPending(atelierNordId, scope, null, 51),
         )),
         ...(await plansOf('total of pending access requests', (db) =>
-          new DrizzleAccessRequestRepository(db).countPending(atelierNordId, {
-            spaceIds: managed.spaceIds,
-            listIds: managed.listIds,
-            spaceId: null,
-            listId: null,
-          }),
+          new DrizzleAccessRequestRepository(db).countPending(atelierNordId, scope),
         )),
         ...(await plansOf('page of pending access requests of one space', (db) =>
           new DrizzleAccessRequestRepository(db).listPending(
             atelierNordId,
-            { spaceIds: managed.spaceIds, listIds: managed.listIds, spaceId, listId: null },
+            { ...scope, spaceId },
             null,
             51,
           ),
@@ -3794,26 +4238,86 @@ describe('the access model: grants, the switch, the effective role and access re
           ),
         )),
         ...batch,
-        ...(await plansOf('clean-up: spaces of the batch locked', (db) =>
-          new DrizzleSpaceRepository(db).lockMany(atelierNordId, batchSpaceIds),
+        // The order of the spaces of the batch, then the lock of the first of them: one row each.
+        ...(await plansOf(
+          'clean-up: spaces of the batch locked',
+          (db) =>
+            new DrizzleSpaceRepository(db).lockInOrder(
+              atelierNordId,
+              batchSpaceIds.map((id) => ({ id, mode: 'update' as const })),
+            ),
+          2,
         )),
         ...(await plansOf('clean-up: lists of the batch locked', (db) =>
           new DrizzleTaskListRepository(db).lockMany(atelierNordId, batchListIds),
         )),
-        ...(await plansOf('clean-up: pending requests of the account locked', (db) =>
-          new DrizzleAccessRequestRepository(db).lockPendingOf(atelierNordId, viewer, 500),
+        ...(await plansOf('clean-up: requests of the account locked, pending or answered', (db) =>
+          new DrizzleAccessRequestRepository(db).lockRequestsOf(atelierNordId, viewer, 500),
         )),
       ];
 
-      for (const plan of plans) {
-        console.info(
-          `access plan | ${plan.label} | ${plan.nodes.join(' > ')} | indexes ${plan.indexes.join(', ') || 'none'} | ${String(plan.blocks)} shared buffers | ${plan.milliseconds.toFixed(3)} ms | ${String(plan.rows)} rows`,
-        );
-      }
-      expect(plans.length).toBeGreaterThanOrEqual(19);
-      expect(
-        plans.flatMap((plan) => plan.seqScans.map((table) => `${plan.label}: ${table}`)),
-      ).toEqual([]);
+      print(plans);
+      expect(plans.length).toBeGreaterThanOrEqual(21);
+      expect(seqScansOf(plans, accessTables)).toEqual([]);
+      const requesterLock = plans.at(-1);
+      expect(requesterLock?.indexes).toContain('access_requests_requester_index');
+    }, 300_000);
+
+    // The cross-list reads filter `tasks.list_id = ANY($listIds)` with every list the member has a
+    // role on, here about 1,400. The statements that start from the assignments of the member
+    // (3,000 rows) or from one list must not scan the table they start from: `task_assignees` by
+    // `task_assignees_user_index`, `activity_entries` by `activity_entries_list_index`, and the page
+    // of the activity reaches its 51 tasks by `tasks_pkey`. Where the planner joins a whole side by
+    // hash, it scans `tasks` (30,000 rows, about 1,000 blocks) rather than probing its key thousands
+    // of times: the 3,000 assignments of "Mes tâches" and "Accueil", and the 5,005 entries of the
+    // total of the activity of the list. The labels read every label row of the visible tasks. Those
+    // scans are printed for the report, not asserted.
+    it('reads the labels, "Mes tâches", "Accueil" and the activity of a list with the real list ids of a member', async () => {
+      expect(visibleListIds.length).toBeGreaterThan(1_000);
+      const plans: PlanLine[] = [
+        ...(await plansOf('labels page of a member (labelPageStatement)', (db) =>
+          db.execute(labelPageStatement(atelierNordId, visibleListIds, null, null, 51)),
+        )),
+        ...(await plansOf('"Mes tâches" page (assignedPageStatement)', (db) =>
+          db.execute(
+            assignedPageStatement(atelierNordId, viewer, visibleListIds, 'open', null, 51),
+          ),
+        )),
+        ...(await plansOf('"Mes tâches" counts (stateCountsStatement)', (db) =>
+          db.execute(stateCountsStatement(atelierNordId, viewer, visibleListIds)),
+        )),
+        ...(await plansOf('"Accueil" stats (homeStatsStatement)', (db) =>
+          db.execute(homeStatsStatement(atelierNordId, viewer, visibleListIds, today)),
+        )),
+        ...(await plansOf('activity of a list: page', (db) =>
+          new DrizzleActivityRepository(db).pageOfList(
+            atelierNordId,
+            { listId: activityListId, listIds: visibleListIds, kinds: null, actorIds: null },
+            null,
+            51,
+          ),
+        )),
+        ...(await plansOf('activity of a list: total', (db) =>
+          new DrizzleActivityRepository(db).countOfList(atelierNordId, {
+            listId: activityListId,
+            listIds: visibleListIds,
+            kinds: null,
+            actorIds: null,
+          }),
+        )),
+      ];
+
+      print(plans);
+      expect(plans).toHaveLength(6);
+      expect(plans.map((plan) => plan.rows)).toEqual([49, 51, 1, 1, 51, 1]);
+      const assigned = plans.filter((plan) => plan.label.includes('"'));
+      expect(seqScansOf(assigned, ['task_assignees'])).toEqual([]);
+      const activity = plans.filter((plan) => plan.label.startsWith('activity'));
+      expect(seqScansOf(activity, ['activity_entries'])).toEqual([]);
+      expect(seqScansOf(activity.slice(0, 1), ['tasks'])).toEqual([]);
+      console.info(
+        `access plans: sequential scans of the task tables: ${seqScansOf(plans, taskTables).join('; ') || 'none'}`,
+      );
     }, 300_000);
   });
 });

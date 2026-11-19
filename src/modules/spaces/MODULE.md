@@ -116,8 +116,22 @@ owner_user_id)` for the handover, `lists (organization_id, space_id, created_at,
   lists of a space; `space_grants_user_index (organization_id, user_id, space_id)` and
   `list_grants_user_index (organization_id, user_id, space_id, list_id)` for the grants of one
   person (the visibility conditions, the clean-up of a member who left); the primary keys of the
-  grant tables serve the grants of one space or list and the grant of one person there. The plans
-  of these queries on representative data are taken by `tests/access.int-spec.ts`.
+  grant tables serve the grants of one space or list and the grant of one person there. Plans of
+  `tests/access.int-spec.ts` (307 spaces, 3,145 lists, 6,202 space grants, 30,149 list grants and 904 accounts in one organization, a member with a role on 1,426 lists, PostgreSQL 18, plans taken as `task_app`), none with a Seq Scan of a grant table:
+  - the grants of one person on one space and one list (`FindVisibleList`, the access checks):
+    three index lookups, 9 shared buffers, 0.05 ms;
+  - the visible lists of a member (`ListVisibleListIds`, `ListManagedAccessTargets`): hash joins of
+    the lists and spaces of the organization with the grants of the member (a range of each
+    `*_user_index`), 194 buffers, 2.7 ms for 1,426 lists, O(lists of the organization); before the
+    left joins on the grant keys replaced the correlated subqueries, 20,687 buffers and 8 ms;
+  - the visible lists of a guest: from the grants of the guest (`list_grants_user_index`), 543
+    buffers, 0.4 ms for 60 lists, O(grants of the guest);
+  - a page of visible spaces: 106 buffers for a member (an ordered walk of
+    `spaces_organization_created_index` stopped at the limit), 215 for a guest; the first six lists
+    of the sidebar ("Accueil"): 107 buffers; the lists of a space for a viewer: 39 buffers;
+  - the grants of a space or a list: 3 to 4 buffers; the spaces managed: 127 buffers;
+  - the batches of the clean-up: the grants of the account through the two `*_user_index`, 32 and
+    63 buffers, the locks of their spaces and lists by primary key, under 0.2 ms each.
 
 ## API
 

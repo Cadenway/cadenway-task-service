@@ -241,6 +241,15 @@ false` keeps from any row when nothing is stored. The one difference left is the
   (same status, headers and body, and the timing medians of a stored request, a request not stored
   and an unknown target), the hourly limit, the approval and the refusal, row-level security on
   `access_requests` and `access_request_attempts`, the plans of the partial indexes, and the
-  clean-up of the grants and the requests, a lock timeout and `member-again` included. Not proven
-  yet: the advisory lock under truly concurrent requests of one requester (the coordinator adds
-  that test).
+  clean-up of the grants and the requests, a lock timeout and `member-again` included, 15
+  concurrent requests of one requester (exactly 10 taken, 5 answered `429`, 10 attempts recorded),
+  a task request that follows its task to another list, and a requester removed while the clean-up
+  waits (`404`). The timing medians of the three outcomes are 13.1 to 13.2 ms. Plans on 10,005
+  requests (2,000 pending, 500 of them for tasks) and 5,004 attempts: a page of the pending
+  requests walks `access_requests_pending_index` backwards, 8 buffers, 0.1 ms; their total, 68
+  buffers, 0.8 ms; the pending task requests of the organization (the listing),
+  `access_requests_pending_unique`, 64 buffers, 0.4 ms, then one `FindTaskReferences` per 100 of
+  them; the attempts of the hour, 12 buffers; the clean-up lock of the requests of an account,
+  `access_requests_requester_index`, 42 buffers. Not proven: an approval refused by the check on
+  the locked rows (`manage-forbidden`), which needs a concurrent loss of the right between the
+  read and the lock.

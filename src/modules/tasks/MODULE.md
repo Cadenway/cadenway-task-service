@@ -440,8 +440,14 @@ the medians of five calls through HTTP on the 75,000 tasks of `tests/task-querie
   `tasks.list_id = ANY($listIds)`: one array parameter of every list of the organization the actor
   has a role on, unbounded (O(those lists)), each candidate row tested against it once. It
   replaced `tasks.space_id = ANY($spaceIds)` of P3a, a list being finer than a space. The plans and
-  numbers above were measured with the space filter; the plans of these statements with an array
-  of 1,426 list ids are taken in `tests/access.int-spec.ts`.
+  numbers above were measured with the space filter. With an array of 1,426 list ids on 30,000
+  tasks (`tests/access.int-spec.ts`): the "Mes tâches" page and counts and the "Accueil" stats
+  hash-join the 3,000 assignments of the member (`task_assignees_user_index`) with a Seq Scan of
+  `tasks`, 1,221 buffers, 7 to 9 ms, as in P3a; the labels page reads `task_labels` and `tasks`
+  whole, 1,330 buffers, 24 ms, as in P3a; the page of the activity of a list walks
+  `activity_entries_list_index` with `tasks_pkey`, 36 buffers, 0.2 ms, and its total hash-joins
+  the entries of the list with a Seq Scan of `tasks`, 1,033 buffers, 9 ms for 5,005 entries
+  (O(tasks of the organization)).
 - Every route that sorts or searches in SQL pays the fold of the name per row; the fold takes the
   short path for ASCII text.
 
