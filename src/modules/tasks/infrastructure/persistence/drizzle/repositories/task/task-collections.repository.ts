@@ -5,6 +5,7 @@ import type { ChecklistCounts } from '../../../../../application/projections/tas
 import type { SubtaskCounts } from '../../../../../application/projections/task/subtask-counts.projection.js';
 import type { TaskSummaryView } from '../../../../../application/projections/task/task-summary.projection.js';
 import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
+import { showsParent } from '../../../../../domain/policies/subtask/subtask-tree.policy.js';
 import { CLOSED_STATUS_KEYS } from '../../../../../domain/value-objects/task/status-category.value-object.js';
 import type { ChecklistItemState } from '../../../../../domain/value-objects/task/checklist-item-state.value-object.js';
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
@@ -26,17 +27,31 @@ import { taskLabels } from '../../schemas/task/task-label.schema.js';
 import { tasks } from '../../schemas/task/task.schema.js';
 
 /**
+ * The parent of task rows as `parentsOf` reads it: its key, which the task keeps whatever its
+ * list, and the list it is in now, which tells whether a summary shows it.
+ */
+interface ParentOfRow {
+  // #region Properties
+  /** The key of the parent. */
+  readonly key: TaskKey;
+
+  /** The list the parent is in now. */
+  readonly listId: string;
+  // #endregion
+}
+
+/**
  * Class DrizzleTaskCollections
  *
  * @description
  * Loads what hangs off a set of task rows, one query per collection whatever the number of tasks:
- * the assignees and the labels in their order, the checklists in their order, and the keys of the
- * parents. Every query names `organization_id` and filters the tasks with one `= ANY($ids)`
- * parameter; each is served by the prefix `(organization_id, task_id)` of the primary key of its
- * table, or by the primary key of `tasks`. The task repository and the readers share it, so a page
- * of N tasks costs the same number of queries as one task. `summarize` turns the rows of a page
- * into summaries in at most five statements (assignees, labels, subtask counts, checklist counts
- * and the keys of the parents) whatever the number of rows.
+ * the assignees and the labels in their order, the checklists in their order, and the keys and
+ * lists of the parents. Every query names `organization_id` and filters the tasks with one
+ * `= ANY($ids)` parameter; each is served by the prefix `(organization_id, task_id)` of the primary
+ * key of its table, or by the primary key of `tasks`. The task repository and the readers share
+ * it, so a page of N tasks costs the same number of queries as one task. `summarize` turns the
+ * rows of a page into summaries in at most five statements (assignees, labels, subtask counts,
+ * checklist counts and the keys and lists of the parents) whatever the number of rows.
  */
 export class DrizzleTaskCollections {
   // #region Properties
@@ -174,32 +189,40 @@ export class DrizzleTaskCollections {
   }
 
   /**
-   * Method keysOf
+   * Method parentsOf
    *
    * @description
-   * Reads the keys of tasks (the parents of a set of rows) in one query by primary key.
+   * Reads the keys and the lists of tasks (the parents of a set of rows) in one query by primary
+   * key: the key for the domain and the summaries, the list for the summaries, which show a parent
+   * only when it is in the list of the row (`showsParent`).
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} taskIds - The tasks.
-   * @returns {Promise<ReadonlyMap<string, TaskKey>>} The keys by task id.
+   * @returns {Promise<ReadonlyMap<string, ParentOfRow>>} The key and the list by task id.
    * @throws {InvalidTaskError} When a stored key is not a key.
    */
-  public async keysOf(
+  private async parentsOf(
     organizationId: string,
     taskIds: readonly string[],
-  ): Promise<ReadonlyMap<string, TaskKey>> {
-    const keys = new Map<string, TaskKey>();
+  ): Promise<ReadonlyMap<string, ParentOfRow>> {
+    const parents = new Map<string, ParentOfRow>();
     if (taskIds.length === 0) {
-      return keys;
+      return parents;
     }
-    const rows: { id: string; keyPrefix: string; keyNumber: number }[] = await this.db
-      .select({ id: tasks.id, keyPrefix: tasks.keyPrefix, keyNumber: tasks.keyNumber })
-      .from(tasks)
-      .where(and(eq(tasks.organizationId, organizationId), anyOf(tasks.id, taskIds, 'uuid')));
+    const rows: { id: string; keyPrefix: string; keyNumber: number; listId: string }[] =
+      await this.db
+        .select({
+          id: tasks.id,
+          keyPrefix: tasks.keyPrefix,
+          keyNumber: tasks.keyNumber,
+          listId: tasks.listId,
+        })
+        .from(tasks)
+        .where(and(eq(tasks.organizationId, organizationId), anyOf(tasks.id, taskIds, 'uuid')));
     for (const row of rows) {
-      keys.set(row.id, TaskKey.of(row.keyPrefix, row.keyNumber));
+      parents.set(row.id, { key: TaskKey.of(row.keyPrefix, row.keyNumber), listId: row.listId });
     }
-    return keys;
+    return parents;
   }
 
   /**
@@ -295,8 +318,10 @@ export class DrizzleTaskCollections {
    * @description
    * Turns the rows of a page into the summaries a list shows: the assignees, the labels, the
    * direct subtask counts and the checklist counts of all the rows in one query each, and the keys
-   * of their parents in one more (none when no row has a parent). The summaries keep the order of
-   * the rows.
+   * and lists of their parents in one more (none when no row has a parent). A row shows its parent
+   * only when the parent is in its list (`showsParent`): an archived root whose live parent moved
+   * to another list since reads as detached, `parentKey: null`, in every summary (the archives,
+   * the subtasks, the pages of the queries). The summaries keep the order of the rows.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly TaskSummaryRow[]} rows - The rows of the page.
@@ -322,15 +347,15 @@ export class DrizzleTaskCollections {
     const labels = await this.labelsOf(organizationId, ids);
     const subtasks = await this.subtaskCountsOf(organizationId, ids);
     const checklists = await this.checklistCountsOf(organizationId, ids);
-    const parentKeys = await this.keysOf(organizationId, parentIds);
+    const parents = await this.parentsOf(organizationId, parentIds);
     return rows.map((row: TaskSummaryRow): TaskSummaryView => {
       let parentKey: string | null = null;
       if (row.parentId !== null) {
-        const key: TaskKey | undefined = parentKeys.get(row.parentId);
-        if (key === undefined) {
+        const parent: ParentOfRow | undefined = parents.get(row.parentId);
+        if (parent === undefined) {
           throw new Error(`The parent ${row.parentId} of the stored task ${row.id} is missing.`);
         }
-        parentKey = key.format();
+        parentKey = showsParent(row.listId, parent.listId) ? parent.key.format() : null;
       }
       return toTaskSummary(
         row,
@@ -384,11 +409,14 @@ export class DrizzleTaskCollections {
     const checklists: ReadonlyMap<string, readonly ChecklistItemState[]> = withChecklists
       ? await this.checklistsOf(organizationId, ids)
       : new Map<string, readonly ChecklistItemState[]>();
-    const parentKeys: ReadonlyMap<string, TaskKey> = await this.keysOf(organizationId, parentIds);
+    const parents: ReadonlyMap<string, ParentOfRow> = await this.parentsOf(
+      organizationId,
+      parentIds,
+    );
     return rows.map((row: TaskRow): Task => {
       let parentKey: TaskKey | null = null;
       if (row.parentId !== null) {
-        parentKey = parentKeys.get(row.parentId) ?? null;
+        parentKey = parents.get(row.parentId)?.key ?? null;
         if (parentKey === null) {
           throw new Error(`The parent ${row.parentId} of the stored task ${row.id} is missing.`);
         }

@@ -24,6 +24,7 @@ const PAGE: ArchivedListPage = {
           goal: 'Livrer les invitations par lien.',
         },
         createdAt: new Date('2026-10-16T10:00:00.000Z'),
+        position: new Date('2026-10-16T10:00:00.000Z'),
         version: 4,
         organizationAccess: true,
         archivedAt: new Date('2026-11-03T09:00:00.000Z'),

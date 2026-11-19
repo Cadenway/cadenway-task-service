@@ -92,11 +92,28 @@ export class TaskLocator {
         located.requireChangeable();
       });
     }
+    this.requireVersion(task, request.expectedVersions);
+    return { task, placement };
+  }
+
+  /**
+   * Method requireVersion
+   *
+   * @description
+   * The `If-Match` check of a task (`412 request.version-mismatch`): the one check of every write,
+   * which `locate` runs last and the restoration runs on the task of its path once it holds the
+   * lock of its archive. `*` and an absent header are `null` (`toExpectedVersions`).
+   *
+   * @param {Task} task - The task, as the write applies to it.
+   * @param {readonly number[] | null} expectedVersions - The versions `If-Match` accepts, `null`
+   * for any.
+   * @throws {TaskRefusal} `version-mismatch` with the stored version.
+   */
+  public requireVersion(task: Task, expectedVersions: readonly number[] | null): void {
     const { version } = task.snapshot;
-    if (request.expectedVersions !== null && !request.expectedVersions.includes(version)) {
+    if (expectedVersions !== null && !expectedVersions.includes(version)) {
       throw new TaskRefusal({ reason: 'version-mismatch', version });
     }
-    return { task, placement };
   }
 
   /**

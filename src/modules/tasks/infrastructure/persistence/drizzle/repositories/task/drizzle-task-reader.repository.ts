@@ -5,7 +5,7 @@ import type { TaskKey } from '../../../../../domain/value-objects/task/task-key.
 import type { PagePosition } from '../../../../../application/models/page/page-position.model.js';
 import type { SubtaskCounts } from '../../../../../application/projections/task/subtask-counts.projection.js';
 import type { TaskLocation } from '../../../../../application/projections/task/task-location.projection.js';
-import type { TaskReferenceView } from '../../../../../application/projections/task/task-reference.projection.js';
+import type { TaskReferenceInListView } from '../../../../../application/projections/task/task-reference-in-list.projection.js';
 import type { TaskSummaryView } from '../../../../../application/projections/task/task-summary.projection.js';
 import type { TaskReader } from '../../../../../application/ports/outbound/persistence/task/task-reader.port.js';
 import { keysetAfter } from '../../mappers/page/keyset-after.mapper.js';
@@ -194,22 +194,22 @@ export class DrizzleTaskReader implements TaskReader {
    * Method references
    *
    * @description
-   * Reads the key, the name and the status of tasks in one query by primary key.
+   * Reads the key, the name, the status and the list of tasks in one query by primary key.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} taskIds - The tasks.
-   * @returns {Promise<ReadonlyMap<string, TaskReferenceView>>} The references by task id.
+   * @returns {Promise<ReadonlyMap<string, TaskReferenceInListView>>} The references by task id.
    * @throws {Error} When a stored status is outside the status keys.
    */
   public async references(
     organizationId: string,
     taskIds: readonly string[],
-  ): Promise<ReadonlyMap<string, TaskReferenceView>> {
-    const references = new Map<string, TaskReferenceView>();
+  ): Promise<ReadonlyMap<string, TaskReferenceInListView>> {
+    const references = new Map<string, TaskReferenceInListView>();
     if (taskIds.length === 0) {
       return references;
     }
-    const rows: Pick<TaskRow, 'id' | 'keyPrefix' | 'keyNumber' | 'name' | 'status'>[] =
+    const rows: Pick<TaskRow, 'id' | 'keyPrefix' | 'keyNumber' | 'name' | 'status' | 'listId'>[] =
       await this.db
         .select({
           id: tasks.id,
@@ -217,11 +217,12 @@ export class DrizzleTaskReader implements TaskReader {
           keyNumber: tasks.keyNumber,
           name: tasks.name,
           status: tasks.status,
+          listId: tasks.listId,
         })
         .from(tasks)
         .where(and(eq(tasks.organizationId, organizationId), anyOf(tasks.id, taskIds, 'uuid')));
     for (const row of rows) {
-      references.set(row.id, toTaskReference(row));
+      references.set(row.id, { ...toTaskReference(row), listId: row.listId });
     }
     return references;
   }

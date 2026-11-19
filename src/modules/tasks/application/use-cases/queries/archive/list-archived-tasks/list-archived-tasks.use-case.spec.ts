@@ -7,6 +7,7 @@ import {
   ATELIER_NORD,
   BUGS,
   CAD_482,
+  CAD_483,
   CAD_490,
   CAMILLE,
   CLOTURES,
@@ -183,5 +184,35 @@ describe('ListArchivedTasks: the roots of the archives the actor sees, the lates
     expect(await refusalOf(useCase.execute(read({ actorUserId: STRANGER })))).toEqual({
       reason: 'organization-not-found',
     });
+  });
+});
+
+describe('ListArchivedTasks: a root whose live parent moved to another list reads as detached', () => {
+  it('gives the summary of the root no parent key, and keeps the parent of a root in its list', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [
+        taskState({ listId: BUGS }),
+        subtaskState({ archive: archiveFrom(CAD_483), version: 2 }),
+        cad490State(),
+        queryTask(4, {
+          parentId: CAD_490,
+          parentKey: TaskKey.of('CAD', 490),
+          archive: archiveFrom(queryTask(4).id, { at: LATER }),
+          version: 2,
+        }),
+      ],
+    });
+
+    const page = await new ListArchivedTasks(
+      tasks,
+      atelierNordMembers(),
+      new InMemorySpaceDirectory(),
+    ).execute(read());
+
+    expect(page.items.map((item) => [item.task.key, item.task.parentKey])).toEqual([
+      ['CAD-804', 'CAD-490'],
+      ['CAD-483', null],
+    ]);
+    expect(tasks.stored(CAD_483).parentId).toBe(CAD_482);
   });
 });

@@ -23,6 +23,7 @@ import {
   checkAttachment,
   checkNewSubtask,
   depthsUnder,
+  showsParent,
   takesRestoredRoot,
 } from './subtask-tree.policy.js';
 
@@ -354,5 +355,15 @@ describe('takesRestoredRoot: the parent takes the restored root back, or the roo
       InvalidTaskError,
     );
     expect(() => takesRestoredRoot(restoredParent(), SPRINT_14, 0)).toThrow(InvalidTaskError);
+  });
+});
+
+describe('showsParent: a task reads with its parent only when the parent is in its list', () => {
+  it('shows a parent of the same list', () => {
+    expect(showsParent(SPRINT_14, SPRINT_14)).toBe(true);
+  });
+
+  it('reads an archived root whose live parent moved to another list as detached', () => {
+    expect(showsParent(SPRINT_14, BUGS)).toBe(false);
   });
 });

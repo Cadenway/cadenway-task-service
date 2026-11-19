@@ -65,20 +65,49 @@ export function taskPageColumns(): SQL {
 }
 
 /**
+ * Function toTaskSummaryRow
+ *
+ * @description
+ * Reads the columns of a summary out of a raw row selected by `taskPageColumns` (a page of tasks,
+ * the roots of the archives), its instants as dates. Members the raw row has beyond them (the
+ * sort value, the archive) are left out.
+ *
+ * @param {Omit<RawTaskPageRow, 'sortValue'>} raw - The row as the database returned it.
+ * @returns {TaskSummaryRow} The columns of the summary.
+ */
+export function toTaskSummaryRow(raw: Omit<RawTaskPageRow, 'sortValue'>): TaskSummaryRow {
+  return {
+    id: raw.id,
+    keyPrefix: raw.keyPrefix,
+    keyNumber: raw.keyNumber,
+    name: raw.name,
+    status: raw.status,
+    cancelReason: raw.cancelReason,
+    priority: raw.priority,
+    dueDate: raw.dueDate,
+    startDate: raw.startDate,
+    estimateMinutes: raw.estimateMinutes,
+    completedAt: raw.completedAt === null ? null : new Date(raw.completedAt),
+    createdAt: new Date(raw.createdAt),
+    listId: raw.listId,
+    spaceId: raw.spaceId,
+    parentId: raw.parentId,
+    version: raw.version,
+  };
+}
+
+/**
  * Function toTaskPageRow
  *
  * @description
- * Reads the instants of a raw row as dates.
+ * Reads a raw row of a page of tasks: the columns of its summary (`toTaskSummaryRow`) and the
+ * value the order sorts by.
  *
  * @param {RawTaskPageRow} raw - The row as the database returned it.
  * @returns {TaskPageRow} The row.
  */
 export function toTaskPageRow(raw: RawTaskPageRow): TaskPageRow {
-  return {
-    ...raw,
-    completedAt: raw.completedAt === null ? null : new Date(raw.completedAt),
-    createdAt: new Date(raw.createdAt),
-  };
+  return { ...toTaskSummaryRow(raw), sortValue: raw.sortValue };
 }
 
 /**

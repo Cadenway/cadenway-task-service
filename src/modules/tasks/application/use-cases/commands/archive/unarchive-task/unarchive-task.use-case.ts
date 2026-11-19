@@ -11,6 +11,7 @@ import type { ListPlacement } from '../../../../models/placement/list-placement.
 import type { ListRestoration } from '../../../../models/placement/list-restoration.model.js';
 import type { LocatedTask } from '../../../../models/task/located-task.model.js';
 import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
+import type { TaskStanding } from '../../../../models/task/task-standing.model.js';
 import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
@@ -26,7 +27,9 @@ import type { UnarchiveTaskOutput } from './unarchive-task.output.js';
 /**
  * How many times the task of the path is located and its archive locked: a restoration of the
  * same archive through another member that commits while this one waits makes the archive empty,
- * and the task is read again (it is live then, or in a new archive). More is a defect.
+ * and an archive restored, moved and archived again meanwhile is in another list; either way the
+ * task is read again (it is live then, or in a new archive, whose list is checked again). More is
+ * a defect.
  */
 const MAX_ATTEMPTS: number = 3;
 
@@ -44,17 +47,23 @@ const MAX_ATTEMPTS: number = 3;
  * writing and emitting nothing. Archived, every member of its archive is locked `FOR NO KEY
  * UPDATE` in one statement ordered by id (at most 651 tasks), so a restoration of the same archive
  * through another member waits and finds it restored; `If-Match` is checked on the locked task.
- * Then the parent of the root is locked and read: the root keeps it only when the domain says the
- * parent takes it back (`takesRestoredRoot`: live, in the list of the root, fewer than 25 live
- * subtasks, its level plus the height of the archive 3 at most), and is detached otherwise. An
- * archived list is restored by the spaces module, which locks it and appends
- * `list.unarchived.v1`, before the tasks; a refusal of the list (unseen, or without `edit`, after a
+ * The members are locked without their checklists, which a restoration never writes or emits. A
+ * root that is no longer in the list of the task located (the archive was restored, moved and
+ * archived again meanwhile) is a changed archive: the task is located again, so the role is
+ * checked on its list as it is now, before `If-Match`. Then the parent of the root is locked by
+ * one lean read of its archive and list: the root keeps it only when the domain says the parent
+ * takes it back (`takesRestoredRoot`: live, in the list of the root, fewer than 25 live subtasks,
+ * its level plus the height of the archive 3 at most), and is detached otherwise. The list of the
+ * root always goes to the spaces module (`RestoreArchivedList`), which locks it and decides on the
+ * locked list: an archived one is restored, appending `list.unarchived.v1` before the tasks; a
+ * live one answers `not-archived`. A refusal of the list (unseen, or without `edit`, after a
  * concurrent change of its grants) answers `task-not-found` or `role-insufficient`. Lock order:
  * the membership of the actor, the members, the parent, the list.
  *
  * Every member gets back to live with its next version and `updatedAt`, in one statement; then
  * one `task.unarchived.v1` per member, the root first, then by depth and id, with the key of the
- * root. A restoration is not recorded in the activity log. The answer is the root.
+ * root. A restoration is not recorded in the activity log. The answer is the root, read again by
+ * its key after the write, with its checklist.
  */
 export class UnarchiveTask {
   // #region Properties
@@ -119,7 +128,7 @@ export class UnarchiveTask {
    * path when it was not archived.
    * @throws {TaskRefusal} `organization-not-found`, `task-not-found`, `role-insufficient` or
    * `version-mismatch`.
-   * @throws {Error} When the archive has no root, its root is not in the list of the task, or the
+   * @throws {Error} When the archive has no root, the restored root cannot be read again, or the
    * task keeps changing archive: defects.
    */
   public async execute(input: UnarchiveTaskInput): Promise<UnarchiveTaskOutput> {
@@ -141,7 +150,7 @@ export class UnarchiveTask {
         });
         const { archive } = task.snapshot;
         if (archive === null) {
-          this.checkVersion(task, input.expectedVersions);
+          this.locator.requireVersion(task, input.expectedVersions);
           return this.views.build(store.reader, task);
         }
         const restored: Task | null = await this.restore(
@@ -167,7 +176,8 @@ export class UnarchiveTask {
    *
    * @description
    * Locks the members of the archive and restores them, or tells the caller to read the task
-   * again when the archive was restored meanwhile.
+   * again when the archive changed meanwhile: restored (the task of the path is no longer in it),
+   * or restored, moved and archived again (its root is no longer in the list of the task located).
    *
    * @param {TasksStore} store - The store of the transaction.
    * @param {Viewer} viewer - The acting member.
@@ -175,9 +185,10 @@ export class UnarchiveTask {
    * @param {Task} task - The task of the path, as read without a lock.
    * @param {ListPlacement} placement - The list of the task of the path, as the actor sees it.
    * @param {TaskArchive} archive - The archive the task was read in.
-   * @returns {Promise<Task | null>} The root, restored; `null` when the task of the path is no
-   * longer in that archive.
+   * @returns {Promise<Task | null>} The root, restored, as stored after the write; `null` when the
+   * archive changed.
    * @throws {TaskRefusal} `version-mismatch`, `task-not-found` or `role-insufficient`.
+   * @throws {Error} When the archive has no root, or the restored root cannot be read again.
    */
   private async restore(
     store: TasksStore,
@@ -195,7 +206,6 @@ export class UnarchiveTask {
     if (located === undefined) {
       return null;
     }
-    this.checkVersion(located, input.expectedVersions);
     const root: Task | undefined = members.find(
       (member: Task): boolean => member.snapshot.id === archive.rootId,
     );
@@ -203,14 +213,11 @@ export class UnarchiveTask {
       throw new Error(`The archive of ${archive.rootId} has no root.`);
     }
     if (root.snapshot.listId !== placement.list.id) {
-      throw new Error(
-        `The root of the archive ${archive.rootId} is not in the list of its members.`,
-      );
+      return null;
     }
+    this.locator.requireVersion(located, input.expectedVersions);
     const keepsParent: boolean = await this.keepsParent(store, root, members);
-    if (placement.list.archivedAt !== null) {
-      await this.restoreList(organizationId, viewer, placement.list.id);
-    }
+    await this.restoreList(organizationId, viewer, placement.list.id);
     const now: Date = await store.clock.now();
     const rootId: string = root.snapshot.id;
     const restored: readonly Task[] = members.map((member: Task): Task =>
@@ -224,19 +231,28 @@ export class UnarchiveTask {
     if (restoredRoot === undefined) {
       throw new Error(`The restoration of ${rootId} lost its root.`);
     }
-    await store.tasks.writeArchives(organizationId, restored);
+    await store.tasks.writeArchives(organizationId, rootId, restored);
     const actor: EventActor = { type: 'user', id: input.actorUserId };
     await this.announcer.unarchived(store.events, restoredRoot, restored, actor);
-    return restoredRoot;
+    const answered: Task | null = await store.tasks.findByKey(
+      organizationId,
+      restoredRoot.snapshot.key,
+      false,
+    );
+    if (answered === null) {
+      throw new Error(`The restored root ${rootId} cannot be read again.`);
+    }
+    return answered;
   }
 
   /**
    * Method keepsParent
    *
    * @description
-   * Locks the parent of the root after the members and asks the domain whether it takes the root
-   * back (`takesRestoredRoot`), from its archive, its list, its level and its live subtasks read
-   * under that lock and the height of the archive.
+   * Locks the parent of the root after the members, reading only whether it is live and its list
+   * (`lockStanding`, one statement without the collections), and asks the domain whether it takes
+   * the root back (`takesRestoredRoot`), from those, its level and its live subtasks read under
+   * that lock, and the height of the archive.
    *
    * @param {TasksStore} store - The store of the transaction.
    * @param {Task} root - The root of the archive, locked.
@@ -253,19 +269,14 @@ export class UnarchiveTask {
     if (parentId === null) {
       return true;
     }
-    const [parent] = await store.tasks.lockByIds(organizationId, [parentId]);
-    if (parent === undefined) {
+    const parent: TaskStanding | null = await store.tasks.lockStanding(organizationId, parentId);
+    if (parent === null) {
       throw new Error(`The parent ${parentId} of the archived task ${id} is missing.`);
     }
     const level: number = await store.tasks.levelOf(organizationId, parentId);
     const childCount: number = await store.tasks.childCount(organizationId, parentId);
     return takesRestoredRoot(
-      {
-        live: parent.snapshot.archive === null,
-        listId: parent.snapshot.listId,
-        level,
-        childCount,
-      },
+      { live: parent.live, listId: parent.listId, level, childCount },
       listId,
       archiveHeight(
         id,
@@ -278,13 +289,14 @@ export class UnarchiveTask {
    * Method restoreList
    *
    * @description
-   * Restores the archived list of the root through the spaces module, which appends
-   * `list.unarchived.v1` before the events of the tasks.
+   * Hands the list of the root to the spaces module, which locks it and restores it when it is
+   * archived (appending `list.unarchived.v1` before the events of the tasks) or answers
+   * `not-archived`: the decision is made on the locked list, not on the list read before.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The acting member.
    * @param {string} listId - The list.
-   * @returns {Promise<void>} Resolves once restored, or when it was live already.
+   * @returns {Promise<void>} Resolves once restored, or when it was live.
    * @throws {TaskRefusal} `task-not-found` when the actor no longer has a role on the list,
    * `role-insufficient` when they no longer have `edit` on it.
    */
@@ -299,23 +311,6 @@ export class UnarchiveTask {
     }
     if (restoration.outcome === 'role-insufficient') {
       throw new TaskRefusal({ reason: 'role-insufficient', role: restoration.role });
-    }
-  }
-
-  /**
-   * Method checkVersion
-   *
-   * @description
-   * The `If-Match` check of the task of the path.
-   *
-   * @param {Task} task - The task, as read.
-   * @param {readonly number[] | null} expectedVersions - The versions `If-Match` accepts.
-   * @throws {TaskRefusal} `version-mismatch` with the stored version.
-   */
-  private checkVersion(task: Task, expectedVersions: readonly number[] | null): void {
-    const { version } = task.snapshot;
-    if (expectedVersions !== null && !expectedVersions.includes(version)) {
-      throw new TaskRefusal({ reason: 'version-mismatch', version });
     }
   }
   // #endregion

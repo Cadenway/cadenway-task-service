@@ -1,12 +1,13 @@
-import type { PagePosition } from '../../models/page/page-position.model.js';
+import type { ListPosition } from '../../models/placement/list-position.model.js';
 import type { ListSummaryView } from './list-summary.projection.js';
 
 /**
  * Interface SpaceOverviewView
  *
  * @description
- * One page of the lists of a space with the counts of their top-level tasks, in the order of their
- * creation (`SpaceOverview` of the contract).
+ * One page of the lists of a space with the counts of their top-level tasks, in the order of the
+ * sidebar: by restoration from the archives, else creation, then id (`SpaceOverview` of the
+ * contract).
  */
 export interface SpaceOverviewView {
   // #region Properties
@@ -23,6 +24,6 @@ export interface SpaceOverviewView {
   readonly items: readonly ListSummaryView[];
 
   /** Where the next page starts, `null` on the last page. */
-  readonly next: PagePosition | null;
+  readonly next: ListPosition | null;
   // #endregion
 }

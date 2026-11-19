@@ -108,7 +108,7 @@ export class TaskMovePlanner {
       statuses = attached.statuses;
       descendants = attached.descendants;
     } else if (moves) {
-      descendants = (await this.subtrees.lock(store, task, [])).tasks;
+      descendants = (await this.subtrees.lock(store, task, [], true)).tasks;
     }
     const patch: TaskPatch = {
       ...fields,
@@ -204,9 +204,12 @@ export class TaskMovePlanner {
       throw invalid;
     }
     this.editing.requireEdit(placement.list);
-    const { tasks: locked, shape: subtree } = await this.subtrees.lock(store, task, [
-      found.snapshot.id,
-    ]);
+    const { tasks: locked, shape: subtree } = await this.subtrees.lock(
+      store,
+      task,
+      [found.snapshot.id],
+      true,
+    );
     const parent: Task | undefined = locked.find(
       (candidate: Task): boolean => candidate.snapshot.id === found.snapshot.id,
     );

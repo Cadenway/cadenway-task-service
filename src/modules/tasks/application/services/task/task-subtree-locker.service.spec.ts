@@ -57,6 +57,23 @@ describe('TaskSubtreeLocker: the live descendants of a task, locked in id order'
     expect(tasks.trace).toEqual(['tasks.lockByIds']);
   });
 
+  it('locks the tasks without their checklists when asked, for an archive, and with them by default', async () => {
+    const stored = (): InMemoryTasks =>
+      new InMemoryTasks({
+        tasks: [taskState(), cad490State({ checklist: taskState().checklist })],
+      });
+
+    const lean: LockedSubtree = await stored().run((store: TasksStore): Promise<LockedSubtree> =>
+      new TaskSubtreeLocker().lock(store, Task.restore(taskState()), [CAD_490], false),
+    );
+    const full: LockedSubtree = await lockCad482(stored(), [CAD_490]);
+
+    expect(lean.tasks.map((task: Task) => task.snapshot.checklist)).toEqual([[]]);
+    expect(full.tasks.map((task: Task) => task.snapshot.checklist)).toEqual([
+      taskState().checklist,
+    ]);
+  });
+
   it('leaves an archived subtask, and what hangs from it, out of the subtree', async () => {
     const tasks = new InMemoryTasks({
       tasks: [

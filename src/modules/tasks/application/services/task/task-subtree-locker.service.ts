@@ -26,7 +26,8 @@ const MAX_DESCENDANTS: number = 650;
  * archived subtask keeps its own archive, never moves and is not taken. The descendants, and the
  * other tasks asked for, are locked `FOR NO KEY UPDATE` in statements in ascending id order, until
  * the subtree read after the locks holds nothing that is not locked; at most 651 tasks (the task,
- * 25 subtasks, 625 sub-subtasks) and 5 passes.
+ * 25 subtasks, 625 sub-subtasks) and 5 passes. A move needs the checklists of the tasks it
+ * carries; an archive does not (it never writes or emits them), so it locks them without.
  */
 export class TaskSubtreeLocker {
   // #region Methods
@@ -46,6 +47,9 @@ export class TaskSubtreeLocker {
    * @param {TasksStore} store - The store of the transaction.
    * @param {Task} task - The task, locked by the caller.
    * @param {readonly string[]} otherIds - The other tasks to lock with them.
+   * @param {boolean} [withChecklists] - `false` to lock the tasks without loading their checklists
+   * (they carry an empty one), for a write that never reads, writes or emits them; `true` by
+   * default.
    * @returns {Promise<LockedSubtree>} The locked descendants and other tasks, and the subtree they
    * were checked against.
    * @throws {Error} When the stored subtree is larger than a valid one, or keeps growing while it
@@ -55,6 +59,7 @@ export class TaskSubtreeLocker {
     store: TasksStore,
     task: Task,
     otherIds: readonly string[],
+    withChecklists: boolean = true,
   ): Promise<LockedSubtree> {
     const { organizationId, id } = task.snapshot;
     const asked = new Set<string>();
@@ -66,14 +71,14 @@ export class TaskSubtreeLocker {
           `The task ${id} has ${String(shape.descendantIds.length)} descendants, more than ${String(MAX_DESCENDANTS)}.`,
         );
       }
-      const wanted: readonly string[] = [...new Set<string>([...otherIds, ...shape.descendantIds])];
-      const unlocked: readonly string[] = wanted.filter(
+      const wanted: ReadonlySet<string> = new Set<string>([...otherIds, ...shape.descendantIds]);
+      const unlocked: readonly string[] = [...wanted].filter(
         (wantedId: string): boolean => !asked.has(wantedId),
       );
       if (unlocked.length === 0) {
         return {
           tasks: [...held.values()].filter((candidate: Task): boolean =>
-            wanted.includes(candidate.snapshot.id),
+            wanted.has(candidate.snapshot.id),
           ),
           shape,
         };
@@ -81,7 +86,7 @@ export class TaskSubtreeLocker {
       for (const wantedId of unlocked) {
         asked.add(wantedId);
       }
-      for (const locked of await store.tasks.lockByIds(organizationId, unlocked)) {
+      for (const locked of await store.tasks.lockByIds(organizationId, unlocked, withChecklists)) {
         held.set(locked.snapshot.id, locked);
       }
     }

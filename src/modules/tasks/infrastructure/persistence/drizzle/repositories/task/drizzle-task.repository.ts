@@ -2,6 +2,7 @@ import type { TransactionDatabase } from '@cadenway/nest-common/database';
 import { and, asc, eq, getTableColumns, gt, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 
+import type { TaskStanding } from '../../../../../application/models/task/task-standing.model.js';
 import type { TaskRepository } from '../../../../../application/ports/outbound/persistence/task/task-repository.port.js';
 import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
 import type { SubtreeShape } from '../../../../../domain/value-objects/subtask/subtree-shape.value-object.js';
@@ -14,6 +15,7 @@ import type { TaskState } from '../../../../../domain/value-objects/task/task-st
 import { writeArchivesStatement } from '../../mappers/archive/archive-statements.mapper.js';
 import { anyOf } from '../../mappers/page/any-of.mapper.js';
 import { liveTask } from '../../mappers/task/live-task.mapper.js';
+import { subtreeStatement } from '../../mappers/task/subtree-statement.mapper.js';
 import { toChecklistItem } from '../../mappers/task/checklist-item.mapper.js';
 import type { ChecklistItemRow } from '../../mappers/task/checklist-item.mapper.js';
 import { toTask, toTaskInsert, toTaskUpdate } from '../../mappers/task/task.mapper.js';
@@ -53,8 +55,10 @@ interface StoredDraft {
  * - The tree reads are recursive CTEs bounded by the depth limit of 3 levels (one level more is
  *   read to see a violation), through the primary key and `tasks_parent_created_index`; the
  *   subtree and the child count of a write are the live ones (`liveTask`).
- * - An archive or a restoration locks the members of an archive in one ordered statement
- *   (`lockArchive`) and writes them in one `UPDATE ... FROM unnest(...)` (`writeArchives`).
+ * - An archive or a restoration locks its tasks without their checklists (`lockByIds` without
+ *   them for the live subtree, `lockArchive`, one ordered statement, for the members of an
+ *   archive), the parent of a restored root by one lean statement (`lockStanding`), and writes
+ *   them in one `UPDATE ... FROM unnest(...)` (`writeArchives`).
  * - `lockAssignedTo` and `unassignBatch` are set-based: a batch is one locking read (a range scan
  *   of `task_assignees_user_index`, without the checklists), the loads of the assignees, labels and
  *   parents, one delete of the assignee rows and one update of the versions.
@@ -139,13 +143,19 @@ export class DrizzleTaskRepository implements TaskRepository {
    *
    * @description
    * Locks several tasks in one statement, `ORDER BY id FOR NO KEY UPDATE`, so two writers lock
-   * the same tasks in the same order, then loads their collections after the lock.
+   * the same tasks in the same order, then loads their collections after the lock (three queries
+   * without the checklists, four with them).
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} ids - The ids of the tasks.
+   * @param {boolean} [withChecklists] - `false` to leave the checklists unloaded; `true` by default.
    * @returns {Promise<readonly Task[]>} The tasks, in ascending id order; unknown ids are left out.
    */
-  public async lockByIds(organizationId: string, ids: readonly string[]): Promise<readonly Task[]> {
+  public async lockByIds(
+    organizationId: string,
+    ids: readonly string[],
+    withChecklists: boolean = true,
+  ): Promise<readonly Task[]> {
     if (ids.length === 0) {
       return [];
     }
@@ -155,7 +165,30 @@ export class DrizzleTaskRepository implements TaskRepository {
       .where(and(eq(tasks.organizationId, organizationId), anyOf(tasks.id, ids, 'uuid')))
       .orderBy(asc(tasks.id))
       .for('no key update');
-    return this.collections.assemble(organizationId, rows);
+    return this.collections.assemble(organizationId, rows, withChecklists);
+  }
+
+  /**
+   * Method lockStanding
+   *
+   * @description
+   * Locks one task by primary key `FOR NO KEY UPDATE` and reads only whether it is live
+   * (`liveTask`) and its list, in one statement without the collections.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} taskId - The task.
+   * @returns {Promise<TaskStanding | null>} Its standing, or `null` when the organization has no
+   * such task.
+   */
+  public async lockStanding(organizationId: string, taskId: string): Promise<TaskStanding | null> {
+    const rows: { live: boolean; listId: string }[] = await this.db
+      .select({ live: sql<boolean>`${liveTask()}`, listId: tasks.listId })
+      .from(tasks)
+      .where(and(eq(tasks.organizationId, organizationId), eq(tasks.id, taskId)))
+      .limit(1)
+      .for('no key update');
+    const row: { live: boolean; listId: string } | undefined = rows[0];
+    return row === undefined ? null : { live: row.live, listId: row.listId };
   }
 
   /**
@@ -359,9 +392,10 @@ export class DrizzleTaskRepository implements TaskRepository {
    * Method subtreeOf
    *
    * @description
-   * Walks down from the task through `tasks_parent_created_index` in a recursive CTE, bounded to
-   * three levels of descendants (two are allowed, one more is read to see a violation), through
-   * the live subtasks only (`liveTask`): an archived subtask, and what hangs from it, is left out.
+   * Walks down from the task through `tasks_parent_created_index` in a recursive CTE
+   * (`subtreeStatement`), bounded to three levels of descendants (two are allowed, one more is read
+   * to see a violation), through the live subtasks only (`liveTask` at every level): an archived
+   * subtask, and what hangs from it, is left out.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} taskId - The task.
@@ -369,21 +403,9 @@ export class DrizzleTaskRepository implements TaskRepository {
    * the height (1 for a task without live subtask).
    */
   public async subtreeOf(organizationId: string, taskId: string): Promise<SubtreeShape> {
-    const result = await this.db.execute<{ id: string; depth: number }>(sql`
-      with recursive tree (id, depth) as (
-        select ${tasks.id}, 1
-        from ${tasks}
-        where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.parentId} = ${taskId}::uuid
-          and ${liveTask()}
-        union all
-        select child.id, tree.depth + 1
-        from tree
-        join ${tasks} as child
-          on child.organization_id = ${organizationId}::uuid and child.parent_id = tree.id
-        where tree.depth < 3 and child.archived_at is null
-      )
-      select id, depth::int as depth from tree order by depth, id
-    `);
+    const result = await this.db.execute<{ id: string; depth: number }>(
+      subtreeStatement(organizationId, taskId),
+    );
     const deepest: number = result.rows.reduce(
       (max: number, row: { id: string; depth: number }): number => Math.max(max, row.depth),
       0,
@@ -422,13 +444,14 @@ export class DrizzleTaskRepository implements TaskRepository {
    * @description
    * Locks the members of an archive in one statement through `tasks_archive_member_index`,
    * `ORDER BY id FOR NO KEY UPDATE`, so two restorations of one archive through two members lock
-   * in the same order and the second waits for the first; then loads their collections after the
-   * lock. PostgreSQL checks the condition again on a row it waited for, so a member restored
-   * meanwhile is left out.
+   * in the same order and the second waits for the first; then loads their assignees, labels and
+   * parent keys after the lock, not their checklists (a restoration never writes or emits them,
+   * so the members carry an empty one). PostgreSQL checks the condition again on a row it waited
+   * for, so a member restored meanwhile is left out.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} rootId - The root of the archive.
-   * @returns {Promise<readonly Task[]>} The members, in ascending id order.
+   * @returns {Promise<readonly Task[]>} The members without checklist, in ascending id order.
    */
   public async lockArchive(organizationId: string, rootId: string): Promise<readonly Task[]> {
     const rows: TaskRow[] = await this.db
@@ -437,7 +460,7 @@ export class DrizzleTaskRepository implements TaskRepository {
       .where(and(eq(tasks.organizationId, organizationId), eq(tasks.archiveRootId, rootId)))
       .orderBy(asc(tasks.id))
       .for('no key update');
-    return this.collections.assemble(organizationId, rows);
+    return this.collections.assemble(organizationId, rows, false);
   }
 
   /**
@@ -449,11 +472,16 @@ export class DrizzleTaskRepository implements TaskRepository {
    * task was written. Neither changes the assignees, the labels or the checklist.
    *
    * @param {string} organizationId - The organization of the transaction.
+   * @param {string} rootId - The root of the archive made or restored, which a failure names.
    * @param {readonly Task[]} updated - The tasks after `archive` or `unarchive`.
    * @returns {Promise<void>} Resolves once written.
    * @throws {Error} When a task vanished or changed version, which the locks prevent.
    */
-  public async writeArchives(organizationId: string, updated: readonly Task[]): Promise<void> {
+  public async writeArchives(
+    organizationId: string,
+    rootId: string,
+    updated: readonly Task[],
+  ): Promise<void> {
     if (updated.length === 0) {
       return;
     }
@@ -461,7 +489,7 @@ export class DrizzleTaskRepository implements TaskRepository {
     const result = await this.db.execute(writeArchivesStatement(organizationId, states));
     if (result.rowCount !== updated.length) {
       throw new Error(
-        `${String(updated.length - (result.rowCount ?? 0))} of the ${String(updated.length)} tasks of the archive of ${states[0]?.archive?.rootId ?? states[0]?.id ?? ''} vanished or changed version while they were locked.`,
+        `${String(updated.length - (result.rowCount ?? 0))} of the ${String(updated.length)} tasks of the archive of ${rootId} vanished or changed version while they were locked.`,
       );
     }
   }

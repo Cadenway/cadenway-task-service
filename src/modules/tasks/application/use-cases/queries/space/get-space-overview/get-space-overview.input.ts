@@ -1,4 +1,4 @@
-import type { PagePosition } from '../../../../models/page/page-position.model.js';
+import type { ListPosition } from '../../../../models/placement/list-position.model.js';
 
 /**
  * Interface GetSpaceOverviewInput
@@ -20,8 +20,8 @@ export interface GetSpaceOverviewInput {
   /** The date of the caller, `YYYY-MM-DD`: a task is late when it is due before it. */
   readonly today: string;
 
-  /** The last list of the previous page, `null` for the first page. */
-  readonly after: PagePosition | null;
+  /** The last list of the previous page, in the order of the sidebar, `null` for the first page. */
+  readonly after: ListPosition | null;
 
   /** The size of the page, 1 to 100. */
   readonly limit: number;

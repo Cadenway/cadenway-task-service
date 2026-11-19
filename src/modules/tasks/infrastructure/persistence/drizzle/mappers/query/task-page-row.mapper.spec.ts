@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import type { TaskSummaryView } from '../../../../../application/projections/task/task-summary.projection.js';
 import { renderSql } from './query-sql.fixture.js';
-import { taskPageColumns, toListedTask, toTaskPageRow } from './task-page-row.mapper.js';
+import {
+  taskPageColumns,
+  toListedTask,
+  toTaskPageRow,
+  toTaskSummaryRow,
+} from './task-page-row.mapper.js';
 import type { RawTaskPageRow } from './raw-task-page-row.mapper.js';
 
 const RAW: RawTaskPageRow = {
@@ -49,6 +54,38 @@ describe('toTaskPageRow: the instants of a raw row become dates', () => {
 
   it('keeps a missing completion null', () => {
     expect(toTaskPageRow({ ...RAW, completedAt: null }).completedAt).toBeNull();
+  });
+});
+
+describe('toTaskSummaryRow: the columns of a summary out of a raw row', () => {
+  it('keeps the columns of the summary, its instants as dates, and leaves out the rest', () => {
+    const root = { ...RAW, archivedAt: '2026-11-05T11:30:00.000Z' };
+
+    expect(toTaskSummaryRow(root)).toEqual({
+      id: RAW.id,
+      keyPrefix: RAW.keyPrefix,
+      keyNumber: RAW.keyNumber,
+      name: RAW.name,
+      status: RAW.status,
+      cancelReason: RAW.cancelReason,
+      priority: RAW.priority,
+      dueDate: RAW.dueDate,
+      startDate: RAW.startDate,
+      estimateMinutes: RAW.estimateMinutes,
+      listId: RAW.listId,
+      spaceId: RAW.spaceId,
+      parentId: RAW.parentId,
+      version: RAW.version,
+      completedAt: new Date('2026-11-03T10:15:00.250Z'),
+      createdAt: new Date('2026-11-02T09:00:00.123Z'),
+    });
+  });
+
+  it('is the summary of a page row, which adds its sort value', () => {
+    const { sortValue, ...row } = toTaskPageRow(RAW);
+
+    expect(row).toEqual(toTaskSummaryRow(RAW));
+    expect(sortValue).toBe('2026-11-10');
   });
 });
 

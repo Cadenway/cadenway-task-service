@@ -479,7 +479,8 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
    *
    * @description
    * Copies a list of the spaces module member by member to the model of the tasks module, with
-   * the switch of the organization, its archive and the role of the viewer.
+   * the switch of the organization, its archive, its position in its space (the order of the
+   * sidebar and the keyset of the overview) and the role of the viewer.
    *
    * @param {VisibleList} list - The list as the spaces module answers it.
    * @returns {PlacedList} The list.
@@ -500,6 +501,7 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
               goal: list.sprint.goal,
             },
       createdAt: list.createdAt,
+      position: list.position,
       version: list.version,
       organizationAccess: list.organizationAccess,
       archivedAt: list.archivedAt,

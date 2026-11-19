@@ -4,6 +4,7 @@ import type { TaskState } from '../../../../../domain/value-objects/task/task-st
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import {
   ATELIER_NORD,
+  BUGS,
   CAD_482,
   CAD_483,
   CAD_484,
@@ -24,6 +25,9 @@ import {
 } from '../../../tasks.fixture.js';
 import type { ArchiveTaskInput } from './archive-task.input.js';
 import { ArchiveTask } from './archive-task.use-case.js';
+
+/** An item of the checklist of CAD-483. */
+const CHECKED = '019a7300-0000-7000-8000-000000000483';
 
 /** CAD-484, a subtask of CAD-483, itself a subtask of CAD-482. */
 function grandchild(overrides: Partial<TaskState> = {}): TaskState {
@@ -180,6 +184,22 @@ describe('ArchiveTask: an archive takes the task and its live subtasks at every 
     ]);
   });
 
+  it('locks the subtree without its checklists, keeps them stored and answers the root with its own', async () => {
+    const item = { id: CHECKED, text: 'Relire le libellé', done: true, position: 1 };
+    const { tasks, useCase } = atelierNord([
+      taskState(),
+      subtaskState({ checklist: [item] }),
+      grandchild(),
+    ]);
+
+    const view = await useCase.execute(archive());
+
+    expect(view.checklist.map((entry) => entry.id)).toEqual(
+      taskState().checklist.map((entry) => entry.id),
+    );
+    expect(tasks.stored(CAD_483)).toMatchObject({ checklist: [item], version: 2 });
+  });
+
   it('archives a subtask alone: its parent stays live and counts one live subtask less', async () => {
     const { tasks, useCase } = atelierNord();
 
@@ -219,6 +239,18 @@ describe('ArchiveTask: an archived task answers as it is', () => {
     expect(view).toMatchObject({ version: 12, archivedAt: archiveFrom(CAD_482).at });
     expect(tasks.events).toEqual([]);
     expect(tasks.trace).not.toContain('tasks.writeArchives');
+  });
+
+  it('answers an archived root whose live parent moved to another list as detached', async () => {
+    const { tasks, useCase } = atelierNord([
+      taskState({ listId: BUGS }),
+      subtaskState({ archive: archiveFrom(CAD_483), version: 2 }),
+    ]);
+
+    const view = await useCase.execute(archive({ taskKey: 'CAD-483' }));
+
+    expect(view).toMatchObject({ key: 'CAD-483', parentKey: null, listId: taskState().listId });
+    expect(tasks.stored(CAD_483).parentId).toBe(CAD_482);
   });
 
   it('checks If-Match before answering that nothing changed', async () => {

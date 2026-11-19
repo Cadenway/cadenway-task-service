@@ -194,6 +194,30 @@ export function archiveHeight(
 }
 
 /**
+ * Function showsParent
+ *
+ * @description
+ * Whether a task reads with its parent (`parentKey` of `Task` and of every `TaskSummary`,
+ * `parent` of the detail) or as detached: it shows its parent only when the parent is in its
+ * list, so that "a subtask is always in the list of its parent" (`listId` of `Task`,
+ * `openapi/public/tasks.yaml`) holds in every answer. A live task always shares the list of its
+ * parent, and so does every member of an archive under the root; only the root of an archive can
+ * be elsewhere, when its live parent moved since (a move carries the live subtree only, "Tasks"
+ * of `openapi/public/archives.yaml`). That root reads as detached, as its restoration leaves it
+ * (`takesRestoredRoot`), and the parent of another list, its key, name and status, never reaches
+ * a viewer of the list of the root who may not see that list: a decision of this service beyond
+ * the contract (P3b-1, PR 2). The stored link is not changed: the restoration reads it.
+ *
+ * @param {string} taskListId - The list of the task.
+ * @param {string} parentListId - The list its parent is in now.
+ * @returns {boolean} `true` when the task reads with its parent, `false` when it reads as
+ * detached.
+ */
+export function showsParent(taskListId: string, parentListId: string): boolean {
+  return taskListId === parentListId;
+}
+
+/**
  * Function takesRestoredRoot
  *
  * @description

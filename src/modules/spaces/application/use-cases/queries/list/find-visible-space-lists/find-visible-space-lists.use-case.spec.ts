@@ -80,6 +80,7 @@ describe('FindVisibleSpaceLists: a member finds the lists of a space it sees', (
       color: 'indigo',
       sprint: { startDate: '2026-11-03', endDate: '2026-11-17', goal: SPRINT_14_GOAL },
       createdAt: new Date('2026-10-22T09:00:00Z'),
+      position: new Date('2026-10-22T09:00:00Z'),
       version: 1,
       organizationAccess: true,
       archivedAt: null,
@@ -113,6 +114,41 @@ describe('FindVisibleSpaceLists: a member finds the lists of a space it sees', (
     const found = await new FindVisibleSpaceLists(spaces).execute(find());
 
     expect(found?.lists.map((list) => list.id)).toEqual([BACKLOG, SPRINT_14, ARCHIVE]);
+  });
+
+  it('gives each list its position in the space: its restoration, or else its creation', async () => {
+    const spaces = atelierNord();
+    const archive = spaces.lists.get(ARCHIVE);
+    if (archive === undefined) {
+      throw new Error('Archive is seeded.');
+    }
+    spaces.lists.set(ARCHIVE, { ...archive, restoredAt: new Date('2026-11-08T17:00:00Z') });
+
+    const found = await new FindVisibleSpaceLists(spaces).execute(find());
+
+    expect(
+      found?.lists.map((list) => ({
+        id: list.id,
+        createdAt: list.createdAt,
+        position: list.position,
+      })),
+    ).toEqual([
+      {
+        id: BACKLOG,
+        createdAt: new Date('2026-10-21T09:00:00Z'),
+        position: new Date('2026-10-21T09:00:00Z'),
+      },
+      {
+        id: SPRINT_14,
+        createdAt: new Date('2026-10-22T09:00:00Z'),
+        position: new Date('2026-10-22T09:00:00Z'),
+      },
+      {
+        id: ARCHIVE,
+        createdAt: new Date('2026-10-20T09:00:00Z'),
+        position: new Date('2026-11-08T17:00:00Z'),
+      },
+    ]);
   });
 
   it('breaks a tie of the creation instant by id', async () => {

@@ -1,13 +1,10 @@
-import { canEdit } from '../../../../../domain/policies/access/access-role.policy.js';
-import type { TaskList } from '../../../../../domain/aggregates/list/task-list.aggregate.js';
-import type { Space } from '../../../../../domain/aggregates/space/space.aggregate.js';
 import type { TaskListArchiveChange } from '../../../../../domain/value-objects/list/task-list-archive-change.value-object.js';
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
-import type { ViewerAccess } from '../../../../models/access/viewer-access.model.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
+import type { EditableListLookup } from '../../../../models/list/editable-list-lookup.model.js';
 import type { SpacesStore } from '../../../../models/transactions/spaces-store.model.js';
 import type { SpacesUnitOfWork } from '../../../../ports/outbound/transactions/space/spaces-unit-of-work.port.js';
-import { AccessResolver } from '../../../../services/access/access-resolver.service.js';
+import { EditableListLocator } from '../../../../services/list/editable-list-locator.service.js';
 import type { RestoreArchivedListInput } from './restore-archived-list.input.js';
 import type { RestoreArchivedListOutput } from './restore-archived-list.output.js';
 
@@ -18,7 +15,8 @@ import type { RestoreArchivedListOutput } from './restore-archived-list.output.j
  * Public operation of the spaces module for the tasks module: restores the archived list of an
  * archived task the member restores ("Restoring any task of an archive restores the whole archive,
  * from its root, to its list, which is restored too when it is archived" of
- * `openapi/public/archives.yaml`). It locks the list `FOR NO KEY UPDATE` until the end of the
+ * `openapi/public/archives.yaml`). Through the guard of every write of a list
+ * (`EditableListLocator.find`), it locks the list `FOR NO KEY UPDATE` until the end of the
  * transaction (after the tasks the caller locked), reads its space without lock and computes the
  * role of the member on the list with the policies of the domain, from the role in the
  * organization the caller passes (no membership is read). A list that does not exist, of another
@@ -43,15 +41,15 @@ export class RestoreArchivedList {
   private readonly unitOfWork: SpacesUnitOfWork;
 
   /**
-   * Property access
+   * Property lists
    *
    * @description
-   * Decides what the member reaches of the list.
+   * Locks the list and answers the refusals of a write, which this operation maps to its outcomes.
    *
-   * @type {AccessResolver}
+   * @type {EditableListLocator}
    * @readonly
    */
-  private readonly access: AccessResolver;
+  private readonly lists: EditableListLocator;
   // #endregion
 
   // #region Constructor
@@ -66,7 +64,7 @@ export class RestoreArchivedList {
    */
   public constructor(unitOfWork: SpacesUnitOfWork) {
     this.unitOfWork = unitOfWork;
-    this.access = new AccessResolver();
+    this.lists = new EditableListLocator();
   }
   // #endregion
 
@@ -82,31 +80,22 @@ export class RestoreArchivedList {
    */
   public async execute(input: RestoreArchivedListInput): Promise<RestoreArchivedListOutput> {
     return this.unitOfWork.run(async (store: SpacesStore): Promise<RestoreArchivedListOutput> => {
-      const stored: TaskList | null = await store.lists.lock(input.organizationId, input.listId);
-      if (stored === null) {
-        return { outcome: 'not-found' };
-      }
-      const space: Space | null = await store.spaces.find(
-        input.organizationId,
-        stored.snapshot.spaceId,
-      );
-      if (space === null) {
-        return { outcome: 'not-found' };
-      }
       const viewer: Viewer = { userId: input.actorUserId, role: input.viewerRole };
-      const access: ViewerAccess = await this.access.resolve(
-        store.grants,
+      const found: EditableListLookup = await this.lists.find(
+        store,
         viewer,
-        space.snapshot,
-        stored.snapshot,
+        input.organizationId,
+        input.listId,
       );
-      if (access.listRole === null) {
+      if (found.outcome === 'list-not-found') {
         return { outcome: 'not-found' };
       }
-      if (!canEdit(access.listRole)) {
-        return { outcome: 'role-insufficient', role: access.listRole };
+      if (found.outcome === 'role-insufficient') {
+        return { outcome: 'role-insufficient', role: found.role };
       }
-      const { list, changed }: TaskListArchiveChange = stored.unarchive(await store.clock.now());
+      const { list, changed }: TaskListArchiveChange = found.list.unarchive(
+        await store.clock.now(),
+      );
       if (!changed) {
         return { outcome: 'not-archived' };
       }

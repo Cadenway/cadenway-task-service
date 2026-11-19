@@ -51,8 +51,10 @@ import { spaces } from '../../schemas/space/space.schema.js';
  * of the sidebar add `liveListCondition` and order the lists of a space by `listPositionInSpace`
  * (`coalesce(restored_at, created_at)`, id as tie-breaker), which no index orders: they sort the
  * few lists of one space or of the organization. `listOfSpaceVisibleTo` and
- * `listArchivedVisibleTo` read a page bounded by the `limit` of the caller; the archives walk the
- * partial index `lists_organization_archived_index` backwards.
+ * `listArchivedVisibleTo` read a page bounded by the `limit` of the caller; the archives and their
+ * count read the partial index `lists_organization_archived_index` by a bitmap scan, then sort the
+ * archived lists the member sees (O(archived lists of the organization), not a walk stopped at the
+ * limit; plans of `tests/archive-queries.int-spec.ts`).
  */
 export class DrizzleTaskListRepository implements TaskListRepository {
   // #region Properties
@@ -394,8 +396,9 @@ export class DrizzleTaskListRepository implements TaskListRepository {
    *
    * @description
    * Loads a page of the archived lists of the organization a member has a role on in the order
-   * `(archived_at desc, id desc)`, after `after`, at most `limit`: a backward walk of
-   * `lists_organization_archived_index`, whose predicate `archivedListCondition` repeats.
+   * `(archived_at desc, id desc)`, after `after`, at most `limit`: a bitmap scan of
+   * `lists_organization_archived_index`, whose predicate `archivedListCondition` repeats, then a
+   * sort of the archived lists the member sees, cut at `limit`.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The member and its role.

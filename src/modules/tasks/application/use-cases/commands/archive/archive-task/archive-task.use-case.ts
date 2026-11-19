@@ -29,11 +29,12 @@ import type { ArchiveTaskOutput } from './archive-task.output.js';
  * own archive (it is not live, so it is not taken). Locks follow the order of the module: the
  * membership of the actor, the task by key `FOR NO KEY UPDATE`, then its live descendants in
  * ordered statements until the live subtree holds nothing unlocked (`TaskSubtreeLocker`, 651 tasks
- * and 5 passes at most). Every task taken gets the same archive (the transaction instant, the
- * actor, the root), its next version and `updatedAt`, written in one statement; then one
- * `task.archived.v1` per task, the root first, then by depth and id, with the key of the root. An
- * archive is not recorded in the activity log. The answer is the root, archived, with the
- * subtasks archived with it as its subtask counts.
+ * and 5 passes at most), without their checklists, which an archive never writes or emits. Every
+ * task taken gets the same archive (the transaction instant, the actor, the root), its next
+ * version and `updatedAt`, written in one statement; then one `task.archived.v1` per task, the
+ * root first, then by depth and id, with the key of the root. An archive is not recorded in the
+ * activity log. The answer is the root, archived (with its checklist, read with it by key), with
+ * the subtasks archived with it as its subtask counts.
  */
 export class ArchiveTask {
   // #region Properties
@@ -113,10 +114,10 @@ export class ArchiveTask {
         archived: 'allow',
         expectedVersions: input.expectedVersions,
       });
-      if (task.snapshot.archive !== null) {
+      if (!task.isLive) {
         return this.views.build(store.reader, task);
       }
-      const subtree: LockedSubtree = await this.subtrees.lock(store, task, []);
+      const subtree: LockedSubtree = await this.subtrees.lock(store, task, [], false);
       const now: Date = await store.clock.now();
       const by: TaskActor = { type: 'user', id: input.actorUserId };
       const rootId: string = task.snapshot.id;
@@ -127,7 +128,7 @@ export class ArchiveTask {
       if (root === undefined) {
         throw new Error(`The archive of the task ${rootId} lost its root.`);
       }
-      await store.tasks.writeArchives(organizationId, archived);
+      await store.tasks.writeArchives(organizationId, rootId, archived);
       const actor: EventActor = { type: 'user', id: input.actorUserId };
       await this.announcer.archived(store.events, root, archived, actor);
       return this.views.build(store.reader, root);

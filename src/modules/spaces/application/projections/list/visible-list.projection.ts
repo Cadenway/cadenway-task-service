@@ -91,6 +91,21 @@ export interface VisibleList {
   readonly createdAt: Date;
 
   /**
+   * Property position
+   *
+   * @description
+   * The instant that places the list in the order of its space (`positionInSpaceOf` of the
+   * domain): when it last came back from the archives, or else when it was created ("Restoring a
+   * list puts it back at the end of its space" of `openapi/public/archives.yaml`). The lists of a
+   * space are ordered by it, then by id, so a caller that pages them keys its pages on
+   * `(position, id)`. It is not a member of `TaskList` and never leaves the service.
+   *
+   * @type {Date}
+   * @readonly
+   */
+  readonly position: Date;
+
+  /**
    * Property version
    *
    * @description

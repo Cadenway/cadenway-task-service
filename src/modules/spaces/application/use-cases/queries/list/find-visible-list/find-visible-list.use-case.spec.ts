@@ -73,6 +73,7 @@ describe('FindVisibleList: a member finds the list and its space', () => {
         color: 'indigo',
         sprint: { startDate: '2026-11-03', endDate: '2026-11-17', goal: SPRINT_14_GOAL },
         createdAt: sprintState().createdAt,
+        position: sprintState().createdAt,
         version: 1,
         organizationAccess: true,
         archivedAt: null,

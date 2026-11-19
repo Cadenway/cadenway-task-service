@@ -14,6 +14,7 @@ const SPRINT_14: ListSummaryView = {
     color: 'bleu',
     sprint: { startDate: '2026-11-02', endDate: '2026-11-15', goal: null },
     createdAt: new Date('2026-11-01T08:00:00.000Z'),
+    position: new Date('2026-11-01T08:00:00.000Z'),
     version: 2,
     organizationAccess: true,
     archivedAt: null,

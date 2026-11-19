@@ -34,6 +34,14 @@ export interface PlacedList {
   /** When the list was created. */
   readonly createdAt: Date;
 
+  /**
+   * The instant that places the list in the order of its space (the sidebar and the overview,
+   * `id` breaking the ties): its last restoration from the archives, else its creation ("Lists"
+   * of `openapi/public/archives.yaml`: a restored list goes to the end of its space). It never
+   * leaves the service.
+   */
+  readonly position: Date;
+
   /** Version of the list. */
   readonly version: number;
 

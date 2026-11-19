@@ -120,6 +120,7 @@ describe('ListSidebarLists: the first lists of the sidebar of a member', () => {
         color: 'gris',
         sprint: null,
         createdAt: new Date('2026-10-21T09:00:00Z'),
+        position: new Date('2026-10-21T09:00:00Z'),
         version: 1,
         organizationAccess: true,
         archivedAt: null,

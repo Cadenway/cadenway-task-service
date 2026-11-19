@@ -91,6 +91,15 @@ null default false`, added without a rewrite) is true exactly for the root of an
   `(organization_id, archive_root_id)` where `archive_root_id is not null` (the members of an
   archive: the restoration lock and the counts of the tab). Rollback: drop the two indexes, the
   constraints and the five columns in a new migration; the previous release reads none of them.
+- Deploying `migrations/0006_archives.sql`: its first `ALTER TABLE` of each table takes ACCESS
+  EXCLUSIVE on `lists` and on `tasks`, held until the migrator commits (the Drizzle migrator runs
+  every pending migration in one transaction). Under it PostgreSQL scans `tasks` for the foreign
+  key `tasks_archive_root_fkey`, the four CHECKs and the builds of the two partial indexes, and
+  `lists` for its three CHECKs and its partial index (the columns are added without a rewrite).
+  Reads and writes of the running version on either table wait meanwhile, and fail after the 5 s
+  `lock_timeout` of `task_app` (SQLSTATE `55P03`, answered `500`). A migrator that cannot take a
+  lock within the `lock_timeout` of its own role fails with nothing applied (all or nothing) and is
+  retried safely. Measured: <to be filled>. Rollback: as above.
 - `tasks.id`, `checklist_items.id` and `activity_entries.id` come from `uuidv7()`. The instants
   that order a page (`created_at`, `occurred_at`, `completed_at`) are `timestamptz(3)`, so that the
   position of a page round-trips exactly through the cursor. The key is stored on the task
@@ -149,6 +158,12 @@ created_at, id)` (subtasks, counts, the subtree and the ancestors);
   the table (a Seq Scan, 24 ms, for a space of 45,000 tasks; the counters of the lists of a small
   space are a range, 15 blocks). If counters outgrow their budget, add `INCLUDE (parent_id, status,
 due_date)` to the list index for index-only counts; status changes then stop being HOT updates.
+- Not indexed, on purpose: the live tasks (`tests/archive-queries.int-spec.ts`). The candidate
+  `(organization_id, list_id, created_at, id) where archived_at is null` helps only the first page
+  in creation order of a list with many old archived tasks (2,664 to 31 buffers, 0.79 to 0.09 ms)
+  and 40 % of the buffers of its aggregates, for 0.7 to 1 ms; the candidate `(organization_id, id)
+where archived_at is null` is not used by "Mes tâches". To revisit by replacing
+  `tasks_list_created_index` with its partial form, once the trash reads of PR 3 are checked.
 - The counters, the totals and the groups read every task row of the list (or of the space): they
   need `status`, `due_date` and `parent_id`, which the index does not hold, so each is a heap read of
   the range. `list_id` is in the index, so moving a task to another list is not a HOT update.
@@ -252,6 +267,10 @@ access.role-insufficient` with `details: { role, requiredRole: 'edit' }` (`role`
   `{ in: 'query', path: 'cursor', code: 'invalid_cursor' }`. `status`, `priority`, `assignee` and
   `label` are comma-separated or repeated; ids are read in either case. A parameter the route does not
   declare, and a date of the year 0000 in `today`, `dueFrom` or `dueTo`, answer `400`.
+- The overview pages its lists in the order of the sidebar, `(coalesce(restored_at, created_at),
+id)` (the `position` of the lists spaces answers), and its cursor carries that position and the
+  id: a list restored from the archives goes to the end of its space, and is neither lost nor read
+  twice between two pages.
 
 ## Events emitted
 
@@ -321,7 +340,14 @@ never changes the assignees.
   significant); a duplicate changes nothing.
 - A task and its subtasks are always in the same list: a new subtask takes its parent's list, a
   moved task takes its subtree, an attached task moves with its subtree to the parent's list, a
-  subtask moved to another list leaves its parent first, a detached task keeps its list.
+  subtask moved to another list leaves its parent first, a detached task keeps its list. Every
+  answer keeps it true: the root of an archive whose live parent moved to another list since (a
+  move carries the live subtree only) reads as detached, `parentKey: null` in `Task` (the task,
+  the detail, the archive and the restoration) and in every `TaskSummary` (the archives, the
+  subtasks, every page), `parent: null` in the detail, as its restoration leaves it
+  (`showsParent`, `takesRestoredRoot`); its stored parent stays for the restoration. Only such a
+  root can be in that state: the members of an archive share the list of its root, and a live
+  task the list of its parent.
 - A task is never deleted or renumbered. A key is never given twice: the number comes from
   `AllocateTaskKeys` in the creation transaction (a creation with `n` subtasks takes `1 + n`
   consecutive numbers, the task first), and the task keeps it when it moves or its space changes
@@ -384,7 +410,8 @@ never changes the assignees.
   "Accueil" count the tasks assigned to the actor, subtasks included, with the counts of both tabs
   on every page; "Accueil" lists the 7 next open tasks, the current sprints (start and end
   inclusive, at most 10, by end date then creation) and the first 6 lists in the order of the
-  sidebar (spaces then lists, by creation), sprints included.
+  sidebar (spaces by creation, then their lists by restoration from the archives, else creation),
+  sprints included.
 - Archives ("Tasks" of `openapi/public/archives.yaml`): archiving or restoring a task needs `edit`
   on its list. An archive takes the task and its live descendants, every level, whatever their
   status, with one instant, actor and root, the next version and `updatedAt` each; a subtask
@@ -395,7 +422,8 @@ never changes the assignees.
   and the child count of a write) through one predicate (`liveTask`); it reads by its key (the
   task, its detail, its activity, the access check) and refuses every change of a user until it is
   restored. Archived tasks never move: a move of a live task leaves its archived subtasks in their
-  list, under it. A live task never has an archived parent.
+  list, under it, where they read as detached (see the list of a subtask above). A live task never
+  has an archived parent.
 - The subtasks shown of a task are those of its archive (`archive_root_id IS NOT DISTINCT FROM` the
   parent's): `subtaskCounts`, `GET /tasks/{taskKey}/subtasks` and the subtasks of the detail. The
   limit of 25, the depth of a new or attached subtask and the subtree of a move count live tasks
@@ -403,8 +431,8 @@ never changes the assignees.
 - A restoration through any member restores the whole archive from its root: the root keeps its
   parent only when the parent is live, in the list of the root, with fewer than 25 live subtasks,
   and its level plus the height of the archive is 3 at most (`takesRestoredRoot`), and becomes a
-  top-level task of its list otherwise; an archived list of the root is restored first. It answers
-  the root.
+  top-level task of its list otherwise; an archived list of the root is restored first (spaces
+  decides on the locked list). It answers the root.
 - The archives pages list, the most recently archived first (`archived_at desc, id desc`), the
   archived lists the actor has a role on, each with its live top-level task count, and the roots of
   the archives of the lists the actor has a role on (archived lists included), each with its list
@@ -445,7 +473,8 @@ Lock order, the same for every writer:
    (the new parent, the moving descendants) in one statement in ascending id order; a restoration
    locks the members of an archive in one statement by id, then the parent of its root;
 3. the `space_prefixes` row, last, by `AllocateTaskKeys`, which serializes the creations of a prefix
-   until the commit; or the archived list of a restored task, last, by `RestoreArchivedList`.
+   until the commit; or the list of a restored task, last, by `RestoreArchivedList`, which locks it
+   whether it is archived or not.
 
 A task write does not lock before it knows the actor may see and change the task: it reads the
 task without a lock, checks the visibility of its list and `edit` on it, then locks it and reads
@@ -469,18 +498,28 @@ transaction, and the request answers an error or the batch of the clean-up job i
 and before the target of a move or an attachment and the domain rules.
 
 An archive locks the membership of the actor `FOR SHARE`, the task by key, then its live
-descendants in ordered statements until the live subtree holds nothing unlocked
-(`TaskSubtreeLocker`, 5 passes at most): at most 651 tasks (1 + 25 + 625), written in one
-`UPDATE ... FROM unnest(...)` guarded by each version (the row count checked), with one outbox row
-per task. A concurrent subtask creation or move under a member either commits first (the subtask is
-taken, the moved task is not) or reads the archived task under its lock and answers `409`. A
-restoration locates the task without a lock, then locks every member of its archive in one
-statement ordered by id, then the parent of the root, then the list (`RestoreArchivedList` of
-spaces): lock order members, parent, list. Two restorations of one archive through two members
-serialize on that statement; the second finds the archive empty and reads the task again (live:
-`200` with its version), 3 attempts at most. A concurrent archive of the parent either commits
-first (the restoration detaches the root) or waits and takes the restored root with it. The same
-bound and single update hold for a restoration.
+descendants in ordered statements, without their checklists, until the live subtree holds nothing
+unlocked (`TaskSubtreeLocker`, 5 passes at most): at most 651 tasks (1 + 25 + 625), written in one
+`UPDATE ... FROM unnest(...)` guarded by each version (the row count checked, a failure naming the
+root), with one outbox row per task. A concurrent subtask creation or move under a member either
+commits first (the subtask is taken, the moved task is not) or reads the archived task under its
+lock and answers `409`. A restoration locates the task without a lock, then locks every member of
+its archive in one statement ordered by id, without their checklists, then the parent of the root
+in one lean statement (its archive and its list), then the list (`RestoreArchivedList` of spaces,
+always called, deciding on the locked list): lock order members, parent, list. Two restorations of
+one archive through two members serialize on that statement; the second finds the archive empty
+and reads the task again (live: `200` with its version), 3 attempts at most. A root that is no
+longer in the list of the task located (the archive was restored, moved and archived again
+meanwhile) also reads the task again, so the role is checked on its list as it is now, before
+`If-Match`. A concurrent archive of the parent either commits first (the restoration detaches the
+root) or waits and takes the restored root with it. The same bound and single update hold for a
+restoration, whose answer reads the root again by key, with its checklist, after the write.
+
+Neither the archive nor a move is free of deadlocks: their order (the task by key, then the others
+by id) is not global, so two writers on nested trees (an archive of a task and a move or an
+archive of one of its descendants or ancestors, each holding its task by key) can each wait for
+the other. PostgreSQL then aborts one (SQLSTATE `40P01`, answered `500`), as the moves of P3a
+accept; the other commits.
 
 Reads (`GET` routes) run in read-only transactions without locks (see above). The tasks of a list,
 the groups, the counters of a list, the labels and "Mes tâches" read each statement as committed
@@ -522,7 +561,25 @@ the medians of five calls through HTTP on the 75,000 tasks of `tests/task-querie
   once per distinct key. Page 2 and a search cost the same as page 1.
 - "Mes tâches" and "Accueil": O(assignments of the actor), lifetime ones included (the hash join of
   the assignments with their tasks; 50 to 80 ms for 10,006 assignments), "Accueil" doing it for the
-  stats and the seven tasks and calling two spaces reads.
+  stats and the seven tasks and calling two spaces reads. A person with many assignments reads the
+  whole `tasks` table, other organizations included, by that hash join, the choice of the planner
+  by selectivity (about 10,000 of 104,278 rows: a Seq Scan, 4,100 buffers, 15 to 23 ms; the plans
+  it refuses cost more: a bitmap scan, 3,750 buffers, 16 to 31 ms, a probe per assignment, 39,350
+  buffers), the same in the shapes of P3a, P3b-1 PR 1 and PR 2; a person with about 100
+  assignments probes `tasks_pkey` (437 buffers, 0.3 to 0.5 ms).
+- The archived tasks of a list (`tests/archive-queries.int-spec.ts`): the first page in creation
+  order of a list also reads, in `tasks_list_created_index`, the archived tasks older than its
+  oldest live one (2,664 buffers, 0.75 ms with 6,000 archived tasks). Archived subtasks accumulate
+  under a live parent, with no limit (the 25 count live subtasks only): the subtask reads and counts
+  of the parent read them and filter them out after the heap fetch (`sameArchiveAsParent`).
+- Archives: the tab "Tâches" reads a page of about `limit` roots by the walk of
+  `tasks_archive_root_index` (5 to 7 buffers), and its total is O(roots the actor sees) (593
+  buffers, 3.7 ms at 12,310 roots); the tab "Listes" has a total O(archived lists the actor sees)
+  (spaces MODULE.md) and its `taskCount` is one grouped statement for the lists of the page.
+- An archive or a restoration of a full tree, 651 tasks: one bulk update and 651 outbox appends of
+  two round trips each, about 1,300 statements in one transaction (Measured: <to be filled>), and
+  up to 651 row locks held until the commit; a concurrent writer of one of them waits up to its 5 s
+  `lock_timeout`, then answers `500` (`55P03`).
 - The visibility filter of the cross-list statements (the labels page, the "Mes tâches" page and
   counts, the "Accueil" stats and tasks, the activity of a list and its total) is
   `tasks.list_id = ANY($listIds)`: one array parameter of every list of the organization the actor
@@ -617,15 +674,33 @@ member-lifecycle (its MODULE.md).
   `allow` for the reads, the archive and the restoration). The archive and the restoration are
   set-based (one update for up to 651 tasks), not one `save` per task, and write no activity.
 - The restoration answers the root, as the contract says, and checks `If-Match` on the task of the
-  path. It restores an archived list through spaces only when the list it read was archived; a list
-  archived between that read and the commit keeps the restored task (an archived list holds live
-  tasks). A refusal of spaces then (a grant withdrawn meanwhile) answers `404` or `403`.
+  path. It always hands the list of the root to spaces (`RestoreArchivedList`), which locks it and
+  restores it when it is archived, or answers `not-archived`: the decision is made on the locked
+  list, not on the list read before the locks. A list archived after that lock waits for the commit
+  and then holds the restored task (an archived list holds live tasks). A refusal of spaces (a
+  grant withdrawn meanwhile) answers `404` or `403`.
+- The root of an archive reads as detached while its parent is in another list (decision of the
+  P3b-1 PR 2 review, beyond the contract): a move carries the live subtree only, so the live parent
+  of an archived root may move away, and showing it would give a viewer of the list of the root the
+  key, the name and the status of a task of a list they may not see. Reading the root as its
+  restoration will leave it keeps "a subtask is always in the list of its parent" true in every
+  answer. It is decided where the parent is read for a view (`showsParent`: the summaries, the
+  view of a task, the reference of the detail), never in the domain state, which keeps the parent
+  for the restoration. Question for cadenway-api-contracts, reported: say it in `Task.parentKey`,
+  `TaskSummary.parentKey` and the `parent` of the detail.
+- The audit trail of an archive: while a task is archived its row says when, by whom and from
+  which root (`archived_at`, `archived_by_type`, `archived_by_id`, `archive_root_id`); a
+  restoration clears them and leaves nothing in the row (tasks have no `restored_at`). The events
+  `task.archived.v1` and `task.unarchived.v1` name the actor and the `rootKey`, and are kept 7 days
+  in the outbox and in the stream `EVENTS`. A durable trail is an open point.
 - `SpaceDirectory.restoreArchivedList` takes the viewer, whose account is the actor of
   `list.unarchived.v1`, rather than a separate actor id: the routes act for the member only.
 - The archives pages run in one snapshot so the page, the total and the counts agree; the cursor
   carries the archive instant and the id (`(archived_at desc, id desc)`), fingerprinted with the tab.
 - The activity instant and `updatedAt` are the instant the transaction started (`now()`), taken
-  once per run. A writer that waits for a lock keeps the instant it started with, so two changes of
+  once per run and truncated to the millisecond as the outbox stamps `occurredAt`, so the
+  `archivedAt` of an archive is the `occurredAt` of its events. The clock is one copy per module
+  (tasks, spaces, access-requests), the three truncating alike. A writer that waits for a lock keeps the instant it started with, so two changes of
   one task can commit in the reverse order of their instants; the version still orders them. This is
   accepted, and the 60-second coalescing compares the same instants.
 - The `total` of the activity of a list counts every matching entry of the list, joined with the

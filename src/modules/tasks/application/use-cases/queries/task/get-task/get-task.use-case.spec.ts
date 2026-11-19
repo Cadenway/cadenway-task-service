@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ATELIER_NORD,
+  BUGS,
   CAD_482,
+  CAD_483,
   CAMILLE,
   CREATED_AT,
   DESIGN,
@@ -214,5 +216,42 @@ describe('GetTask: an archived task reads by its key', () => {
     });
 
     expect(view).toMatchObject({ archivedAt: ARCHIVED_AT, archivedBy: HUGO_ACTOR, version: 12 });
+  });
+
+  it('reads an archived root whose live parent moved to another list as detached', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [
+        taskState({ listId: BUGS }),
+        subtaskState({ archive: archiveFrom(CAD_483), version: 2 }),
+      ],
+    });
+    const useCase = new GetTask(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
+
+    const view = await useCase.execute({
+      organizationId: ATELIER_NORD,
+      actorUserId: CAMILLE,
+      taskKey: 'CAD-483',
+    });
+
+    expect(view).toMatchObject({ key: 'CAD-483', parentKey: null, listId: SPRINT_14 });
+    expect(tasks.stored(CAD_483).parentId).toBe(CAD_482);
+  });
+
+  it('keeps the parent of an archived subtask in the list of its parent', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [
+        taskState({ archive: archiveFrom(CAD_482), version: 13 }),
+        subtaskState({ archive: archiveFrom(CAD_482), version: 2 }),
+      ],
+    });
+    const useCase = new GetTask(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
+
+    const view = await useCase.execute({
+      organizationId: ATELIER_NORD,
+      actorUserId: CAMILLE,
+      taskKey: 'CAD-483',
+    });
+
+    expect(view.parentKey).toBe('CAD-482');
   });
 });

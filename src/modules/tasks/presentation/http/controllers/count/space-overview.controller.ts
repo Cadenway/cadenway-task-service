@@ -60,7 +60,8 @@ export class SpaceOverviewController {
    *
    * @description
    * `GET /internal/v1/spaces/{spaceId}/overview`: `200` with the number of lists and of top-level
-   * tasks of the space, and one page of its lists in order of creation with their counters.
+   * tasks of the space, and one page of its lists in the order of the sidebar (by restoration from
+   * the archives, else creation) with their counters.
    *
    * @param {SpaceOverviewPath} path - The id of the space.
    * @param {SpaceOverviewQuery} query - The date of the caller, the cursor and the page size.

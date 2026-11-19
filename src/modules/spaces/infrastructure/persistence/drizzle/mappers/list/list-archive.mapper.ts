@@ -38,8 +38,9 @@ export function archivedListCondition(): SQL {
  *
  * @description
  * The condition that keeps the archived lists after a page position in the order
- * `(archived_at desc, id desc)`: a row-value comparison, which a backward walk of
- * `lists_organization_archived_index` serves. The position travels as an ISO instant and a text
+ * `(archived_at desc, id desc)`: a row-value comparison on the columns of
+ * `lists_organization_archived_index`, whose bitmap scan reads the archived lists, which the query
+ * then sorts. The position travels as an ISO instant and a text
  * id, cast to the column types; `archived_at` has millisecond precision, so the instant of a row
  * round-trips exactly through a JavaScript `Date`.
  *

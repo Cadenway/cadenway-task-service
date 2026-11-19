@@ -2,10 +2,11 @@
  * Interface TransactionClock
  *
  * @description
- * The instant of the current transaction (`now()` of PostgreSQL, rounded to the millisecond as the
- * `timestamptz(3)` columns store it), so that the instant an archive or a restoration stores
- * (`archived_at`, `restored_at`) is the instant of its transaction, the one its event carries as
- * `occurredAt`. The application never reads the system clock.
+ * The instant of the current transaction (`now()` of PostgreSQL, truncated to the millisecond as
+ * the outbox stamps `occurredAt`, a value the `timestamptz(3)` columns store unchanged), so that
+ * the instant an archive or a restoration stores (`archived_at`, `restored_at`) is the instant of
+ * its transaction, the one its event carries as `occurredAt`. The application never reads the
+ * system clock.
  */
 export interface TransactionClock {
   // #region Methods

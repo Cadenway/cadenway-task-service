@@ -436,6 +436,21 @@ export class Task {
   public get snapshot(): TaskState {
     return this.state;
   }
+
+  /**
+   * Property isLive
+   *
+   * @description
+   * Whether the task is live, in no archive ("An archived task is left out of every collection
+   * and count", "Tasks" of `openapi/public/archives.yaml`): the application decides on it, not on
+   * the stored archive.
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  public get isLive(): boolean {
+    return this.state.archive === null;
+  }
   // #endregion
 
   // #region Constructor
@@ -971,7 +986,7 @@ export class Task {
    * @throws {TaskArchivedError} With the key of the task, when it is archived.
    */
   public requireChangeable(): void {
-    if (this.state.archive !== null) {
+    if (!this.isLive) {
       throw new TaskArchivedError(this.state.key.format());
     }
   }

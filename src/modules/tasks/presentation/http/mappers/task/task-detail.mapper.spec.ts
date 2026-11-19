@@ -74,6 +74,7 @@ const DETAIL: TaskDetailView = {
     color: 'gris',
     sprint: { startDate: '2026-11-03', endDate: '2026-11-17', goal: null },
     createdAt: new Date('2026-11-02T08:00:00.000Z'),
+    position: new Date('2026-11-02T08:00:00.000Z'),
     version: 1,
     organizationAccess: true,
     archivedAt: null,

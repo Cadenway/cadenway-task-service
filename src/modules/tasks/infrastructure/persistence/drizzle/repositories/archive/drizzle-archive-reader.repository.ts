@@ -11,6 +11,7 @@ import {
   liveRootCountsStatement,
 } from '../../mappers/archive/archive-statements.mapper.js';
 import type { RawArchivedRootRow } from '../../mappers/archive/raw-archived-root-row.mapper.js';
+import { toTaskSummaryRow } from '../../mappers/query/task-page-row.mapper.js';
 import type { TaskSummaryRow } from '../../mappers/task/task-summary.mapper.js';
 import { toActorType } from '../../mappers/task/task-values.mapper.js';
 import { DrizzleTaskCollections } from '../task/task-collections.repository.js';
@@ -96,24 +97,7 @@ export class DrizzleArchiveReader implements ArchiveReader {
       archivedRootsPageStatement(organizationId, listIds, after, limit),
     );
     const rows: readonly TaskSummaryRow[] = result.rows.map(
-      (raw: RawArchivedRootRow): TaskSummaryRow => ({
-        id: raw.id,
-        keyPrefix: raw.keyPrefix,
-        keyNumber: raw.keyNumber,
-        name: raw.name,
-        status: raw.status,
-        cancelReason: raw.cancelReason,
-        priority: raw.priority,
-        dueDate: raw.dueDate,
-        startDate: raw.startDate,
-        estimateMinutes: raw.estimateMinutes,
-        completedAt: raw.completedAt === null ? null : new Date(raw.completedAt),
-        createdAt: new Date(raw.createdAt),
-        listId: raw.listId,
-        spaceId: raw.spaceId,
-        parentId: raw.parentId,
-        version: raw.version,
-      }),
+      (raw: RawArchivedRootRow): TaskSummaryRow => toTaskSummaryRow(raw),
     );
     const summaries: readonly TaskSummaryView[] = await this.collections.summarize(
       organizationId,

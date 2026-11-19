@@ -1072,6 +1072,20 @@ describe('Task.unarchive: a restoration brings every member back', () => {
   });
 });
 
+describe('Task.isLive: a task is live while it is in no archive', () => {
+  it('is live without an archive and not live in one', () => {
+    expect(cad482().isLive).toBe(true);
+    expect(cad482({ archive: archiveFrom(CAD_482) }).isLive).toBe(false);
+  });
+
+  it('follows the archive and the restoration', () => {
+    const archived: Task = cad482().archive(CAD_482, HUGO_ACTOR, NOW);
+
+    expect(archived.isLive).toBe(false);
+    expect(archived.unarchive(NOW, false).isLive).toBe(true);
+  });
+});
+
 describe('Task.requireChangeable: an archived task refuses every change until it is restored', () => {
   const archived = (): Task => cad482({ archive: archiveFrom(CAD_482) });
 

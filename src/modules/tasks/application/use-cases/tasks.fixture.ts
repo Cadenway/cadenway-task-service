@@ -22,6 +22,7 @@ import type { ActivityKind } from '../../domain/value-objects/activity/activity-
 import type { MemberRole } from '../../domain/value-objects/member/member-role.value-object.js';
 import type { Viewer } from '../../domain/value-objects/member/viewer.value-object.js';
 import { isLate } from '../../domain/policies/task/lateness.policy.js';
+import { showsParent } from '../../domain/policies/subtask/subtask-tree.policy.js';
 import type { SubtreeShape } from '../../domain/value-objects/subtask/subtree-shape.value-object.js';
 import type { ChecklistItemDraft } from '../../domain/value-objects/task/checklist-item-draft.value-object.js';
 import type { ChecklistItemState } from '../../domain/value-objects/task/checklist-item-state.value-object.js';
@@ -55,6 +56,7 @@ import type { AccessRole } from '../../domain/value-objects/access/access-role.v
 import type { PlacedList } from '../models/placement/placed-list.model.js';
 import type { PlacedSpace } from '../models/placement/placed-space.model.js';
 import { TaskRefusal } from '../models/task/task-refusal.model.js';
+import type { TaskStanding } from '../models/task/task-standing.model.js';
 import type { TaskRefusalReason } from '../models/task/task-refusal-reason.model.js';
 import type { ReadOptions } from '../models/transactions/read-options.model.js';
 import type { TasksStore } from '../models/transactions/tasks-store.model.js';
@@ -74,7 +76,7 @@ import type { HomeStatsView } from '../projections/user/home-stats.projection.js
 import type { MyTaskCountsView } from '../projections/user/my-task-counts.projection.js';
 import type { SubtaskCounts } from '../projections/task/subtask-counts.projection.js';
 import type { TaskLocation } from '../projections/task/task-location.projection.js';
-import type { TaskReferenceView } from '../projections/task/task-reference.projection.js';
+import type { TaskReferenceInListView } from '../projections/task/task-reference-in-list.projection.js';
 import type { TaskSummaryView } from '../projections/task/task-summary.projection.js';
 
 export {
@@ -195,12 +197,14 @@ export function placedSpace(overrides: Partial<PlacedSpace> = {}): PlacedSpace {
 }
 
 /**
- * Builds the list "Sprint 14" of the space "Produit".
+ * Builds the list "Sprint 14" of the space "Produit", placed in its space by its creation (never
+ * restored) unless the overrides give it a position.
  *
  * @param overrides - Fields to replace.
  * @returns The list.
  */
 export function placedList(overrides: Partial<PlacedList> = {}): PlacedList {
+  const createdAt: Date = overrides.createdAt ?? new Date('2026-10-26T09:00:00Z');
   return {
     id: SPRINT_14,
     spaceId: PRODUIT,
@@ -208,7 +212,8 @@ export function placedList(overrides: Partial<PlacedList> = {}): PlacedList {
     icon: null,
     color: 'bleu',
     sprint: { startDate: '2026-11-02', endDate: '2026-11-15', goal: 'Livrer le SSO' },
-    createdAt: new Date('2026-10-26T09:00:00Z'),
+    createdAt,
+    position: createdAt,
     version: 1,
     organizationAccess: true,
     archivedAt: null,
@@ -357,8 +362,9 @@ const MAX_VISIBLE_LISTS: number = 100;
  * those of their private space: the rules before grants. As the spaces module, it leaves archived
  * lists out of the lists of a space, the current sprints and the sidebar, keeps them in
  * `findVisibleList`, `visibleListIds` and `findVisibleLists`, and orders the lists of a space by
- * their restoration, else their creation. A restoration of a list (`restoreArchivedList`) changes
- * the fake at once and does not roll back with a unit of work, like the key counter.
+ * their position (`(coalesce(restored_at, created_at), id)`): a restoration of a list
+ * (`restoreArchivedList`) moves it to the end of its space. It changes the fake at once and does
+ * not roll back with a unit of work, like the key counter.
  */
 export class InMemorySpaceDirectory implements SpaceDirectory {
   // #region Properties
@@ -390,11 +396,8 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
   /** The `restoreArchivedList` calls, as list ids, the lists restored included. */
   public readonly restoreCalls: string[] = [];
 
-  /** The lists by id; a restoration replaces its list. */
+  /** The lists by id; a restoration replaces its list, at the position of its restoration. */
   private readonly lists: Map<string, PlacedList>;
-
-  /** When each restored list was restored, which puts it at the end of its space. */
-  private readonly restoredAt: Map<string, Date> = new Map<string, Date>();
 
   /** The instant a restoration takes. */
   private readonly now: Date;
@@ -515,8 +518,8 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
    * Method findVisibleSpaceLists
    *
    * @description
-   * Lists the lists of a space of Atelier Nord the viewer sees that they have a role on, with that
-   * role, in the order of their creation.
+   * Lists the live lists of a space of Atelier Nord the viewer sees that they have a role on, with
+   * that role, in the order of the sidebar (position, then id).
    *
    * @param {string} organizationId - The organization.
    * @param {Viewer} viewer - The acting member.
@@ -642,7 +645,8 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
    * Restores an archived list the viewer has `edit` on, as the spaces module does: `not-found`
    * without a role, `role-insufficient` without `edit`, `not-archived` for a live list; a
    * restored list takes the next version and goes to the end of its space, and the trace records
-   * `spaces.listUnarchived`, the event the spaces module appends.
+   * `spaces.listUnarchived`, the event the spaces module appends. A live list is still looked up
+   * (the spaces module locks it) and answers `not-archived`.
    *
    * @param {string} organizationId - The organization.
    * @param {Viewer} viewer - The acting member.
@@ -673,8 +677,8 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
       archivedAt: null,
       archivedBy: null,
       version: list.version + 1,
+      position: this.now,
     });
-    this.restoredAt.set(listId, this.now);
     this.trace.push('spaces.listUnarchived');
     return Promise.resolve({ outcome: 'restored' });
   }
@@ -791,8 +795,8 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
    * Method placedListsOf
    *
    * @description
-   * Lists the lists of a space the viewer has a role on, by restoration, else creation, each with
-   * that role.
+   * Lists the lists of a space the viewer has a role on, by position (restoration, else creation)
+   * then id, each with that role.
    *
    * @param {Viewer} viewer - The acting member.
    * @param {PlacedSpace} space - The space.
@@ -803,9 +807,7 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
       .filter((list: PlacedList): boolean => list.spaceId === space.id)
       .sort(
         (left: PlacedList, right: PlacedList): number =>
-          (this.restoredAt.get(left.id) ?? left.createdAt).getTime() -
-            (this.restoredAt.get(right.id) ?? right.createdAt).getTime() ||
-          compareText(left.id, right.id),
+          left.position.getTime() - right.position.getTime() || compareText(left.id, right.id),
       )
       .flatMap((list: PlacedList): PlacedList[] => {
         const placed: PlacedList | null = this.placed(viewer, list);
@@ -1045,9 +1047,14 @@ export interface InMemoryTasksSeed {
  *
  * @param state - The task.
  * @param subtaskCounts - Its direct subtasks.
+ * @param parentKey - The key of the parent it reads with; its stored parent's when left out.
  * @returns The summary.
  */
-export function summaryOf(state: TaskState, subtaskCounts: SubtaskCounts): TaskSummaryView {
+export function summaryOf(
+  state: TaskState,
+  subtaskCounts: SubtaskCounts,
+  parentKey: string | null = state.parentKey === null ? null : state.parentKey.format(),
+): TaskSummaryView {
   return {
     id: state.id,
     key: state.key.format(),
@@ -1060,7 +1067,7 @@ export function summaryOf(state: TaskState, subtaskCounts: SubtaskCounts): TaskS
     startDate: state.startDate,
     estimateMinutes: state.estimateMinutes,
     labels: state.labels,
-    parentKey: state.parentKey === null ? null : state.parentKey.format(),
+    parentKey,
     listId: state.listId,
     spaceId: state.spaceId,
     subtaskCounts,
@@ -1714,7 +1721,10 @@ export class InMemoryTaskReads
  * organization as the repositories do, records the order of the locks and keeps the transaction
  * instant fixed. It applies the conditions of the statements: the live tasks only in every
  * collection and count, the subtasks of a task those of its archive, the live subtree and child
- * count of a write, and the version guard of the bulk write of an archive.
+ * count of a write, the parent a task reads with (none when the parent is in another list,
+ * `showsParent`, in the summaries and the references), the locks without checklists (the members
+ * of an archive, `lockByIds` without them) and the bulk write of an archive, guarded by the
+ * versions, which keeps the stored checklists.
  */
 export class InMemoryTasks implements TasksUnitOfWork {
   // #region Properties
@@ -1916,6 +1926,17 @@ export class InMemoryTasks implements TasksUnitOfWork {
       childrenOf(organizationId, parentId).filter(
         (row: TaskState): boolean => row.archive === null,
       );
+    // The parent a task reads with: none when its parent is in another list (`showsParent`), as
+    // the summaries, the views and the detail read it from the list of the parent row.
+    const parentKeyShown = (state: TaskState): string | null => {
+      const parent: TaskState | undefined =
+        state.parentId === null ? undefined : tasks.get(state.parentId);
+      return state.parentKey === null ||
+        parent === undefined ||
+        !showsParent(state.listId, parent.listId)
+        ? null
+        : state.parentKey.format();
+    };
     const countsOf = (organizationId: string, taskId: string): SubtaskCounts => {
       const children: TaskState[] = childrenOf(organizationId, taskId);
       return {
@@ -1983,7 +2004,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
     const reads = new InMemoryTaskReads(
       (): readonly TaskState[] => [...tasks.values()],
       (state: TaskState): TaskSummaryView =>
-        summaryOf(state, countsOf(state.organizationId, state.id)),
+        summaryOf(state, countsOf(state.organizationId, state.id), parentKeyShown(state)),
       this.reads,
       this.trace,
     );
@@ -2010,7 +2031,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
                 ? []
                 : [
                     {
-                      task: summaryOf(row, countsOf(organizationId, row.id)),
+                      task: summaryOf(row, countsOf(organizationId, row.id), parentKeyShown(row)),
                       archivedAt: row.archive.at,
                       archivedBy: row.archive.by,
                     },
@@ -2060,13 +2081,28 @@ export class InMemoryTasks implements TasksUnitOfWork {
           );
           return Promise.resolve(state === undefined ? null : Task.restore(state));
         },
-        lockByIds: (organizationId: string, ids: readonly string[]): Promise<readonly Task[]> => {
+        lockByIds: (
+          organizationId: string,
+          ids: readonly string[],
+          withChecklists: boolean = true,
+        ): Promise<readonly Task[]> => {
           this.trace.push('tasks.lockByIds');
           return Promise.resolve(
             inOrganization(organizationId)
               .filter((row: TaskState): boolean => ids.includes(row.id))
               .sort((left: TaskState, right: TaskState): number => left.id.localeCompare(right.id))
-              .map((row: TaskState): Task => Task.restore(row)),
+              .map((row: TaskState): Task =>
+                Task.restore(withChecklists ? row : { ...row, checklist: [] }),
+              ),
+          );
+        },
+        lockStanding: (organizationId: string, taskId: string): Promise<TaskStanding | null> => {
+          this.trace.push('tasks.lockStanding');
+          const row: TaskState | undefined = inOrganization(organizationId).find(
+            (candidate: TaskState): boolean => candidate.id === taskId,
+          );
+          return Promise.resolve(
+            row === undefined ? null : { live: row.archive === null, listId: row.listId },
           );
         },
         insert: (draft: TaskDraft, key: TaskKey): Promise<Task> => {
@@ -2136,18 +2172,29 @@ export class InMemoryTasks implements TasksUnitOfWork {
             inOrganization(organizationId)
               .filter((row: TaskState): boolean => row.archive?.rootId === rootId)
               .sort((left: TaskState, right: TaskState): number => left.id.localeCompare(right.id))
-              .map((row: TaskState): Task => Task.restore(row)),
+              // The members are locked without their checklists, as the statement loads them.
+              .map((row: TaskState): Task => Task.restore({ ...row, checklist: [] })),
           );
         },
-        writeArchives: (_organizationId: string, updated: readonly Task[]): Promise<void> => {
+        writeArchives: (
+          _organizationId: string,
+          rootId: string,
+          updated: readonly Task[],
+        ): Promise<void> => {
           this.trace.push('tasks.writeArchives');
           for (const task of updated) {
             if (tasks.get(task.snapshot.id)?.version !== task.snapshot.version - 1) {
-              return Promise.reject(new Error('A task changed since it was locked.'));
+              return Promise.reject(
+                new Error(`A task of the archive of ${rootId} changed since it was locked.`),
+              );
             }
           }
           for (const task of updated) {
-            tasks.set(task.snapshot.id, task.snapshot);
+            // The statement writes neither the checklist nor the collections, which the rows keep.
+            tasks.set(task.snapshot.id, {
+              ...task.snapshot,
+              checklist: tasks.get(task.snapshot.id)?.checklist ?? [],
+            });
           }
           return Promise.resolve();
         },
@@ -2214,7 +2261,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
               )
               .slice(0, limit)
               .map((row: TaskState): TaskSummaryView =>
-                summaryOf(row, countsOf(organizationId, row.id)),
+                summaryOf(row, countsOf(organizationId, row.id), parentKeyShown(row)),
               ),
           ),
         countChildren: (organizationId: string, parentId: string): Promise<number> =>
@@ -2222,14 +2269,14 @@ export class InMemoryTasks implements TasksUnitOfWork {
         references: (
           organizationId: string,
           taskIds: readonly string[],
-        ): Promise<ReadonlyMap<string, TaskReferenceView>> =>
+        ): Promise<ReadonlyMap<string, TaskReferenceInListView>> =>
           Promise.resolve(
             new Map(
               inOrganization(organizationId)
                 .filter((row: TaskState): boolean => taskIds.includes(row.id))
-                .map((row: TaskState): [string, TaskReferenceView] => [
+                .map((row: TaskState): [string, TaskReferenceInListView] => [
                   row.id,
-                  { key: row.key.format(), name: row.name, status: row.status },
+                  { key: row.key.format(), name: row.name, status: row.status, listId: row.listId },
                 ]),
             ),
           ),

@@ -58,8 +58,10 @@ copy of the memberships.
   `none-left` or `member-again`.
 - `AllocateTaskKeys` (`{ organizationId, spaceId, count }`, `count` 1 to 26): the prefix and the
   first of `count` consecutive task numbers.
-- Every `VisibleList` carries `organizationAccess`, `callerRole`, `archivedAt` (`Date | null`) and
-  `archivedBy` (`{ type, id } | null`).
+- Every `VisibleList` carries `organizationAccess`, `callerRole`, `archivedAt` (`Date | null`),
+  `archivedBy` (`{ type, id } | null`) and `position` (`Date`, `positionInSpaceOf`: its last
+  restoration, else its creation), the key of the order of its space with its id for a caller that
+  pages the lists of a space; `position` is not a member of `TaskList` and never leaves the service.
 - `FindVisibleList` (`{ organizationId, viewerUserId, viewerRole, listId }`): `{ list, space }`
   (`VisibleList`, `VisibleSpace` with statuses, prefix, `nextKey`, `callerRole` and
   `callerCanManage`), archived lists included, or `null` when the list is unknown or the viewer has
@@ -112,7 +114,12 @@ copy of the memberships.
 
 Created by `migrations/0002_spaces_and_lists.sql`, `migrations/0005_access_grants.sql`
 (`lists.organization_access` and the two grant tables), which force the policies by hand, and
-`migrations/0006_archives.sql` (the archive columns of `lists`).
+`migrations/0006_archives.sql` (the archive columns of `lists`). Deploying `0006_archives.sql`
+holds ACCESS EXCLUSIVE on `lists` from its first `ALTER TABLE` until the migrator commits, and
+scans `lists` under it for its three CHECKs and the build of its partial index: the reads and
+writes of lists of the running version wait meanwhile, and fail after the 5 s `lock_timeout` of
+the application role. The measured cost, the timeouts and the rollback are in the tasks
+`MODULE.md`, since the same transaction takes that lock on `tasks` too.
 
 - `spaces.id` and `lists.id` come from `uuidv7()`; every `created_at` is `timestamptz(3)`, so that
   the position of a page round-trips exactly through the cursor. `statuses` is a `jsonb` of the ten
@@ -137,8 +144,9 @@ Created by `migrations/0002_spaces_and_lists.sql`, `migrations/0005_access_grant
 owner_user_id)` for the handover, `lists (organization_id, space_id, created_at, id)` for the
   lists of a space (sorted by `coalesce(restored_at, created_at)` after the read: no index orders
   that expression, a space holds few lists), the partial `lists_organization_archived_index
-(organization_id, archived_at, id) where archived_at is not null` for the archives, walked
-  backwards; `space_grants_user_index (organization_id, user_id, space_id)` and
+(organization_id, archived_at, id) where archived_at is not null` for the archives (a bitmap scan of
+  the archived lists of the organization, then a sort; plans in Decisions);
+  `space_grants_user_index (organization_id, user_id, space_id)` and
   `list_grants_user_index (organization_id, user_id, space_id, list_id)` for the grants of one
   person (the visibility conditions, the clean-up of a member who left); the primary keys of the
   grant tables serve the grants of one space or list and the grant of one person there. Plans of
@@ -300,8 +308,9 @@ Locks are always taken in this order: memberships `FOR SHARE`, then spaces, then
   given access `FOR SHARE` after the actor's, so that the clean-up of a removal sees the grant.
   `RestoreArchivedList` reads no membership and locks the list `FOR NO KEY UPDATE` after the tasks
   its caller locked.
-- An archive and a restoration store the instant of their transaction (`TransactionClock`,
-  `now()::timestamptz(3)`, read once per run), never the system clock.
+- An archive and a restoration store the instant of their transaction (`TransactionClock`: `now()`
+  truncated to the millisecond, as the outbox stamps `occurredAt`, read once per run), never the
+  system clock.
 - A change of the grants of a list (its routes, `GrantRequestedAccess`) reads the list, locks its
   space `FOR SHARE` (its owner, whom no grant may name, cannot change meanwhile), then the list
   `FOR NO KEY UPDATE`. `GrantRequestedAccess` checks on these locked rows, with the role of the
@@ -380,9 +389,19 @@ list_grants` by `list_grants_user_index`, which `list_grants.space_id` makes pos
   which a later archive keeps; the domain refuses an archive stored by halves. The tasks module
   serves the pages of the archives (they need task counts, and spaces never depends on tasks)
   through `ListArchivedLists` and `FindVisibleLists`, and restores the list of a restored task
-  through `RestoreArchivedList`, whose refusals are outcomes so that the caller answers them. The
-  plans of the archive statements are not measured yet: the integration specs of the archives add
-  them.
+  through `RestoreArchivedList`, whose refusals, those of the one guard of the writes of a list
+  (`EditableListLocator`, also behind `PATCH`, `archive` and `unarchive`), are outcomes so that the
+  caller answers them. A page of the archived lists and its total read
+  `lists_organization_archived_index` by a bitmap scan, then sort the archived lists the viewer
+  sees: not a walk stopped at the limit, O(archived lists of the organization). Plans of
+  `tests/archive-queries.int-spec.ts` (4,004 lists, 60 of them archived), the page and the total:
+  16 buffers, 0.3 ms for Camille; 107 buffers, 0.4 to 0.5 ms for a member with a role on 1,392
+  lists; `FindVisibleLists` reads its lists by `lists_pkey`, 19 buffers.
+- The trail of an archive of a list: while it is archived, `archived_at` and `archived_by_*` say
+  when and by whom; a restoration clears them and keeps only `restored_at` (when, not who). The
+  events `list.archived.v1` and `list.unarchived.v1` name the actor, and are kept 7 days (the sent
+  rows of the outbox and the stream `EVENTS`). Open point: a durable trail of who archived and
+  restored a list.
 - Lists live in this module (a space is created with its first list), and the tasks module depends
   on spaces through the public entries above, never the reverse; access-requests and
   member-lifecycle likewise.

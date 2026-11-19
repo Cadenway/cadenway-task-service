@@ -4,6 +4,8 @@ import { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
 import type { TaskArchive } from '../../../../../domain/value-objects/task/task-archive.value-object.js';
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import type { TaskState } from '../../../../../domain/value-objects/task/task-state.value-object.js';
+import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
+import type { ListPlacement } from '../../../../models/placement/list-placement.model.js';
 import type { ListRestoration } from '../../../../models/placement/list-restoration.model.js';
 import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
@@ -180,7 +182,7 @@ describe('UnarchiveTask: a restoration brings the whole archive back, from its r
     expect(tasks.activity.size).toBe(0);
   });
 
-  it('locks the members in one statement, without a lock on the task first, and writes them in one', async () => {
+  it('locks the members in one statement, without a lock on the task first, writes them in one and reads the root again', async () => {
     const { tasks, useCase } = atelierNord();
 
     await useCase.execute(unarchive({ taskKey: 'CAD-483' }));
@@ -190,7 +192,20 @@ describe('UnarchiveTask: a restoration brings the whole archive back, from its r
       'tasks.findByKey:read',
       'tasks.lockArchive',
       'tasks.writeArchives',
+      'tasks.findByKey:read',
     ]);
+  });
+
+  it('answers the root with its checklist, which the lock of the members does not load', async () => {
+    const { tasks, useCase } = atelierNord();
+
+    const view = await useCase.execute(unarchive({ taskKey: 'CAD-484' }));
+
+    expect(view.checklist.map((item) => item.id)).toEqual(
+      taskState().checklist.map((item) => item.id),
+    );
+    expect(view.checklistCounts.total).toBe(taskState().checklist.length);
+    expect(tasks.stored(CAD_482).checklist).toEqual(taskState().checklist);
   });
 
   it('leaves an older archive of a subtask archived', async () => {
@@ -259,7 +274,7 @@ describe('UnarchiveTask: the parent of the root takes it back, or the root is de
     expect((await useCase.execute(unarchive({ taskKey: 'CAD-483' }))).parentKey).toBe('CAD-482');
   });
 
-  it('locks the parent after the members', async () => {
+  it('locks the parent after the members, reading only its archive and its list', async () => {
     const { tasks, useCase } = atelierNord(archivedSubtree());
 
     await useCase.execute(unarchive({ taskKey: 'CAD-483' }));
@@ -267,7 +282,8 @@ describe('UnarchiveTask: the parent of the root takes it back, or the root is de
     const calls: string[] = tasks.trace.filter((call: string): boolean =>
       call.startsWith('tasks.'),
     );
-    expect(calls.indexOf('tasks.lockArchive')).toBeLessThan(calls.indexOf('tasks.lockByIds'));
+    expect(calls.indexOf('tasks.lockArchive')).toBeLessThan(calls.indexOf('tasks.lockStanding'));
+    expect(calls).not.toContain('tasks.lockByIds');
   });
 });
 
@@ -290,12 +306,60 @@ describe('UnarchiveTask: an archived list comes back with its task', () => {
     expect(unlisted).toBeLessThan(tasks.trace.indexOf('events.unarchived'));
   });
 
-  it('does not call the spaces module for a live list', async () => {
-    const { directory, useCase } = atelierNord();
+  it('hands a live list to the spaces module too, which decides on the locked list and restores nothing', async () => {
+    const { tasks, directory, useCase } = atelierNord();
 
     await useCase.execute(unarchive());
 
-    expect(directory.restoreCalls).toEqual([]);
+    expect(directory.restoreCalls).toEqual([SPRINT_14]);
+    expect(directory.stateOf(SPRINT_14)).toMatchObject({ archivedAt: null, version: 1 });
+    expect(tasks.trace).not.toContain('spaces.listUnarchived');
+    expect(tasks.trace.indexOf('spaces.restoreArchivedList')).toBeGreaterThan(
+      tasks.trace.indexOf('tasks.lockStanding'),
+    );
+  });
+
+  it('restores a list archived after the task was located, the spaces module reading it locked', async () => {
+    /** Spaces that answer the list as it was read before another transaction archived it. */
+    class StaleSpaces extends InMemorySpaceDirectory {
+      // #region Methods
+      /**
+       * Finds the list, live as it was read before its archive.
+       *
+       * @param organizationId - The organization.
+       * @param viewer - The acting member.
+       * @param listId - The list.
+       * @returns The list and its space, the list without its archive.
+       */
+      public override async findVisibleList(
+        organizationId: string,
+        viewer: Viewer,
+        listId: string,
+      ): Promise<ListPlacement | null> {
+        const placement: ListPlacement | null = await super.findVisibleList(
+          organizationId,
+          viewer,
+          listId,
+        );
+        return placement === null
+          ? null
+          : { ...placement, list: { ...placement.list, archivedAt: null, archivedBy: null } };
+      }
+      // #endregion
+    }
+    const { tasks, directory, useCase } = atelierNord(
+      archivedTree(),
+      (trace: string[]) =>
+        new StaleSpaces({
+          lists: atelierNordLists({ archivedAt: ARCHIVED_AT, archivedBy: HUGO_ACTOR }),
+          trace,
+        }),
+    );
+
+    await useCase.execute(unarchive());
+
+    expect(directory.stateOf(SPRINT_14)).toMatchObject({ archivedAt: null, version: 2 });
+    expect(tasks.trace).toContain('spaces.listUnarchived');
   });
 
   it('answers the refusal of the spaces module and restores nothing', async () => {
@@ -382,6 +446,72 @@ describe('UnarchiveTask: a task that is not archived answers as it is', () => {
 
     expect(view).toMatchObject({ key: 'CAD-482', version: 12, archivedAt: null });
     expect(tasks.trace).not.toContain('tasks.writeArchives');
+  });
+});
+
+describe('UnarchiveTask: an archive restored, moved and archived again meanwhile is located again', () => {
+  /**
+   * A unit of work whose first read of the task by key answers it as it was before its archive was
+   * restored, moved to "Bugs" and archived again: in "Bugs", while its members are in "Sprint 14".
+   *
+   * @param tasks - The fake store.
+   * @returns The unit of work.
+   */
+  function movedMeanwhile(tasks: InMemoryTasks): TasksUnitOfWork {
+    let stale: boolean = true;
+    return {
+      run: <TResult>(work: (store: TasksStore) => Promise<TResult>): Promise<TResult> =>
+        tasks.run((store: TasksStore): Promise<TResult> =>
+          work({
+            ...store,
+            tasks: {
+              ...store.tasks,
+              findByKey: (organizationId: string, key: TaskKey, lock: boolean) => {
+                if (stale) {
+                  stale = false;
+                  return Promise.resolve(
+                    Task.restore(taskState({ archive: FROM_482, version: 13, listId: BUGS })),
+                  );
+                }
+                return store.tasks.findByKey(organizationId, key, lock);
+              },
+            },
+          }),
+        ),
+      runReadOnly: <TResult>(work: (store: TasksStore) => Promise<TResult>): Promise<TResult> =>
+        tasks.runReadOnly(work),
+    };
+  }
+
+  it('reads the task again and checks its list as it is now, then restores the archive', async () => {
+    const { tasks, directory } = atelierNord();
+
+    const view = await new UnarchiveTask(
+      movedMeanwhile(tasks),
+      atelierNordMembers(),
+      directory,
+    ).execute(unarchive());
+
+    expect(directory.findCalls).toEqual([BUGS, SPRINT_14]);
+    expect(view).toMatchObject({ key: 'CAD-482', version: 14, archivedAt: null });
+    expect(tasks.stored(CAD_484)).toMatchObject({ archive: null, version: 3 });
+  });
+
+  it('refuses on the list the archive is in now, before If-Match, and restores nothing', async () => {
+    const trace: string[] = [];
+    const tasks = new InMemoryTasks({ tasks: archivedTree(), trace });
+
+    expect(
+      await refusalOf(
+        new UnarchiveTask(
+          movedMeanwhile(tasks),
+          atelierNordMembers(),
+          sprint14SharedWith({ [HUGO]: 'view' }, trace),
+        ).execute(unarchive({ actorUserId: HUGO, expectedVersions: [1] })),
+      ),
+    ).toEqual({ reason: 'role-insufficient', role: 'view' });
+    expect(tasks.stored(CAD_482).archive).toEqual(FROM_482);
+    expect(tasks.events).toEqual([]);
   });
 });
 
