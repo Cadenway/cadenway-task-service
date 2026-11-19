@@ -280,10 +280,14 @@ function checkStoredSprint(sprint: Sprint | null): void {
  * - its name, icon and color follow `ListCreation` and `ListPatch`;
  * - a sprint has a first day, a last day on or after it, and an optional goal of 300 characters
  *   at most; its state follows from its dates, with no start or completion;
- * - who creates and changes it is whoever sees its space, which the application checks first
- *   ("Who sees a list" of `openapi/public/lists.yaml`): there is no role rule beyond the space;
- * - each change that changes something takes the next version; one that changes nothing keeps the
- *   same instance, so no `list.updated.v1` is emitted.
+ * - whoever has `edit` on its space creates it, whoever has `edit` on it changes it, which the
+ *   application checks first with `access-role.policy.ts` ("Who sees a list" of
+ *   `openapi/public/lists.yaml`, decision 2 of P3b-1);
+ * - its switch "Accès de l’organisation" (`organizationAccess`) is on unless the creation or a
+ *   change turns it off; a change of the switch is a change of access, apart from the content;
+ * - each change that changes something takes the next version, and a change of its grants too
+ *   (`recordAccessChange`); one that changes nothing keeps the same instance, so nothing is
+ *   emitted.
  *
  * The name of the first list of a new space is chosen by the application, not by this class.
  */
@@ -351,6 +355,7 @@ export class TaskList {
       icon: checkIcon(input.icon),
       color: checkColor(input.color),
       sprint: input.sprint === null ? null : normalizeSprint(input.sprint, null),
+      organizationAccess: input.organizationAccess,
     };
   }
 
@@ -402,6 +407,8 @@ export class TaskList {
     const icon: LookIcon | null = patch.icon === undefined ? current.icon : checkIcon(patch.icon);
     const color: LookColor = patch.color === undefined ? current.color : checkColor(patch.color);
     const sprint: Sprint | null = patchSprint(current.sprint, patch.sprint);
+    const organizationAccess: boolean = patch.organizationAccess ?? current.organizationAccess;
+    const accessChanged: boolean = organizationAccess !== current.organizationAccess;
 
     const changed: TaskListField[] = [];
     if (name !== current.name) {
@@ -417,8 +424,8 @@ export class TaskList {
     if (sprintChanged) {
       changed.push('sprint');
     }
-    if (changed.length === 0) {
-      return { list: this, changed };
+    if (changed.length === 0 && !accessChanged) {
+      return { list: this, changed, accessChanged };
     }
     return {
       list: new TaskList({
@@ -427,10 +434,25 @@ export class TaskList {
         icon,
         color,
         sprint: sprintChanged ? sprint : current.sprint,
+        organizationAccess,
         version: current.version + 1,
       }),
       changed,
+      accessChanged,
     };
+  }
+
+  /**
+   * Method recordAccessChange
+   *
+   * @description
+   * Takes the next version for a change of the grants of the list ("Every change adds one to the
+   * version of the space or the list" of `openapi/public/access.yaml`); nothing else changes.
+   *
+   * @returns {TaskList} The list at the next version.
+   */
+  public recordAccessChange(): TaskList {
+    return new TaskList({ ...this.state, version: this.state.version + 1 });
   }
   // #endregion
 }

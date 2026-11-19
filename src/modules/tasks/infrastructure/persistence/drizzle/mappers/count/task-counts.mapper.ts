@@ -31,40 +31,40 @@ export function countsOfListsStatement(
  * Function stateCountsStatement
  *
  * @description
- * The tasks assigned to an account in some spaces, subtasks included, by tab of "Mes tâches".
+ * The tasks assigned to an account in some lists, subtasks included, by tab of "Mes tâches".
  *
  * @param {string} organizationId - The organization of the transaction.
  * @param {string} userId - The account.
- * @param {readonly string[]} spaceIds - The spaces the actor sees.
+ * @param {readonly string[]} listIds - The lists the actor has a role on.
  * @returns {SQL} The statement; one row `{ open, closed }`.
  */
 export function stateCountsStatement(
   organizationId: string,
   userId: string,
-  spaceIds: readonly string[],
+  listIds: readonly string[],
 ): SQL {
-  return sql`select (count(*) filter (where ${isNotClosed()}))::int as "open", (count(*) filter (where ${isClosed()}))::int as "closed" from ${assignedTasksSource()} where ${assignedTasksCondition(organizationId, userId, spaceIds)}`;
+  return sql`select (count(*) filter (where ${isNotClosed()}))::int as "open", (count(*) filter (where ${isClosed()}))::int as "closed" from ${assignedTasksSource()} where ${assignedTasksCondition(organizationId, userId, listIds)}`;
 }
 
 /**
  * Function homeStatsStatement
  *
  * @description
- * The counters of "Accueil" over the tasks assigned to an account in some spaces, subtasks
+ * The counters of "Accueil" over the tasks assigned to an account in some lists, subtasks
  * included: not closed, late (not closed, due strictly before `today`), not closed and due
  * `today`, and `done`.
  *
  * @param {string} organizationId - The organization of the transaction.
  * @param {string} userId - The account.
- * @param {readonly string[]} spaceIds - The spaces the actor sees.
+ * @param {readonly string[]} listIds - The lists the actor has a role on.
  * @param {string} today - The date of the caller, `YYYY-MM-DD`.
  * @returns {SQL} The statement; one row `{ assigned, late, dueToday, done }`.
  */
 export function homeStatsStatement(
   organizationId: string,
   userId: string,
-  spaceIds: readonly string[],
+  listIds: readonly string[],
   today: string,
 ): SQL {
-  return sql`select (count(*) filter (where ${isNotClosed()}))::int as "assigned", (count(*) filter (where ${isLateOn(today)}))::int as "late", (count(*) filter (where ${isNotClosed()} and ${tasks.dueDate} = ${today}::date))::int as "dueToday", (count(*) filter (where ${hasStatus('done')}))::int as "done" from ${assignedTasksSource()} where ${assignedTasksCondition(organizationId, userId, spaceIds)}`;
+  return sql`select (count(*) filter (where ${isNotClosed()}))::int as "assigned", (count(*) filter (where ${isLateOn(today)}))::int as "late", (count(*) filter (where ${isNotClosed()} and ${tasks.dueDate} = ${today}::date))::int as "dueToday", (count(*) filter (where ${hasStatus('done')}))::int as "done" from ${assignedTasksSource()} where ${assignedTasksCondition(organizationId, userId, listIds)}`;
 }

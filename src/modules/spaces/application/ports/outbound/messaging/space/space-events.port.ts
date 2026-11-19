@@ -1,5 +1,6 @@
 import type { TaskList } from '../../../../../domain/aggregates/list/task-list.aggregate.js';
 import type { Space } from '../../../../../domain/aggregates/space/space.aggregate.js';
+import type { GrantEntry } from '../../../../../domain/value-objects/access/grant-entry.value-object.js';
 import type { TaskListField } from '../../../../../domain/value-objects/list/task-list-field.value-object.js';
 import type { SpaceField } from '../../../../../domain/value-objects/space/space-field.value-object.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
@@ -62,5 +63,48 @@ export interface SpaceEvents {
    * @returns {Promise<void>} Resolves once appended.
    */
   listUpdated(list: TaskList, changed: readonly TaskListField[], actor: EventActor): Promise<void>;
+
+  /**
+   * Method spaceAccessChanged
+   *
+   * @description
+   * Appends `space.access-changed.v1`: every grant of the space after the change, in the order
+   * they were first given, the people whose grant changed, and the version of the space.
+   *
+   * @param {Space} space - The space at its version after the change.
+   * @param {readonly GrantEntry[]} grants - Every grant of the space after the change.
+   * @param {readonly string[]} changedUserIds - The people whose grant changed, at least one.
+   * @param {EventActor} actor - Who changed it: a member, or task-service.
+   * @returns {Promise<void>} Resolves once appended.
+   */
+  spaceAccessChanged(
+    space: Space,
+    grants: readonly GrantEntry[],
+    changedUserIds: readonly string[],
+    actor: EventActor,
+  ): Promise<void>;
+
+  /**
+   * Method listAccessChanged
+   *
+   * @description
+   * Appends `list.access-changed.v1`: every grant and the switch "Accès de l’organisation" of the
+   * list after the change, what changed (`grants`, `organizationAccess`), the people whose grant
+   * changed (none when only the switch did), and the version of the list.
+   *
+   * @param {TaskList} list - The list at its version after the change.
+   * @param {readonly GrantEntry[]} grants - Every grant of the list after the change.
+   * @param {readonly ('grants' | 'organizationAccess')[]} changed - What changed, at least one.
+   * @param {readonly string[]} changedUserIds - The people whose grant changed.
+   * @param {EventActor} actor - Who changed it: a member, or task-service.
+   * @returns {Promise<void>} Resolves once appended.
+   */
+  listAccessChanged(
+    list: TaskList,
+    grants: readonly GrantEntry[],
+    changed: readonly ('grants' | 'organizationAccess')[],
+    changedUserIds: readonly string[],
+    actor: EventActor,
+  ): Promise<void>;
   // #endregion
 }

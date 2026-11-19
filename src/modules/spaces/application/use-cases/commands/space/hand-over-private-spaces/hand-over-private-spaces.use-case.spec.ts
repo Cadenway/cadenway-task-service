@@ -17,8 +17,11 @@ import {
   OTHER_ORGANIZATION,
   PRODUIT,
   atelierNordMembers,
+  backlogState,
   designState,
+  listGrantOf,
   marketingState,
+  spaceGrantOf,
   spaceState,
 } from '../../../spaces.fixture.js';
 import { HandOverPrivateSpaces } from './hand-over-private-spaces.use-case.js';
@@ -310,7 +313,7 @@ describe('HandOverPrivateSpaces: while the copy does not hold the owner, the spa
     const visible = await spaces.run((store) =>
       Promise.all(
         [HUGO, CAMILLE, INES].map((userId) =>
-          store.spaces.listVisible(ATELIER_NORD, userId, null, 10),
+          store.spaces.listVisible(ATELIER_NORD, { userId, role: 'member' }, null, 10),
         ),
       ),
     );
@@ -362,5 +365,67 @@ describe('HandOverPrivateSpaces: the copy is read only when there is something t
     await new HandOverPrivateSpaces(spaces, members).execute(input);
 
     expect(members.ownerCalls).toEqual([ATELIER_NORD]);
+  });
+});
+
+describe('HandOverPrivateSpaces: the new owner keeps no grant on the spaces handed over to them', () => {
+  /** A list of the private space "Design". */
+  const MAQUETTES = '019a7100-0000-7000-8000-000000000003';
+
+  it('removes the grants Camille Martin held on Design and its list, with their access events', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [designState()],
+      lists: [backlogState({ id: MAQUETTES, spaceId: DESIGN, name: 'Maquettes', version: 2 })],
+      grants: [
+        spaceGrantOf(DESIGN, CAMILLE, 'view'),
+        spaceGrantOf(DESIGN, INES, 'edit'),
+        listGrantOf(DESIGN, MAQUETTES, CAMILLE, 'edit'),
+      ],
+    });
+
+    const outcome = await new HandOverPrivateSpaces(
+      spaces,
+      atelierNordMembers({ removed: [HUGO] }),
+    ).execute(input);
+
+    expect(outcome).toEqual({ outcome: 'handed-over', handedOver: 1, awaitingOwner: 0 });
+    expect(spaces.grantsOf({ kind: 'space', spaceId: DESIGN })).toEqual([
+      { userId: INES, role: 'edit' },
+    ]);
+    expect(spaces.grantsOf({ kind: 'list', spaceId: DESIGN, listId: MAQUETTES })).toEqual([]);
+    expect(spaces.lists.get(MAQUETTES)?.version).toBe(3);
+    expect(spaces.events).toEqual([
+      expect.objectContaining({ kind: 'spaceUpdated', spaceId: DESIGN, version: 2 }),
+      {
+        kind: 'spaceAccessChanged',
+        spaceId: DESIGN,
+        version: 2,
+        grants: [{ userId: INES, role: 'edit' }],
+        changedUserIds: [CAMILLE],
+        actor: SYSTEM,
+      },
+      {
+        kind: 'listAccessChanged',
+        listId: MAQUETTES,
+        spaceId: DESIGN,
+        version: 3,
+        organizationAccess: true,
+        grants: [],
+        changed: ['grants'],
+        changedUserIds: [CAMILLE],
+        actor: SYSTEM,
+      },
+    ]);
+  });
+
+  it('emits no access event when the new owner held no grant there', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [designState()],
+      grants: [spaceGrantOf(DESIGN, INES, 'edit')],
+    });
+
+    await new HandOverPrivateSpaces(spaces, atelierNordMembers({ removed: [HUGO] })).execute(input);
+
+    expect(spaces.events.map((event) => event.kind)).toEqual(['spaceUpdated']);
   });
 });

@@ -2,6 +2,7 @@ import { fc, test } from '@fast-check/vitest';
 import { describe, expect, it } from 'vitest';
 
 import { InvalidSpaceError } from '../../errors/space/invalid-space.error.js';
+import { canSeeSpace } from '../../policies/access/access-role.policy.js';
 import { SpaceStatusRequiredError } from '../../errors/space/space-status-required.error.js';
 import { SpaceVisibilityForbiddenError } from '../../errors/space/space-visibility-forbidden.error.js';
 import {
@@ -24,6 +25,9 @@ import { DEFAULT_SPACE_STATUSES } from '../../value-objects/status/space-statuse
 import type { SpaceStatuses } from '../../value-objects/status/space-statuses.value-object.js';
 import { STATUS_KEYS } from '../../value-objects/status/status-key.value-object.js';
 import { Space } from './space.aggregate.js';
+
+/** No grant on the space nor on any of its lists: the P3a rule alone. */
+const NO_GRANTS = { space: null, anyList: false } as const;
 
 /**
  * Builds the creation of the space "Produit" as Camille Martin types it.
@@ -591,7 +595,7 @@ describe('Space.update: null puts the default statuses back', () => {
   });
 });
 
-describe('Space.update: only the owner of the space, or the owner or an admin of the organization, changes its visibility', () => {
+describe('Space.update: only a member who manages the space changes its visibility', () => {
   it('refuses a member who does not own the space', () => {
     expect(() => produit().update({ visibility: 'private' }, LEA_VIEWER)).toThrow(
       SpaceVisibilityForbiddenError,
@@ -621,13 +625,21 @@ describe('Space.update: only the owner of the space, or the owner or an admin of
     expect(space.snapshot.version).toBe(2);
   });
 
-  it('allows the owner of the organization on a space they do not own', () => {
-    const { changed }: SpaceUpdate = Space.restore(designState()).update(
-      { visibility: 'organization' },
+  it('allows the owner of the organization on a space of the organization they do not own', () => {
+    const { changed }: SpaceUpdate = produit({ ownerUserId: HUGO }).update(
+      { visibility: 'private' },
       CAMILLE_VIEWER,
     );
 
     expect(changed).toEqual(['visibility']);
+  });
+
+  it('refuses the owner and an admin of the organization on a private space they do not own', () => {
+    for (const viewer of [CAMILLE_VIEWER, INES_VIEWER]) {
+      expect(() =>
+        Space.restore(designState()).update({ visibility: 'organization' }, viewer),
+      ).toThrow(SpaceVisibilityForbiddenError);
+    }
   });
 
   it('allows an admin on a space they do not own', () => {
@@ -714,23 +726,16 @@ describe('Space.handOver: the owner of the organization takes a private space of
   it('lets the new owner see the private space and hides it from the former owner', () => {
     const { space }: SpaceUpdate = Space.restore(designState()).handOver(CAMILLE);
 
-    expect(space.isVisibleTo(CAMILLE_VIEWER)).toBe(true);
-    expect(space.isVisibleTo(HUGO_VIEWER)).toBe(false);
+    expect(canSeeSpace(space.snapshot, CAMILLE_VIEWER, NO_GRANTS)).toBe(true);
+    expect(canSeeSpace(space.snapshot, HUGO_VIEWER, NO_GRANTS)).toBe(false);
   });
 });
 
-describe('Space.isVisibleTo: it applies the access policy to the space', () => {
-  it('shows an organization space to a member and hides it from a guest', () => {
-    expect(produit().isVisibleTo(LEA_VIEWER)).toBe(true);
-    expect(produit().isVisibleTo(NADIA_VIEWER)).toBe(false);
-  });
-
-  it('shows a private space to its owner only', () => {
-    const design: Space = Space.restore(designState());
-
-    expect(design.isVisibleTo(HUGO_VIEWER)).toBe(true);
-    expect(design.isVisibleTo(CAMILLE_VIEWER)).toBe(false);
-    expect(design.isVisibleTo(INES_VIEWER)).toBe(false);
+describe('Space.recordAccessChange: a change of the grants takes the next version', () => {
+  it('adds one to the version and keeps everything else', () => {
+    expect(produit({ version: 3 }).recordAccessChange().snapshot).toEqual(
+      spaceState({ version: 4 }),
+    );
   });
 });
 
@@ -802,7 +807,7 @@ describe('Space.awaitOwner: the space of a leaver fails closed while the owner i
     const awaiting: Space = Space.restore(designState()).awaitOwner();
 
     for (const viewer of [HUGO_VIEWER, CAMILLE_VIEWER, INES_VIEWER, LEA_VIEWER, NADIA_VIEWER]) {
-      expect(awaiting.isVisibleTo(viewer)).toBe(false);
+      expect(canSeeSpace(awaiting.snapshot, viewer, { space: 'edit', anyList: true })).toBe(false);
     }
   });
 });
@@ -817,7 +822,7 @@ describe('Space.handOver: a space that awaits an owner stops awaiting', () => {
     expect(space.snapshot).toEqual(
       designState({ ownerUserId: CAMILLE, version: 2, awaitingOwner: false }),
     );
-    expect(space.isVisibleTo(CAMILLE_VIEWER)).toBe(true);
+    expect(canSeeSpace(space.snapshot, CAMILLE_VIEWER, NO_GRANTS)).toBe(true);
   });
 
   it('clears the wait with the same version and no change when that owner already owns the space', () => {

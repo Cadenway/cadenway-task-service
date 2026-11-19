@@ -2,12 +2,15 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ATELIER_NORD,
+  CAD_482,
   CAMILLE,
+  HUGO,
   InMemorySpaceDirectory,
   InMemoryTasks,
   NADIA,
   atelierNordMembers,
   refusalOf,
+  sprint14SharedWith,
   taskState,
 } from '../../../tasks.fixture.js';
 import type { RemoveTaskLabelInput } from './remove-task-label.input.js';
@@ -84,4 +87,25 @@ describe('RemoveTaskLabel: the refusals', () => {
       reason: 'task-not-found',
     });
   });
+});
+
+describe('RemoveTaskLabel: a change needs edit on the list of the task', () => {
+  it.each(['view', 'comment'] as const)(
+    'refuses a member with %s on Sprint 14 as role-insufficient, changing nothing',
+    async (role) => {
+      const tasks = InMemoryTasks.withCad482();
+      const useCase = new RemoveTaskLabel(
+        tasks,
+        atelierNordMembers(),
+        sprint14SharedWith({ [HUGO]: role }),
+      );
+
+      expect(await refusalOf(useCase.execute(removeLabel({ actorUserId: HUGO })))).toEqual({
+        reason: 'role-insufficient',
+        role,
+      });
+      expect(tasks.stored(CAD_482).labels).toEqual(['Auth', 'Front']);
+      expect(tasks.events).toEqual([]);
+    },
+  );
 });

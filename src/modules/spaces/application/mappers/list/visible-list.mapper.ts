@@ -1,3 +1,4 @@
+import type { AccessRole } from '../../../domain/value-objects/access/access-role.value-object.js';
 import type { TaskListState } from '../../../domain/value-objects/list/task-list-state.value-object.js';
 import type { VisibleList } from '../../projections/list/visible-list.projection.js';
 
@@ -5,13 +6,15 @@ import type { VisibleList } from '../../projections/list/visible-list.projection
  * Function toVisibleList
  *
  * @description
- * Copies a stored list into its public projection, so that no type of the domain crosses the
- * public entry points. Shared by every operation that hands lists to another module.
+ * Copies a stored list and the role of the member on it into its public projection, so that no
+ * type of the domain crosses the public entry points. Shared by every operation that hands lists
+ * to another module.
  *
  * @param {TaskListState} state - The stored list.
+ * @param {AccessRole} callerRole - The effective role of the member on the list.
  * @returns {VisibleList} The projection.
  */
-export function toVisibleList(state: TaskListState): VisibleList {
+export function toVisibleList(state: TaskListState, callerRole: AccessRole): VisibleList {
   return {
     id: state.id,
     spaceId: state.spaceId,
@@ -28,5 +31,7 @@ export function toVisibleList(state: TaskListState): VisibleList {
           },
     createdAt: state.createdAt,
     version: state.version,
+    organizationAccess: state.organizationAccess,
+    callerRole,
   };
 }

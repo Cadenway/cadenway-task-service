@@ -4,6 +4,7 @@ import {
   ATELIER_NORD,
   CAD_482,
   CAMILLE,
+  HUGO,
   InMemorySpaceDirectory,
   InMemoryTasks,
   MAQUETTE_VALIDEE,
@@ -11,6 +12,7 @@ import {
   RECETTE,
   atelierNordMembers,
   refusalOf,
+  sprint14SharedWith,
   taskState,
 } from '../../../tasks.fixture.js';
 import type { UpdateChecklistItemInput } from './update-checklist-item.input.js';
@@ -106,5 +108,46 @@ describe('UpdateChecklistItem: the refusals', () => {
     expect(await refusalOf(useCase.execute(tick({ actorUserId: NADIA })))).toEqual({
       reason: 'task-not-found',
     });
+  });
+});
+
+describe('UpdateChecklistItem: a change needs edit on the list of the task', () => {
+  it.each(['view', 'comment'] as const)(
+    'refuses a member with %s on Sprint 14 as role-insufficient, ticking nothing',
+    async (role) => {
+      const tasks = InMemoryTasks.withCad482();
+      const useCase = new UpdateChecklistItem(
+        tasks,
+        atelierNordMembers(),
+        sprint14SharedWith({ [HUGO]: role }),
+      );
+
+      expect(await refusalOf(useCase.execute(tick({ actorUserId: HUGO })))).toEqual({
+        reason: 'role-insufficient',
+        role,
+      });
+      expect(tasks.stored(CAD_482).checklist[1]).toMatchObject({ done: false });
+      expect(tasks.events).toEqual([]);
+    },
+  );
+
+  it('answers role-insufficient before version-mismatch and before an unknown item', async () => {
+    const useCase = new UpdateChecklistItem(
+      InMemoryTasks.withCad482(),
+      atelierNordMembers(),
+      sprint14SharedWith({ [HUGO]: 'view' }),
+    );
+
+    expect(
+      await refusalOf(
+        useCase.execute(
+          tick({
+            actorUserId: HUGO,
+            expectedVersions: [3],
+            checklistItemId: '019a7300-0000-7000-8000-0000000000ff',
+          }),
+        ),
+      ),
+    ).toEqual({ reason: 'role-insufficient', role: 'view' });
   });
 });

@@ -34,7 +34,8 @@ function toSprint(row: TaskListRow): Sprint | null {
  * Function toTaskList
  *
  * @description
- * Maps a row to the list it stores. The sprint dates stay `YYYY-MM-DD` strings.
+ * Maps a row to the list it stores, its switch "Accès de l’organisation" included. The sprint
+ * dates stay `YYYY-MM-DD` strings.
  *
  * @param {TaskListRow} row - The row.
  * @returns {TaskList} The list.
@@ -49,6 +50,7 @@ export function toTaskList(row: TaskListRow): TaskList {
     icon: toLookIcon(row.icon),
     color: toLookColor(row.color),
     sprint: toSprint(row),
+    organizationAccess: row.organizationAccess,
     createdAt: row.createdAt,
     version: row.version,
   });

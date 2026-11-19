@@ -1040,6 +1040,22 @@ describe('task queries', () => {
   }
 
   /**
+   * Reads the ids of the lists of some spaces, as the migrator role: the cross-list statements
+   * filter by the lists the actor has a role on (P3b-1), which, without any grant, are the lists of
+   * the spaces the actor sees.
+   *
+   * @param spaceIds - The spaces.
+   * @returns The ids of their lists.
+   */
+  async function listsOf(spaceIds: readonly string[]): Promise<string[]> {
+    const rows = await asSystem<{ readonly id: string }>(
+      'select id from lists where space_id = any($1::uuid[]) order by created_at, id',
+      [spaceIds],
+    );
+    return rows.map((row) => row.id);
+  }
+
+  /**
    * Runs work in the tenant transaction of an organization, as the module of a request would, with
    * the `task_app` role and the policies of row-level security.
    *
@@ -3309,7 +3325,7 @@ describe('task queries', () => {
         rootsOnly: false,
       };
       const order: TaskOrder = { key: 'manual', descending: false };
-      const visible = [produit.id, marketing.id, deltaSpace.id];
+      const visible = await listsOf([produit.id, marketing.id, deltaSpace.id]);
       const run = async (statement: SQL, organizationId: string): Promise<readonly unknown[]> => {
         const query = new PgDialect().sqlToQuery(statement);
         return inTenant(
@@ -4007,7 +4023,7 @@ describe('task queries', () => {
 
     it('takes the plans of the large list and of the other statements of the routes, and keeps them for the report', async () => {
       const probes = await probesOfList('Import 20,000', bigList.id, 'sso');
-      const visible = [produit.id, marketing.id, sprintsSpace.id, bigSpace.id];
+      const visible = await listsOf([produit.id, marketing.id, sprintsSpace.id, bigSpace.id]);
       const lists = [produitFirstList.id, backlog.id, sprint14.id, bigList.id, siblingList.id];
       const own: Probe[] = [
         {
@@ -4126,6 +4142,7 @@ describe('task queries', () => {
     }, 300_000);
 
     it('measures what the two indexes change, by dropping each inside a transaction that is rolled back', async () => {
+      const visible = await listsOf([produit.id, marketing.id, sprintsSpace.id, bigSpace.id]);
       const probes: Probe[] = [
         {
           scope: 'Sprint 14',
@@ -4230,24 +4247,12 @@ describe('task queries', () => {
         {
           scope: 'Labels',
           label: 'page of labels',
-          statement: labelPageStatement(
-            atelierNordId,
-            [produit.id, marketing.id, sprintsSpace.id, bigSpace.id],
-            null,
-            null,
-            51,
-          ),
+          statement: labelPageStatement(atelierNordId, visible, null, null, 51),
         },
         {
           scope: 'Labels',
           label: 'page of labels, search',
-          statement: labelPageStatement(
-            atelierNordId,
-            [produit.id, marketing.id, sprintsSpace.id, bigSpace.id],
-            'auth',
-            null,
-            51,
-          ),
+          statement: labelPageStatement(atelierNordId, visible, 'auth', null, 51),
         },
       ];
 

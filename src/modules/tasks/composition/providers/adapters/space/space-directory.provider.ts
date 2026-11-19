@@ -4,8 +4,8 @@ import { FindVisibleList } from '../../../../../spaces/public/list/find-visible-
 import { FindVisibleSpaceLists } from '../../../../../spaces/public/list/find-visible-space-lists.js';
 import { ListCurrentSprints } from '../../../../../spaces/public/list/list-current-sprints.js';
 import { ListSidebarLists } from '../../../../../spaces/public/list/list-sidebar-lists.js';
+import { ListVisibleListIds } from '../../../../../spaces/public/list/list-visible-list-ids.js';
 import { AllocateTaskKeys } from '../../../../../spaces/public/space/allocate-task-keys.js';
-import { ListVisibleSpaceIds } from '../../../../../spaces/public/space/list-visible-space-ids.js';
 import type { SpaceDirectory } from '../../../../application/ports/outbound/spaces/space/space-directory.port.js';
 import { SpacesSpaceDirectory } from '../../../../infrastructure/adapters/spaces/spaces-space-directory.adapter.js';
 import { SPACE_DIRECTORY } from '../../../tokens/space/space-directory.token.js';
@@ -15,7 +15,7 @@ import { SPACE_DIRECTORY } from '../../../tokens/space/space-directory.token.js'
  *
  * @description
  * Binds the `SpaceDirectory` port to the operations `SpacesModule` exports (`FindVisibleList`,
- * `ListVisibleSpaceIds`, `FindVisibleSpaceLists`, `ListCurrentSprints`, `ListSidebarLists` and
+ * `ListVisibleListIds`, `FindVisibleSpaceLists`, `ListCurrentSprints`, `ListSidebarLists` and
  * `AllocateTaskKeys`), which join the tenant transaction of the calling use case.
  *
  * @type {FactoryProvider<SpaceDirectory>}
@@ -24,7 +24,7 @@ export const spaceDirectoryProvider: FactoryProvider<SpaceDirectory> = {
   provide: SPACE_DIRECTORY,
   inject: [
     FindVisibleList,
-    ListVisibleSpaceIds,
+    ListVisibleListIds,
     FindVisibleSpaceLists,
     ListCurrentSprints,
     ListSidebarLists,
@@ -32,7 +32,7 @@ export const spaceDirectoryProvider: FactoryProvider<SpaceDirectory> = {
   ],
   useFactory: (
     findVisibleList: FindVisibleList,
-    listVisibleSpaceIds: ListVisibleSpaceIds,
+    listVisibleListIds: ListVisibleListIds,
     findVisibleSpaceLists: FindVisibleSpaceLists,
     listCurrentSprints: ListCurrentSprints,
     listSidebarLists: ListSidebarLists,
@@ -40,7 +40,7 @@ export const spaceDirectoryProvider: FactoryProvider<SpaceDirectory> = {
   ): SpaceDirectory =>
     new SpacesSpaceDirectory(
       findVisibleList,
-      listVisibleSpaceIds,
+      listVisibleListIds,
       findVisibleSpaceLists,
       listCurrentSprints,
       listSidebarLists,

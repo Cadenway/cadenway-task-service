@@ -81,6 +81,7 @@ export class GetTaskDetail {
           organizationId: input.organizationId,
           viewer,
           taskKey: input.taskKey,
+          edit: false,
           lock: false,
           expectedVersions: null,
         });

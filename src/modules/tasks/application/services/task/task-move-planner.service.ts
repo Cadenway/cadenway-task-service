@@ -13,6 +13,7 @@ import type { TaskChange } from '../../models/task/task-change.model.js';
 import { TaskRefusal } from '../../models/task/task-refusal.model.js';
 import type { TasksStore } from '../../models/transactions/tasks-store.model.js';
 import type { SpaceDirectory } from '../../ports/outbound/spaces/space/space-directory.port.js';
+import { TaskEditGuard } from './task-edit-guard.service.js';
 
 /**
  * How many times the subtree is read to lock it: the three levels the read goes down, plus the
@@ -42,9 +43,14 @@ interface LockedSubtree {
  *
  * @description
  * Resolves the target of a patch for the domain: the list to move to and the task to attach to
- * are looked up, checked for existence and visibility (`list-invalid`, `parent-invalid`), and the
- * tasks that move with the task (its descendants, and the new parent) are locked in ordered
- * statements after the task itself, until every descendant of the task is locked (a descendant
+ * are looked up, checked for existence and visibility (`list-invalid`, `parent-invalid`), then for
+ * the role a change needs, which the task write policy of the domain decides (`canWriteTasksOf`,
+ * applied through `TaskEditGuard`): a move needs `edit` on the list it goes to, an attachment
+ * `edit` on the list of the new parent (`role-insufficient`; "It needs `edit` on the list of the
+ * task, and on the list it moves to" of `openapi/public/tasks.yaml`); the list of the task itself
+ * was checked by `TaskLocator`. An unseen target stays a `422`, a seen one without `edit` is a `403`, both after
+ * `If-Match`. The tasks that move with the task (its descendants, and the new parent) are locked
+ * in ordered statements after the task itself, until every descendant of the task is locked (a descendant
  * that left the subtree while the locks were taken is not kept). It also picks the statuses the domain checks a new status
  * against: those of the space the task ends up in. The rules of the tree (depth, limit, cycles,
  * the list of a subtask) stay with `Task.update`.
@@ -53,6 +59,9 @@ export class TaskMovePlanner {
   // #region Properties
   /** The spaces module, to see the target list and the list of the parent. */
   private readonly spaces: SpaceDirectory;
+
+  /** Checks the role a change needs on the target list and on the list of the new parent. */
+  private readonly editing: TaskEditGuard;
   // #endregion
 
   // #region Constructor
@@ -67,6 +76,7 @@ export class TaskMovePlanner {
    */
   public constructor(spaces: SpaceDirectory) {
     this.spaces = spaces;
+    this.editing = new TaskEditGuard();
   }
   // #endregion
 
@@ -83,7 +93,8 @@ export class TaskMovePlanner {
    * @param {TaskChange} change - The patch as the request says it.
    * @returns {Promise<PlannedChange>} The patch for the domain, the statuses to check and the
    * locked descendants (empty unless the task can change list).
-   * @throws {TaskRefusal} `list-invalid` or `parent-invalid`.
+   * @throws {TaskRefusal} `list-invalid`, `parent-invalid`, or `role-insufficient` with the role
+   * of the actor on the target list or on the list of the new parent.
    */
   public async plan(
     store: TasksStore,
@@ -123,14 +134,15 @@ export class TaskMovePlanner {
    * Method resolveList
    *
    * @description
-   * Finds the list the task moves to, which the actor must see.
+   * Finds the list the task moves to, which the actor must see and have `edit` on.
    *
    * @param {Task} task - The task.
    * @param {ListPlacement} current - Where the task is.
    * @param {Viewer} viewer - The acting member.
    * @param {string | undefined} listId - The list of the patch, if it names one.
    * @returns {Promise<ListPlacement>} The target, the current place when the patch names none.
-   * @throws {TaskRefusal} `list-invalid` when the list is unknown or not seen.
+   * @throws {TaskRefusal} `list-invalid` when the list is unknown or not seen,
+   * `role-insufficient` when the actor sees it without `edit`.
    */
   private async resolveList(
     task: Task,
@@ -149,6 +161,7 @@ export class TaskMovePlanner {
     if (target === null) {
       throw new TaskRefusal({ reason: 'list-invalid' });
     }
+    this.editing.requireEdit(target.list);
     return target;
   }
 
@@ -156,10 +169,12 @@ export class TaskMovePlanner {
    * Method resolveParent
    *
    * @description
-   * Finds the task to attach to, which the actor must see, locks it with the descendants of the
-   * task and reads its level and the number of its subtasks under that lock. The parent was read
-   * without a lock to check its visibility: when the locked parent is in another list, the
-   * visibility and the statuses are those of the list it is in now.
+   * Finds the task to attach to, which the actor must see with `edit` on its list (the task moves
+   * to that list), locks it with the descendants of the task and reads its level and the number of
+   * its subtasks under that lock. The parent was read without a lock to check its list:
+   * when the locked parent is in another list, the visibility, the role and the statuses are those
+   * of the list it is in now. A parent in the list of the task needs nothing more: the actor has
+   * `edit` on that list already.
    *
    * @param {TasksStore} store - The store of the transaction.
    * @param {Viewer} viewer - The acting member.
@@ -167,7 +182,8 @@ export class TaskMovePlanner {
    * @param {string} parentKey - The key of the new parent.
    * @returns {Promise<{ attachment: TaskAttachment; statuses: SpaceStatusUse; descendants: readonly Task[] }>}
    * The attachment for the domain, the statuses of the space of the parent and the descendants.
-   * @throws {TaskRefusal} `parent-invalid` when the parent is unknown or not seen.
+   * @throws {TaskRefusal} `parent-invalid` when the parent is unknown or not seen,
+   * `role-insufficient` when the actor sees its list without `edit`.
    */
   private async resolveParent(
     store: TasksStore,
@@ -195,6 +211,7 @@ export class TaskMovePlanner {
     if (found === null || placement === null) {
       throw invalid;
     }
+    this.editing.requireEdit(placement.list);
     const { tasks: locked, shape: subtree } = await this.lockSubtree(store, task, [
       found.snapshot.id,
     ]);
@@ -214,6 +231,7 @@ export class TaskMovePlanner {
       if (moved === null) {
         throw invalid;
       }
+      this.editing.requireEdit(moved.list);
       statuses = moved.space.statuses;
     }
     const [level, childCount] = [

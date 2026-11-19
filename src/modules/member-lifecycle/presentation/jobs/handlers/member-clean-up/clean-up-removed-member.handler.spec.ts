@@ -1,10 +1,11 @@
 import type { Job, JobHandler, JobWorkerRegistry } from '@cadenway/nest-jobs/runtime';
 import { Logger } from '@nestjs/common';
-import { propagation } from '@opentelemetry/api';
-import type { TextMapGetter, TextMapPropagator } from '@opentelemetry/api';
+import { propagation, SpanStatusCode, trace } from '@opentelemetry/api';
+import type { Span, TextMapGetter, TextMapPropagator, Tracer } from '@opentelemetry/api';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { MockInstance } from 'vitest';
+import type { Mock, MockInstance } from 'vitest';
 
+import { CleanUpStepError } from '../../../../application/models/clean-up/clean-up-step-error.model.js';
 import type { CleanUpRemovedMemberInput } from '../../../../application/use-cases/commands/membership/clean-up-removed-member/clean-up-removed-member.input.js';
 import type { CleanUpRemovedMemberOutput } from '../../../../application/use-cases/commands/membership/clean-up-removed-member/clean-up-removed-member.output.js';
 import type { CleanUpRemovedMember } from '../../../../application/use-cases/commands/membership/clean-up-removed-member/clean-up-removed-member.use-case.js';
@@ -24,8 +25,10 @@ const COMPLETED: CleanUpRemovedMemberOutput = {
   outcome: 'completed',
   spacesHandedOver: 2,
   spacesAwaitingOwner: 0,
+  grantsRemoved: 5,
+  requestsDropped: 3,
   tasksUnassigned: 700,
-  batches: 4,
+  batches: 6,
 };
 
 /**
@@ -146,10 +149,12 @@ describe('CleanUpRemovedMemberHandler: each job cleans up after one former membe
         outcome: 'completed',
         spacesHandedOver: 2,
         spacesAwaitingOwner: 0,
+        grantsRemoved: 5,
+        requestsDropped: 3,
         tasksUnassigned: 700,
-        batches: 4,
+        batches: 6,
       },
-      'removed member clean-up job handled',
+      expect.any(String),
     );
     expect(JSON.stringify(log.mock.calls)).not.toContain(HUGO);
     expect(warn).not.toHaveBeenCalled();
@@ -197,11 +202,94 @@ describe('CleanUpRemovedMemberHandler: each job cleans up after one former membe
     expect(inputs).toEqual([]);
   });
 
-  it('rejects with the error of the use case, so the queue retries the job', async () => {
-    const failure = new Error('canceling statement due to lock timeout');
+  it('rejects with the error of the use case, so the queue retries the job, and logs nothing itself', async () => {
+    const failure = new CleanUpStepError(
+      'grants',
+      2,
+      new Error('canceling statement due to lock timeout'),
+    );
     const { handler } = handlerOn(failure);
 
     await expect(handler.handle(jobOf())).rejects.toBe(failure);
     expect(log).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('records the exception, the failed step and the batches committed on the span of the job', async () => {
+    const failure = new CleanUpStepError('grants', 2, new Error('lock timeout'));
+    const span = spanDouble();
+    const getTracer = vi
+      .spyOn(trace, 'getTracer')
+      .mockReturnValue({ startSpan: () => span.span } as unknown as Tracer);
+    const { handler } = handlerOn(failure);
+
+    await expect(handler.handle(jobOf())).rejects.toBe(failure);
+    getTracer.mockRestore();
+
+    expect(span.recordException).toHaveBeenCalledWith(failure);
+    expect(span.setAttributes).toHaveBeenCalledWith({
+      'cleanup.step': 'grants',
+      'cleanup.batches': 2,
+    });
+    expect(span.setStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ code: SpanStatusCode.ERROR }),
+    );
+    expect(span.end).toHaveBeenCalledTimes(1);
+  });
+
+  it('records an error without a step, as an abort, without the step attributes', async () => {
+    const failure = new Error('The attempt expired.');
+    const span = spanDouble();
+    const getTracer = vi
+      .spyOn(trace, 'getTracer')
+      .mockReturnValue({ startSpan: () => span.span } as unknown as Tracer);
+    const { handler } = handlerOn(failure);
+
+    await expect(handler.handle(jobOf())).rejects.toBe(failure);
+    getTracer.mockRestore();
+
+    expect(span.recordException).toHaveBeenCalledWith(failure);
+    expect(span.setAttributes).not.toHaveBeenCalled();
   });
 });
+
+/** A span that records what the handler does with it. */
+interface SpanDouble {
+  // #region Properties
+  /** The span to hand to the handler. */
+  readonly span: Span;
+
+  /** `recordException`. */
+  readonly recordException: Mock;
+
+  /** `setAttributes`. */
+  readonly setAttributes: Mock;
+
+  /** `setStatus`. */
+  readonly setStatus: Mock;
+
+  /** `end`. */
+  readonly end: Mock;
+  // #endregion
+}
+
+/**
+ * Builds a span that records its calls.
+ *
+ * @returns The span and its recorded methods.
+ */
+function spanDouble(): SpanDouble {
+  const recordException = vi.fn();
+  const setAttributes = vi.fn();
+  const setStatus = vi.fn();
+  const end = vi.fn();
+  const span = {
+    recordException,
+    setAttributes,
+    setStatus,
+    end,
+    spanContext: () => ({ traceId: '0'.repeat(32), spanId: '0'.repeat(16), traceFlags: 0 }),
+    isRecording: () => true,
+  } as unknown as Span;
+  return { span, recordException, setAttributes, setStatus, end };
+}

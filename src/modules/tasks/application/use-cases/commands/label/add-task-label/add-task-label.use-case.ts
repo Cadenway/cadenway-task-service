@@ -79,8 +79,8 @@ export class AddTaskLabel {
    * @param {AddTaskLabelInput} input - The actor, the task, the label and the versions `If-Match`
    * accepts.
    * @returns {Promise<AddTaskLabelOutput>} The task after the change.
-   * @throws {TaskRefusal} `organization-not-found`, `task-not-found`, `version-mismatch` or
-   * `label-limit-reached`.
+   * @throws {TaskRefusal} `organization-not-found`, `task-not-found`, `role-insufficient`,
+   * `version-mismatch` or `label-limit-reached`.
    */
   public async execute(input: AddTaskLabelInput): Promise<AddTaskLabelOutput> {
     return this.unitOfWork.run(async (store: TasksStore): Promise<AddTaskLabelOutput> => {
@@ -93,6 +93,7 @@ export class AddTaskLabel {
         organizationId: input.organizationId,
         viewer,
         taskKey: input.taskKey,
+        edit: true,
         lock: true,
         expectedVersions: input.expectedVersions,
       });

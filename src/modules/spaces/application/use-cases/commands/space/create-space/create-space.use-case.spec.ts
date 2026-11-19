@@ -69,16 +69,28 @@ describe('CreateSpace: a member creates a space and its first list', () => {
       createDesign(),
     );
 
-    expect(firstList).toMatchObject({
+    expect(firstList.callerRole).toBe('edit');
+    expect(firstList.list).toMatchObject({
       organizationId: ATELIER_NORD,
       spaceId: space.space.id,
       name: 'Première liste',
       icon: null,
       color: 'gris',
       sprint: null,
+      organizationAccess: true,
       version: 1,
     });
-    expect(spaces.lists.get(firstList.id)).toEqual(firstList);
+    expect(spaces.lists.get(firstList.list.id)).toEqual(firstList.list);
+  });
+
+  it('answers the access of the creator: edit on the space, which they manage, without reading grants', async () => {
+    const spaces = atelierNord();
+
+    const { space } = await new CreateSpace(spaces, atelierNordMembers()).execute(createDesign());
+
+    expect(space.callerRole).toBe('edit');
+    expect(space.callerCanManage).toBe(true);
+    expect(spaces.viewerGrantsCalls).toEqual([]);
   });
 
   it('appends space.created then list.created, by the caller, in the same transaction', async () => {
@@ -97,7 +109,7 @@ describe('CreateSpace: a member creates a space and its first list', () => {
       },
       {
         kind: 'listCreated',
-        listId: firstList.id,
+        listId: firstList.list.id,
         spaceId: space.space.id,
         actor: { type: 'user', id: HUGO },
       },

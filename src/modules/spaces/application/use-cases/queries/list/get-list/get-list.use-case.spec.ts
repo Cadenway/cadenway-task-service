@@ -19,7 +19,9 @@ import {
   atelierNordMembers,
   backlogState,
   designState,
+  listGrantOf,
   refusalOf,
+  spaceGrantOf,
   spaceState,
   sprintState,
 } from '../../../spaces.fixture.js';
@@ -51,15 +53,15 @@ function atelierNord(): InMemorySpaces {
   });
 }
 
-describe('GetList: a list is seen by whoever sees its space', () => {
+describe('GetList: a list is seen by whoever has a role on it', () => {
   it('returns Sprint 14 with its dates and goal to a member', async () => {
-    const list = await new GetList(atelierNord(), atelierNordMembers()).execute(getSprint());
+    const { list } = await new GetList(atelierNord(), atelierNordMembers()).execute(getSprint());
 
     expect(list).toEqual(sprintState());
   });
 
   it('returns the list Backlog, which is no sprint', async () => {
-    const list = await new GetList(atelierNord(), atelierNordMembers()).execute(
+    const { list } = await new GetList(atelierNord(), atelierNordMembers()).execute(
       getSprint({ listId: BACKLOG }),
     );
 
@@ -68,7 +70,7 @@ describe('GetList: a list is seen by whoever sees its space', () => {
   });
 
   it('returns a list of a private space to the owner of that space', async () => {
-    const list = await new GetList(atelierNord(), atelierNordMembers()).execute(
+    const { list } = await new GetList(atelierNord(), atelierNordMembers()).execute(
       getSprint({ actorUserId: HUGO, listId: MAQUETTES }),
     );
 
@@ -167,5 +169,72 @@ describe('GetList: the lists of a private space that awaits an owner are unknown
     );
 
     expect(refusal).toEqual({ reason: 'list-not-found' });
+  });
+});
+
+describe('GetList: the effective role of the caller on the list', () => {
+  it('answers edit to a member of the organization without reading grants (P3a unchanged)', async () => {
+    const spaces = atelierNord();
+
+    const view = await new GetList(spaces, atelierNordMembers()).execute(getSprint());
+
+    expect(view.callerRole).toBe('edit');
+    expect(spaces.viewerGrantsCalls).toEqual([]);
+  });
+
+  it('answers the role of the grant of the list to a guest, reading the grants in one statement', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [sprintState()],
+      grants: [listGrantOf(PRODUIT, SPRINT_14, NADIA, 'comment')],
+    });
+
+    const view = await new GetList(spaces, atelierNordMembers()).execute(
+      getSprint({ actorUserId: NADIA }),
+    );
+
+    expect(view.callerRole).toBe('comment');
+    expect(spaces.viewerGrantsCalls).toEqual([
+      { viewerUserId: NADIA, spaceId: PRODUIT, listId: SPRINT_14 },
+    ]);
+  });
+
+  it('answers the highest of the grant of the space and the grant of the list', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [designState()],
+      lists: [backlogState({ id: MAQUETTES, spaceId: DESIGN, name: 'Maquettes' })],
+      grants: [spaceGrantOf(DESIGN, LEA, 'view'), listGrantOf(DESIGN, MAQUETTES, LEA, 'comment')],
+    });
+
+    const view = await new GetList(spaces, atelierNordMembers()).execute(
+      getSprint({ listId: MAQUETTES }),
+    );
+
+    expect(view.callerRole).toBe('comment');
+  });
+
+  it('hides a list whose switch is off from a member of the organization it is not shared with', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [sprintState({ organizationAccess: false })],
+    });
+
+    const refusal = await refusalOf(
+      new GetList(spaces, atelierNordMembers()).execute(getSprint({ actorUserId: INES })),
+    );
+
+    expect(refusal).toEqual({ reason: 'list-not-found' });
+  });
+
+  it('shows a list whose switch is off to the owner of the space and to a grant of the space', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [sprintState({ organizationAccess: false })],
+      grants: [spaceGrantOf(PRODUIT, LEA, 'view')],
+    });
+    const getList = new GetList(spaces, atelierNordMembers());
+
+    expect((await getList.execute(getSprint({ actorUserId: CAMILLE }))).callerRole).toBe('edit');
+    expect((await getList.execute(getSprint())).callerRole).toBe('view');
   });
 });

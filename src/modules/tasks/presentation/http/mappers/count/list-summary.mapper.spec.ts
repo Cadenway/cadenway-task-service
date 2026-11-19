@@ -15,6 +15,8 @@ const SPRINT_14: ListSummaryView = {
     sprint: { startDate: '2026-11-02', endDate: '2026-11-15', goal: null },
     createdAt: new Date('2026-11-01T08:00:00.000Z'),
     version: 2,
+    organizationAccess: true,
+    callerRole: 'edit',
   },
   counts: { total: 98, open: 72, done: 24, cancelled: 2, late: 3 },
 };
@@ -31,6 +33,16 @@ describe('the list and its counters', () => {
       goal: null,
     });
     expect(body.list.createdAt).toBe('2026-11-01T08:00:00.000Z');
+  });
+
+  it('carries the switch of the organization and the role of the caller on the list', () => {
+    const body = toListSummary({
+      ...SPRINT_14,
+      list: { ...SPRINT_14.list, organizationAccess: false, callerRole: 'comment' },
+    });
+
+    expect(GetListCountsInternalResponse.parse(body)).toEqual(body);
+    expect(body.list).toMatchObject({ organizationAccess: false, callerRole: 'comment' });
   });
 
   it('keeps a list that is not a sprint as such, with zero counters', () => {

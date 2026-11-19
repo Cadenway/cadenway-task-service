@@ -14,8 +14,11 @@ import {
   STRANGER,
   UNKNOWN_SPACE,
   atelierNordMembers,
+  backlogState,
   designState,
+  listGrantOf,
   refusalOf,
+  spaceGrantOf,
   spaceState,
 } from '../../../spaces.fixture.js';
 import type { GetSpaceInput } from './get-space.input.js';
@@ -40,10 +43,15 @@ function atelierNord(): InMemorySpaces {
 }
 
 describe('GetSpace: a member reads a space they see, with its next key', () => {
-  it('returns Produit with the key CAD-482 for its next task', async () => {
+  it('returns Produit with the key CAD-482 for its next task, edit for a member who does not manage it', async () => {
     const view = await new GetSpace(atelierNord(), atelierNordMembers()).execute(getProduit());
 
-    expect(view).toEqual({ space: spaceState(), nextKey: 'CAD-482' });
+    expect(view).toEqual({
+      space: spaceState(),
+      nextKey: 'CAD-482',
+      callerRole: 'edit',
+      callerCanManage: false,
+    });
   });
 
   it('starts the numbering at 1 for a space with no task yet', async () => {
@@ -146,5 +154,82 @@ describe('GetSpace: a private space that awaits an owner is unknown to everyone'
     );
 
     expect(refusal).toEqual({ reason: 'space-not-found' });
+  });
+});
+
+describe('GetSpace: the role of the caller on the space and whether they manage it', () => {
+  it('reads no grant when the rule of the organization already gives edit (P3a unchanged)', async () => {
+    const spaces = atelierNord();
+
+    await new GetSpace(spaces, atelierNordMembers()).execute(getProduit());
+
+    expect(spaces.viewerGrantsCalls).toEqual([]);
+  });
+
+  it('lets an admin manage a space of the organization', async () => {
+    const view = await new GetSpace(atelierNord(), atelierNordMembers()).execute(
+      getProduit({ actorUserId: INES }),
+    );
+
+    expect(view).toMatchObject({ callerRole: 'edit', callerCanManage: true });
+  });
+
+  it('shows the private Design to Léa Petit with the role its grant gives, without managing it', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState(), designState()],
+      grants: [spaceGrantOf(DESIGN, LEA, 'view')],
+    });
+
+    const view = await new GetSpace(spaces, atelierNordMembers()).execute(
+      getProduit({ spaceId: DESIGN }),
+    );
+
+    expect(view).toMatchObject({ callerRole: 'view', callerCanManage: false });
+    expect(spaces.viewerGrantsCalls).toEqual([
+      { viewerUserId: LEA, spaceId: DESIGN, listId: null },
+    ]);
+  });
+
+  it('shows a guest the space of a list shared with them, with no role on the space', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [backlogState()],
+      grants: [listGrantOf(PRODUIT, backlogState().id, NADIA, 'comment')],
+    });
+
+    const view = await new GetSpace(spaces, atelierNordMembers()).execute(
+      getProduit({ actorUserId: NADIA }),
+    );
+
+    expect(view).toMatchObject({ callerRole: null, callerCanManage: false });
+  });
+
+  it('gives nothing to a guest through a grant of the space they held as a member', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [designState()],
+      grants: [spaceGrantOf(DESIGN, NADIA, 'edit')],
+    });
+
+    const refusal = await refusalOf(
+      new GetSpace(spaces, atelierNordMembers()).execute(
+        getProduit({ actorUserId: NADIA, spaceId: DESIGN }),
+      ),
+    );
+
+    expect(refusal).toEqual({ reason: 'space-not-found' });
+  });
+
+  it('gives nothing through a grant of a space that awaits an owner', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [designState({ awaitingOwner: true })],
+      grants: [spaceGrantOf(DESIGN, LEA, 'edit')],
+    });
+
+    const refusal = await refusalOf(
+      new GetSpace(spaces, atelierNordMembers()).execute(getProduit({ spaceId: DESIGN })),
+    );
+
+    expect(refusal).toEqual({ reason: 'space-not-found' });
+    expect(spaces.viewerGrantsCalls).toEqual([]);
   });
 });

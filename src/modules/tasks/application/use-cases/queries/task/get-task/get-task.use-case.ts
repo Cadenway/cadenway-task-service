@@ -15,8 +15,8 @@ import type { GetTaskOutput } from './get-task.output.js';
  *
  * @description
  * Reads one task by its key (`GET /internal/v1/tasks/{taskKey}`), without a lock. A task is seen
- * by whoever sees the space of its list: an unknown task and a task of a space the actor does not
- * see (a guest sees none) get the same answer, `task-not-found`. It runs in one read-only
+ * by whoever has a role on its list, any role: an unknown task and a task of a list the actor has
+ * no role on get the same answer, `task-not-found`. It runs in one read-only
  * tenant transaction, scoped to the organization of the context.
  */
 export class GetTask {
@@ -76,6 +76,7 @@ export class GetTask {
         organizationId: input.organizationId,
         viewer,
         taskKey: input.taskKey,
+        edit: false,
         lock: false,
         expectedVersions: null,
       });

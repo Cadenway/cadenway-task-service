@@ -1,9 +1,13 @@
-import type { TaskList } from '../../../../../domain/aggregates/list/task-list.aggregate.js';
 import type { Space } from '../../../../../domain/aggregates/space/space.aggregate.js';
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
+import { toListViews } from '../../../../mappers/list/list-view.mapper.js';
 import { toVisibleList } from '../../../../mappers/list/visible-list.mapper.js';
+import type { ListWithGrants } from '../../../../models/access/list-with-grants.model.js';
+import type { ViewerAccess } from '../../../../models/access/viewer-access.model.js';
 import type { SpacesStore } from '../../../../models/transactions/spaces-store.model.js';
 import type { SpacesUnitOfWork } from '../../../../ports/outbound/transactions/space/spaces-unit-of-work.port.js';
+import type { ListView } from '../../../../projections/list/list-view.projection.js';
+import { AccessResolver } from '../../../../services/access/access-resolver.service.js';
 import type { FindVisibleSpaceListsInput } from './find-visible-space-lists.input.js';
 import type { FindVisibleSpaceListsOutput } from './find-visible-space-lists.output.js';
 
@@ -11,12 +15,14 @@ import type { FindVisibleSpaceListsOutput } from './find-visible-space-lists.out
  * Class FindVisibleSpaceLists
  *
  * @description
- * Public operation of the spaces module for the tasks module: every list and sprint of a space the
- * member sees, unpaged and in the order of their creation (the tasks module counts them all, then
- * pages). A space that does not exist, a space of another organization and a space the member does
- * not see (a guest sees none, a private space is seen by its owner only, a space awaiting an owner
- * by nobody: `Space.isVisibleTo`) all answer `null`, so no case tells another apart. The role of
- * the member comes from the caller, which read it from the copy of the memberships. It runs in
+ * Public operation of the spaces module for the tasks module: the lists and sprints of a space the
+ * member sees that they have a role on, each with that role (`callerRole`), unpaged and in the
+ * order of their creation (the tasks module counts them all, then pages). A space that does not
+ * exist, a space of another organization and a space the member does not see (`canSeeSpace`: a
+ * private space of another not shared with them, a guest without a grant of one of its lists, a
+ * space awaiting an owner) all answer `null`, so no case tells another apart; a member who sees
+ * the space only through some of its lists gets those lists. The role of the member in the
+ * organization comes from the caller, which read it from the copy of the memberships. It runs in
  * `SpacesUnitOfWork.run`, which joins the tenant transaction of the caller, scoped to the
  * organization of the input; it takes no lock and appends no event.
  */
@@ -32,6 +38,17 @@ export class FindVisibleSpaceLists {
    * @readonly
    */
   private readonly unitOfWork: SpacesUnitOfWork;
+
+  /**
+   * Property access
+   *
+   * @description
+   * Decides whether the member sees the space.
+   *
+   * @type {AccessResolver}
+   * @readonly
+   */
+  private readonly access: AccessResolver;
   // #endregion
 
   // #region Constructor
@@ -46,6 +63,7 @@ export class FindVisibleSpaceLists {
    */
   public constructor(unitOfWork: SpacesUnitOfWork) {
     this.unitOfWork = unitOfWork;
+    this.access = new AccessResolver();
   }
   // #endregion
 
@@ -54,7 +72,7 @@ export class FindVisibleSpaceLists {
    * Method execute
    *
    * @description
-   * Reads the space, checks that the member sees it, then reads its lists.
+   * Reads the space, checks that the member sees it, then reads its lists they have a role on.
    *
    * @param {FindVisibleSpaceListsInput} input - The member, its role and the space.
    * @returns {Promise<FindVisibleSpaceListsOutput | null>} The lists of the space, or `null` when
@@ -66,15 +84,29 @@ export class FindVisibleSpaceLists {
     return this.unitOfWork.run(
       async (store: SpacesStore): Promise<FindVisibleSpaceListsOutput | null> => {
         const space: Space | null = await store.spaces.find(input.organizationId, input.spaceId);
-        const viewer: Viewer = { userId: input.viewerUserId, role: input.viewerRole };
-        if (!space?.isVisibleTo(viewer)) {
+        if (space === null) {
           return null;
         }
-        const lists: TaskList[] = await store.lists.listAllOfSpace(
+        const viewer: Viewer = { userId: input.viewerUserId, role: input.viewerRole };
+        const access: ViewerAccess = await this.access.resolve(
+          store.grants,
+          viewer,
+          space.snapshot,
+          null,
+        );
+        if (!access.seesSpace) {
+          return null;
+        }
+        const rows: ListWithGrants[] = await store.lists.listAllOfSpaceVisibleTo(
           input.organizationId,
           input.spaceId,
+          viewer,
         );
-        return { lists: lists.map((list: TaskList) => toVisibleList(list.snapshot)) };
+        return {
+          lists: toListViews(rows, viewer).map((view: ListView) =>
+            toVisibleList(view.list, view.callerRole),
+          ),
+        };
       },
     );
   }

@@ -17,6 +17,8 @@ import {
   UNKNOWN_SPACE,
   backlogState,
   designState,
+  listGrantOf,
+  spaceGrantOf,
   spaceState,
   sprintState,
 } from '../../../spaces.fixture.js';
@@ -63,7 +65,7 @@ function atelierNord(): InMemorySpaces {
   });
 }
 
-describe('FindVisibleSpaceLists: a member finds every list of a space it sees', () => {
+describe('FindVisibleSpaceLists: a member finds the lists of a space it sees', () => {
   it('returns the lists of the space in the order of their creation, with the dates of a sprint', async () => {
     const found = await new FindVisibleSpaceLists(atelierNord()).execute(find());
 
@@ -78,6 +80,8 @@ describe('FindVisibleSpaceLists: a member finds every list of a space it sees', 
       sprint: { startDate: '2026-11-03', endDate: '2026-11-17', goal: SPRINT_14_GOAL },
       createdAt: new Date('2026-10-22T09:00:00Z'),
       version: 1,
+      organizationAccess: true,
+      callerRole: 'edit',
     } satisfies FindVisibleSpaceListsOutput['lists'][number]);
   });
 
@@ -228,5 +232,48 @@ describe('FindVisibleSpaceLists: a lookup changes nothing', () => {
     expect(spaces.spaces).toEqual(before.spaces);
     expect(spaces.lists).toEqual(before.lists);
     expect(spaces.allocateCalls).toEqual([]);
+  });
+});
+
+describe('FindVisibleSpaceLists: only the lists the viewer has a role on, each with that role', () => {
+  it('finds for a guest the space of a list shared with them, and that list only', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [backlogState(), sprintState()],
+      grants: [listGrantOf(PRODUIT, SPRINT_14, NADIA, 'comment')],
+    });
+
+    const found = await new FindVisibleSpaceLists(spaces).execute(
+      find({ viewerUserId: NADIA, viewerRole: 'guest' }),
+    );
+
+    expect(found?.lists.map((list) => [list.id, list.callerRole])).toEqual([
+      [SPRINT_14, 'comment'],
+    ]);
+  });
+
+  it('leaves out a list whose switch is off for a member it is not shared with', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [backlogState(), sprintState({ organizationAccess: false })],
+    });
+
+    const found = await new FindVisibleSpaceLists(spaces).execute(find());
+
+    expect(found?.lists.map((list) => [list.id, list.organizationAccess])).toEqual([
+      [BACKLOG, true],
+    ]);
+  });
+
+  it('gives each list of a private space shared with the viewer the role of the grant of the space', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [designState()],
+      lists: [backlogState({ id: MAQUETTES, spaceId: DESIGN, name: 'Maquettes' })],
+      grants: [spaceGrantOf(DESIGN, LEA, 'view')],
+    });
+
+    const found = await new FindVisibleSpaceLists(spaces).execute(find({ spaceId: DESIGN }));
+
+    expect(found?.lists.map((list) => [list.id, list.callerRole])).toEqual([[MAQUETTES, 'view']]);
   });
 });

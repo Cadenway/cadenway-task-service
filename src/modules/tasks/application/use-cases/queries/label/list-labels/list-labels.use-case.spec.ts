@@ -4,14 +4,17 @@ import {
   ATELIER_NORD,
   BUGS,
   CAMILLE,
+  CLOTURES,
   DESIGN,
   HUGO,
   InMemorySpaceDirectory,
   InMemoryTasks,
   MAQUETTES,
   NADIA,
+  SPRINT_14,
   STRANGER,
   atelierNordMembers,
+  placedList,
   queryTask,
   refusalOf,
   subtaskState,
@@ -95,14 +98,14 @@ describe('ListLabels: the labels of the tasks the actor sees, each once', () => 
     expect(page.items.map((item) => item.name)).toContain('Secret');
   });
 
-  it('hands the visible spaces and the search to the reader', async () => {
+  it('hands the lists the actor has a role on and the search to the reader', async () => {
     const tasks = atelierNord();
 
     await over(tasks).execute(read({ search: 'AU' }));
 
     expect(tasks.reads.labels).toHaveLength(1);
     expect(tasks.reads.labels[0]?.search).toBe('AU');
-    expect(tasks.reads.labels[0]?.spaceIds).not.toContain(DESIGN);
+    expect(tasks.reads.labels[0]?.listIds).toEqual([SPRINT_14, BUGS, CLOTURES]);
   });
 
   it('keeps the labels that contain the search, without regard to case or accents', async () => {
@@ -138,14 +141,39 @@ describe('ListLabels: the labels of the tasks the actor sees, each once', () => 
   });
 });
 
-describe('ListLabels: a guest sees no space', () => {
-  it('answers an empty page without reading any label', async () => {
+describe('ListLabels: the lists of a guest are those shared with them', () => {
+  it('answers an empty page without reading any label to a guest with no list grant', async () => {
     const tasks = atelierNord();
 
     const page = await over(tasks).execute(read({ actorUserId: NADIA }));
 
     expect(page).toEqual({ items: [], next: null });
     expect(tasks.reads.labels).toEqual([]);
+  });
+
+  it('shows a guest the labels of the tasks of a list shared with them, and of no other', async () => {
+    const tasks = atelierNord();
+    const spaces = new InMemorySpaceDirectory({ listGrants: { [BUGS]: { [NADIA]: 'view' } } });
+
+    const page = await new ListLabels(tasks, atelierNordMembers(), spaces).execute(
+      read({ actorUserId: NADIA }),
+    );
+
+    expect(page.items.map((item) => item.name)).toEqual(['API', 'auth']);
+    expect(tasks.reads.labels[0]?.listIds).toEqual([BUGS]);
+  });
+
+  it('leaves out a list of a space of the organization whose switch is off', async () => {
+    const tasks = atelierNord();
+    const spaces = new InMemorySpaceDirectory({
+      lists: [placedList({ organizationAccess: false }), placedList({ id: BUGS, sprint: null })],
+    });
+
+    const page = await new ListLabels(tasks, atelierNordMembers(), spaces).execute(
+      read({ actorUserId: HUGO }),
+    );
+
+    expect(page.items.map((item) => item.name)).toEqual(['API', 'auth']);
   });
 
   it('refuses an account the copy does not hold as organization-not-found', async () => {

@@ -7,26 +7,32 @@ import type { LocatedTask } from '../../models/task/located-task.model.js';
 import { TaskRefusal } from '../../models/task/task-refusal.model.js';
 import type { TasksStore } from '../../models/transactions/tasks-store.model.js';
 import type { SpaceDirectory } from '../../ports/outbound/spaces/space/space-directory.port.js';
+import { TaskEditGuard } from './task-edit-guard.service.js';
 
 /**
  * Class TaskLocator
  *
  * @description
  * Finds a task by its key for an actor, in the order the writes of the module follow: the task,
- * its visibility through the list it is in, then the `If-Match` check. A task that does not exist,
- * and a task in a space the actor does not see (a guest sees none), get the same answer,
- * `task-not-found`. The organization of the request scopes every read.
+ * its visibility through the list it is in, the role a change needs on that list, then the
+ * `If-Match` check. A task that does not exist, and a task of a list the actor has no role on (a
+ * guest has a role on the lists shared with them only), get the same answer, `task-not-found`. A
+ * change (`edit`) of a task the actor sees without `edit` on its list answers `role-insufficient`,
+ * before `If-Match`. The organization of the request scopes every read.
  *
- * A write (`lock`) does not lock before it knows the actor may see the task: it reads the task
- * without a lock and checks the visibility of its list, then locks the task and reads it again.
- * If another transaction moved the task to another list in between, the visibility is checked
- * again on the list the locked task is in, so what the actor is allowed to change is decided on
- * the state the write applies to. A refusal is the same `task-not-found` as without the lock.
+ * A write (`lock`) does not lock before it knows the actor may see, and change, the task: it reads
+ * the task without a lock and checks its list, then locks the task and reads it again. If another
+ * transaction moved the task to another list in between, the list the locked task is in is checked
+ * again, so what the actor is allowed to change is decided on the state the write applies to. A
+ * refusal is the same as without the lock.
  */
 export class TaskLocator {
   // #region Properties
   /** The spaces module, to see the list of a task. */
   private readonly spaces: SpaceDirectory;
+
+  /** Checks the role a change needs. */
+  private readonly editing: TaskEditGuard;
   // #endregion
 
   // #region Constructor
@@ -41,6 +47,7 @@ export class TaskLocator {
    */
   public constructor(spaces: SpaceDirectory) {
     this.spaces = spaces;
+    this.editing = new TaskEditGuard();
   }
   // #endregion
 
@@ -52,9 +59,11 @@ export class TaskLocator {
    * Finds the task and its place.
    *
    * @param {TasksStore} store - The store of the transaction.
-   * @param {LocateRequest} request - The organization, the viewer, the key, the lock and `If-Match`.
+   * @param {LocateRequest} request - The organization, the viewer, the key, whether the task
+   * changes, the lock and `If-Match`.
    * @returns {Promise<LocatedTask>} The task and its list and space.
-   * @throws {TaskRefusal} `task-not-found`, or `version-mismatch` with the stored version.
+   * @throws {TaskRefusal} `task-not-found`, `role-insufficient` with the role of the actor on the
+   * list, or `version-mismatch` with the stored version.
    */
   public async locate(store: TasksStore, request: LocateRequest): Promise<LocatedTask> {
     const key: TaskKey = this.parse(request.taskKey);
@@ -104,12 +113,14 @@ export class TaskLocator {
    * Method see
    *
    * @description
-   * Finds the list of a task through the spaces module, for the viewer.
+   * Finds the list of a task through the spaces module, for the viewer, and checks the role a
+   * change needs on it.
    *
-   * @param {LocateRequest} request - The organization and the viewer.
+   * @param {LocateRequest} request - The organization, the viewer and whether the task changes.
    * @param {Task} task - The task.
    * @returns {Promise<ListPlacement>} The list and its space.
-   * @throws {TaskRefusal} `task-not-found` when the viewer does not see the list.
+   * @throws {TaskRefusal} `task-not-found` when the viewer has no role on the list,
+   * `role-insufficient` when the task changes and the role is not `edit`.
    */
   private async see(request: LocateRequest, task: Task): Promise<ListPlacement> {
     const placement: ListPlacement | null = await this.spaces.findVisibleList(
@@ -119,6 +130,9 @@ export class TaskLocator {
     );
     if (placement === null) {
       throw new TaskRefusal({ reason: 'task-not-found' });
+    }
+    if (request.edit) {
+      this.editing.requireEdit(placement.list);
     }
     return placement;
   }

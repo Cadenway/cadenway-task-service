@@ -25,8 +25,9 @@ function toStatus(key: StatusKey, status: PlacedSpace['statuses'][StatusKey]): S
  * @description
  * Maps the space of a task, as the spaces module showed it to the viewer, to the `Space` of
  * `openapi/internal/task-service.yaml`: the owner as `{ userId }`, the ten statuses with their
- * category and the creation instant in ISO 8601. The organization of the space is not part of the
- * contract and does not leave the service.
+ * category, the creation instant in ISO 8601, the role of the viewer on the space (`null` when they
+ * see it through some of its lists only) and whether they manage it. The organization of the space
+ * is not part of the contract and does not leave the service.
  *
  * @param {PlacedSpace} space - The space and its next key.
  * @returns {Space} The space of the contract.
@@ -56,5 +57,7 @@ export function toPlacedSpace(space: PlacedSpace): Space {
     nextKey: space.nextKey,
     createdAt: space.createdAt.toISOString(),
     version: space.version,
+    callerRole: space.callerRole,
+    callerCanManage: space.callerCanManage,
   };
 }

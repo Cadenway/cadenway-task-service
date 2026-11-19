@@ -21,10 +21,10 @@ import type { ListListActivityOutput } from './list-list-activity.output.js';
  *
  * @description
  * Lists the activity recorded while tasks were in a list, most recent first, one keyset page at a
- * time (`GET /internal/v1/lists/{listId}/activity`), without a lock. An unknown list and a list of
- * a space the actor does not see (a guest sees none) get the same answer, `list-not-found`. Entries
- * of a task that is now in a space the actor does not see are left out of the items and of the
- * total; a task now in another visible list stays included. `total` counts the entries that match
+ * time (`GET /internal/v1/lists/{listId}/activity`), without a lock. An unknown list and a list the
+ * actor has no role on get the same answer, `list-not-found`. Entries of a task that is now in a
+ * list the actor has no role on are left out of the items and of the total; a task now in another
+ * visible list stays included. `total` counts the entries that match
  * the filters, whatever the page.
  */
 export class ListListActivity {
@@ -96,7 +96,7 @@ export class ListListActivity {
         }
         const filter: ListActivityFilter = {
           listId: input.listId,
-          spaceIds: await this.spaces.visibleSpaceIds(input.organizationId, viewer),
+          listIds: await this.spaces.visibleListIds(input.organizationId, viewer),
           kinds: input.kinds,
           actorIds: input.actorIds,
         };

@@ -20,9 +20,9 @@ import type { ListListTasksOutput } from './list-list-tasks.output.js';
  *
  * @description
  * Lists the tasks of a list, filtered and sorted, one keyset page at a time
- * (`GET /internal/v1/lists/{listId}/tasks`), without a lock. An unknown list and a list of a space
- * the actor does not see (a guest sees none) get the same answer, `list-not-found`; after that,
- * filtering on the list is enough, as a task is in the space of its list. It reads one row more
+ * (`GET /internal/v1/lists/{listId}/tasks`), without a lock. An unknown list and a list the actor
+ * has no role on get the same answer, `list-not-found`; after that, filtering on the list is
+ * enough, as a task is seen through its list. It reads one row more
  * than the page to know whether another follows, and counts the tasks that match the filters in the
  * same read-only transaction, so `total` is the same on every page.
  */

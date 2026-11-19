@@ -14,6 +14,13 @@ describe('toTaskListPatch', () => {
     });
   });
 
+  it('keeps the switch "Accès de l’organisation" when the patch turns it, absent otherwise', () => {
+    expect(toTaskListPatch({ organizationAccess: false })).toStrictEqual({
+      organizationAccess: false,
+    });
+    expect(toTaskListPatch({ name: 'Sprint 15' })).toStrictEqual({ name: 'Sprint 15' });
+  });
+
   it('leaves the goal of a sprint out when the patch does not name it', () => {
     const patch: ReturnType<typeof toTaskListPatch> = toTaskListPatch({
       sprint: { startDate: '2026-11-18', endDate: '2026-12-01' },

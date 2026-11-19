@@ -4,6 +4,17 @@ import { Module } from '@nestjs/common';
 import { OrganizationMembersModule } from '../organization-members/organization-members.module.js';
 import { memberDirectoryProvider } from './composition/providers/adapters/membership/member-directory.provider.js';
 import { spacesUnitOfWorkProvider } from './composition/providers/adapters/space/spaces-unit-of-work.provider.js';
+import { checkListAccessProvider } from './composition/providers/use-cases/access/check-list-access.provider.js';
+import { findAccessTargetProvider } from './composition/providers/use-cases/access/find-access-target.provider.js';
+import { grantRequestedAccessProvider } from './composition/providers/use-cases/access/grant-requested-access.provider.js';
+import { listListGrantsProvider } from './composition/providers/use-cases/access/list-list-grants.provider.js';
+import { listManagedAccessTargetsProvider } from './composition/providers/use-cases/access/list-managed-access-targets.provider.js';
+import { listSpaceGrantsProvider } from './composition/providers/use-cases/access/list-space-grants.provider.js';
+import { removeListGrantProvider } from './composition/providers/use-cases/access/remove-list-grant.provider.js';
+import { removeMemberGrantsProvider } from './composition/providers/use-cases/access/remove-member-grants.provider.js';
+import { removeSpaceGrantProvider } from './composition/providers/use-cases/access/remove-space-grant.provider.js';
+import { setListGrantProvider } from './composition/providers/use-cases/access/set-list-grant.provider.js';
+import { setSpaceGrantProvider } from './composition/providers/use-cases/access/set-space-grant.provider.js';
 import { createListProvider } from './composition/providers/use-cases/list/create-list.provider.js';
 import { findVisibleListProvider } from './composition/providers/use-cases/list/find-visible-list.provider.js';
 import { findVisibleSpaceListsProvider } from './composition/providers/use-cases/list/find-visible-space-lists.provider.js';
@@ -11,6 +22,7 @@ import { getListProvider } from './composition/providers/use-cases/list/get-list
 import { listCurrentSprintsProvider } from './composition/providers/use-cases/list/list-current-sprints.provider.js';
 import { listListsProvider } from './composition/providers/use-cases/list/list-lists.provider.js';
 import { listSidebarListsProvider } from './composition/providers/use-cases/list/list-sidebar-lists.provider.js';
+import { listVisibleListIdsProvider } from './composition/providers/use-cases/list/list-visible-list-ids.provider.js';
 import { updateListProvider } from './composition/providers/use-cases/list/update-list.provider.js';
 import { allocateTaskKeysProvider } from './composition/providers/use-cases/space/allocate-task-keys.provider.js';
 import { createSpaceProvider } from './composition/providers/use-cases/space/create-space.provider.js';
@@ -18,19 +30,25 @@ import { getSpaceProvider } from './composition/providers/use-cases/space/get-sp
 import { handOverAwaitingSpacesProvider } from './composition/providers/use-cases/space/hand-over-awaiting-spaces.provider.js';
 import { handOverPrivateSpacesProvider } from './composition/providers/use-cases/space/hand-over-private-spaces.provider.js';
 import { listSpacesProvider } from './composition/providers/use-cases/space/list-spaces.provider.js';
-import { listVisibleSpaceIdsProvider } from './composition/providers/use-cases/space/list-visible-space-ids.provider.js';
 import { updateSpaceProvider } from './composition/providers/use-cases/space/update-space.provider.js';
+import { ListAccessController } from './presentation/http/controllers/access/list-access.controller.js';
+import { ListGrantsController } from './presentation/http/controllers/access/list-grants.controller.js';
+import { SpaceGrantsController } from './presentation/http/controllers/access/space-grants.controller.js';
 import { ListsController } from './presentation/http/controllers/list/lists.controller.js';
 import { SpaceListsController } from './presentation/http/controllers/list/space-lists.controller.js';
 import { SpacesController } from './presentation/http/controllers/space/spaces.controller.js';
+import { FindAccessTarget } from './public/access/find-access-target.js';
+import { GrantRequestedAccess } from './public/access/grant-requested-access.js';
+import { ListManagedAccessTargets } from './public/access/list-managed-access-targets.js';
+import { RemoveMemberGrants } from './public/access/remove-member-grants.js';
 import { FindVisibleList } from './public/list/find-visible-list.js';
 import { FindVisibleSpaceLists } from './public/list/find-visible-space-lists.js';
 import { ListCurrentSprints } from './public/list/list-current-sprints.js';
 import { ListSidebarLists } from './public/list/list-sidebar-lists.js';
+import { ListVisibleListIds } from './public/list/list-visible-list-ids.js';
 import { AllocateTaskKeys } from './public/space/allocate-task-keys.js';
 import { HandOverAwaitingSpaces } from './public/space/hand-over-awaiting-spaces.js';
 import { HandOverPrivateSpaces } from './public/space/hand-over-private-spaces.js';
-import { ListVisibleSpaceIds } from './public/space/list-visible-space-ids.js';
 
 /**
  * Function markIdempotent
@@ -65,19 +83,28 @@ markIdempotent(SpaceListsController.prototype, 'create');
  * Class SpacesModule
  *
  * @description
- * Composition root of the spaces, their statuses, their task key prefixes and their lists and
- * sprints (P3a). The use cases run on one tenant unit of work that appends their events to the
- * outbox in the same transaction, and read the roles and the owner from `OrganizationMembersModule`
- * through the `MemberDirectory` port, never from the `role` claim of the internal token (decision 4
- * of the P3a plan). It exports `HandOverPrivateSpaces`, which the clean-up job of the
- * member-lifecycle module runs batch after batch once a member left the organization, and
- * `HandOverAwaitingSpaces`, which member-lifecycle runs when the copy learns the owner, and
- * `FindVisibleList`, `FindVisibleSpaceLists`, `ListCurrentSprints`, `ListSidebarLists`,
- * `ListVisibleSpaceIds` and `AllocateTaskKeys`, which the tasks module runs in its own transaction.
+ * Composition root of the spaces, their statuses, their task key prefixes, their lists and
+ * sprints (P3a), and their grants (P3b-1). The use cases run on one tenant unit of work that
+ * appends their events to the outbox in the same transaction, and read the roles and the owner
+ * from `OrganizationMembersModule` through the `MemberDirectory` port, never from the `role` claim
+ * of the internal token (decision 4 of the P3a plan). It exports, for the member-lifecycle module,
+ * `HandOverPrivateSpaces` and `RemoveMemberGrants`, which the clean-up job runs batch after batch
+ * once a member left the organization, and `HandOverAwaitingSpaces`, which it runs when the copy
+ * learns the owner; for the tasks module `FindVisibleList`, `FindVisibleSpaceLists`,
+ * `ListCurrentSprints`, `ListSidebarLists`, `ListVisibleListIds` and `AllocateTaskKeys`; for the
+ * access-requests module `FindAccessTarget`, `ListManagedAccessTargets` and
+ * `GrantRequestedAccess`. They run in the transaction of their caller.
  */
 @Module({
   imports: [OrganizationMembersModule],
-  controllers: [SpacesController, SpaceListsController, ListsController],
+  controllers: [
+    SpacesController,
+    SpaceListsController,
+    ListsController,
+    SpaceGrantsController,
+    ListGrantsController,
+    ListAccessController,
+  ],
   providers: [
     spacesUnitOfWorkProvider,
     memberDirectoryProvider,
@@ -95,18 +122,33 @@ markIdempotent(SpaceListsController.prototype, 'create');
     findVisibleSpaceListsProvider,
     listCurrentSprintsProvider,
     listSidebarListsProvider,
-    listVisibleSpaceIdsProvider,
+    listVisibleListIdsProvider,
     allocateTaskKeysProvider,
+    listSpaceGrantsProvider,
+    setSpaceGrantProvider,
+    removeSpaceGrantProvider,
+    listListGrantsProvider,
+    setListGrantProvider,
+    removeListGrantProvider,
+    checkListAccessProvider,
+    findAccessTargetProvider,
+    listManagedAccessTargetsProvider,
+    grantRequestedAccessProvider,
+    removeMemberGrantsProvider,
   ],
   exports: [
     HandOverPrivateSpaces,
     HandOverAwaitingSpaces,
+    RemoveMemberGrants,
     FindVisibleList,
     FindVisibleSpaceLists,
     ListCurrentSprints,
     ListSidebarLists,
-    ListVisibleSpaceIds,
+    ListVisibleListIds,
     AllocateTaskKeys,
+    FindAccessTarget,
+    ListManagedAccessTargets,
+    GrantRequestedAccess,
   ],
 })
 export class SpacesModule {}

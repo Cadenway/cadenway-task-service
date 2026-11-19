@@ -17,10 +17,12 @@ import {
   SPRINT_14,
   STRANGER,
   UNKNOWN_LIST,
+  atelierNordLists,
   atelierNordMembers,
   cad490State,
   priorityEntry,
   refusalOf,
+  sprint14SharedWith,
   taskState,
 } from '../../../tasks.fixture.js';
 import type { ListListActivityInput } from './list-list-activity.input.js';
@@ -63,8 +65,13 @@ function entry(index: number, overrides: Partial<ActivityEntryState> = {}): Acti
   });
 }
 
-/** A use case on Atelier Nord with five entries, one of which is of a task moved to Design. */
-function atelierNord(): ListListActivity {
+/**
+ * Builds a use case on Atelier Nord with five entries, one of which is of a task moved to Design.
+ *
+ * @param spaces - The fake spaces.
+ * @returns The use case.
+ */
+function atelierNord(spaces = new InMemorySpaceDirectory()): ListListActivity {
   return new ListListActivity(
     new InMemoryTasks({
       tasks: [
@@ -87,7 +94,7 @@ function atelierNord(): ListListActivity {
       ],
     }),
     atelierNordMembers(),
-    new InMemorySpaceDirectory(),
+    spaces,
   );
 }
 
@@ -114,6 +121,28 @@ describe('ListListActivity: the entries recorded while tasks were in a list, mos
 
     expect(page.items.map((item) => item.task.key)).not.toContain('DES-1');
     expect(page.total).toBe(3);
+  });
+
+  it('leaves out the entries of a task now in a list closed to the actor, in a space they see', async () => {
+    const spaces = new InMemorySpaceDirectory({
+      lists: atelierNordLists().map((list) =>
+        list.id === BUGS ? { ...list, organizationAccess: false } : list,
+      ),
+    });
+
+    const page = await atelierNord(spaces).execute(read({ actorUserId: HUGO }));
+
+    expect(page.items.map((item) => item.task.key)).not.toContain('CAD-490');
+    expect(page.total).toBe(3);
+  });
+
+  it('shows a guest the activity of a list shared with them, without the tasks gone elsewhere', async () => {
+    const spaces = sprint14SharedWith({ [NADIA]: 'view' });
+
+    const page = await atelierNord(spaces).execute(read({ actorUserId: NADIA }));
+
+    expect(page.items.map((item) => item.id)).toEqual([entry(2).id, entry(1).id]);
+    expect(page.total).toBe(2);
   });
 
   it('shows those entries to the owner of that private space', async () => {
@@ -154,7 +183,7 @@ describe('ListListActivity: the entries recorded while tasks were in a list, mos
 describe('ListListActivity: what the actor does not see is not found', () => {
   it.each([
     ['an unknown list', { listId: UNKNOWN_LIST }],
-    ['any list, for a guest', { actorUserId: NADIA }],
+    ['a list not shared with a guest', { actorUserId: NADIA }],
     ['a list of the private space of another member', { listId: MAQUETTES }],
   ] as const)('refuses %s as list-not-found', async (_name, overrides) => {
     expect(await refusalOf(atelierNord().execute(read(overrides)))).toEqual({

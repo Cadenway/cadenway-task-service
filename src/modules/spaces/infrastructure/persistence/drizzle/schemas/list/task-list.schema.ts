@@ -1,6 +1,7 @@
 import { organizationPolicy } from '@cadenway/nest-common/database';
 import { sql } from 'drizzle-orm';
 import {
+  boolean,
   check,
   date,
   foreignKey,
@@ -45,7 +46,8 @@ const LOOK_COLOR_VALUES: string = LOOK_COLORS.map((color: string): string => `'$
  * dates are `date` columns read as `YYYY-MM-DD` strings. `id` and `created_at` come from
  * PostgreSQL; `created_at` keeps millisecond precision so that the position of a page round-trips
  * exactly through a JavaScript `Date`. The checks keep a sprint whole: both dates or neither, the
- * end on or after the start, and a goal only on a sprint. A tenant table: `organization_id`
+ * end on or after the start, and a goal only on a sprint. `organization_access` is the switch
+ * "Accès de l’organisation" of the list (P3b-1). A tenant table: `organization_id`
  * carries the policy of the kit, which the migration forces by hand
  * (`ALTER TABLE "lists" FORCE ROW LEVEL SECURITY;`).
  */
@@ -63,6 +65,9 @@ export const taskLists = pgTable(
     sprintStartDate: date('sprint_start_date', { mode: 'string' }),
     sprintEndDate: date('sprint_end_date', { mode: 'string' }),
     sprintGoal: text('sprint_goal'),
+    // The switch "Accès de l’organisation" (P3b-1): on by default, as for every list created
+    // before it existed, so the expand-only migration keeps the P3a rule for them.
+    organizationAccess: boolean('organization_access').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true, precision: 3 }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     version: integer('version').notNull().default(1),

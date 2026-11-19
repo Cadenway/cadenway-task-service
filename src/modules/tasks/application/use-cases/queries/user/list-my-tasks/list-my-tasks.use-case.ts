@@ -17,13 +17,14 @@ import type { ListMyTasksOutput } from './list-my-tasks.output.js';
  * Class ListMyTasks
  *
  * @description
- * Lists the tasks assigned to the actor in every space they see, subtasks included, by due date
- * (the tasks without one last) then in the order of their creation, one keyset page at a time
- * (`GET /internal/v1/users/{userId}/tasks`), without a lock. The tab `open` holds the tasks that are
- * not closed, the tab `closed` those of the keys `done` and `cancelled`; `counts` covers both tabs on
- * every page. A `userId` other than the actor answers `user-not-found`, checked before the
- * membership copy is read (open question 11 of the design). A guest sees no space and gets an empty
- * page with zero counts, without a read (open question 10 of the design).
+ * Lists the tasks assigned to the actor in every list they have a role on, subtasks included, by
+ * due date (the tasks without one last) then in the order of their creation, one keyset page at a
+ * time (`GET /internal/v1/users/{userId}/tasks`), without a lock. The tab `open` holds the tasks
+ * that are not closed, the tab `closed` those of the keys `done` and `cancelled`; `counts` covers
+ * both tabs on every page. A `userId` other than the actor answers `user-not-found`, checked before
+ * the membership copy is read (open question 11 of the design). The lists come from the spaces
+ * module (a guest has a role on the lists shared with them only); an actor with a role on no list
+ * gets an empty page with zero counts, without a read of the tasks.
  */
 export class ListMyTasks {
   // #region Properties
@@ -82,17 +83,17 @@ export class ListMyTasks {
     }
     return this.unitOfWork.runReadOnly(async (store: TasksStore): Promise<ListMyTasksOutput> => {
       const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
-      const spaceIds: readonly string[] = await this.spaces.visibleSpaceIds(
+      const listIds: readonly string[] = await this.spaces.visibleListIds(
         input.organizationId,
         viewer,
       );
-      if (spaceIds.length === 0) {
+      if (listIds.length === 0) {
         return { items: [], next: null, counts: { open: 0, closed: 0 } };
       }
       const rows: readonly ListedTask[] = await store.assigned.pageAssignedTo(
         input.organizationId,
         viewer.userId,
-        spaceIds,
+        listIds,
         input.state,
         input.after,
         input.limit + 1,
@@ -105,7 +106,7 @@ export class ListMyTasks {
       const counts: MyTaskCountsView = await store.counter.stateCountsOf(
         input.organizationId,
         viewer.userId,
-        spaceIds,
+        listIds,
       );
       return { items: page.items.map((row: ListedTask) => row.task), next: page.next, counts };
     });

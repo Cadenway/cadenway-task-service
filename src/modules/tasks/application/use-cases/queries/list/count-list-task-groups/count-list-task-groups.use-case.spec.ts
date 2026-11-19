@@ -245,7 +245,7 @@ describe('CountListTaskGroups: the groups are paged from the position of the las
 describe('CountListTaskGroups: what the actor does not see is not found', () => {
   it.each([
     ['an unknown list', { listId: UNKNOWN_LIST }],
-    ['any list, for a guest', { actorUserId: NADIA }],
+    ['a list not shared with a guest', { actorUserId: NADIA }],
     ['a list of the private space of another member', { listId: MAQUETTES }],
   ] as const)('refuses %s as list-not-found, before counting', async (_name, overrides) => {
     const tasks = sprint14();

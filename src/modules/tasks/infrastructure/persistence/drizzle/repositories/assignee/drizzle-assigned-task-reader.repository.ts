@@ -13,8 +13,8 @@ import { DrizzleTaskPageLoader } from '../task/task-page-loader.repository.js';
  * @description
  * `AssignedTaskReader` on `task_assignees` and `tasks`, in the transaction of its unit of work,
  * without a lock. The statement starts from `task_assignees_user_index` on the organization and the
- * account, names the organization on both tables and keeps the spaces the actor sees. A page is
- * that statement plus five at most for its summaries.
+ * account, names the organization on both tables and keeps the lists the actor has a role on. A
+ * page is that statement plus five at most for its summaries.
  */
 export class DrizzleAssignedTaskReader implements AssignedTaskReader {
   // #region Properties
@@ -50,13 +50,13 @@ export class DrizzleAssignedTaskReader implements AssignedTaskReader {
    * Method pageAssignedTo
    *
    * @description
-   * Reads a page of the tasks assigned to an account in some spaces, by due date (undated last),
-   * then `(created_at, id)`. The sort value of a position is the due date or `null`. No space gives
+   * Reads a page of the tasks assigned to an account in some lists, by due date (undated last),
+   * then `(created_at, id)`. The sort value of a position is the due date or `null`. No list gives
    * no row, without a statement.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} userId - The account.
-   * @param {readonly string[]} spaceIds - The spaces the actor sees.
+   * @param {readonly string[]} listIds - The lists the actor has a role on.
    * @param {MyTaskState} state - `open` for the tasks not closed, `closed` for `done` and `cancelled`.
    * @param {TaskPosition | null} after - The last task of the previous page, `null` for the first.
    * @param {number} limit - How many rows at most.
@@ -65,17 +65,17 @@ export class DrizzleAssignedTaskReader implements AssignedTaskReader {
   public async pageAssignedTo(
     organizationId: string,
     userId: string,
-    spaceIds: readonly string[],
+    listIds: readonly string[],
     state: MyTaskState,
     after: TaskPosition | null,
     limit: number,
   ): Promise<readonly ListedTask[]> {
-    if (spaceIds.length === 0) {
+    if (listIds.length === 0) {
       return [];
     }
     return this.pages.load(
       organizationId,
-      assignedPageStatement(organizationId, userId, spaceIds, state, after, limit),
+      assignedPageStatement(organizationId, userId, listIds, state, after, limit),
     );
   }
   // #endregion

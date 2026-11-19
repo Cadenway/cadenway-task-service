@@ -16,9 +16,10 @@ import type { ListLabelsOutput } from './list-labels.output.js';
  *
  * @description
  * Lists the labels of the tasks the actor sees, each label once whatever its case, one keyset page
- * at a time (`GET /internal/v1/labels`), without a lock. Only the tasks of the spaces the actor sees
- * count, subtasks included, and only their spellings: a guest sees no space and gets an empty page,
- * without a read (open question 10 of the design; the contract states it for "Accueil" only).
+ * at a time (`GET /internal/v1/labels`), without a lock. Only the tasks of the lists the actor has
+ * a role on count, subtasks included, and only their spellings; the lists come from the spaces
+ * module (a guest has a role on the lists shared with them only). An actor with a role on no list
+ * gets an empty page without a read of the labels.
  */
 export class ListLabels {
   // #region Properties
@@ -73,16 +74,16 @@ export class ListLabels {
   public async execute(input: ListLabelsInput): Promise<ListLabelsOutput> {
     return this.unitOfWork.runReadOnly(async (store: TasksStore): Promise<ListLabelsOutput> => {
       const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
-      const spaceIds: readonly string[] = await this.spaces.visibleSpaceIds(
+      const listIds: readonly string[] = await this.spaces.visibleListIds(
         input.organizationId,
         viewer,
       );
-      if (spaceIds.length === 0) {
+      if (listIds.length === 0) {
         return { items: [], next: null };
       }
       const rows: readonly ListedLabel[] = await store.labels.pageOfLabels(
         input.organizationId,
-        spaceIds,
+        listIds,
         input.search,
         input.after,
         input.limit + 1,

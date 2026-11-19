@@ -4,6 +4,7 @@ import type { OutboxRelay, OutboxWriter } from '@cadenway/nest-messaging/outbox'
 import type { SpacesStore } from '../../../../../application/models/transactions/spaces-store.model.js';
 import type { SpacesUnitOfWork } from '../../../../../application/ports/outbound/transactions/space/spaces-unit-of-work.port.js';
 import { OutboxSpaceEvents } from '../../../../messaging/outbox/space/outbox-space-events.adapter.js';
+import { DrizzleGrantRepository } from '../../repositories/access/drizzle-grant.repository.js';
 import { DrizzleTaskListRepository } from '../../repositories/list/drizzle-task-list.repository.js';
 import { DrizzleSpacePrefixRepository } from '../../repositories/space/drizzle-space-prefix.repository.js';
 import { DrizzleSpaceRepository } from '../../repositories/space/drizzle-space.repository.js';
@@ -95,6 +96,7 @@ export class TenantSpacesUnitOfWork implements SpacesUnitOfWork {
           spaces: new DrizzleSpaceRepository(transaction.db),
           prefixes: new DrizzleSpacePrefixRepository(transaction.db),
           lists: new DrizzleTaskListRepository(transaction.db),
+          grants: new DrizzleGrantRepository(transaction.db),
           events: new OutboxSpaceEvents(transaction, this.outbox, (): void => {
             appends.count += 1;
           }),

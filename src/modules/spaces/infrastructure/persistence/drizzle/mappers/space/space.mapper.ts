@@ -83,7 +83,7 @@ export function toSpaceStatuses(stored: unknown): SpaceStatuses {
  * @returns {Visibility} The visibility.
  * @throws {Error} When the value is neither `organization` nor `private`.
  */
-function toVisibility(value: string): Visibility {
+export function toVisibility(value: string): Visibility {
   if (value === 'organization' || value === 'private') {
     return value;
   }

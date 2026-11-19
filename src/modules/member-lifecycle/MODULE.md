@@ -10,15 +10,18 @@ tenant transaction:
 - for a removal, enqueues the `task.clean-up-removed-member` job, which runs after the commit: it
   hands the private spaces the former member owned to the owner of the organization
   (`HandOverPrivateSpaces` of spaces), or leaves them awaiting an owner while the copy does not
-  hold that owner, then removes the member from the assignees of every task, closed tasks included
+  hold that owner, then removes their grants of spaces and lists (`RemoveMemberGrants` of spaces),
+  then drops their access requests, pending or answered (`DropMemberAccessRequests` of
+  access-requests), then
+  removes the member from the assignees of every task, closed tasks included
   (`UnassignRemovedMember` of tasks), batch after batch (`CleanUpRemovedMember`);
 - for a join or a role change that gives the role `owner`, hands the spaces awaiting an owner to
   that owner (`HandOverAwaitingSpaces` of spaces).
 
 It owns no data, no route and no event of its own, and one job queue,
 `task.clean-up-removed-member`, with its dead-letter queue (`src/config/job-queues.ts`). A module of its own rather than a part of
-organization-members: the spaces and tasks modules read the copy, so the copy cannot call
-them without a module cycle; this module depends on all of them and none depends on it.
+organization-members: the spaces, tasks and access-requests modules read the copy, so the copy
+cannot call them without a module cycle; this module depends on all of them and none depends on it.
 
 ## Public entry points
 
@@ -28,7 +31,8 @@ them without a module cycle; this module depends on all of them and none depends
 
 ## Owned tables
 
-None. The copy belongs to organization-members, the spaces to spaces, the tasks to tasks. The jobs
+None. The copy belongs to organization-members, the spaces and the grants to spaces, the access
+requests to access-requests, the tasks to tasks. The jobs
 live in the `pgboss` schema of `@cadenway/nest-jobs`, provisioned by `src/migrate.ts`; their
 payload holds the account id and the `traceparent` of the removal, the organization travels in the
 envelope of the kit.
@@ -41,8 +45,9 @@ None.
 
 None of its own. The clean-up job appends, through the outboxes of the other modules and in the
 transaction of each of its batches, one `space.updated.v1` per private space it hands over
-(`changed: ['ownerUserId']`) and one `task.updated.v1` per task it changes
-(`changed: ['assigneeIds']`), both by the actor `{ type: 'system', id: 'task-service' }`. The
+(`changed: ['ownerUserId']`), one `space.access-changed.v1` or `list.access-changed.v1` per grant it
+removes, and one `task.updated.v1` per task it changes (`changed: ['assigneeIds']`), all by the
+actor `{ type: 'system', id: 'task-service' }`; a dropped access request emits nothing. The
 handover of the awaiting spaces to an arriving owner appends `space.updated.v1` in the transaction
 of the event.
 
@@ -76,13 +81,19 @@ of the event.
   with its outbox rows) and the processed id commit together. A transient failure (the database
   unavailable, a lock timeout) rolls the whole unit back, the change of the copy and the job
   included, and the event is redelivered on the schedule below.
-- A removal always commits and touches no space and no task (decision revised by the coordinating
-  session for P3a, then again in PR 2: a revocation must never wait for cleanup). It writes the copy
-  and one job row, so its cost does not grow with what the member owned; the job does the work
-  afterwards, in batches. Until the job reaches a private space, the space stays owned by a person
-  who is no longer a member, so nobody sees it, the owner and the admins of the organization
-  included (fail closed); until it reaches a task, the task still lists the former member among its
-  assignees (the MODULE.md of tasks has the note for the contract). An owner of the organization
+- A removal always commits and touches no space, no grant, no access request and no task (decision
+  revised by the coordinating session for P3a, then again in PR 2: a revocation must never wait for
+  cleanup). It writes the copy and one job row, so its cost does not grow with what the member
+  owned; the job does the work afterwards, in batches. Until the job reaches a private space, the
+  space stays owned by a person who is no longer a member, so nobody sees it, the owner and the
+  admins of the organization included (fail closed); until it reaches a grant, the grant stays
+  listed among the grants of its space or list, but gives the former member nothing (the copy answers
+  `404 organization.not-found` to them); until it reaches a pending access request, the request
+  stays in the listing of the people who manage its target, and an approval or a refusal of it
+  answers `404 access-request.not-found` (its requester left); until it reaches a task, the task
+  still lists the former member
+  among its assignees (the MODULE.md of tasks has the note for the contract). An owner of the
+  organization
   unknown to the copy (its `member.joined.v1` has not arrived, or the copy is incomplete) is not a
   failure: the job leaves the private spaces of the former member awaiting an owner
   (`spaces.awaiting_owner`), seen by nobody, the former owner included, and logs once the warning
@@ -155,12 +166,13 @@ unapplied, with no later correction.
 - A private space passes to the owner of the organization only when its owner is no longer a
   member of the organization; it awaits that owner, seen by nobody, while the copy does not hold
   one.
-- A removal of the copy commits whatever the spaces or the tasks hold; only a transient failure
-  redelivers it.
+- A removal of the copy commits whatever the spaces, the grants, the access requests or the tasks
+  hold; only a transient failure redelivers it.
 - A removal enqueues exactly one clean-up job per membership and version, in its transaction; the
-  job hands the private spaces over, then removes the former member from every task, after the
-  commit, unless the copy holds them as a member again when a batch runs. A join or a role change
-  enqueues nothing, so a member who becomes a guest keeps the tasks they hold.
+  job hands the private spaces over, then removes the grants of the former member, then drops their
+  access requests, pending or answered, then removes them from every task, after the commit,
+  unless the copy holds them as a member again when a batch runs. A join or a role change enqueues
+  nothing, so a member who becomes a guest keeps the tasks, the grants and the requests they hold.
 - A private space of a former member is seen by nobody until the job hands it over.
 
 ## Transactions
@@ -189,7 +201,12 @@ runner of the kit (any 8-4-4-4-12 hexadecimal id, in either case). `CleanUpRemov
 loops within the attempt, each batch in its own tenant transaction:
 
 1. `HandOverPrivateSpaces` (spaces): up to 100 private spaces, until a batch finds none;
-2. `UnassignRemovedMember` (tasks): up to 500 tasks after the last task id of the previous batch,
+2. `RemoveMemberGrants` (spaces): up to 100 grants, space grants first, then list grants, each
+   with its `space.access-changed.v1` or `list.access-changed.v1`, until a batch finds none;
+3. `DropMemberAccessRequests` (access-requests): up to 500 access requests of the account,
+   pending or answered (the answered ones carry the free text the person wrote), and its attempts,
+   without event, until a batch finds none;
+4. `UnassignRemovedMember` (tasks): up to 500 tasks after the last task id of the previous batch,
    until a batch finds none.
 
 It stops only on an empty batch, never on a short one, and for good on a batch that finds the
@@ -197,25 +214,35 @@ account a member again. It starts no batch once the signal of its attempt aborte
 expiration of the queue, or a shutdown past the 8 s `shutdownTimeoutMs` of the runtime, under the
 10 s default grace period of Docker: a batch takes about a second, and the handler stops at a batch
 boundary). A failed batch (the database, a lock or statement timeout) rolls back alone: the batches
-before it stay committed, the attempt fails, and pg-boss retries the job 8 times with backoff from
+before it stay committed, the attempt fails with a `CleanUpStepError` that names the step
+(`spaces`, `grants`, `requests` or `tasks`) and the batches committed before it, the error of the
+batch as its `cause`, and pg-boss retries the job 8 times with backoff from
 10 s, capped at 30 min (the last attempt starts 42 to 72 minutes after the first failure when the
-attempts fail fast). A retry starts again from the spaces and tasks still owned or assigned, so
-nothing is written twice. A permanent error (a malformed job, a defect) costs that whole schedule
-before its dead letter. After the last attempt the job becomes a dead letter of
-`task.clean-up-removed-member.dead-letter`, kept 14 days. The spaces module documents the cost of a
-space batch, the tasks module the nine statements of a task batch.
+attempts fail fast). A retry starts again from the spaces, grants, requests and tasks still
+owned, held, left or assigned, so nothing is written twice. A permanent error (a malformed
+job, a defect) costs that whole schedule before its dead letter. After the last attempt the job
+becomes a dead letter of `task.clean-up-removed-member.dead-letter`, kept 14 days. The spaces module
+documents the cost of a space batch and of a grant batch, the access-requests module the four
+statements of a request batch, the tasks module the nine statements of a task batch.
 
 The runtime of the jobs keeps a pool of 2 connections of its own beside the 5 of the application
 pool: 7 connections per replica.
 
-**Signals for operators.** The kit logs each failed attempt (`JobsService`, a warning while it will
-be retried, an error on the last attempt, naming the dead-letter queue), with the job id, the
-queue, the attempt and the error, never the payload; a crashed attempt is retried silently after
-its expiration. The dead-letter watch logs an error with the count of retained dead letters every
+**Signals for operators.** The kit logs each failed attempt once (`JobsService`, a warning while it
+will be retried, an error on the last attempt, naming the dead-letter queue), with the job id, the
+queue, the attempt and the error, never the payload; the message of the error says which step
+failed and what the attempt had committed ("grants batch failed after 2 committed batches:
+canceling statement due to lock timeout"), and the handler logs nothing more. The span
+`process task.clean-up-removed-member` of the attempt records the exception and, for a failed
+batch, the attributes `cleanup.step` and `cleanup.batches`. A crashed attempt is retried silently
+after its expiration. The dead-letter watch logs an error with the count of retained dead letters every
 60 s while the queue holds one, once per replica (each replica sees the same stock). A finished job
 logs `removed member clean-up job handled` (`CleanUpRemovedMemberHandler`) with the job id, the
 attempt, the outcome (`completed` or `member-again`), the numbers of spaces handed over and left
-awaiting, of tasks changed and of batches committed, no account. Not covered:
+awaiting (`spacesHandedOver`, `spacesAwaitingOwner`), of grants removed (`grantsRemoved`), of
+access requests dropped (`requestsDropped`), of tasks changed (`tasksUnassigned`) and of batches
+committed (`batches`, those that found something to process; the closing call of each step is not
+counted), no account. Not covered:
 
 - readiness does not cover the job runtime: a replica whose worker stopped polling stays ready;
 - no metric counts the waiting jobs or the attempts that run long;
@@ -226,10 +253,15 @@ awaiting, of tasks changed and of batches committed, no account. Not covered:
 - rollback: the release before PR 2 has no worker for this queue, so an enqueued job waits; it is
   deleted after 14 days unless a release with the worker returns, and then the former member stays
   owner of their private spaces (seen by nobody) and assigned to their tasks. Check: the query of
-  rows of `task_assignees` for the account below.
+  rows of `task_assignees` for the account below. A rollback to a release before P3b-1 runs the two
+  steps of that release only: the grants and the pending access requests of a member removed
+  meanwhile stay (they give the former member nothing, the copy answers them `404`), and the job of
+  that removal completed, so only the reconciliation below, which does not exist yet, would remove
+  them. Check: the counts of `space_grants`, `list_grants` and pending `access_requests` below.
 
 **What an operator does with a dead letter.** Every dead letter is an incident; it can leave a
-removed member owner of private spaces nobody sees and assigned to tasks for good. As the migrator
+removed member owner of private spaces nobody sees, listed among the grants of spaces and lists,
+with pending access requests, and assigned to tasks for good. As the migrator
 role, which owns the `pgboss` schema (checked against pg-boss 12.38 and the schema of
 `tests/tasks.int-spec.ts`, which runs these statements):
 
@@ -245,10 +277,19 @@ role, which owns the `pgboss` schema (checked against pg-boss 12.38 and the sche
    ```
 
    Check what is left, as the migrator role with `select set_config('app.system_access', 'on',
-true)` in the same transaction: `select count(*) from spaces where organization_id = $1 and
-visibility = 'private' and owner_user_id = $2 and not awaiting_owner` and `select count(*) from
-task_assignees where organization_id = $1 and user_id = $2`, while `organization_members` holds
-   no active membership of the account (`removed_at is null`).
+true)` in the same transaction, while `organization_members` holds no active membership of the
+   account (`removed_at is null`):
+
+   ```sql
+   select count(*) from spaces
+    where organization_id = $1 and visibility = 'private' and owner_user_id = $2
+      and not awaiting_owner;
+   select count(*) from space_grants where organization_id = $1 and user_id = $2;
+   select count(*) from list_grants where organization_id = $1 and user_id = $2;
+   select count(*) from access_requests
+    where organization_id = $1 and requester_user_id = $2 and state = 'pending';
+   select count(*) from task_assignees where organization_id = $1 and user_id = $2;
+   ```
 
 2. Fix the cause, then replay. While the failed original is kept (7 days after its last attempt,
    `deleteAfterSeconds`), give it one more attempt, as `retry()` of pg-boss does:
@@ -285,8 +326,9 @@ task_assignees where organization_id = $1 and user_id = $2`, while `organization
     where name = 'task.clean-up-removed-member.dead-letter' and id = $dead_letter_id;
    ```
 
-A reconciliation job that finds former members still owning private spaces or assigned to tasks
-does not exist yet (follow-up of PR 2); until then the procedure above is the only remedy.
+A reconciliation job that finds former members still owning private spaces, holding grants, with
+pending access requests or assigned to tasks does not exist yet (follow-up of PR 2); until then the
+procedure above is the only remedy.
 
 **An organization id in upper case.** The contract accepts a UUID in either case, and the kit
 builds the context of an event, its deduplicator transaction and the envelope of a job from the raw
@@ -320,6 +362,23 @@ spelling, which the outbox writer refuses. A gap of the kit, not fixed here.
 - The spaces come first: a private space of a former member is seen by nobody until it is handed
   over, while a task still assigned to them stays visible to the others, so the spaces are the
   longer harm.
+- P3b-1 PR 1 adds two steps between the spaces and the tasks, each a batch operation of its owner
+  (decision 3 of P3b-1: "Removing a member from the organization removes their grants, in the
+  member clean-up job, bounded batches"; the contract drops their pending requests too): the grants
+  (`RemoveMemberGrants` of spaces, 100 per batch), then the access requests and their attempts
+  (`DropMemberAccessRequests` of access-requests, 500 per batch). The answered requests go with the
+  pending ones, in the same batches, since each carries the free text the person wrote (privacy).
+  The grants come before the requests and the tasks: they are shown in the share dialog and carried
+  by the `…access-changed.v1` events the projections of the other services keep, while a pending
+  request only waits for an answer and an assignment only names the person. Both stop the job for
+  good on `member-again`, like the other steps; the output and the log line gain `grantsRemoved`
+  and `requestsDropped`.
+- Open point raised by the security review, to be confirmed by the user: a member who joins again
+  before the job reaches their grants keeps them (`member-again` stops the job for good), as P3a
+  already keeps the private spaces and the tasks of a member who comes back.
+- A failed batch rejects with `CleanUpStepError` (step, batches committed, cause), an application
+  error free of the framework, so that the one log line of the kit and the span of the attempt say
+  where the job stopped; the handler adds no log of its own.
 - The first version of PR 1 rolled the removal back while the owner of the organization was
   unknown, so the removed member stayed a member for up to about 25 h 43 min; the coordinating
   session revised it: the removal commits and the spaces fail closed, awaiting an owner. Decision
@@ -335,4 +394,10 @@ spelling, which the outbox writer refuses. A gap of the kit, not fixed here.
   job and keeps the space and the tasks, a removal in upper case, the trace of the job and the
   dead-letter SQL above. A dead letter reached through the whole retry schedule is not provoked
   (about an hour); it is seeded by SQL. `member-events-handler.provider.spec.ts` pins the
-  production schedule and the three handler names.
+  production schedule and the three handler names. `tests/access.int-spec.ts` proves that the job
+  removes the grants of a former member in batches, each with its access event by the system,
+  drops their requests and attempts and unassigns their tasks, that a lock timeout fails one batch
+  and not the removal, and that a member who joins again before the job reaches their grants keeps
+  them and the job ends `member-again`. The order of the four steps, the stops and the
+  `CleanUpStepError` of a failed batch are proven by the unit specs of `CleanUpRemovedMember` and
+  of its handler.

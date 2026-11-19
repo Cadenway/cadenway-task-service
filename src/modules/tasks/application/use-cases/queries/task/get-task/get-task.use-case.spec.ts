@@ -6,6 +6,7 @@ import {
   CAMILLE,
   CREATED_AT,
   DESIGN,
+  HUGO,
   InMemorySpaceDirectory,
   InMemoryTasks,
   INES,
@@ -17,6 +18,7 @@ import {
   UPDATED_AT,
   atelierNordMembers,
   refusalOf,
+  sprint14SharedWith,
   subtaskState,
   taskState,
 } from '../../../tasks.fixture.js';
@@ -111,10 +113,47 @@ describe('GetTask: a member reads a task of a list they see', () => {
   });
 });
 
+describe('GetTask: a read needs any role on the list of the task', () => {
+  it.each(['view', 'comment'] as const)(
+    'reads the task for a member with %s on its list',
+    async (role) => {
+      const useCase = new GetTask(
+        InMemoryTasks.withCad482(),
+        atelierNordMembers(),
+        sprint14SharedWith({ [HUGO]: role }),
+      );
+
+      expect((await useCase.execute(read({ actorUserId: HUGO }))).key).toBe('CAD-482');
+    },
+  );
+
+  it('reads it for a guest the list is shared with', async () => {
+    const useCase = new GetTask(
+      InMemoryTasks.withCad482(),
+      atelierNordMembers(),
+      sprint14SharedWith({ [NADIA]: 'view' }),
+    );
+
+    expect((await useCase.execute(read({ actorUserId: NADIA }))).key).toBe('CAD-482');
+  });
+
+  it('answers task-not-found to a member the list is closed to', async () => {
+    const useCase = new GetTask(
+      InMemoryTasks.withCad482(),
+      atelierNordMembers(),
+      sprint14SharedWith({}),
+    );
+
+    expect(await refusalOf(useCase.execute(read({ actorUserId: INES })))).toEqual({
+      reason: 'task-not-found',
+    });
+  });
+});
+
 describe('GetTask: what the actor does not see is not found', () => {
   it.each([
     ['an unknown task', { taskKey: 'CAD-999' }],
-    ['any task, for a guest', { actorUserId: NADIA }],
+    ['a task of no list shared with a guest', { actorUserId: NADIA }],
   ] as const)('answers %s as task-not-found', async (_name, overrides) => {
     const { useCase } = atelierNord();
 

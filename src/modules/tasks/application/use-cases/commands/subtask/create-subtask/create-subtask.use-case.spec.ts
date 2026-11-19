@@ -21,6 +21,7 @@ import {
   STRANGER,
   atelierNordMembers,
   refusalOf,
+  sprint14SharedWith,
   subtaskState,
   taskState,
 } from '../../../tasks.fixture.js';
@@ -295,7 +296,7 @@ describe('CreateSubtask: the tree rules of the domain', () => {
 describe('CreateSubtask: what the actor does not see is not found', () => {
   it.each([
     ['an unknown parent', { taskKey: 'CAD-999' }],
-    ['any parent, for a guest', { actorUserId: NADIA }],
+    ['a parent of no list shared with a guest', { actorUserId: NADIA }],
   ] as const)('refuses %s', async (_name, overrides) => {
     const { useCase } = atelierNord();
 
@@ -318,5 +319,56 @@ describe('CreateSubtask: what the actor does not see is not found', () => {
     expect(await refusalOf(useCase.execute(createSubtask({ actorUserId: STRANGER })))).toEqual({
       reason: 'organization-not-found',
     });
+  });
+});
+
+describe('CreateSubtask: a subtask needs edit on the list of its parent', () => {
+  it.each(['view', 'comment'] as const)(
+    'refuses a member with %s on Sprint 14 as role-insufficient, before locking a membership',
+    async (role) => {
+      const trace: string[] = [];
+      const tasks = new InMemoryTasks({ tasks: [taskState()], trace });
+      const useCase = new CreateSubtask(
+        tasks,
+        atelierNordMembers([], trace),
+        sprint14SharedWith({ [HUGO]: role }, trace),
+      );
+
+      expect(await refusalOf(useCase.execute(createSubtask({ actorUserId: HUGO })))).toEqual({
+        reason: 'role-insufficient',
+        role,
+      });
+      expect(tasks.tasks.size).toBe(1);
+      expect(trace.filter((call) => call.endsWith(':lock'))).toEqual([
+        `members.roleOf:${HUGO}:lock`,
+      ]);
+    },
+  );
+
+  it('refuses it with explicit assignees too', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState()] });
+    const useCase = new CreateSubtask(
+      tasks,
+      atelierNordMembers(),
+      sprint14SharedWith({ [HUGO]: 'comment' }),
+    );
+
+    expect(
+      await refusalOf(useCase.execute(createSubtask({ actorUserId: HUGO, assigneeIds: [INES] }))),
+    ).toEqual({ reason: 'role-insufficient', role: 'comment' });
+    expect(tasks.tasks.size).toBe(1);
+  });
+
+  it('lets a guest with edit on the list create a subtask, which inherits the first assignee', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState()] });
+    const useCase = new CreateSubtask(
+      tasks,
+      atelierNordMembers(),
+      sprint14SharedWith({ [NADIA]: 'edit' }),
+    );
+
+    const view = await useCase.execute(createSubtask({ actorUserId: NADIA }));
+
+    expect(view).toMatchObject({ parentKey: 'CAD-482', assigneeIds: [CAMILLE] });
   });
 });

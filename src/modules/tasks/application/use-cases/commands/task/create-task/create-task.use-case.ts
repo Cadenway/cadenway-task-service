@@ -18,6 +18,7 @@ import { ActivityRecorder } from '../../../../services/activity/activity-recorde
 import { AssigneeChecker } from '../../../../services/member/assignee-checker.service.js';
 import { ViewerResolver } from '../../../../services/member/viewer-resolver.service.js';
 import { TaskAnnouncer } from '../../../../services/task/task-announcer.service.js';
+import { TaskEditGuard } from '../../../../services/task/task-edit-guard.service.js';
 import { TaskRuleGuard } from '../../../../services/task/task-rule-guard.service.js';
 import { TaskViewBuilder } from '../../../../services/task/task-view-builder.service.js';
 import type { CreateTaskInput } from './create-task.input.js';
@@ -30,8 +31,9 @@ import type { CreateTaskOutput } from './create-task.output.js';
  * Creates a task in a list the actor sees, with the subtasks of the request
  * (`POST /internal/v1/lists/{listId}/tasks`). In one tenant transaction, which joins the one of the
  * idempotency interceptor: the membership of the actor is locked, the list is read through the
- * spaces module (`list-not-found` for an unknown list or a space the actor does not see), the
- * memberships of the assignees are locked in id order, the domain drafts the task (`Task.create`
+ * spaces module (`list-not-found` for an unknown list or a list the actor has no role on,
+ * `role-insufficient` for a list they see without `edit`), the memberships of the assignees are
+ * locked in id order, the domain drafts the task (`Task.create`
  * decides every rule and its refusals), then the keys are allocated, one for the task and one per
  * subtask in body order, so that the counter of the prefix stays locked for the shortest time:
  * after the key counter only statements remain, one for the task and, whatever the number of
@@ -58,6 +60,9 @@ export class CreateTask {
 
   /** Maps the refusals of the domain. */
   private readonly rules: TaskRuleGuard;
+
+  /** Checks the role a creation needs on the list. */
+  private readonly editing: TaskEditGuard;
 
   /** Writes the activity entries. */
   private readonly recorder: ActivityRecorder;
@@ -91,6 +96,7 @@ export class CreateTask {
     this.viewers = new ViewerResolver(members);
     this.assignees = new AssigneeChecker(members);
     this.rules = new TaskRuleGuard();
+    this.editing = new TaskEditGuard();
     this.recorder = new ActivityRecorder();
     this.announcer = new TaskAnnouncer();
     this.views = new TaskViewBuilder();
@@ -106,7 +112,8 @@ export class CreateTask {
    *
    * @param {CreateTaskInput} input - The actor, the list and the task.
    * @returns {Promise<CreateTaskOutput>} The task created.
-   * @throws {TaskRefusal} `organization-not-found`, `list-not-found`, `status-hidden`,
+   * @throws {TaskRefusal} `organization-not-found`, `list-not-found`, `role-insufficient`,
+   * `status-hidden`,
    * `cancel-reason-required`, `cancel-reason-unexpected`, `start-date-invalid` or
    * `assignee-invalid`.
    */
@@ -125,6 +132,7 @@ export class CreateTask {
       if (placement === null) {
         throw new TaskRefusal({ reason: 'list-not-found' });
       }
+      this.editing.requireEdit(placement.list);
       const candidates: readonly AssigneeCandidate[] = await this.assignees.candidates(
         input.organizationId,
         input.assigneeIds,

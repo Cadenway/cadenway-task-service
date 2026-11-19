@@ -6,6 +6,7 @@ import type { EventActor } from '../../../../application/models/actor/event-acto
 import type { SpaceEvents } from '../../../../application/ports/outbound/messaging/space/space-events.port.js';
 import type { TaskList } from '../../../../domain/aggregates/list/task-list.aggregate.js';
 import type { Space } from '../../../../domain/aggregates/space/space.aggregate.js';
+import type { GrantEntry } from '../../../../domain/value-objects/access/grant-entry.value-object.js';
 import type { TaskListField } from '../../../../domain/value-objects/list/task-list-field.value-object.js';
 import type { TaskListState } from '../../../../domain/value-objects/list/task-list-state.value-object.js';
 import type { SpaceField } from '../../../../domain/value-objects/space/space-field.value-object.js';
@@ -150,7 +151,8 @@ export class OutboxSpaceEvents implements SpaceEvents {
    * Method listCreated
    *
    * @description
-   * Appends `list.created.v1`, the whole list at its version 1.
+   * Appends `list.created.v1`, the whole list at its version 1, its switch "Accès de
+   * l’organisation" included.
    *
    * @param {TaskList} list - The stored list.
    * @param {EventActor} actor - Its creator.
@@ -177,6 +179,7 @@ export class OutboxSpaceEvents implements SpaceEvents {
               endDate: state.sprint.endDate,
               goal: state.sprint.goal,
             },
+      organizationAccess: state.organizationAccess,
     });
     this.onAppend();
   }
@@ -218,6 +221,78 @@ export class OutboxSpaceEvents implements SpaceEvents {
               goal: state.sprint.goal,
             },
       changed: [...changed],
+    });
+    this.onAppend();
+  }
+
+  /**
+   * Method spaceAccessChanged
+   *
+   * @description
+   * Appends `space.access-changed.v1`: every grant of the space after the change, in the order
+   * they were first given, the people whose grant changed, and the version of the space.
+   *
+   * @param {Space} space - The space at its version after the change.
+   * @param {readonly GrantEntry[]} grants - Every grant of the space after the change.
+   * @param {readonly string[]} changedUserIds - The people whose grant changed, at least one.
+   * @param {EventActor} actor - Who changed it: a member, or task-service.
+   * @returns {Promise<void>} Resolves once appended.
+   * @throws {Error} When the payload does not match the schema of the contract: a defect, which
+   * rolls the transaction back.
+   */
+  public async spaceAccessChanged(
+    space: Space,
+    grants: readonly GrantEntry[],
+    changedUserIds: readonly string[],
+    actor: EventActor,
+  ): Promise<void> {
+    const state: SpaceState = space.snapshot;
+    await this.outbox.append(this.transaction, eventSchemas, 'space.access-changed.v1', {
+      organizationId: state.organizationId,
+      actor: { type: actor.type, id: actor.id },
+      version: state.version,
+      spaceId: state.id,
+      grants: grants.map((grant: GrantEntry) => ({ userId: grant.userId, role: grant.role })),
+      changedUserIds: [...changedUserIds],
+    });
+    this.onAppend();
+  }
+
+  /**
+   * Method listAccessChanged
+   *
+   * @description
+   * Appends `list.access-changed.v1`: every grant and the switch "Accès de l’organisation" of the
+   * list after the change, what changed, the people whose grant changed (none when only the switch
+   * did), and the version of the list.
+   *
+   * @param {TaskList} list - The list at its version after the change.
+   * @param {readonly GrantEntry[]} grants - Every grant of the list after the change.
+   * @param {readonly ('grants' | 'organizationAccess')[]} changed - What changed, at least one.
+   * @param {readonly string[]} changedUserIds - The people whose grant changed.
+   * @param {EventActor} actor - Who changed it: a member, or task-service.
+   * @returns {Promise<void>} Resolves once appended.
+   * @throws {Error} When the payload does not match the schema of the contract: a defect, which
+   * rolls the transaction back.
+   */
+  public async listAccessChanged(
+    list: TaskList,
+    grants: readonly GrantEntry[],
+    changed: readonly ('grants' | 'organizationAccess')[],
+    changedUserIds: readonly string[],
+    actor: EventActor,
+  ): Promise<void> {
+    const state: TaskListState = list.snapshot;
+    await this.outbox.append(this.transaction, eventSchemas, 'list.access-changed.v1', {
+      organizationId: state.organizationId,
+      actor: { type: actor.type, id: actor.id },
+      version: state.version,
+      listId: state.id,
+      spaceId: state.spaceId,
+      organizationAccess: state.organizationAccess,
+      grants: grants.map((grant: GrantEntry) => ({ userId: grant.userId, role: grant.role })),
+      changed: [...changed],
+      changedUserIds: [...changedUserIds],
     });
     this.onAppend();
   }

@@ -16,8 +16,11 @@ import {
   STRANGER,
   UNKNOWN_SPACE,
   atelierNordMembers,
+  backlogState,
   designState,
+  listGrantOf,
   refusalOf,
+  spaceGrantOf,
   spaceState,
 } from '../../../spaces.fixture.js';
 import type { CreateListInput } from './create-list.input.js';
@@ -38,6 +41,7 @@ function createBacklog(overrides: Partial<CreateListInput> = {}): CreateListInpu
     icon: null,
     color: 'gris',
     sprint: null,
+    organizationAccess: true,
     ...overrides,
   };
 }
@@ -62,11 +66,11 @@ function atelierNord(): InMemorySpaces {
   return new InMemorySpaces({ spaces: [spaceState(), designState()] });
 }
 
-describe('CreateList: any member who sees the space creates a list in it', () => {
+describe('CreateList: a member with edit on the space creates a list in it', () => {
   it('stores the list at version 1 and returns it', async () => {
     const spaces = atelierNord();
 
-    const list = await new CreateList(spaces, atelierNordMembers()).execute(createBacklog());
+    const { list } = await new CreateList(spaces, atelierNordMembers()).execute(createBacklog());
 
     expect(list).toMatchObject({
       organizationId: ATELIER_NORD,
@@ -75,6 +79,7 @@ describe('CreateList: any member who sees the space creates a list in it', () =>
       icon: null,
       color: 'gris',
       sprint: null,
+      organizationAccess: true,
       version: 1,
     });
     expect(spaces.lists.get(list.id)).toEqual(list);
@@ -83,7 +88,7 @@ describe('CreateList: any member who sees the space creates a list in it', () =>
   it('appends list.created by the caller, in the same transaction', async () => {
     const spaces = atelierNord();
 
-    const list = await new CreateList(spaces, atelierNordMembers()).execute(createBacklog());
+    const { list } = await new CreateList(spaces, atelierNordMembers()).execute(createBacklog());
 
     expect(spaces.events).toEqual([
       { kind: 'listCreated', listId: list.id, spaceId: PRODUIT, actor: { type: 'user', id: LEA } },
@@ -92,7 +97,7 @@ describe('CreateList: any member who sees the space creates a list in it', () =>
   });
 
   it('stores the name the domain trims', async () => {
-    const list = await new CreateList(atelierNord(), atelierNordMembers()).execute(
+    const { list } = await new CreateList(atelierNord(), atelierNordMembers()).execute(
       createBacklog({ name: '  Backlog ' }),
     );
 
@@ -100,7 +105,7 @@ describe('CreateList: any member who sees the space creates a list in it', () =>
   });
 
   it('lets the owner of the space create a list in its private space', async () => {
-    const list = await new CreateList(atelierNord(), atelierNordMembers()).execute(
+    const { list } = await new CreateList(atelierNord(), atelierNordMembers()).execute(
       createBacklog({ actorUserId: HUGO, spaceId: DESIGN }),
     );
 
@@ -123,7 +128,7 @@ describe('CreateList: a sprint has dates, a goal, and ends on or after its first
   it('creates Sprint 14 from 3 to 17 November with its goal', async () => {
     const spaces = atelierNord();
 
-    const list = await new CreateList(spaces, atelierNordMembers()).execute(createSprint());
+    const { list } = await new CreateList(spaces, atelierNordMembers()).execute(createSprint());
 
     expect(list.sprint).toEqual({
       startDate: '2026-11-03',
@@ -134,7 +139,7 @@ describe('CreateList: a sprint has dates, a goal, and ends on or after its first
   });
 
   it('allows a sprint of a single day, with no goal', async () => {
-    const list = await new CreateList(atelierNord(), atelierNordMembers()).execute(
+    const { list } = await new CreateList(atelierNord(), atelierNordMembers()).execute(
       createSprint({ sprint: { startDate: '2026-11-03', endDate: '2026-11-03' } }),
     );
 
@@ -233,5 +238,89 @@ describe('CreateList: the membership of the caller is locked, so a removal canno
     await new CreateList(atelierNord(), members).execute(createBacklog());
 
     expect(members.roleCalls).toEqual([{ organizationId: ATELIER_NORD, userId: LEA, lock: true }]);
+  });
+});
+
+describe('CreateList: a list is created in a space the caller has edit on', () => {
+  /** A list of the private space "Design". */
+  const MAQUETTES = '019a7100-0000-7000-8000-000000000003';
+
+  /**
+   * The private Design, shared with Léa Petit with the role given, and its list Maquettes shared
+   * with the guest Nadia Benali.
+   *
+   * @param role - The role of the grant of Léa Petit.
+   * @returns The fake store.
+   */
+  function designSharedWithLea(role: 'edit' | 'comment' | 'view'): InMemorySpaces {
+    return new InMemorySpaces({
+      spaces: [designState()],
+      lists: [backlogState({ id: MAQUETTES, spaceId: DESIGN, name: 'Maquettes' })],
+      grants: [spaceGrantOf(DESIGN, LEA, role), listGrantOf(DESIGN, MAQUETTES, NADIA, 'edit')],
+    });
+  }
+
+  it('answers edit for the new list, without reading grants in a space of the organization', async () => {
+    const spaces = atelierNord();
+
+    const created = await new CreateList(spaces, atelierNordMembers()).execute(createBacklog());
+
+    expect(created.callerRole).toBe('edit');
+    expect(created.list.organizationAccess).toBe(true);
+    expect(spaces.viewerGrantsCalls).toEqual([]);
+  });
+
+  it('stores the switch "Accès de l’organisation" off when asked, answering the role it was created with', async () => {
+    const spaces = atelierNord();
+
+    const created = await new CreateList(spaces, atelierNordMembers()).execute(
+      createBacklog({ organizationAccess: false }),
+    );
+
+    expect(created.callerRole).toBe('edit');
+    expect(spaces.lists.get(created.list.id)?.organizationAccess).toBe(false);
+  });
+
+  it('lets a member with edit on a private space through its grant create a list in it', async () => {
+    const created = await new CreateList(designSharedWithLea('edit'), atelierNordMembers()).execute(
+      createBacklog({ spaceId: DESIGN }),
+    );
+
+    expect(created.list.spaceId).toBe(DESIGN);
+  });
+
+  it.each([['comment'], ['view']] as const)(
+    'refuses role-insufficient with the role %s on the space, and stores nothing',
+    async (role: 'comment' | 'view') => {
+      const spaces = designSharedWithLea(role);
+
+      const refusal = await refusalOf(
+        new CreateList(spaces, atelierNordMembers()).execute(createBacklog({ spaceId: DESIGN })),
+      );
+
+      expect(refusal).toEqual({ reason: 'role-insufficient', role });
+      expect(spaces.lists.size).toBe(1);
+      expect(spaces.events).toEqual([]);
+    },
+  );
+
+  it('refuses role-insufficient with no role to a guest who sees the space through a list', async () => {
+    const refusal = await refusalOf(
+      new CreateList(designSharedWithLea('view'), atelierNordMembers()).execute(
+        createBacklog({ actorUserId: NADIA, spaceId: DESIGN }),
+      ),
+    );
+
+    expect(refusal).toEqual({ reason: 'role-insufficient', role: null });
+  });
+
+  it('answers space-not-found, not role-insufficient, to a member who does not see the space', async () => {
+    const refusal = await refusalOf(
+      new CreateList(designSharedWithLea('view'), atelierNordMembers()).execute(
+        createBacklog({ actorUserId: INES, spaceId: DESIGN }),
+      ),
+    );
+
+    expect(refusal).toEqual({ reason: 'space-not-found' });
   });
 });

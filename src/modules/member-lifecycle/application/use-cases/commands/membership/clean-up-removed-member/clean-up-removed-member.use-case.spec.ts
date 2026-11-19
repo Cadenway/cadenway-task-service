@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
+import { CleanUpStepError } from '../../../../models/clean-up/clean-up-step-error.model.js';
+import type { GrantRemovalBatch } from '../../../../models/clean-up/grant-removal-batch.model.js';
+import type { RequestDropBatch } from '../../../../models/clean-up/request-drop-batch.model.js';
 import type { SpaceHandoverBatch } from '../../../../models/clean-up/space-handover-batch.model.js';
 import type { TaskUnassignmentBatch } from '../../../../models/clean-up/task-unassignment-batch.model.js';
+import type { MemberAccessRequests } from '../../../../ports/outbound/access-requests/access-request/member-access-requests.port.js';
+import type { MemberGrants } from '../../../../ports/outbound/spaces/access/member-grants.port.js';
 import type { PrivateSpaceHandover } from '../../../../ports/outbound/spaces/space/private-space-handover.port.js';
 import type { TaskAssignments } from '../../../../ports/outbound/tasks/assignee/task-assignments.port.js';
 import { CleanUpRemovedMember } from './clean-up-removed-member.use-case.js';
@@ -14,6 +19,33 @@ const HUGO: string = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b32';
 
 /** The clean-up of Hugo Dubois. */
 const input = { organizationId: ATELIER_NORD, userId: HUGO } as const;
+
+/** What a run finds when nothing is left. */
+const NOTHING = {
+  spacesHandedOver: 0,
+  spacesAwaitingOwner: 0,
+  grantsRemoved: 0,
+  requestsDropped: 0,
+  tasksUnassigned: 0,
+  batches: 0,
+} as const;
+
+/** The scripted answers of the four steps. */
+interface Scripts {
+  // #region Properties
+  /** The answers of the handover of the spaces. */
+  readonly spaces?: readonly (SpaceHandoverBatch | Error)[];
+
+  /** The answers of the removal of the grants. */
+  readonly grants?: readonly (GrantRemovalBatch | Error)[];
+
+  /** The answers of the dropping of the access requests. */
+  readonly requests?: readonly (RequestDropBatch | Error)[];
+
+  /** The answers of the unassignment from the tasks. */
+  readonly tasks?: readonly (TaskUnassignmentBatch | Error)[];
+  // #endregion
+}
 
 /** Ports that answer from scripted batches and record what they were asked, in order. */
 interface Scripted {
@@ -30,55 +62,79 @@ interface Scripted {
  * Wires the use case on scripted ports: each call takes the next answer, then `none-left`. An
  * `Error` in a script is thrown by that call.
  *
- * @param spaceBatches - The answers of the handover of the spaces.
- * @param taskBatches - The answers of the unassignment from the tasks.
+ * @param scripts - The answers of each step.
  * @param onCall - Run at each call, with its name, before it answers.
  * @returns The calls and the use case.
  */
-function scripted(
-  spaceBatches: readonly (SpaceHandoverBatch | Error)[],
-  taskBatches: readonly (TaskUnassignmentBatch | Error)[],
-  onCall: (call: string) => void = () => undefined,
-): Scripted {
+function scripted(scripts: Scripts, onCall: (call: string) => void = () => undefined): Scripted {
   const calls: string[] = [];
-  const spaceAnswers = [...spaceBatches];
-  const taskAnswers = [...taskBatches];
+  const spaceAnswers = [...(scripts.spaces ?? [])];
+  const grantAnswers = [...(scripts.grants ?? [])];
+  const requestAnswers = [...(scripts.requests ?? [])];
+  const taskAnswers = [...(scripts.tasks ?? [])];
   const next = <TBatch>(answers: (TBatch | Error)[], fallback: TBatch): Promise<TBatch> => {
     const answer: TBatch | Error = answers.shift() ?? fallback;
     return answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer);
   };
+  const record = (call: string): void => {
+    calls.push(call);
+    onCall(call);
+  };
   const spaces: PrivateSpaceHandover = {
     handOverBatch: (organizationId: string, formerOwnerUserId: string) => {
-      const call = `spaces:${organizationId}:${formerOwnerUserId}`;
-      calls.push(call);
-      onCall(call);
+      record(`spaces:${organizationId}:${formerOwnerUserId}`);
       return next<SpaceHandoverBatch>(spaceAnswers, { outcome: 'none-left' });
     },
     handOverAwaiting: () => Promise.reject(new Error('Not part of the clean-up.')),
   };
+  const grants: MemberGrants = {
+    removeBatch: (organizationId: string, userId: string) => {
+      record(`grants:${organizationId}:${userId}`);
+      return next<GrantRemovalBatch>(grantAnswers, { outcome: 'none-left' });
+    },
+  };
+  const requests: MemberAccessRequests = {
+    dropBatch: (organizationId: string, userId: string) => {
+      record(`requests:${organizationId}:${userId}`);
+      return next<RequestDropBatch>(requestAnswers, { outcome: 'none-left' });
+    },
+  };
   const assignments: TaskAssignments = {
     unassignBatch: (organizationId: string, userId: string, afterTaskId: string | null) => {
-      const call = `tasks:${organizationId}:${userId}:${afterTaskId ?? 'first'}`;
-      calls.push(call);
-      onCall(call);
+      record(`tasks:${organizationId}:${userId}:${afterTaskId ?? 'first'}`);
       return next<TaskUnassignmentBatch>(taskAnswers, { outcome: 'none-left' });
     },
   };
-  return { calls, useCase: new CleanUpRemovedMember(spaces, assignments) };
+  return { calls, useCase: new CleanUpRemovedMember(spaces, grants, requests, assignments) };
 }
 
-describe('CleanUpRemovedMember: the private spaces first, then the tasks, batch after batch', () => {
-  it('hands the spaces over until a batch finds none, then unassigns the tasks after the last id of each batch until one finds none', async () => {
-    const { calls, useCase } = scripted(
-      [
+/**
+ * The step of each call, in order.
+ *
+ * @param calls - The calls.
+ * @returns Their steps.
+ */
+function stepsOf(calls: readonly string[]): string[] {
+  return calls.map((call) => call.split(':')[0] ?? '');
+}
+
+describe('CleanUpRemovedMember: spaces, then grants, then access requests, then tasks, batch after batch', () => {
+  it('runs every step until a batch finds none, then the tasks after the last id of each batch', async () => {
+    const { calls, useCase } = scripted({
+      spaces: [
         { outcome: 'handed-over', handedOver: 100, awaitingOwner: 0 },
         { outcome: 'handed-over', handedOver: 20, awaitingOwner: 0 },
       ],
-      [
+      grants: [
+        { outcome: 'removed', removed: 100 },
+        { outcome: 'removed', removed: 3 },
+      ],
+      requests: [{ outcome: 'dropped', dropped: 7 }],
+      tasks: [
         { outcome: 'unassigned', unassigned: 500, lastTaskId: 'task-500' },
         { outcome: 'unassigned', unassigned: 200, lastTaskId: 'task-700' },
       ],
-    );
+    });
 
     const output = await useCase.execute(input);
 
@@ -86,95 +142,163 @@ describe('CleanUpRemovedMember: the private spaces first, then the tasks, batch 
       outcome: 'completed',
       spacesHandedOver: 120,
       spacesAwaitingOwner: 0,
+      grantsRemoved: 103,
+      requestsDropped: 7,
       tasksUnassigned: 700,
-      batches: 4,
+      batches: 7,
     });
     expect(calls).toEqual([
       `spaces:${ATELIER_NORD}:${HUGO}`,
       `spaces:${ATELIER_NORD}:${HUGO}`,
       `spaces:${ATELIER_NORD}:${HUGO}`,
+      `grants:${ATELIER_NORD}:${HUGO}`,
+      `grants:${ATELIER_NORD}:${HUGO}`,
+      `grants:${ATELIER_NORD}:${HUGO}`,
+      `requests:${ATELIER_NORD}:${HUGO}`,
+      `requests:${ATELIER_NORD}:${HUGO}`,
       `tasks:${ATELIER_NORD}:${HUGO}:first`,
       `tasks:${ATELIER_NORD}:${HUGO}:task-500`,
       `tasks:${ATELIER_NORD}:${HUGO}:task-700`,
     ]);
   });
 
+  it('removes the grants after the handover of the spaces and before the access requests and the tasks', async () => {
+    const { calls, useCase } = scripted({
+      spaces: [{ outcome: 'handed-over', handedOver: 1, awaitingOwner: 0 }],
+      grants: [{ outcome: 'removed', removed: 1 }],
+      requests: [{ outcome: 'dropped', dropped: 1 }],
+      tasks: [{ outcome: 'unassigned', unassigned: 1, lastTaskId: 'task-1' }],
+    });
+
+    await useCase.execute(input);
+
+    expect([...new Set(stepsOf(calls))]).toEqual(['spaces', 'grants', 'requests', 'tasks']);
+  });
+
   it('goes on after a short batch, and stops only on an empty one', async () => {
-    const { calls, useCase } = scripted(
-      [{ outcome: 'handed-over', handedOver: 3, awaitingOwner: 0 }],
-      [
+    const { calls, useCase } = scripted({
+      spaces: [{ outcome: 'handed-over', handedOver: 3, awaitingOwner: 0 }],
+      grants: [
+        { outcome: 'removed', removed: 0 },
+        { outcome: 'removed', removed: 2 },
+      ],
+      requests: [{ outcome: 'dropped', dropped: 0 }],
+      tasks: [
         { outcome: 'unassigned', unassigned: 0, lastTaskId: 'task-1' },
         { outcome: 'unassigned', unassigned: 2, lastTaskId: 'task-3' },
       ],
-    );
+    });
 
     const output = await useCase.execute(input);
 
     expect(output.outcome).toBe('completed');
-    expect(calls.filter((call) => call.startsWith('spaces'))).toHaveLength(2);
-    expect(calls.filter((call) => call.startsWith('tasks'))).toHaveLength(3);
+    expect(stepsOf(calls)).toEqual([
+      'spaces',
+      'spaces',
+      'grants',
+      'grants',
+      'grants',
+      'requests',
+      'requests',
+      'tasks',
+      'tasks',
+      'tasks',
+    ]);
   });
 
   it('counts the spaces left awaiting an owner while the copy holds none', async () => {
-    const { useCase } = scripted([{ outcome: 'handed-over', handedOver: 0, awaitingOwner: 2 }], []);
+    const { useCase } = scripted({
+      spaces: [{ outcome: 'handed-over', handedOver: 0, awaitingOwner: 2 }],
+    });
 
     const output = await useCase.execute(input);
 
     expect(output).toEqual({
+      ...NOTHING,
       outcome: 'completed',
-      spacesHandedOver: 0,
       spacesAwaitingOwner: 2,
-      tasksUnassigned: 0,
       batches: 1,
     });
   });
 
   it('finds nothing to do when nothing is left, so a job run again is harmless', async () => {
-    const { calls, useCase } = scripted([], []);
+    const { calls, useCase } = scripted({});
 
     const output = await useCase.execute(input);
 
-    expect(output).toEqual({
-      outcome: 'completed',
-      spacesHandedOver: 0,
-      spacesAwaitingOwner: 0,
-      tasksUnassigned: 0,
-      batches: 0,
-    });
+    expect(output).toEqual({ ...NOTHING, outcome: 'completed' });
     expect(calls).toEqual([
       `spaces:${ATELIER_NORD}:${HUGO}`,
+      `grants:${ATELIER_NORD}:${HUGO}`,
+      `requests:${ATELIER_NORD}:${HUGO}`,
       `tasks:${ATELIER_NORD}:${HUGO}:first`,
     ]);
   });
 });
 
 describe('CleanUpRemovedMember: the job stops for good once the person is a member again', () => {
-  it('touches no task when a space batch finds the account a member again', async () => {
-    const { calls, useCase } = scripted(
-      [{ outcome: 'handed-over', handedOver: 100, awaitingOwner: 0 }, { outcome: 'member-again' }],
-      [{ outcome: 'unassigned', unassigned: 1, lastTaskId: 'task-1' }],
-    );
+  it('touches no grant, request or task when a space batch finds the account a member again', async () => {
+    const { calls, useCase } = scripted({
+      spaces: [
+        { outcome: 'handed-over', handedOver: 100, awaitingOwner: 0 },
+        { outcome: 'member-again' },
+      ],
+      grants: [{ outcome: 'removed', removed: 1 }],
+      tasks: [{ outcome: 'unassigned', unassigned: 1, lastTaskId: 'task-1' }],
+    });
 
     const output = await useCase.execute(input);
 
     expect(output).toEqual({
+      ...NOTHING,
       outcome: 'member-again',
       spacesHandedOver: 100,
-      spacesAwaitingOwner: 0,
-      tasksUnassigned: 0,
       batches: 1,
     });
-    expect(calls.some((call) => call.startsWith('tasks'))).toBe(false);
+    expect(stepsOf(calls)).toEqual(['spaces', 'spaces']);
+  });
+
+  it('stops at a grant batch that finds the account a member again, before the requests and tasks', async () => {
+    const { calls, useCase } = scripted({
+      grants: [{ outcome: 'removed', removed: 100 }, { outcome: 'member-again' }],
+      requests: [{ outcome: 'dropped', dropped: 1 }],
+    });
+
+    const output = await useCase.execute(input);
+
+    expect(output).toEqual({
+      ...NOTHING,
+      outcome: 'member-again',
+      grantsRemoved: 100,
+      batches: 1,
+    });
+    expect(stepsOf(calls)).toEqual(['spaces', 'grants', 'grants']);
+  });
+
+  it('stops at a request batch that finds the account a member again, before the tasks', async () => {
+    const { calls, useCase } = scripted({
+      requests: [{ outcome: 'dropped', dropped: 500 }, { outcome: 'member-again' }],
+      tasks: [{ outcome: 'unassigned', unassigned: 1, lastTaskId: 'task-1' }],
+    });
+
+    const output = await useCase.execute(input);
+
+    expect(output).toEqual({
+      ...NOTHING,
+      outcome: 'member-again',
+      requestsDropped: 500,
+      batches: 1,
+    });
+    expect(stepsOf(calls)).toEqual(['spaces', 'grants', 'requests', 'requests']);
   });
 
   it('keeps the task batches committed before a re-join and asks for no more', async () => {
-    const { calls, useCase } = scripted(
-      [],
-      [
+    const { calls, useCase } = scripted({
+      tasks: [
         { outcome: 'unassigned', unassigned: 500, lastTaskId: 'task-500' },
         { outcome: 'member-again' },
       ],
-    );
+    });
 
     const output = await useCase.execute(input);
 
@@ -183,25 +307,78 @@ describe('CleanUpRemovedMember: the job stops for good once the person is a memb
   });
 });
 
-describe('CleanUpRemovedMember: a failed batch fails the attempt, and the next one resumes', () => {
-  it('rejects with the error of the batch and asks for nothing after it', async () => {
+describe('CleanUpRemovedMember: a failed batch fails the attempt, says where, and the next one resumes', () => {
+  it('rejects with the step, the batches committed and the cause, and asks for nothing after it', async () => {
     const failure = new Error('lock timeout');
-    const { calls, useCase } = scripted(
-      [{ outcome: 'handed-over', handedOver: 100, awaitingOwner: 0 }, failure],
-      [],
-    );
+    const { calls, useCase } = scripted({
+      spaces: [{ outcome: 'handed-over', handedOver: 100, awaitingOwner: 0 }, failure],
+    });
 
-    await expect(useCase.execute(input)).rejects.toThrow(failure);
+    const rejection: unknown = await useCase.execute(input).catch((error: unknown) => error);
+
+    expect(rejection).toBeInstanceOf(CleanUpStepError);
+    expect(rejection).toMatchObject({
+      step: 'spaces',
+      batches: 1,
+      cause: failure,
+      message: 'spaces batch failed after 1 committed batches: lock timeout',
+    });
     expect(calls).toHaveLength(2);
+  });
+
+  it('names the grants step after two committed batches, and drops no request', async () => {
+    const failure = new Error('statement timeout');
+    const { calls, useCase } = scripted({
+      spaces: [{ outcome: 'handed-over', handedOver: 3, awaitingOwner: 0 }],
+      grants: [{ outcome: 'removed', removed: 100 }, failure],
+    });
+
+    await expect(useCase.execute(input)).rejects.toThrow(
+      'grants batch failed after 2 committed batches: statement timeout',
+    );
+    expect(stepsOf(calls)).toEqual(['spaces', 'spaces', 'grants', 'grants']);
+  });
+
+  it('names the requests step, and unassigns no task', async () => {
+    const failure = new Error('statement timeout');
+    const { calls, useCase } = scripted({ requests: [failure] });
+
+    await expect(useCase.execute(input)).rejects.toThrow(
+      expect.objectContaining({ step: 'requests', batches: 0 }) as CleanUpStepError,
+    );
+    expect(stepsOf(calls)).toEqual(['spaces', 'grants', 'requests']);
+  });
+
+  it('names the tasks step with the batches before it', async () => {
+    const failure = new Error('statement timeout');
+    const { useCase } = scripted({
+      tasks: [{ outcome: 'unassigned', unassigned: 500, lastTaskId: 'task-500' }, failure],
+    });
+
+    await expect(useCase.execute(input)).rejects.toThrow(
+      expect.objectContaining({ step: 'tasks', batches: 1, cause: failure }) as CleanUpStepError,
+    );
+  });
+
+  it('keeps the reason of an aborted signal as it is', async () => {
+    const attempt = new AbortController();
+    const reason = new Error('The attempt expired.');
+    attempt.abort(reason);
+    const { useCase } = scripted({});
+
+    const rejection: unknown = await useCase
+      .execute({ ...input, signal: attempt.signal })
+      .catch((error: unknown) => error);
+
+    expect(rejection).toBe(reason);
   });
 
   it('starts the tasks of a new attempt again from the first batch', async () => {
     const failure = new Error('statement timeout');
-    const { calls, useCase } = scripted(
-      [],
-      [{ outcome: 'unassigned', unassigned: 500, lastTaskId: 'task-500' }, failure],
-    );
-    await expect(useCase.execute(input)).rejects.toThrow(failure);
+    const { calls, useCase } = scripted({
+      tasks: [{ outcome: 'unassigned', unassigned: 500, lastTaskId: 'task-500' }, failure],
+    });
+    await expect(useCase.execute(input)).rejects.toThrow(CleanUpStepError);
 
     await useCase.execute(input);
 
@@ -215,7 +392,7 @@ describe('CleanUpRemovedMember: no batch starts once the signal of the attempt a
   it('rejects with the reason before the first batch of an attempt already aborted', async () => {
     const attempt = new AbortController();
     attempt.abort(new Error('The attempt expired.'));
-    const { calls, useCase } = scripted([], []);
+    const { calls, useCase } = scripted({});
 
     await expect(useCase.execute({ ...input, signal: attempt.signal })).rejects.toThrow(
       'The attempt expired.',
@@ -223,13 +400,16 @@ describe('CleanUpRemovedMember: no batch starts once the signal of the attempt a
     expect(calls).toEqual([]);
   });
 
-  it('keeps the batches committed before the abort and starts no other, spaces or tasks', async () => {
+  it('keeps the batches committed before the abort and starts no other, of any step', async () => {
     const attempt = new AbortController();
     const { calls, useCase } = scripted(
-      [{ outcome: 'handed-over', handedOver: 100, awaitingOwner: 0 }],
-      [{ outcome: 'unassigned', unassigned: 500, lastTaskId: 'task-500' }],
+      {
+        spaces: [{ outcome: 'handed-over', handedOver: 100, awaitingOwner: 0 }],
+        grants: [{ outcome: 'removed', removed: 100 }],
+        tasks: [{ outcome: 'unassigned', unassigned: 500, lastTaskId: 'task-500' }],
+      },
       (call) => {
-        if (call.startsWith('tasks')) {
+        if (call.startsWith('grants')) {
           attempt.abort(new Error('The attempt expired.'));
         }
       },
@@ -238,10 +418,6 @@ describe('CleanUpRemovedMember: no batch starts once the signal of the attempt a
     await expect(useCase.execute({ ...input, signal: attempt.signal })).rejects.toThrow(
       'The attempt expired.',
     );
-    expect(calls).toEqual([
-      `spaces:${ATELIER_NORD}:${HUGO}`,
-      `spaces:${ATELIER_NORD}:${HUGO}`,
-      `tasks:${ATELIER_NORD}:${HUGO}:first`,
-    ]);
+    expect(stepsOf(calls)).toEqual(['spaces', 'spaces', 'grants']);
   });
 });

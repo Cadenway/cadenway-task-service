@@ -75,8 +75,8 @@ export class ListsController {
    * Method read
    *
    * @description
-   * `GET /internal/v1/lists/{listId}`: `200` with a list the actor sees, `404 list.not-found` for
-   * any other.
+   * `GET /internal/v1/lists/{listId}`: `200` with a list the actor has a role on, with
+   * `callerRole`; `404 list.not-found` for any other.
    *
    * @param {ListPath} path - The id of the list.
    * @returns {Promise<TaskList>} The list.
@@ -97,8 +97,8 @@ export class ListsController {
    * @description
    * `PATCH /internal/v1/lists/{listId}`: `200` with the list after the merge patch, the same
    * version when nothing changed. `If-Match` is optional. `404 list.not-found`,
-   * `412 request.version-mismatch` with `details.version` and `422 list.sprint-dates-invalid`
-   * come from the use case.
+   * `403 access.role-insufficient` without `edit` on the list, `412 request.version-mismatch` with
+   * `details.version` and `422 list.sprint-dates-invalid` come from the use case.
    *
    * @param {ListPath} path - The id of the list.
    * @param {UpdateListBody} body - The merge patch.

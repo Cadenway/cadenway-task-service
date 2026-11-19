@@ -227,10 +227,10 @@ export class DrizzleActivityRepository implements ActivityRepository {
    *
    * @description
    * Reads a page of the entries recorded while their task was in a list, most recent first, kept
-   * when the task is now in one of the visible spaces; filtered by kinds and actors.
+   * when the task is now in one of the visible lists; filtered by kinds and actors.
    *
    * @param {string} organizationId - The organization of the transaction.
-   * @param {ListActivityFilter} filter - The list, the visible spaces and the filters.
+   * @param {ListActivityFilter} filter - The list, the visible lists and the filters.
    * @param {ActivityPosition | null} after - The last entry of the previous page, `null` for the first.
    * @param {number} limit - How many rows at most.
    * @returns {Promise<readonly ActivityEntryState[]>} The entries.
@@ -269,7 +269,7 @@ export class DrizzleActivityRepository implements ActivityRepository {
    * Counts the entries `pageOfList` reads, with the same join and filters.
    *
    * @param {string} organizationId - The organization of the transaction.
-   * @param {ListActivityFilter} filter - The list, the visible spaces and the filters.
+   * @param {ListActivityFilter} filter - The list, the visible lists and the filters.
    * @returns {Promise<number>} The count.
    */
   public async countOfList(organizationId: string, filter: ListActivityFilter): Promise<number> {
@@ -292,10 +292,11 @@ export class DrizzleActivityRepository implements ActivityRepository {
    *
    * @description
    * The conditions both list reads share: the organization on both tables, the list the entry was
-   * recorded in, the visible spaces of the task as it is now, and the optional kinds and actors.
+   * recorded in, the list of the task as it is now among the visible ones, and the optional kinds
+   * and actors.
    *
    * @param {string} organizationId - The organization of the transaction.
-   * @param {ListActivityFilter} filter - The list, the visible spaces and the filters.
+   * @param {ListActivityFilter} filter - The list, the visible lists and the filters.
    * @returns {SQL | undefined} The condition.
    */
   private listCondition(organizationId: string, filter: ListActivityFilter): SQL | undefined {
@@ -303,7 +304,7 @@ export class DrizzleActivityRepository implements ActivityRepository {
       eq(activityEntries.organizationId, organizationId),
       eq(tasks.organizationId, organizationId),
       eq(activityEntries.listId, filter.listId),
-      anyOf(tasks.spaceId, filter.spaceIds, 'uuid'),
+      anyOf(tasks.listId, filter.listIds, 'uuid'),
       filter.kinds === null ? undefined : anyOf(activityEntries.kind, filter.kinds, 'text'),
       filter.actorIds === null
         ? undefined

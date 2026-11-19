@@ -4,7 +4,7 @@ import type { VisibleList } from '../../../../projections/list/visible-list.proj
  * Interface ListCurrentSprintsOutput
  *
  * @description
- * The sprints under way in the spaces a member sees.
+ * The sprints under way a member has a role on.
  */
 export interface ListCurrentSprintsOutput {
   // #region Properties
@@ -12,8 +12,8 @@ export interface ListCurrentSprintsOutput {
    * Property lists
    *
    * @description
-   * The sprints whose period holds the day, bounds included, by end date, then creation; empty for
-   * a guest.
+   * The sprints the member has a role on whose period holds the day, bounds included, by end date,
+   * then creation, each with that role.
    *
    * @type {readonly VisibleList[]}
    * @readonly

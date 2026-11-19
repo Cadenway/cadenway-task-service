@@ -1,6 +1,7 @@
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import type { ChecklistCounts } from '../../../../../application/projections/task/checklist-counts.projection.js';
 import type { SubtaskCounts } from '../../../../../application/projections/task/subtask-counts.projection.js';
+import type { TaskLocation } from '../../../../../application/projections/task/task-location.projection.js';
 import type { TaskReferenceView } from '../../../../../application/projections/task/task-reference.projection.js';
 import type { TaskSummaryView } from '../../../../../application/projections/task/task-summary.projection.js';
 import type { TaskRow } from './task.mapper.js';
@@ -116,5 +117,30 @@ export function toTaskReference(
     key,
     name: row.name,
     status: toStatusKey(row.status, `task ${key}`),
+  };
+}
+
+/**
+ * Function toTaskLocation
+ *
+ * @description
+ * Maps the id, the key, the name, the status, the list and the space of a stored task to the
+ * location other modules read.
+ *
+ * @param {Pick<TaskRow, 'id' | 'keyPrefix' | ...>} row - The id, key, name, status, list and space.
+ * @returns {TaskLocation} The location.
+ * @throws {Error} When the stored status is outside the status keys.
+ */
+export function toTaskLocation(
+  row: Pick<TaskRow, 'id' | 'keyPrefix' | 'keyNumber' | 'name' | 'status' | 'listId' | 'spaceId'>,
+): TaskLocation {
+  const key: string = toTaskKeyText(row.keyPrefix, row.keyNumber);
+  return {
+    id: row.id,
+    key,
+    name: row.name,
+    status: toStatusKey(row.status, `task ${key}`),
+    listId: row.listId,
+    spaceId: row.spaceId,
   };
 }

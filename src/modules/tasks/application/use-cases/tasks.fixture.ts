@@ -48,6 +48,7 @@ import type { TaskPosition } from '../models/query/task-position.model.js';
 import type { MyTaskState } from '../models/user/my-task-state.model.js';
 import type { KeyAllocation } from '../models/placement/key-allocation.model.js';
 import type { ListPlacement } from '../models/placement/list-placement.model.js';
+import type { AccessRole } from '../../domain/value-objects/access/access-role.value-object.js';
 import type { PlacedList } from '../models/placement/placed-list.model.js';
 import type { PlacedSpace } from '../models/placement/placed-space.model.js';
 import { TaskRefusal } from '../models/task/task-refusal.model.js';
@@ -67,6 +68,7 @@ import type { TaskGroupView } from '../projections/query/task-group.projection.j
 import type { HomeStatsView } from '../projections/user/home-stats.projection.js';
 import type { MyTaskCountsView } from '../projections/user/my-task-counts.projection.js';
 import type { SubtaskCounts } from '../projections/task/subtask-counts.projection.js';
+import type { TaskLocation } from '../projections/task/task-location.projection.js';
 import type { TaskReferenceView } from '../projections/task/task-reference.projection.js';
 import type { TaskSummaryView } from '../projections/task/task-summary.projection.js';
 
@@ -170,6 +172,8 @@ export function placedSpace(overrides: Partial<PlacedSpace> = {}): PlacedSpace {
     nextKey: 'CAD-496',
     createdAt: new Date('2026-10-01T09:00:00Z'),
     version: 1,
+    callerRole: 'edit',
+    callerCanManage: true,
     ...overrides,
   };
 }
@@ -190,8 +194,33 @@ export function placedList(overrides: Partial<PlacedList> = {}): PlacedList {
     sprint: { startDate: '2026-11-02', endDate: '2026-11-15', goal: 'Livrer le SSO' },
     createdAt: new Date('2026-10-26T09:00:00Z'),
     version: 1,
+    organizationAccess: true,
+    callerRole: 'edit',
     ...overrides,
   };
+}
+
+/** The rank of each role, `edit` > `comment` > `view`. */
+const ROLE_RANK: Readonly<Record<AccessRole, number>> = { view: 1, comment: 2, edit: 3 };
+
+/**
+ * Picks the highest of some roles.
+ *
+ * @param roles - The roles, `undefined` or `null` for none.
+ * @returns The highest, `null` when there is none.
+ */
+function highestRole(roles: readonly (AccessRole | null | undefined)[]): AccessRole | null {
+  let highest: AccessRole | null = null;
+  for (const role of roles) {
+    if (
+      role !== null &&
+      role !== undefined &&
+      (highest === null || ROLE_RANK[role] > ROLE_RANK[highest])
+    ) {
+      highest = role;
+    }
+  }
+  return highest;
 }
 
 /**
@@ -251,6 +280,22 @@ export function byCreation(
   return left.createdAt.getTime() - right.createdAt.getTime() || compareText(left.id, right.id);
 }
 
+/**
+ * Builds the usual lists of Atelier Nord: "Sprint 14" and "Bugs" in "Produit", "Maquettes" in the
+ * private space "Design" of Hugo Dubois, "Clôturés" in "Archives", every switch on.
+ *
+ * @param overrides - Fields to replace in "Sprint 14".
+ * @returns The lists.
+ */
+export function atelierNordLists(overrides: Partial<PlacedList> = {}): readonly PlacedList[] {
+  return [
+    placedList(overrides),
+    placedList({ id: BUGS, name: 'Bugs', sprint: null }),
+    placedList({ id: MAQUETTES, spaceId: DESIGN, name: 'Maquettes', sprint: null }),
+    placedList({ id: CLOTURES, spaceId: ARCHIVES, name: 'Clôturés', sprint: null }),
+  ];
+}
+
 /** What a spec seeds in the fake spaces. */
 export interface InMemorySpaceSeed {
   // #region Properties
@@ -259,6 +304,12 @@ export interface InMemorySpaceSeed {
 
   /** The lists; the usual ones (Sprint 14, Bugs, Maquettes, Clôturés) when left out. */
   readonly lists?: readonly PlacedList[];
+
+  /** The grants of the spaces: the role of each account, by space id; none when left out. */
+  readonly spaceGrants?: Readonly<Record<string, Readonly<Record<string, AccessRole>>>>;
+
+  /** The grants of the lists: the role of each account, by list id; none when left out. */
+  readonly listGrants?: Readonly<Record<string, Readonly<Record<string, AccessRole>>>>;
 
   /** The last number given for each prefix. */
   readonly lastNumbers?: Readonly<Record<string, number>>;
@@ -272,8 +323,14 @@ export interface InMemorySpaceSeed {
  * Class InMemorySpaceDirectory
  *
  * @description
- * A fake `SpaceDirectory` over spaces and lists of Atelier Nord, with the visibility rules of the
- * spaces module: a guest sees nothing, a private space is seen by its owner only.
+ * A fake `SpaceDirectory` over spaces and lists of Atelier Nord, with the access rules of the
+ * spaces module ("Access" of `openapi/public/spaces.yaml`): the role on a list is the highest of
+ * `edit` for the owner of the space, `edit` for a list of a space of the organization whose switch
+ * is on, the grant of the space and the grant of the list; a guest has the grant of the list only.
+ * A space is seen with a role on it (the owner, a space of the organization, a grant of the space;
+ * never by a guest) or through a grant of one of its lists. With no grant seeded, every member
+ * other than a guest has `edit` on every list of a space of the organization and the owner on
+ * those of their private space: the rules before grants.
  */
 export class InMemorySpaceDirectory implements SpaceDirectory {
   // #region Properties
@@ -304,6 +361,12 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
 
   /** The lists by id. */
   private readonly lists: ReadonlyMap<string, PlacedList>;
+
+  /** The grants of the spaces, by space id then account. */
+  private readonly spaceGrants: Readonly<Record<string, Readonly<Record<string, AccessRole>>>>;
+
+  /** The grants of the lists, by list id then account. */
+  private readonly listGrants: Readonly<Record<string, Readonly<Record<string, AccessRole>>>>;
 
   /** The calls of every fake, in order. */
   private readonly trace: string[];
@@ -341,16 +404,13 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
         },
       }),
     ];
-    const lists: readonly PlacedList[] = seed.lists ?? [
-      placedList(),
-      placedList({ id: BUGS, name: 'Bugs', sprint: null }),
-      placedList({ id: MAQUETTES, spaceId: DESIGN, name: 'Maquettes', sprint: null }),
-      placedList({ id: CLOTURES, spaceId: ARCHIVES, name: 'Clôturés', sprint: null }),
-    ];
+    const lists: readonly PlacedList[] = seed.lists ?? atelierNordLists();
     this.spaces = new Map(
       spaces.map((space: PlacedSpace): [string, PlacedSpace] => [space.id, space]),
     );
     this.lists = new Map(lists.map((list: PlacedList): [string, PlacedList] => [list.id, list]));
+    this.spaceGrants = seed.spaceGrants ?? {};
+    this.listGrants = seed.listGrants ?? {};
     this.lastNumbers = new Map(Object.entries(seed.lastNumbers ?? { CAD: 495 }));
     this.trace = seed.trace ?? [];
   }
@@ -361,7 +421,8 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
    * Method findVisibleList
    *
    * @description
-   * Finds a list of Atelier Nord in a space the viewer sees.
+   * Finds a list of Atelier Nord the viewer has a role on, with that role, and its space, with the
+   * role of the viewer on it and whether they manage it.
    *
    * @param {string} organizationId - The organization.
    * @param {Viewer} viewer - The acting member.
@@ -378,35 +439,37 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
     const list: PlacedList | undefined = this.lists.get(listId);
     const space: PlacedSpace | undefined =
       list === undefined ? undefined : this.spaces.get(list.spaceId);
-    if (
-      organizationId !== ATELIER_NORD ||
-      list === undefined ||
-      space === undefined ||
-      !this.sees(viewer, space)
-    ) {
+    if (organizationId !== ATELIER_NORD || list === undefined || space === undefined) {
       return Promise.resolve(null);
     }
-    return Promise.resolve({ list, space });
+    const placed: PlacedList | null = this.placed(viewer, list);
+    if (placed === null) {
+      return Promise.resolve(null);
+    }
+    return Promise.resolve({
+      list: placed,
+      space: {
+        ...space,
+        callerRole: this.spaceRoleOf(viewer, space),
+        callerCanManage: this.manages(viewer, space),
+      },
+    });
   }
 
   /**
-   * Method visibleSpaceIds
+   * Method visibleListIds
    *
    * @description
-   * Lists the spaces the viewer sees.
+   * Lists the lists the viewer has a role on, in the order of the sidebar.
    *
    * @param {string} organizationId - The organization.
    * @param {Viewer} viewer - The acting member.
    * @returns {Promise<readonly string[]>} Their ids.
    */
-  public visibleSpaceIds(organizationId: string, viewer: Viewer): Promise<readonly string[]> {
-    this.trace.push('spaces.visibleSpaceIds');
+  public visibleListIds(organizationId: string, viewer: Viewer): Promise<readonly string[]> {
+    this.trace.push('spaces.visibleListIds');
     return Promise.resolve(
-      organizationId !== ATELIER_NORD
-        ? []
-        : [...this.spaces.values()]
-            .filter((space: PlacedSpace): boolean => this.sees(viewer, space))
-            .map((space: PlacedSpace): string => space.id),
+      this.visibleLists(organizationId, viewer).map((list: PlacedList): string => list.id),
     );
   }
 
@@ -414,7 +477,8 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
    * Method findVisibleSpaceLists
    *
    * @description
-   * Lists the lists of a space of Atelier Nord the viewer sees, in the order of their creation.
+   * Lists the lists of a space of Atelier Nord the viewer sees that they have a role on, with that
+   * role, in the order of their creation.
    *
    * @param {string} organizationId - The organization.
    * @param {Viewer} viewer - The acting member.
@@ -429,21 +493,17 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
     this.trace.push('spaces.findVisibleSpaceLists');
     this.spaceListCalls.push(spaceId);
     const space: PlacedSpace | undefined = this.spaces.get(spaceId);
-    if (organizationId !== ATELIER_NORD || space === undefined || !this.sees(viewer, space)) {
+    if (organizationId !== ATELIER_NORD || space === undefined || !this.seesSpace(viewer, space)) {
       return Promise.resolve(null);
     }
-    return Promise.resolve(
-      [...this.lists.values()]
-        .filter((list: PlacedList): boolean => list.spaceId === spaceId)
-        .sort(byCreation),
-    );
+    return Promise.resolve(this.placedListsOf(viewer, space));
   }
 
   /**
    * Method currentSprints
    *
    * @description
-   * Lists the sprints of the spaces the viewer sees that are current on a date, by end date then
+   * Lists the sprints the viewer has a role on that are current on a date, by end date then
    * creation.
    *
    * @param {string} organizationId - The organization.
@@ -461,7 +521,7 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
     this.trace.push('spaces.currentSprints');
     this.sprintCalls.push({ today, limit });
     return Promise.resolve(
-      this.listsOfVisibleSpaces(organizationId, viewer)
+      this.visibleLists(organizationId, viewer)
         .filter(
           (list: PlacedList): boolean =>
             list.sprint !== null && list.sprint.startDate <= today && today <= list.sprint.endDate,
@@ -479,7 +539,7 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
    * Method sidebarLists
    *
    * @description
-   * Lists the first lists of the spaces the viewer sees: the spaces, then their lists, each in the
+   * Lists the first lists the viewer has a role on: the spaces, then their lists, each in the
    * order of their creation.
    *
    * @param {string} organizationId - The organization.
@@ -494,7 +554,7 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
   ): Promise<readonly PlacedList[]> {
     this.trace.push('spaces.sidebarLists');
     this.sidebarCalls.push({ limit });
-    return Promise.resolve(this.listsOfVisibleSpaces(organizationId, viewer).slice(0, limit));
+    return Promise.resolve(this.visibleLists(organizationId, viewer).slice(0, limit));
   }
 
   /**
@@ -527,47 +587,165 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
   }
 
   /**
-   * Method listsOfVisibleSpaces
+   * Method visibleLists
    *
    * @description
-   * Lists the lists of the spaces the viewer sees in the order of the sidebar: the spaces by
-   * creation, then the lists of each by creation.
+   * Lists the lists the viewer has a role on in the order of the sidebar: the spaces by creation,
+   * then the lists of each by creation, each with the role of the viewer.
    *
    * @param {string} organizationId - The organization.
    * @param {Viewer} viewer - The acting member.
    * @returns {PlacedList[]} The lists.
    */
-  private listsOfVisibleSpaces(organizationId: string, viewer: Viewer): PlacedList[] {
+  private visibleLists(organizationId: string, viewer: Viewer): PlacedList[] {
     if (organizationId !== ATELIER_NORD) {
       return [];
     }
     return [...this.spaces.values()]
-      .filter((space: PlacedSpace): boolean => this.sees(viewer, space))
       .sort(byCreation)
-      .flatMap((space: PlacedSpace): PlacedList[] =>
-        [...this.lists.values()]
-          .filter((list: PlacedList): boolean => list.spaceId === space.id)
-          .sort(byCreation),
-      );
+      .flatMap((space: PlacedSpace): PlacedList[] => this.placedListsOf(viewer, space));
   }
 
   /**
-   * Method sees
+   * Method placedListsOf
    *
    * @description
-   * Applies the visibility rule of the spaces module.
+   * Lists the lists of a space the viewer has a role on, by creation, each with that role.
+   *
+   * @param {Viewer} viewer - The acting member.
+   * @param {PlacedSpace} space - The space.
+   * @returns {PlacedList[]} The lists.
+   */
+  private placedListsOf(viewer: Viewer, space: PlacedSpace): PlacedList[] {
+    return [...this.lists.values()]
+      .filter((list: PlacedList): boolean => list.spaceId === space.id)
+      .sort(byCreation)
+      .flatMap((list: PlacedList): PlacedList[] => {
+        const placed: PlacedList | null = this.placed(viewer, list);
+        return placed === null ? [] : [placed];
+      });
+  }
+
+  /**
+   * Method placed
+   *
+   * @description
+   * Gives a list the role of the viewer on it.
+   *
+   * @param {Viewer} viewer - The acting member.
+   * @param {PlacedList} list - The list.
+   * @returns {PlacedList | null} The list with the role, `null` when the viewer has none.
+   */
+  private placed(viewer: Viewer, list: PlacedList): PlacedList | null {
+    const space: PlacedSpace | undefined = this.spaces.get(list.spaceId);
+    const role: AccessRole | null =
+      space === undefined ? null : this.listRoleOf(viewer, space, list);
+    return role === null ? null : { ...list, callerRole: role };
+  }
+
+  /**
+   * Method spaceRoleOf
+   *
+   * @description
+   * The role of the viewer on a space itself: none for a guest; `edit` for the owner and for a
+   * space of the organization; else the grant of the space.
+   *
+   * @param {Viewer} viewer - The acting member.
+   * @param {PlacedSpace} space - The space.
+   * @returns {AccessRole | null} The role.
+   */
+  private spaceRoleOf(viewer: Viewer, space: PlacedSpace): AccessRole | null {
+    if (viewer.role === 'guest') {
+      return null;
+    }
+    return highestRole([
+      space.ownerUserId === viewer.userId || space.visibility === 'organization' ? 'edit' : null,
+      this.spaceGrants[space.id]?.[viewer.userId],
+    ]);
+  }
+
+  /**
+   * Method listRoleOf
+   *
+   * @description
+   * The role of the viewer on a list: the grant of the list for anyone, guests included; for a
+   * member other than a guest also `edit` as the owner of the space, `edit` in a space of the
+   * organization when the switch of the list is on, and the grant of the space. Highest wins.
+   *
+   * @param {Viewer} viewer - The acting member.
+   * @param {PlacedSpace} space - The space of the list.
+   * @param {PlacedList} list - The list.
+   * @returns {AccessRole | null} The role.
+   */
+  private listRoleOf(viewer: Viewer, space: PlacedSpace, list: PlacedList): AccessRole | null {
+    const listGrant: AccessRole | undefined = this.listGrants[list.id]?.[viewer.userId];
+    if (viewer.role === 'guest') {
+      return listGrant ?? null;
+    }
+    return highestRole([
+      space.ownerUserId === viewer.userId ? 'edit' : null,
+      space.visibility === 'organization' && list.organizationAccess ? 'edit' : null,
+      this.spaceGrants[space.id]?.[viewer.userId],
+      listGrant,
+    ]);
+  }
+
+  /**
+   * Method seesSpace
+   *
+   * @description
+   * Whether the viewer sees a space: with a role on it, or through a role on one of its lists.
    *
    * @param {Viewer} viewer - The acting member.
    * @param {PlacedSpace} space - The space.
    * @returns {boolean} Whether the viewer sees the space.
    */
-  private sees(viewer: Viewer, space: PlacedSpace): boolean {
+  private seesSpace(viewer: Viewer, space: PlacedSpace): boolean {
+    return this.spaceRoleOf(viewer, space) !== null || this.placedListsOf(viewer, space).length > 0;
+  }
+
+  /**
+   * Method manages
+   *
+   * @description
+   * Whether the viewer manages a space: never a guest; the owner of the space, or the owner or an
+   * admin of the organization for a space of the organization.
+   *
+   * @param {Viewer} viewer - The acting member.
+   * @param {PlacedSpace} space - The space.
+   * @returns {boolean} Whether they manage it.
+   */
+  private manages(viewer: Viewer, space: PlacedSpace): boolean {
     if (viewer.role === 'guest') {
       return false;
     }
-    return space.visibility === 'organization' || space.ownerUserId === viewer.userId;
+    return (
+      space.ownerUserId === viewer.userId ||
+      (space.visibility === 'organization' && (viewer.role === 'owner' || viewer.role === 'admin'))
+    );
   }
   // #endregion
+}
+
+/**
+ * Builds the spaces of Atelier Nord with "Sprint 14" closed to the organization (its switch "Accès
+ * de l’organisation" off) and shared with some accounts: Camille Martin, the owner of "Produit",
+ * keeps `edit` on it; any other account, a guest included, has the role of its grant, or none.
+ * Every other list is as usual.
+ *
+ * @param grants - The role of each account the list is shared with.
+ * @param trace - The calls of every fake, in order.
+ * @returns The fake spaces.
+ */
+export function sprint14SharedWith(
+  grants: Readonly<Record<string, AccessRole>>,
+  trace: string[] = [],
+): InMemorySpaceDirectory {
+  return new InMemorySpaceDirectory({
+    lists: atelierNordLists({ organizationAccess: false }),
+    listGrants: { [SPRINT_14]: grants },
+    trace,
+  });
 }
 
 /**
@@ -709,6 +887,23 @@ export function summaryOf(state: TaskState, subtaskCounts: SubtaskCounts): TaskS
   };
 }
 
+/**
+ * Builds where a task is, as a reader gives it to another module.
+ *
+ * @param state - The task.
+ * @returns The location.
+ */
+export function locationOf(state: TaskState): TaskLocation {
+  return {
+    id: state.id,
+    key: state.key.format(),
+    name: state.name,
+    status: state.status,
+    listId: state.listId,
+    spaceId: state.spaceId,
+  };
+}
+
 /** What the specs read of the calls the fake readers received, kept across the runs. */
 export interface ReadRecords {
   // #region Properties
@@ -733,7 +928,7 @@ export interface ReadRecords {
 
   /** The `pageOfLabels` calls. */
   readonly labels: {
-    readonly spaceIds: readonly string[];
+    readonly listIds: readonly string[];
     readonly search: string | null;
     readonly limit: number;
   }[];
@@ -990,20 +1185,20 @@ export class InMemoryTaskReads
    * Method stateCountsOf
    *
    * @description
-   * Counts the tasks assigned to an account in some spaces, subtasks included, by tab.
+   * Counts the tasks assigned to an account in some lists, subtasks included, by tab.
    *
    * @param {string} organizationId - The organization.
    * @param {string} userId - The account.
-   * @param {readonly string[]} spaceIds - The spaces the actor sees.
+   * @param {readonly string[]} listIds - The lists the actor has a role on.
    * @returns {Promise<MyTaskCountsView>} The counts.
    */
   public stateCountsOf(
     organizationId: string,
     userId: string,
-    spaceIds: readonly string[],
+    listIds: readonly string[],
   ): Promise<MyTaskCountsView> {
     this.trace.push('counter.stateCountsOf');
-    const assigned: TaskState[] = this.assignedTo(organizationId, userId, spaceIds);
+    const assigned: TaskState[] = this.assignedTo(organizationId, userId, listIds);
     const closed: number = assigned.filter((state: TaskState): boolean =>
       isClosedStatus(state.status),
     ).length;
@@ -1014,22 +1209,22 @@ export class InMemoryTaskReads
    * Method homeStatsOf
    *
    * @description
-   * Counts the tasks assigned to an account in some spaces, subtasks included, for "Accueil".
+   * Counts the tasks assigned to an account in some lists, subtasks included, for "Accueil".
    *
    * @param {string} organizationId - The organization.
    * @param {string} userId - The account.
-   * @param {readonly string[]} spaceIds - The spaces the actor sees.
+   * @param {readonly string[]} listIds - The lists the actor has a role on.
    * @param {string} today - The date of the caller.
    * @returns {Promise<HomeStatsView>} The counters.
    */
   public homeStatsOf(
     organizationId: string,
     userId: string,
-    spaceIds: readonly string[],
+    listIds: readonly string[],
     today: string,
   ): Promise<HomeStatsView> {
     this.trace.push('counter.homeStatsOf');
-    const open: TaskState[] = this.assignedTo(organizationId, userId, spaceIds).filter(
+    const open: TaskState[] = this.assignedTo(organizationId, userId, listIds).filter(
       (state: TaskState): boolean => !isClosedStatus(state.status),
     );
     return Promise.resolve({
@@ -1037,7 +1232,7 @@ export class InMemoryTaskReads
       late: open.filter((state: TaskState): boolean => isLate(state.status, state.dueDate, today))
         .length,
       dueToday: open.filter((state: TaskState): boolean => state.dueDate === today).length,
-      done: this.assignedTo(organizationId, userId, spaceIds).filter(
+      done: this.assignedTo(organizationId, userId, listIds).filter(
         (state: TaskState): boolean => state.status === 'done',
       ).length,
     });
@@ -1047,12 +1242,12 @@ export class InMemoryTaskReads
    * Method pageAssignedTo
    *
    * @description
-   * Reads the tasks assigned to an account in some spaces, by due date (undated last), then in the
+   * Reads the tasks assigned to an account in some lists, by due date (undated last), then in the
    * order of creation.
    *
    * @param {string} organizationId - The organization.
    * @param {string} userId - The account.
-   * @param {readonly string[]} spaceIds - The spaces the actor sees.
+   * @param {readonly string[]} listIds - The lists the actor has a role on.
    * @param {MyTaskState} state - The tab.
    * @param {TaskPosition | null} after - The last task of the previous page.
    * @param {number} limit - How many rows at most.
@@ -1061,14 +1256,14 @@ export class InMemoryTaskReads
   public pageAssignedTo(
     organizationId: string,
     userId: string,
-    spaceIds: readonly string[],
+    listIds: readonly string[],
     state: MyTaskState,
     after: TaskPosition | null,
     limit: number,
   ): Promise<readonly ListedTask[]> {
     this.trace.push('assigned.pageAssignedTo');
     this.records.assigned.push({ state, after, limit });
-    const sorted: TaskState[] = this.assignedTo(organizationId, userId, spaceIds)
+    const sorted: TaskState[] = this.assignedTo(organizationId, userId, listIds)
       .filter((row: TaskState): boolean => isClosedStatus(row.status) === (state === 'closed'))
       .sort(
         (left: TaskState, right: TaskState): number =>
@@ -1087,11 +1282,11 @@ export class InMemoryTaskReads
    * Method pageOfLabels
    *
    * @description
-   * Reads the labels of the tasks in some spaces, each once per key, by folded name then key, in
+   * Reads the labels of the tasks in some lists, each once per key, by folded name then key, in
    * the spelling that comes first.
    *
    * @param {string} organizationId - The organization.
-   * @param {readonly string[]} spaceIds - The spaces the actor sees.
+   * @param {readonly string[]} listIds - The lists the actor has a role on.
    * @param {string | null} search - The text to find in the labels.
    * @param {LabelPosition | null} after - The last label of the previous page.
    * @param {number} limit - How many rows at most.
@@ -1099,16 +1294,16 @@ export class InMemoryTaskReads
    */
   public pageOfLabels(
     organizationId: string,
-    spaceIds: readonly string[],
+    listIds: readonly string[],
     search: string | null,
     after: LabelPosition | null,
     limit: number,
   ): Promise<readonly ListedLabel[]> {
     this.trace.push('labels.pageOfLabels');
-    this.records.labels.push({ spaceIds, search, limit });
+    this.records.labels.push({ listIds, search, limit });
     const names = new Map<string, string>();
     for (const state of this.rows()) {
-      if (state.organizationId !== organizationId || !spaceIds.includes(state.spaceId)) {
+      if (state.organizationId !== organizationId || !listIds.includes(state.listId)) {
         continue;
       }
       for (const name of state.labels) {
@@ -1200,23 +1395,23 @@ export class InMemoryTaskReads
    * Method assignedTo
    *
    * @description
-   * Finds the tasks assigned to an account in some spaces, subtasks included.
+   * Finds the tasks assigned to an account in some lists, subtasks included.
    *
    * @param {string} organizationId - The organization.
    * @param {string} userId - The account.
-   * @param {readonly string[]} spaceIds - The spaces the actor sees.
+   * @param {readonly string[]} listIds - The lists the actor has a role on.
    * @returns {TaskState[]} The tasks.
    */
   private assignedTo(
     organizationId: string,
     userId: string,
-    spaceIds: readonly string[],
+    listIds: readonly string[],
   ): TaskState[] {
     return this.rows().filter(
       (state: TaskState): boolean =>
         state.organizationId === organizationId &&
         state.assigneeIds.includes(userId) &&
-        spaceIds.includes(state.spaceId),
+        listIds.includes(state.listId),
     );
   }
 
@@ -1559,7 +1754,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
           entry.organizationId === organizationId &&
           entry.listId === filter.listId &&
           task !== undefined &&
-          filter.spaceIds.includes(task.spaceId) &&
+          filter.listIds.includes(task.listId) &&
           matchesKinds(entry, filter.kinds) &&
           (filter.actorIds === null || filter.actorIds.includes(entry.actor.id))
         );
@@ -1732,6 +1927,24 @@ export class InMemoryTasks implements TasksUnitOfWork {
                 ]),
             ),
           ),
+        locationByKey: (organizationId: string, key: TaskKey): Promise<TaskLocation | null> => {
+          this.trace.push('reader.locationByKey');
+          const row: TaskState | undefined = inOrganization(organizationId).find(
+            (candidate: TaskState): boolean => candidate.key.equals(key),
+          );
+          return Promise.resolve(row === undefined ? null : locationOf(row));
+        },
+        locationsByIds: (
+          organizationId: string,
+          taskIds: readonly string[],
+        ): Promise<readonly TaskLocation[]> => {
+          this.trace.push('reader.locationsByIds');
+          return Promise.resolve(
+            inOrganization(organizationId)
+              .filter((row: TaskState): boolean => taskIds.includes(row.id))
+              .map(locationOf),
+          );
+        },
       },
       activity: {
         latestOfKind: (

@@ -1,25 +1,59 @@
 import type { TransactionDatabase } from '@cadenway/nest-common/database';
 import { and, asc, eq, sql } from 'drizzle-orm';
 
+import type { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import type { PagePosition } from '../../../../../application/models/page/page-position.model.js';
 import type { SubtaskCounts } from '../../../../../application/projections/task/subtask-counts.projection.js';
+import type { TaskLocation } from '../../../../../application/projections/task/task-location.projection.js';
 import type { TaskReferenceView } from '../../../../../application/projections/task/task-reference.projection.js';
 import type { TaskSummaryView } from '../../../../../application/projections/task/task-summary.projection.js';
 import type { TaskReader } from '../../../../../application/ports/outbound/persistence/task/task-reader.port.js';
 import { keysetAfter } from '../../mappers/page/keyset-after.mapper.js';
 import { anyOf } from '../../mappers/page/any-of.mapper.js';
-import { toTaskReference } from '../../mappers/task/task-summary.mapper.js';
+import { toTaskLocation, toTaskReference } from '../../mappers/task/task-summary.mapper.js';
 import type { TaskRow } from '../../mappers/task/task.mapper.js';
 import { tasks } from '../../schemas/task/task.schema.js';
 import { DrizzleTaskCollections } from './task-collections.repository.js';
+
+/** The columns of `tasks` a location reads. */
+type TaskLocationRow = Pick<
+  TaskRow,
+  'id' | 'keyPrefix' | 'keyNumber' | 'name' | 'status' | 'listId' | 'spaceId'
+>;
+
+/**
+ * Constant LOCATION_COLUMNS
+ *
+ * @description
+ * The selection of a location: the id, the key, the name, the status, the list and the space.
+ *
+ * @type {{ readonly id: typeof tasks.id; readonly keyPrefix: typeof tasks.keyPrefix; ... }}
+ */
+const LOCATION_COLUMNS: {
+  readonly id: typeof tasks.id;
+  readonly keyPrefix: typeof tasks.keyPrefix;
+  readonly keyNumber: typeof tasks.keyNumber;
+  readonly name: typeof tasks.name;
+  readonly status: typeof tasks.status;
+  readonly listId: typeof tasks.listId;
+  readonly spaceId: typeof tasks.spaceId;
+} = {
+  id: tasks.id,
+  keyPrefix: tasks.keyPrefix,
+  keyNumber: tasks.keyNumber,
+  name: tasks.name,
+  status: tasks.status,
+  listId: tasks.listId,
+  spaceId: tasks.spaceId,
+};
 
 /**
  * Class DrizzleTaskReader
  *
  * @description
  * `TaskReader` on `tasks`, `task_assignees`, `task_labels` and `checklist_items`, in the
- * transaction of its unit of work, without a lock. Every query names `organization_id`. The counts
- * and the references are one grouped or `= ANY($ids)` query for any number of tasks; a page of
+ * transaction of its unit of work, without a lock. Every query names `organization_id`. The counts,
+ * the references and the locations are one grouped or `= ANY($ids)` query for any number of tasks; a page of
  * subtasks costs six queries however many rows it holds: the page (served by
  * `tasks_parent_created_index`, bounded by the `limit` of the caller), then the assignees, the
  * labels, the subtask counts, the checklist counts and the parent key of its rows.
@@ -175,6 +209,60 @@ export class DrizzleTaskReader implements TaskReader {
       references.set(row.id, toTaskReference(row));
     }
     return references;
+  }
+
+  /**
+   * Method locationByKey
+   *
+   * @description
+   * Reads where a task is by its key, in one statement through `tasks_key_unique`, without its
+   * collections and without a lock.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {TaskKey} key - The key.
+   * @returns {Promise<TaskLocation | null>} The task, or `null` when the organization has none.
+   * @throws {Error} When the stored status is outside the status keys.
+   */
+  public async locationByKey(organizationId: string, key: TaskKey): Promise<TaskLocation | null> {
+    const rows: TaskLocationRow[] = await this.db
+      .select(LOCATION_COLUMNS)
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.organizationId, organizationId),
+          eq(tasks.keyPrefix, key.prefix),
+          eq(tasks.keyNumber, key.number),
+        ),
+      )
+      .limit(1);
+    const row: TaskLocationRow | undefined = rows[0];
+    return row === undefined ? null : toTaskLocation(row);
+  }
+
+  /**
+   * Method locationsByIds
+   *
+   * @description
+   * Reads where tasks are by their ids, in one statement by primary key (`= ANY($ids)`), without
+   * their collections and without a lock. No id reads nothing.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {readonly string[]} taskIds - The ids of the tasks, UUIDs.
+   * @returns {Promise<readonly TaskLocation[]>} The tasks found, in no particular order.
+   * @throws {Error} When a stored status is outside the status keys.
+   */
+  public async locationsByIds(
+    organizationId: string,
+    taskIds: readonly string[],
+  ): Promise<readonly TaskLocation[]> {
+    if (taskIds.length === 0) {
+      return [];
+    }
+    const rows: TaskLocationRow[] = await this.db
+      .select(LOCATION_COLUMNS)
+      .from(tasks)
+      .where(and(eq(tasks.organizationId, organizationId), anyOf(tasks.id, taskIds, 'uuid')));
+    return rows.map((row: TaskLocationRow): TaskLocation => toTaskLocation(row));
   }
   // #endregion
 }

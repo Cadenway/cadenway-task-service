@@ -4,6 +4,7 @@ import type { EventActor } from '../../../../models/actor/event-actor.model.js';
 import type { SpacesStore } from '../../../../models/transactions/spaces-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpacesUnitOfWork } from '../../../../ports/outbound/transactions/space/spaces-unit-of-work.port.js';
+import { OwnerGrantsRemover } from '../../../../services/access/owner-grants-remover.service.js';
 import type { HandOverAwaitingSpacesInput } from './hand-over-awaiting-spaces.input.js';
 
 /**
@@ -26,7 +27,9 @@ const SYSTEM_ACTOR: EventActor = Object.freeze({ type: 'system', id: 'task-servi
  * committed and the spaces were left seen by nobody (decision of the coordinating session for P3a).
  * Called in the transaction of the member event that made the copy learn the owner, which `run`
  * joins; each space passes with `space.updated.v1` (`changed: ['ownerUserId']`, actor
- * `{ type: 'system', id: 'task-service' }`). Idempotent: a second run finds nothing awaiting.
+ * `{ type: 'system', id: 'task-service' }`); a grant the owner held on such a space or on one of
+ * its lists is removed with its access event, since an owner holds none (`OwnerGrantsRemover`).
+ * Idempotent: a second run finds nothing awaiting.
  */
 export class HandOverAwaitingSpaces {
   // #region Properties
@@ -51,6 +54,17 @@ export class HandOverAwaitingSpaces {
    * @readonly
    */
   private readonly members: MemberDirectory;
+
+  /**
+   * Property ownerGrants
+   *
+   * @description
+   * Removes the grants of the owner of the organization on the spaces handed over to them.
+   *
+   * @type {OwnerGrantsRemover}
+   * @readonly
+   */
+  private readonly ownerGrants: OwnerGrantsRemover;
   // #endregion
 
   // #region Constructor
@@ -67,6 +81,7 @@ export class HandOverAwaitingSpaces {
   public constructor(unitOfWork: SpacesUnitOfWork, members: MemberDirectory) {
     this.unitOfWork = unitOfWork;
     this.members = members;
+    this.ownerGrants = new OwnerGrantsRemover();
   }
   // #endregion
 
@@ -88,13 +103,16 @@ export class HandOverAwaitingSpaces {
         return;
       }
       const spaces: Space[] = await store.spaces.lockAwaitingOwner(input.organizationId);
+      const handed: { readonly space: Space; readonly formerOwnerUserId: string }[] = [];
       for (const stored of spaces) {
         const { space, changed }: SpaceUpdate = stored.handOver(ownerUserId);
         await store.spaces.update(space);
         if (changed.length > 0) {
           await store.events.spaceUpdated(space, changed, SYSTEM_ACTOR);
+          handed.push({ space, formerOwnerUserId: stored.snapshot.ownerUserId });
         }
       }
+      await this.ownerGrants.remove(store, ownerUserId, handed, SYSTEM_ACTOR);
     });
   }
   // #endregion

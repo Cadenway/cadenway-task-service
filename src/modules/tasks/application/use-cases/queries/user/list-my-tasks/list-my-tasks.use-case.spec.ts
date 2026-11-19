@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ATELIER_NORD,
+  BUGS,
   CAD_482,
   CAMILLE,
   DESIGN,
@@ -15,6 +16,7 @@ import {
   atelierNordMembers,
   queryTask,
   refusalOf,
+  sprint14SharedWith,
   subtaskState,
   taskState,
 } from '../../../tasks.fixture.js';
@@ -193,6 +195,40 @@ describe('ListMyTasks: only the tasks of the actor', () => {
     expect(
       await refusalOf(useCase.execute(read({ actorUserId: STRANGER, userId: STRANGER }))),
     ).toEqual({ reason: 'organization-not-found' });
+  });
+
+  it('reads the tasks of a guest in the lists shared with them only', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [
+        taskState({ assigneeIds: [NADIA] }),
+        queryTask(1, { assigneeIds: [NADIA], listId: BUGS }),
+      ],
+    });
+    const useCase = new ListMyTasks(
+      tasks,
+      atelierNordMembers(),
+      sprint14SharedWith({ [NADIA]: 'view' }),
+    );
+
+    const page = await useCase.execute(read({ actorUserId: NADIA, userId: NADIA }));
+
+    expect(page.items.map((item) => item.key)).toEqual(['CAD-482']);
+    expect(page.counts).toEqual({ open: 1, closed: 0 });
+  });
+
+  it('leaves out the tasks of a list closed to the organization and not shared with the member', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [
+        taskState({ assigneeIds: [INES] }),
+        queryTask(4, { assigneeIds: [INES], listId: BUGS }),
+      ],
+    });
+    const useCase = new ListMyTasks(tasks, atelierNordMembers(), sprint14SharedWith({}));
+
+    const page = await useCase.execute(read({ actorUserId: INES, userId: INES }));
+
+    expect(page.items.map((item) => item.key)).toEqual(['CAD-804']);
+    expect(page.counts).toEqual({ open: 1, closed: 0 });
   });
 
   it('answers an empty page with zero counts to a guest, without reading a task', async () => {

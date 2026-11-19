@@ -1,7 +1,7 @@
 import { InvalidSpaceError } from '../../errors/space/invalid-space.error.js';
 import { SpaceStatusRequiredError } from '../../errors/space/space-status-required.error.js';
 import { SpaceVisibilityForbiddenError } from '../../errors/space/space-visibility-forbidden.error.js';
-import { canChangeVisibility, canSeeSpace } from '../../policies/space/space-access.policy.js';
+import { canManageSpace } from '../../policies/access/access-role.policy.js';
 import { LOOK_COLORS } from '../../value-objects/look/look-color.value-object.js';
 import type { LookColor } from '../../value-objects/look/look-color.value-object.js';
 import { LOOK_ICONS } from '../../value-objects/look/look-icon.value-object.js';
@@ -318,8 +318,10 @@ function checkStoredStatuses(statuses: SpaceStatuses): void {
  *   keys" of `openapi/public/spaces.yaml`);
  * - a space renames a status (24 characters at most) or stops using it, but `todo` and `done` are
  *   always used ("Statuses" of `openapi/public/spaces.yaml`);
- * - who sees it and who changes its visibility follow `space-access.policy.ts` (decision 3 of the
- *   P3a plan); any member who sees it changes the rest, which the application checks first;
+ * - who sees it, with which role, and who manages it follow `access-role.policy.ts` (decision 2
+ *   and 3 of P3b-1): only a member who manages it changes its visibility; whoever has `edit` on it
+ *   changes the rest, which the application checks first;
+ * - a change of its grants takes the next version too (`recordAccessChange`);
  * - each change that changes something takes the next version; one that changes nothing keeps the
  *   same instance, so no `space.updated.v1` is emitted.
  */
@@ -446,8 +448,8 @@ export class Space {
    * `changed: []` when nothing changes.
    * @throws {InvalidSpaceError} When a member breaks an invariant, which the message names.
    * @throws {SpaceStatusRequiredError} When the patch hides `todo` or `done`.
-   * @throws {SpaceVisibilityForbiddenError} When the visibility changes and the viewer is neither
-   * the owner of the space nor the owner or an admin of the organization.
+   * @throws {SpaceVisibilityForbiddenError} When the visibility changes and the viewer does not
+   * manage the space (`canManageSpace`).
    */
   public update(patch: SpacePatch, viewer: Viewer): SpaceUpdate {
     const current: SpaceState = this.state;
@@ -466,7 +468,7 @@ export class Space {
         ? current.statuses
         : patchStatuses(current.statuses, patch.statuses);
 
-    if (visibility !== current.visibility && !canChangeVisibility(current, viewer)) {
+    if (visibility !== current.visibility && !canManageSpace(current, viewer)) {
       throw new SpaceVisibilityForbiddenError();
     }
 
@@ -568,17 +570,16 @@ export class Space {
   }
 
   /**
-   * Method isVisibleTo
+   * Method recordAccessChange
    *
    * @description
-   * Whether a member sees the space, and so its lists and tasks (`canSeeSpace`, decision 3 of the
-   * P3a plan).
+   * Takes the next version for a change of the grants of the space ("Every change adds one to the
+   * version of the space or the list" of `openapi/public/access.yaml`); nothing else changes.
    *
-   * @param {Viewer} viewer - The member who asks.
-   * @returns {boolean} Whether the member sees the space.
+   * @returns {Space} The space at the next version.
    */
-  public isVisibleTo(viewer: Viewer): boolean {
-    return canSeeSpace(this.state, viewer);
+  public recordAccessChange(): Space {
+    return new Space({ ...this.state, version: this.state.version + 1 });
   }
   // #endregion
 }

@@ -78,5 +78,19 @@ export interface TaskListDraft {
    * @readonly
    */
   readonly sprint: Sprint | null;
+
+  /**
+   * Property organizationAccess
+   *
+   * @description
+   * The switch "Accès de l’organisation" ("Tous les membres de Atelier Nord peuvent voir cette
+   * liste", P3b-1): on, every owner, admin and member of the organization has `edit` on the list
+   * when its space is `organization`; off, only the owner of the space and the people the space or
+   * the list is shared with see it. It changes nothing in a private space.
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  readonly organizationAccess: boolean;
   // #endregion
 }

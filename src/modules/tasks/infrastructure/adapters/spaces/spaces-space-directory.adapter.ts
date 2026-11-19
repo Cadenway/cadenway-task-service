@@ -20,9 +20,9 @@ import type {
   VisibleList,
 } from '../../../../spaces/public/list/list-sidebar-lists.js';
 import type {
-  ListVisibleSpaceIds,
-  ListVisibleSpaceIdsOutput,
-} from '../../../../spaces/public/space/list-visible-space-ids.js';
+  ListVisibleListIds,
+  ListVisibleListIdsOutput,
+} from '../../../../spaces/public/list/list-visible-list-ids.js';
 import type { KeyAllocation } from '../../../application/models/placement/key-allocation.model.js';
 import type { ListPlacement } from '../../../application/models/placement/list-placement.model.js';
 import type { PlacedList } from '../../../application/models/placement/placed-list.model.js';
@@ -33,11 +33,13 @@ import type { Viewer } from '../../../domain/value-objects/member/viewer.value-o
  * Class SpacesSpaceDirectory
  *
  * @description
- * `SpaceDirectory` over the public operations `FindVisibleList`, `ListVisibleSpaceIds`,
+ * `SpaceDirectory` over the public operations `FindVisibleList`, `ListVisibleListIds`,
  * `FindVisibleSpaceLists`, `ListCurrentSprints`, `ListSidebarLists` and `AllocateTaskKeys` of the
- * spaces module, which join the tenant transaction of the calling use case. The projections of the spaces module are copied member by member to the models of the
- * tasks module, so neither module shares a type with the other. The viewer's role is the one the
- * copy of the memberships gave, passed as `viewerRole`.
+ * spaces module, which join the tenant transaction of the calling use case and decide every role
+ * of the viewer. The projections of the spaces module are copied member by member to the models of
+ * the tasks module, the roles of the viewer included, so neither module shares a type with the
+ * other. The viewer's role in the organization is the one the copy of the memberships gave, passed
+ * as `viewerRole`.
  */
 export class SpacesSpaceDirectory implements SpaceDirectory {
   // #region Properties
@@ -53,15 +55,15 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
   private readonly findVisibleListOperation: FindVisibleList;
 
   /**
-   * Property listVisibleSpaceIds
+   * Property listVisibleListIds
    *
    * @description
-   * The reading of the spaces a viewer sees.
+   * The reading of the lists a viewer has a role on.
    *
-   * @type {ListVisibleSpaceIds}
+   * @type {ListVisibleListIds}
    * @readonly
    */
-  private readonly listVisibleSpaceIds: ListVisibleSpaceIds;
+  private readonly listVisibleListIds: ListVisibleListIds;
 
   /**
    * Property findVisibleSpaceListsOperation
@@ -78,7 +80,7 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
    * Property listCurrentSprints
    *
    * @description
-   * The reading of the current sprints of the spaces a viewer sees.
+   * The reading of the current sprints a viewer has a role on.
    *
    * @type {ListCurrentSprints}
    * @readonly
@@ -116,7 +118,7 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
    * Takes the six public operations of the spaces module.
    *
    * @param {FindVisibleList} findVisibleList - The reading of a visible list.
-   * @param {ListVisibleSpaceIds} listVisibleSpaceIds - The reading of the visible spaces.
+   * @param {ListVisibleListIds} listVisibleListIds - The reading of the visible lists.
    * @param {FindVisibleSpaceLists} findVisibleSpaceLists - The reading of the lists of a space.
    * @param {ListCurrentSprints} listCurrentSprints - The reading of the current sprints.
    * @param {ListSidebarLists} listSidebarLists - The reading of the lists of the sidebar.
@@ -125,14 +127,14 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
    */
   public constructor(
     findVisibleList: FindVisibleList,
-    listVisibleSpaceIds: ListVisibleSpaceIds,
+    listVisibleListIds: ListVisibleListIds,
     findVisibleSpaceLists: FindVisibleSpaceLists,
     listCurrentSprints: ListCurrentSprints,
     listSidebarLists: ListSidebarLists,
     allocateTaskKeys: AllocateTaskKeys,
   ) {
     this.findVisibleListOperation = findVisibleList;
-    this.listVisibleSpaceIds = listVisibleSpaceIds;
+    this.listVisibleListIds = listVisibleListIds;
     this.findVisibleSpaceListsOperation = findVisibleSpaceLists;
     this.listCurrentSprints = listCurrentSprints;
     this.listSidebarLists = listSidebarLists;
@@ -145,14 +147,14 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
    * Method findVisibleList
    *
    * @description
-   * Runs `FindVisibleList` for the viewer and maps its list and space to the models of the tasks
-   * module.
+   * Runs `FindVisibleList` for the viewer and maps its list and space, with the roles of the
+   * viewer, to the models of the tasks module.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The acting member, with the role of the copy.
    * @param {string} listId - The list.
    * @returns {Promise<ListPlacement | null>} The list and its space, or `null` when the list is
-   * unknown or in a space the viewer does not see.
+   * unknown or the viewer has no role on it.
    */
   public async findVisibleList(
     organizationId: string,
@@ -195,34 +197,37 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
         nextKey: space.nextKey,
         createdAt: space.createdAt,
         version: space.version,
+        callerRole: space.callerRole,
+        callerCanManage: space.callerCanManage,
       },
     };
   }
 
   /**
-   * Method visibleSpaceIds
+   * Method visibleListIds
    *
    * @description
-   * Runs `ListVisibleSpaceIds` for the viewer.
+   * Runs `ListVisibleListIds` for the viewer.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The acting member, with the role of the copy.
-   * @returns {Promise<readonly string[]>} The ids of the spaces; empty for a guest.
+   * @returns {Promise<readonly string[]>} The ids of the lists the viewer has a role on.
    */
-  public async visibleSpaceIds(organizationId: string, viewer: Viewer): Promise<readonly string[]> {
-    const output: ListVisibleSpaceIdsOutput = await this.listVisibleSpaceIds.execute({
+  public async visibleListIds(organizationId: string, viewer: Viewer): Promise<readonly string[]> {
+    const output: ListVisibleListIdsOutput = await this.listVisibleListIds.execute({
       organizationId,
       viewerUserId: viewer.userId,
       viewerRole: viewer.role,
     });
-    return output.spaceIds;
+    return output.listIds;
   }
 
   /**
    * Method findVisibleSpaceLists
    *
    * @description
-   * Runs `FindVisibleSpaceLists` for the viewer: every list of the space in the order of creation.
+   * Runs `FindVisibleSpaceLists` for the viewer: the lists of the space the viewer has a role on,
+   * in the order of creation.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The acting member, with the role of the copy.
@@ -257,7 +262,7 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
    * @param {Viewer} viewer - The acting member, with the role of the copy.
    * @param {string} today - The date of the caller, `YYYY-MM-DD`.
    * @param {number} limit - How many sprints at most.
-   * @returns {Promise<readonly PlacedList[]>} The sprints; empty for a guest.
+   * @returns {Promise<readonly PlacedList[]>} The sprints the viewer has a role on.
    */
   public async currentSprints(
     organizationId: string,
@@ -284,7 +289,7 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The acting member, with the role of the copy.
    * @param {number} limit - How many lists at most.
-   * @returns {Promise<readonly PlacedList[]>} The lists; empty for a guest.
+   * @returns {Promise<readonly PlacedList[]>} The lists the viewer has a role on.
    */
   public async sidebarLists(
     organizationId: string,
@@ -329,7 +334,8 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
    * Method toPlacedList
    *
    * @description
-   * Copies a list of the spaces module member by member to the model of the tasks module.
+   * Copies a list of the spaces module member by member to the model of the tasks module, with
+   * the switch of the organization and the role of the viewer.
    *
    * @param {VisibleList} list - The list as the spaces module answers it.
    * @returns {PlacedList} The list.
@@ -351,6 +357,8 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
             },
       createdAt: list.createdAt,
       version: list.version,
+      organizationAccess: list.organizationAccess,
+      callerRole: list.callerRole,
     };
   }
   // #endregion

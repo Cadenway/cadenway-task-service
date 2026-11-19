@@ -171,7 +171,8 @@ export class SpacesController {
    *
    * @description
    * `GET /internal/v1/spaces`: `200` with one page of the spaces the actor sees, in the order of
-   * their creation.
+   * their creation, each with `callerRole` and `callerCanManage`; a guest gets the spaces of the
+   * lists shared with them.
    *
    * @param {ListSpacesQuery} query - The cursor and the page size.
    * @returns {Promise<SpacePageBody>} The page.
@@ -216,10 +217,10 @@ export class SpacesController {
    *
    * @description
    * `PATCH /internal/v1/spaces/{spaceId}`: `200` with the space after the merge patch, the same
-   * version when nothing changed. `If-Match` is optional. `403 space.visibility-forbidden`,
-   * `404 space.not-found`, `409 space.prefix-taken`, `412 request.version-mismatch` with
-   * `details.version` and `422 space.status-required` with `details.status` come from the use
-   * case.
+   * version when nothing changed. `If-Match` is optional. `404 space.not-found`,
+   * `403 access.role-insufficient` without `edit` on the space, `403 space.visibility-forbidden`,
+   * `409 space.prefix-taken`, `412 request.version-mismatch` with `details.version` and
+   * `422 space.status-required` with `details.status` come from the use case.
    *
    * @param {SpacePath} path - The id of the space.
    * @param {UpdateSpaceBody} body - The merge patch.

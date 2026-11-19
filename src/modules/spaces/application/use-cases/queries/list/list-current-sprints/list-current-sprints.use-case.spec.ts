@@ -16,7 +16,9 @@ import {
   SPRINT_14_GOAL,
   backlogState,
   designState,
+  listGrantOf,
   marketingState,
+  spaceGrantOf,
   spaceState,
   sprintState,
 } from '../../../spaces.fixture.js';
@@ -105,6 +107,8 @@ describe('ListCurrentSprints: the sprints under way in the spaces a member sees'
       sprint: { startDate: '2026-11-03', endDate: '2026-11-17', goal: SPRINT_14_GOAL },
       createdAt: sprintState().createdAt,
       version: 1,
+      organizationAccess: true,
+      callerRole: 'edit',
     });
   });
 
@@ -237,7 +241,7 @@ describe('ListCurrentSprints: only the spaces the viewer sees', () => {
     expect(output.lists).toEqual([]);
   });
 
-  it('answers an empty list for a guest without any read', async () => {
+  it('answers an empty list for a guest no sprint is shared with', async () => {
     const spaces = atelierNord();
 
     const output = await new ListCurrentSprints(spaces).execute(
@@ -245,10 +249,9 @@ describe('ListCurrentSprints: only the spaces the viewer sees', () => {
     );
 
     expect(output).toEqual({ lists: [] });
-    expect(spaces.listCurrentSprintsCalls).toEqual([]);
   });
 
-  it('answers an empty list for the former owner of a private space who is now a guest', async () => {
+  it('answers an empty list for the former owner of a private space who is now a guest, without a grant', async () => {
     const spaces = atelierNord();
 
     const output = await new ListCurrentSprints(spaces).execute(
@@ -256,7 +259,6 @@ describe('ListCurrentSprints: only the spaces the viewer sees', () => {
     );
 
     expect(output).toEqual({ lists: [] });
-    expect(spaces.listCurrentSprintsCalls).toEqual([]);
   });
 });
 
@@ -272,5 +274,44 @@ describe('ListCurrentSprints: a listing changes nothing', () => {
     expect(spaces.spaces).toEqual(before.spaces);
     expect(spaces.lists).toEqual(before.lists);
     expect(spaces.allocateCalls).toEqual([]);
+  });
+});
+
+describe('ListCurrentSprints: the sprints the viewer has a role on, each with that role', () => {
+  it('lists to a guest the sprints shared with them, with the role of the grant', async () => {
+    const spaces = atelierNord();
+    spaces.grants = [listGrantOf(PRODUIT, SPRINT_14, NADIA, 'comment')];
+
+    const output = await new ListCurrentSprints(spaces).execute(
+      current({ viewerUserId: NADIA, viewerRole: 'guest' }),
+    );
+
+    expect(output.lists.map((list) => [list.id, list.callerRole])).toEqual([
+      [SPRINT_14, 'comment'],
+    ]);
+  });
+
+  it('leaves out a sprint whose switch is off for a member it is not shared with', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [sprintState({ organizationAccess: false })],
+    });
+
+    const output = await new ListCurrentSprints(spaces).execute(current());
+
+    expect(output.lists).toEqual([]);
+  });
+
+  it('adds the sprint of a private space shared with the viewer through the space', async () => {
+    const spaces = atelierNord();
+    spaces.grants = [spaceGrantOf(DESIGN, LEA, 'view')];
+
+    const output = await new ListCurrentSprints(spaces).execute(current());
+
+    expect(output.lists.map((list) => [list.id, list.callerRole])).toEqual([
+      [MARKETING_SPRINT, 'edit'],
+      [SPRINT_14, 'edit'],
+      [DESIGN_SPRINT, 'view'],
+    ]);
   });
 });

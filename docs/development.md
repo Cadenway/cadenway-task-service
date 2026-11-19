@@ -18,7 +18,11 @@ events leave through the outbox, and the tasks with their subtasks, assignees, l
 and activity log (`src/modules/tasks/MODULE.md`), whose internal routes exist and whose `task.*`
 events leave through the outbox; the removal of a member enqueues, in the transaction of
 `member.removed.v1`, a job of `@cadenway/nest-jobs` that hands their private spaces over, then
-unassigns them from their tasks, in batches. The tasks module also serves the seven task queries (the tasks of a list, the group counts, the counts of a list, the overview of a space, the labels, "Mes tâches" and "Accueil"). The target architecture in this guide is what
+removes their grants of spaces and lists and drops their access requests, then unassigns them
+from their tasks, in batches. The grants of spaces and lists (`src/modules/spaces/MODULE.md`) and
+the access requests (`src/modules/access-requests/MODULE.md`) have their internal routes, and every
+route applies the effective role of the caller; the realtime gateway checks the access to a list or
+a task through two routes of its own. The tasks module also serves the seven task queries (the tasks of a list, the group counts, the counts of a list, the overview of a space, the labels, "Mes tâches" and "Accueil"). The target architecture in this guide is what
 the next modules must follow.
 
 The commands below are the documented workflow. Inspect the repository's actual manifests and files before running them, and report unavailable checks rather than inventing replacements. Run Git, pnpm, build, and test commands with this repository as the working directory, never from the parent workspace.
@@ -178,7 +182,12 @@ does the same for the tasks: every route against its contract validators, the ru
 the outbox, and the clean-up job of a removed member: enqueued with the removal, emptying
 1,200 assignments in batches, enqueued once for a redelivered removal, stopped by a re-join,
 retrying only the batch a lock timeout failed, run for an organization in upper case, carrying the
-trace, and replayed from a dead letter with the SQL of the member-lifecycle `MODULE.md`. They move to the fixtures
+trace, and replayed from a dead letter with the SQL of the member-lifecycle `MODULE.md`. `tests/access.int-spec.ts` does the same for the access model:
+the grants of spaces and lists and their rules, the switch of a list, the effective role on the
+routes of P3a, the access requests (the existence oracle, the hourly limit, the answers), the two
+access checks of the realtime gateway, row-level security of the four tables, the clean-up of the
+grants and requests of a removed member, and the query plans of the access reads on a large
+organization. They move to the fixtures
 of `@cadenway/nest-testing` once that package exports them.
 
 ## Minimum checks by change

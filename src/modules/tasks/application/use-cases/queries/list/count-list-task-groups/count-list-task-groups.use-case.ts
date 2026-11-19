@@ -22,8 +22,8 @@ import type { CountListTaskGroupsOutput } from './count-list-task-groups.output.
  *
  * @description
  * Counts the tasks of a list by status, priority or assignee, with the filters of the tasks route
- * (`GET /internal/v1/lists/{listId}/task-groups`), without a lock. An unknown list and a list of a
- * space the actor does not see (a guest sees none) get the same answer, `list-not-found`. Every
+ * (`GET /internal/v1/lists/{listId}/task-groups`), without a lock. An unknown list and a list the
+ * actor has no role on get the same answer, `list-not-found`. Every
  * group is counted on each request, then the page is cut in memory: their number is bounded by the
  * ten statuses, the four priorities or the assignees of one list. `total` counts each task once, as
  * the same statement that counts the groups returns it (a task with two assignees is in two groups).

@@ -1,11 +1,11 @@
-import type { TaskListState } from '../../../domain/value-objects/list/task-list-state.value-object.js';
 import type { PagePosition } from '../../models/page/page-position.model.js';
+import type { ListView } from './list-view.projection.js';
 
 /**
  * Interface TaskListPage
  *
  * @description
- * One page of the lists of a space, in the order of their creation.
+ * One page of the lists of a space the caller has a role on, in the order of their creation.
  */
 export interface TaskListPage {
   // #region Properties
@@ -13,12 +13,12 @@ export interface TaskListPage {
    * Property items
    *
    * @description
-   * The lists of the page.
+   * The lists of the page, each with the role of the caller.
    *
-   * @type {readonly TaskListState[]}
+   * @type {readonly ListView[]}
    * @readonly
    */
-  readonly items: readonly TaskListState[];
+  readonly items: readonly ListView[];
 
   /**
    * Property next

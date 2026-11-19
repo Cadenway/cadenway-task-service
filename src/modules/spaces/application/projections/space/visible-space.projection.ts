@@ -155,5 +155,29 @@ export interface VisibleSpace {
    * @readonly
    */
   readonly version: number;
+
+  /**
+   * Property callerRole
+   *
+   * @description
+   * The role of the member on the space itself; `null` when they see it only through the
+   * grants of some of its lists (decision 2 of P3b-1).
+   *
+   * @type {'edit' | 'comment' | 'view' | null}
+   * @readonly
+   */
+  readonly callerRole: 'edit' | 'comment' | 'view' | null;
+
+  /**
+   * Property callerCanManage
+   *
+   * @description
+   * Whether the member manages the space: changes its visibility, shares it and deletes
+   * it (decision 3 of P3b-1).
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  readonly callerCanManage: boolean;
   // #endregion
 }
