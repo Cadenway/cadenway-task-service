@@ -99,7 +99,13 @@ null default false`, added without a rewrite) is true exactly for the root of an
   Reads and writes of the running version on either table wait meanwhile, and fail after the 5 s
   `lock_timeout` of `task_app` (SQLSTATE `55P03`, answered `500`). A migrator that cannot take a
   lock within the `lock_timeout` of its own role fails with nothing applied (all or nothing) and is
-  retried safely. Measured: <to be filled>. Rollback: as above.
+  retried safely. Measured (`tests/archive-queries.int-spec.ts`, the statements of 0006 under fresh
+  names in a rolled-back transaction of the migrator, 104,278 tasks of 3,929 blocks and 4,004
+  lists): 94 ms in all, of which 10 to 14 ms for each scan of `tasks` (the foreign key, each CHECK,
+  each index build), the `ADD COLUMN`s under 2 ms each; the transaction holds ACCESS EXCLUSIVE on
+  both tables until its commit. The scans grow with the whole table (every organization): deploy at
+  low traffic once `tasks` holds millions of rows, or split the CHECKs and the foreign key into
+  `NOT VALID` then `VALIDATE` steps in a later migration. Rollback: as above.
 - `tasks.id`, `checklist_items.id` and `activity_entries.id` come from `uuidv7()`. The instants
   that order a page (`created_at`, `occurred_at`, `completed_at`) are `timestamptz(3)`, so that the
   position of a page round-trips exactly through the cursor. The key is stored on the task
@@ -577,7 +583,9 @@ the medians of five calls through HTTP on the 75,000 tasks of `tests/task-querie
   buffers, 3.7 ms at 12,310 roots); the tab "Listes" has a total O(archived lists the actor sees)
   (spaces MODULE.md) and its `taskCount` is one grouped statement for the lists of the page.
 - An archive or a restoration of a full tree, 651 tasks: one bulk update and 651 outbox appends of
-  two round trips each, about 1,300 statements in one transaction (Measured: <to be filled>), and
+  two round trips each, in one transaction (measured through HTTP by `tests/archives.int-spec.ts`:
+  1,326 statements and 946 ms for the archive, 1,327 statements and 1,017 ms for the restoration,
+  1,302 of them the outbox appends, on one connection), and
   up to 651 row locks held until the commit; a concurrent writer of one of them waits up to its 5 s
   `lock_timeout`, then answers `500` (`55P03`).
 - The visibility filter of the cross-list statements (the labels page, the "Mes tâches" page and

@@ -55,6 +55,8 @@ import type {
 } from '@cadenway/nest-common';
 import { TenantTransactionRunner } from '@cadenway/nest-common/database';
 import type { TransactionClient } from '@cadenway/nest-common/database';
+import { startTelemetry } from '@cadenway/nest-common/telemetry';
+import type { TelemetryHandle } from '@cadenway/nest-common/telemetry';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import pg from 'pg';
 import request from 'supertest';
@@ -77,8 +79,10 @@ import { appConfigSchema } from '../src/config/app-config.js';
 // of the API gateway and of the realtime gateway, and their answers are checked against the
 // validators generated from `openapi/internal/task-service.yaml`; the outbox rows are checked
 // against the schemas of `asyncapi/task-service.yaml`. Rows are read as the migrator role with the
-// system access of the policies, since row-level security is forced on every table. The scenarios
-// run in the order of the file and pass their state on.
+// system access of the policies, since row-level security is forced on every table. The
+// OpenTelemetry SDK of the kit runs as `src/telemetry.ts` starts it, without an exporter, so that the
+// rows of a request carry its `traceparent`. The scenarios run in the order of the file and pass
+// their state on.
 
 /** Compose file of the development dependencies. */
 const composeFile: string = fileURLToPath(new URL('../compose.dev.yaml', import.meta.url));
@@ -153,6 +157,21 @@ const chloe: Person = {
 const noe: Person = {
   userId: '01938f6e-8a42-7d5b-b2c9-5e1f3a6d9c2e',
   memberId: '01938f6e-9000-7000-8000-0000000000d1',
+};
+
+/**
+ * Mathis Roux, guest of Atelier Nord, given `edit` on the list of an archived root and nothing on
+ * the list its parent moves to.
+ */
+const mathis: Person = {
+  userId: '01938f6e-8a42-7d5b-b2c9-5e1f3a6d9c2a',
+  memberId: '01938f6e-9000-7000-8000-0000000000c8',
+};
+
+/** Lucie Fabre, guest of Atelier Nord, who loses a grant while she walks the pages "Archives". */
+const lucie: Person = {
+  userId: '01938f6e-8a42-7d5b-b2c9-5e1f3a6d9c32',
+  memberId: '01938f6e-9000-7000-8000-0000000000d3',
 };
 
 /** Solène Garnier, owner of the second organization. */
@@ -478,6 +497,7 @@ describe('the archives of lists and tasks', () => {
   const apiGateway = keyPair('test-api-gateway');
   const realtimeGateway = keyPair('test-realtime-gateway');
   let app: NestExpressApplication | undefined;
+  let telemetry: TelemetryHandle | undefined;
   const signers = new Map<Issuer, InternalTokenSigner>();
   let migrator: pg.Pool;
 
@@ -1246,6 +1266,7 @@ describe('the archives of lists and tasks', () => {
       }),
     );
 
+    telemetry = startTelemetry({ service: 'task-service', version: '0.0.0-test' });
     // As main.ts: the configuration is read inside the start-up, never when a module is imported.
     const config = loadConfig(appConfigSchema);
     app = await createApplication(AppModule, {
@@ -1285,11 +1306,15 @@ describe('the archives of lists and tasks', () => {
     join(atelierNordId, rose, 'guest');
     join(atelierNordId, chloe, 'guest');
     join(atelierNordId, noe, 'guest');
+    join(atelierNordId, mathis, 'guest');
+    join(atelierNordId, lucie, 'guest');
     join(atelierDeltaId, solene, 'owner');
     await vi.waitFor(
       async () => {
         expect(await activeMembers(atelierNordId)).toEqual(
-          [camille, ines, hugo, lea, nadia, rose, chloe, noe].map((person) => person.userId).sort(),
+          [camille, ines, hugo, lea, nadia, rose, chloe, noe, mathis, lucie]
+            .map((person) => person.userId)
+            .sort(),
         );
         expect(await activeMembers(atelierDeltaId)).toEqual([solene.userId]);
       },
@@ -1352,6 +1377,7 @@ describe('the archives of lists and tasks', () => {
     try {
       await app?.close();
       await migrator.end();
+      await telemetry?.shutdown();
     } finally {
       vi.unstubAllEnvs();
       compose('down', '--volumes', '--remove-orphans');
@@ -2332,10 +2358,11 @@ describe('the archives of lists and tasks', () => {
       expect(await readTask(inventory.key)).toEqual(inventory);
     });
 
-    it('leaves an archived subtask in its list, under its parent, when the parent moves to another list', async () => {
+    it('leaves an archived subtask in its list when its parent moves to another list: it keeps its stored parent and reads as detached', async () => {
       migration = await createTask(camille, refonte.id, { name: 'Migrer les redirections' });
       oldRules = await createSubtask(migration.key, { name: 'Anciennes règles nginx' });
       oldRules = await archiveTask(oldRules.key);
+      expect(oldRules).toMatchObject({ listId: refonte.id, parentKey: migration.key });
       const total = (await outboxOf('key', oldRules.key)).length;
 
       const moved = await patchTask(migration.key, { listId: maintenance.id });
@@ -2344,8 +2371,14 @@ describe('the archives of lists and tasks', () => {
         listId: maintenance.id,
         subtaskCounts: { total: 0, closed: 0 },
       });
-      expect(await readTask(oldRules.key)).toEqual(oldRules);
-      expect(oldRules).toMatchObject({ listId: refonte.id, parentKey: migration.key });
+      // Nothing of the archive changed but the reading of its parent, now in another list.
+      expect(await readTask(oldRules.key)).toEqual({ ...oldRules, parentKey: null });
+      const [stored] = await asSystem<{ readonly list_id: string; readonly parent_id: string }>(
+        `select list_id::text as list_id, parent_id::text as parent_id from tasks
+          where organization_id = $1 and id = $2`,
+        [atelierNordId, await taskIdOf(oldRules.key)],
+      );
+      expect(stored).toEqual({ list_id: refonte.id, parent_id: await taskIdOf(migration.key) });
       expect(await outboxOf('key', oldRules.key)).toHaveLength(total);
     });
   });
@@ -2577,6 +2610,173 @@ describe('the archives of lists and tasks', () => {
 
       expect(await readTask(interviewGuide.key, hugo)).toEqual(interviewGuide);
       expect(await outboxTotal()).toBe(total);
+    });
+  });
+
+  // « Refondre les emails » of "Emails transactionnels" (Produit) moves to "Emails marketing" once
+  // its subtask « Email de bienvenue » is archived with its own subtask; Mathis, a guest with
+  // `edit` on "Emails transactionnels" alone, does not see "Emails marketing". « Refondre les
+  // notifications » moves there and back.
+  describe('an archived root whose parent moved to another list reads as detached, as its restoration leaves it', () => {
+    let transactional: ListBody;
+    let marketingEmails: ListBody;
+    let emails: TaskBody;
+    let welcome: TaskBody;
+    let welcomeText: TaskBody;
+
+    /**
+     * Checks that an answer names nothing of a task: neither its key, its id nor its name.
+     *
+     * @param body - What the routes answered.
+     * @param task - The task that must not appear.
+     * @param taskId - Its id, as stored.
+     * @param label - What the answer is, for the message.
+     */
+    function expectNothingOf(body: unknown, task: TaskBody, taskId: string, label: string): void {
+      const text = JSON.stringify(body);
+      for (const value of [task.key, task.name, taskId]) {
+        expect(text, `${label} names ${value}`).not.toContain(JSON.stringify(value));
+      }
+    }
+
+    it('reads the root with parentKey null in the task, its detail (parent null) and the page "Archives", for Mathis and for Camille, and never names the parent to Mathis', async () => {
+      transactional = await createList(camille, produit.space.id, {
+        name: 'Emails transactionnels',
+      });
+      marketingEmails = await createList(camille, produit.space.id, { name: 'Emails marketing' });
+      await grant(camille, 'lists', transactional.id, mathis.userId, 'edit');
+      emails = await createTask(camille, transactional.id, { name: 'Refondre les emails' });
+      welcome = await createSubtask(emails.key, { name: 'Email de bienvenue' });
+      welcomeText = await createSubtask(welcome.key, { name: 'Texte de l’email de bienvenue' });
+      const archived = await archiveTask(welcome.key);
+      // Archived under a parent of its list, it reads under it.
+      expect(archived).toMatchObject({ parentKey: emails.key, listId: transactional.id });
+
+      const moved = await patchTask(emails.key, { listId: marketingEmails.id });
+
+      expect(moved).toMatchObject({
+        listId: marketingEmails.id,
+        subtaskCounts: { total: 0, closed: 0 },
+      });
+      expectProblem(
+        await send('get', `/internal/v1/tasks/${emails.key}`, mathis),
+        404,
+        'task.not-found',
+      );
+      const emailsId = await taskIdOf(emails.key);
+      for (const viewer of [mathis, camille]) {
+        const name = viewer === mathis ? 'Mathis' : 'Camille';
+        const task = await readTask(welcome.key, viewer);
+        expect(task, name).toEqual({ ...archived, parentKey: null });
+        const detail = await read(
+          GetTaskDetailInternalResponse,
+          `/internal/v1/tasks/${welcome.key}/detail`,
+          viewer,
+        );
+        expect(detail.parent, name).toBeNull();
+        expect(detail.task, name).toEqual(task);
+        expect(detail.list.id, name).toBe(transactional.id);
+        expect(detail.subtasks.map((subtask) => subtask.key)).toEqual([welcomeText.key]);
+        const subtasks = await read(
+          ListSubtasksInternalResponse,
+          `/internal/v1/tasks/${welcome.key}/subtasks`,
+          viewer,
+        );
+        expect(subtasks.items.map((subtask) => [subtask.key, subtask.parentKey])).toEqual([
+          [welcomeText.key, welcome.key],
+        ]);
+        const page = await archivedTasksOf(viewer);
+        const item = page.items.find((candidate) => candidate.task.key === welcome.key);
+        expect(item, name).toMatchObject({
+          task: { key: welcome.key, parentKey: null, listId: transactional.id },
+          list: { id: transactional.id, state: 'active' },
+          subtaskCount: 1,
+        });
+        if (viewer === mathis) {
+          expectNothingOf([task, detail, subtasks, page], emails, emailsId, name);
+        }
+      }
+      // Its stored parent stays, for the restoration to decide.
+      const [stored] = await asSystem<{ readonly parent_id: string }>(
+        'select parent_id::text as parent_id from tasks where organization_id = $1 and id = $2',
+        [atelierNordId, await taskIdOf(welcome.key)],
+      );
+      expect(stored?.parent_id).toBe(emailsId);
+    });
+
+    it('restores it detached for Mathis: parentKey null in the answer and in task.unarchived.v1, the subtask archived with it under it, and the parent left in its list without it', async () => {
+      const eventsBefore = (await outboxOf('rootKey', welcome.key)).length;
+
+      const restored = await unarchiveTask(welcome.key, mathis);
+
+      expect(restored).toMatchObject({
+        key: welcome.key,
+        parentKey: null,
+        listId: transactional.id,
+        archivedAt: null,
+        archivedBy: null,
+        subtaskCounts: { total: 1, closed: 0 },
+      });
+      expect(await unarchivedSince(welcome.key, eventsBefore)).toEqual([
+        { key: welcome.key, rootKey: welcome.key, parentKey: null },
+        { key: welcomeText.key, rootKey: welcome.key, parentKey: welcome.key },
+      ]);
+      expectNothingOf(restored, emails, await taskIdOf(emails.key), 'the restoration');
+      expect(await readTask(emails.key)).toMatchObject({
+        listId: marketingEmails.id,
+        subtaskCounts: { total: 0, closed: 0 },
+      });
+      const [stored] = await asSystem<{ readonly parent_id: string | null }>(
+        'select parent_id::text as parent_id from tasks where organization_id = $1 and id = $2',
+        [atelierNordId, await taskIdOf(welcome.key)],
+      );
+      expect(stored?.parent_id).toBeNull();
+      expect((await tasksOf(transactional.id)).keys).toContain(welcome.key);
+    });
+
+    it('reads the parent again once it moves back into the list of the root, and the restoration keeps the root under it', async () => {
+      const notifications = await createTask(camille, transactional.id, {
+        name: 'Refondre les notifications',
+      });
+      const reminder = await createSubtask(notifications.key, { name: 'Notification de rappel' });
+      const archived = await archiveTask(reminder.key);
+      await patchTask(notifications.key, { listId: marketingEmails.id });
+      expect((await readTask(reminder.key, mathis)).parentKey).toBeNull();
+
+      await patchTask(notifications.key, { listId: transactional.id });
+
+      expect(await readTask(reminder.key, mathis)).toEqual(archived);
+      const detail = await read(
+        GetTaskDetailInternalResponse,
+        `/internal/v1/tasks/${reminder.key}/detail`,
+        mathis,
+      );
+      expect(detail.parent).toEqual({
+        key: notifications.key,
+        name: 'Refondre les notifications',
+        status: 'todo',
+      });
+      expect(
+        (await archivedTasksOf(mathis)).items.find((item) => item.task.key === reminder.key)?.task
+          .parentKey,
+      ).toBe(notifications.key);
+      const eventsBefore = (await outboxOf('rootKey', reminder.key)).length;
+
+      const restored = await unarchiveTask(reminder.key, mathis);
+
+      expect(restored).toMatchObject({
+        key: reminder.key,
+        parentKey: notifications.key,
+        listId: transactional.id,
+        archivedAt: null,
+      });
+      expect(await unarchivedSince(reminder.key, eventsBefore)).toEqual([
+        { key: reminder.key, rootKey: reminder.key, parentKey: notifications.key },
+      ]);
+      expect((await readTask(notifications.key, mathis)).subtaskCounts).toEqual({
+        total: 1,
+        closed: 0,
+      });
     });
   });
 
@@ -2978,6 +3178,328 @@ describe('the archives of lists and tasks', () => {
     });
   });
 
+  describe('the constraints keep an archive in its organization and its root flag with its root', () => {
+    it('refuses, as task_app in a tenant transaction of Atelier Nord, a root of the second organization by the composite foreign key and row-level security, and an archive_root that disagrees with archive_root_id by tasks_archive_root_check', async () => {
+      const [delta] = await asSystem<{ readonly id: string }>(
+        'select id::text as id from tasks where organization_id = $1 order by id limit 1',
+        [atelierDeltaId],
+      );
+      const deltaTaskId = delta?.id ?? '';
+      expect(deltaTaskId).not.toBe('');
+      const liveId = await taskIdOf(gridUpdate.key);
+      const rootId = await taskIdOf(oldVisual.key);
+      const stored = async (): Promise<unknown[]> =>
+        asSystem(
+          `select id::text as id, organization_id::text as organization_id, version, archived_at,
+                  archived_by_type, archived_by_id, archive_root_id::text as archive_root_id, archive_root
+             from tasks where id = any($1::uuid[]) order by id`,
+          [[liveId, rootId]],
+        );
+      const before = await stored();
+      const archive = `archived_at = now(), archived_by_type = 'user', archived_by_id = '${camille.userId}'`;
+      const attempts: readonly (readonly [string, string, readonly unknown[]])[] = [
+        [
+          'a live task archived under a root of the second organization',
+          `update tasks set ${archive}, archive_root_id = $2 where organization_id = $1 and id = $3`,
+          [atelierNordId, deltaTaskId, liveId],
+        ],
+        [
+          'the same task moved into the second organization with that root',
+          `update tasks set organization_id = $2, ${archive}, archive_root_id = $3
+            where organization_id = $1 and id = $4`,
+          [atelierNordId, atelierDeltaId, deltaTaskId, liveId],
+        ],
+        [
+          'archive_root set on a live task, without archive_root_id',
+          'update tasks set archive_root = true where organization_id = $1 and id = $2',
+          [atelierNordId, liveId],
+        ],
+        [
+          'a task archived as its own root, without archive_root',
+          `update tasks set ${archive}, archive_root_id = id where organization_id = $1 and id = $2`,
+          [atelierNordId, liveId],
+        ],
+        [
+          'archive_root cleared on the root of an archive',
+          'update tasks set archive_root = false where organization_id = $1 and id = $2',
+          [atelierNordId, rootId],
+        ],
+      ];
+
+      const outcome = await inTenant(atelierNordId, async (client) => {
+        const role = await client.query('select current_user::text as role');
+        const refusals: {
+          readonly attempt: string;
+          readonly code?: string;
+          readonly constraint?: string;
+          readonly accepted?: true;
+        }[] = [];
+        for (const [attempt, text, params] of attempts) {
+          await client.query('savepoint attempt');
+          try {
+            await client.query(text, [...params]);
+            refusals.push({ attempt, accepted: true });
+          } catch (error) {
+            const { code, constraint } = error as { code?: string; constraint?: string };
+            refusals.push({ attempt, code, constraint });
+          }
+          await client.query('rollback to savepoint attempt');
+        }
+        return {
+          role: (role.rows as readonly { readonly role: string }[])[0]?.role,
+          refusals,
+        };
+      });
+
+      expect(outcome.role).toBe('task_app');
+      expect(outcome.refusals).toEqual([
+        {
+          attempt: attempts[0]?.[0],
+          code: '23503',
+          constraint: 'tasks_archive_root_fkey',
+        },
+        { attempt: attempts[1]?.[0], code: '42501', constraint: undefined },
+        {
+          attempt: attempts[2]?.[0],
+          code: '23514',
+          constraint: 'tasks_archive_root_check',
+        },
+        {
+          attempt: attempts[3]?.[0],
+          code: '23514',
+          constraint: 'tasks_archive_root_check',
+        },
+        {
+          attempt: attempts[4]?.[0],
+          code: '23514',
+          constraint: 'tasks_archive_root_check',
+        },
+      ]);
+      expect(await stored()).toEqual(before);
+    });
+  });
+
+  describe('an archived list or task the actor does not see answers exactly as an unknown one', () => {
+    /**
+     * The problem of a refusal, without `instance`, which names the path.
+     *
+     * @param response - A supertest response.
+     * @returns The members of the problem.
+     */
+    function problemOf(response: request.Response): Readonly<Record<string, unknown>> {
+      expect(response.headers['content-type']).toMatch(/^application\/problem\+json/u);
+      return Object.fromEntries(
+        Object.entries(bodyOf(response) as Readonly<Record<string, unknown>>).filter(
+          ([member]) => member !== 'instance',
+        ),
+      );
+    }
+
+    /**
+     * Calls each route for a target the actor does not see and for an unknown one, and checks both
+     * answer the same problem: its status, its code, its other members, and no `details`.
+     *
+     * @param routes - Verb, path with `{id}` for the target, and issuer of each route.
+     * @param actor - Who calls.
+     * @param unseen - The target the actor has no role on.
+     * @param unknown - A target that does not exist.
+     * @param status - The status both answer.
+     * @param code - The code both answer.
+     */
+    async function expectAsUnknown(
+      routes: readonly (readonly [HttpMethod, string, Issuer])[],
+      actor: Person,
+      unseen: string,
+      unknown: string,
+      status: number,
+      code: string,
+    ): Promise<void> {
+      for (const [method, path, issuer] of routes) {
+        const options: SendOptions = method === 'post' ? { body: {}, issuer } : { issuer };
+        const label = `${method} ${path}`;
+        const ofUnseen = await send(method, path.replace('{id}', unseen), actor, options);
+        const ofUnknown = await send(method, path.replace('{id}', unknown), actor, options);
+        expect(ofUnseen.status, `${label}: ${ofUnseen.text}`).toBe(status);
+        expect(ofUnknown.status, `${label}: ${ofUnknown.text}`).toBe(status);
+        const problem = problemOf(ofUnseen);
+        expect(problem, label).toMatchObject({ status, code });
+        expect(problem, label).not.toHaveProperty('details');
+        expect(problem, label).toEqual(problemOf(ofUnknown));
+      }
+    }
+
+    it('answers 404 list.not-found to Chloé (a guest without a grant) and Léa (a member, the list closed to the organization) on every route of an archived list, as for an unknown list, and changes nothing', async () => {
+      const total = await outboxTotal();
+      const before = [await readList(campaign.id), await readList(budget.id)];
+      const routes: readonly (readonly [HttpMethod, string, Issuer])[] = [
+        ['get', '/internal/v1/lists/{id}', 'api-gateway'],
+        ['get', '/internal/v1/lists/{id}/tasks?limit=10', 'api-gateway'],
+        ['get', `/internal/v1/lists/{id}/counts?today=${today}`, 'api-gateway'],
+        ['get', '/internal/v1/lists/{id}/task-groups?groupBy=status', 'api-gateway'],
+        ['get', '/internal/v1/lists/{id}/activity', 'api-gateway'],
+        ['post', '/internal/v1/lists/{id}/archive', 'api-gateway'],
+        ['post', '/internal/v1/lists/{id}/unarchive', 'api-gateway'],
+        ['get', '/internal/v1/lists/{id}/access', 'realtime-gateway'],
+      ];
+
+      for (const [actor, list] of [
+        [chloe, campaign],
+        [lea, budget],
+      ] as const) {
+        expect(list.archivedAt).not.toBeNull();
+        await expectAsUnknown(routes, actor, list.id, randomUUID(), 404, 'list.not-found');
+      }
+
+      expect([await readList(campaign.id), await readList(budget.id)]).toEqual(before);
+      expect(await outboxTotal()).toBe(total);
+    });
+
+    it('answers 404 task.not-found to them on every route of an archived task, in a live list or an archived one, as for an unknown key of the same space, and changes nothing', async () => {
+      const total = await outboxTotal();
+      const routes: readonly (readonly [HttpMethod, string, Issuer])[] = [
+        ['get', '/internal/v1/tasks/{id}', 'api-gateway'],
+        ['get', '/internal/v1/tasks/{id}/detail', 'api-gateway'],
+        ['get', '/internal/v1/tasks/{id}/subtasks', 'api-gateway'],
+        ['get', '/internal/v1/tasks/{id}/activity', 'api-gateway'],
+        ['post', '/internal/v1/tasks/{id}/archive', 'api-gateway'],
+        ['post', '/internal/v1/tasks/{id}/unarchive', 'api-gateway'],
+        ['get', '/internal/v1/tasks/{id}/access', 'realtime-gateway'],
+      ];
+
+      for (const [actor, task] of [
+        [chloe, calendar],
+        [chloe, oldVisual],
+        [lea, boothCost],
+      ] as const) {
+        expect(task.archivedAt).not.toBeNull();
+        await expectAsUnknown(routes, actor, task.key, 'MKT-99999', 404, 'task.not-found');
+      }
+
+      for (const task of [calendar, oldVisual, boothCost]) {
+        expect(await readTask(task.key)).toEqual(task);
+      }
+      expect(await outboxTotal()).toBe(total);
+    });
+  });
+
+  describe('restoring a task needs edit on its list, also when the list is archived', () => {
+    it('refuses Nadia, who views the archived « Salon 2026 », the restoration of « Réserver le stand » with 403 access.role-insufficient before 412, and leaves the list and the task archived without an event', async () => {
+      const total = await outboxTotal();
+      const listEvents = (await outboxOf('listId', fair.id)).length;
+      expect(await readList(fair.id, nadia)).toMatchObject({
+        callerRole: 'view',
+        archivedAt: fair.archivedAt,
+      });
+
+      for (const headers of [{}, stale]) {
+        expectProblem(
+          await act('unarchive', 'tasks', booth.key, nadia, { headers }),
+          403,
+          'access.role-insufficient',
+          { role: 'view', requiredRole: 'edit' },
+        );
+      }
+
+      expect(await readList(fair.id)).toEqual(fair);
+      expect(await readTask(booth.key)).toEqual(booth);
+      const events = await outboxOf('listId', fair.id);
+      expect(events).toHaveLength(listEvents);
+      expect(events.map((event) => event.event_name)).not.toContain('list.unarchived.v1');
+      expect(events.map((event) => event.event_name)).not.toContain('task.unarchived.v1');
+      expect(await outboxTotal()).toBe(total);
+    });
+  });
+
+  describe('a cursor of the pages "Archives" reused after the loss of a grant skips what is no longer seen', () => {
+    it('leaves « Salon 2026 » and « Réserver le stand » out of the next page of Lucie once her grant is removed, and drops the totals', async () => {
+      for (const list of [campaign, fair, budget]) {
+        await grant(camille, 'lists', list.id, lucie.userId, 'view');
+      }
+      const lists = await archivedListsOf(lucie, { limit: 1 });
+      const tasks = await archivedTasksOf(lucie, { limit: 1 });
+      expect(lists).toMatchObject({ total: 3 });
+      expect(lists.items.map((item) => item.list.id)).toEqual([budget.id]);
+      expect(lists.nextCursor).not.toBeNull();
+      expect(tasks).toMatchObject({ total: 3 });
+      expect(tasks.items.map((item) => item.task.key)).toEqual([boothCost.key]);
+      expect(tasks.nextCursor).not.toBeNull();
+      // Without the loss, the next pages would hold « Salon 2026 » and « Réserver le stand ».
+      expect(
+        (await archivedListsOf(lucie, { limit: 1, cursor: lists.nextCursor ?? '' })).items.map(
+          (item) => item.list.id,
+        ),
+      ).toEqual([fair.id]);
+      expect(
+        (await archivedTasksOf(lucie, { limit: 1, cursor: tasks.nextCursor ?? '' })).items.map(
+          (item) => item.task.key,
+        ),
+      ).toEqual([booth.key]);
+
+      const removed = await send(
+        'delete',
+        `/internal/v1/lists/${fair.id}/grants/${lucie.userId}`,
+        camille,
+      );
+      expect(removed.status, removed.text).toBe(204);
+
+      const nextLists = await archivedListsOf(lucie, {
+        limit: 1,
+        cursor: lists.nextCursor ?? '',
+      });
+      expect(nextLists).toMatchObject({ total: 2, nextCursor: null });
+      expect(nextLists.items.map((item) => item.list.id)).toEqual([campaign.id]);
+      const nextTasks = await archivedTasksOf(lucie, {
+        limit: 1,
+        cursor: tasks.nextCursor ?? '',
+      });
+      expect(nextTasks).toMatchObject({ total: 2, nextCursor: null });
+      expect(nextTasks.items.map((item) => item.task.key)).toEqual([oldVisual.key]);
+      expectProblem(
+        await send('get', `/internal/v1/lists/${fair.id}`, lucie),
+        404,
+        'list.not-found',
+      );
+    });
+  });
+
+  describe('the overview pages the lists of a space in the order of the sidebar, a restored list last', () => {
+    it('pages « Support » by two: « Tickets entrants » and « Base de connaissances » first, then « Première liste », restored from the archives, with listCount 3 on both pages', async () => {
+      const support = await createSpace(camille, { name: 'Support', prefix: 'SUP' });
+      const first = support.firstList;
+      const tickets = await createList(camille, support.space.id, { name: 'Tickets entrants' });
+      const knowledge = await createList(camille, support.space.id, {
+        name: 'Base de connaissances',
+      });
+      await createTask(camille, first.id, { name: 'Répondre aux tickets en attente' });
+      await createTask(camille, tickets.id, { name: 'Trier les tickets du jour' });
+      await archiveList(first.id);
+      const restored = await unarchiveList(first.id);
+      const path = `/internal/v1/spaces/${support.space.id}/overview`;
+
+      const pageOne = await read(GetSpaceOverviewInternalResponse, path, camille, {
+        today,
+        limit: 2,
+      });
+      const pageTwo = await read(GetSpaceOverviewInternalResponse, path, camille, {
+        today,
+        limit: 2,
+        cursor: pageOne.nextCursor ?? '',
+      });
+
+      expect(pageOne.items.map((item) => item.list.id)).toEqual([tickets.id, knowledge.id]);
+      expect(pageOne).toMatchObject({ listCount: 3, taskCount: 2 });
+      expect(pageOne.nextCursor).not.toBeNull();
+      expect(pageTwo.items.map((item) => item.list.id)).toEqual([first.id]);
+      expect(pageTwo.items[0]?.list).toEqual(restored);
+      expect(pageTwo).toMatchObject({ listCount: 3, taskCount: 2, nextCursor: null });
+      expect(await listNamesOf(support.space.id)).toEqual([
+        'Tickets entrants',
+        'Base de connaissances',
+        'Première liste',
+      ]);
+    });
+  });
+
   describe('concurrent archives and restorations end in one consistent state, without a deadlock', () => {
     /**
      * Counts the lock requests of the cluster that wait, as `pg_locks` shows them to any role.
@@ -3198,6 +3720,179 @@ describe('the archives of lists and tasks', () => {
       );
       expect(orphans?.total).toBe(0);
     });
+
+    describe('an archive racing the move of a descendant out of its list takes the descendant whole or leaves it live', () => {
+      /** A task of a round, as stored. */
+      interface StoredTask {
+        readonly key: string;
+        readonly list_id: string;
+        readonly parent_key: string | null;
+        readonly archived_at: Date | null;
+        readonly archive_root_key: string | null;
+      }
+
+      /** Sends the archive and the move of a round, and answers them in that order. */
+      type Race = (
+        held: string,
+        archive: () => Promise<request.Response>,
+        move: () => Promise<request.Response>,
+      ) => Promise<readonly [request.Response, request.Response]>;
+
+      /**
+       * Reads tasks as stored, by key.
+       *
+       * @param keys - The tasks.
+       * @returns Each task, by key.
+       */
+      async function storedTasks(keys: readonly string[]): Promise<Map<string, StoredTask>> {
+        const rows = await asSystem<StoredTask>(
+          `select t.key_prefix || '-' || t.key_number as key, t.list_id::text as list_id,
+                  p.key_prefix || '-' || p.key_number as parent_key, t.archived_at,
+                  r.key_prefix || '-' || r.key_number as archive_root_key
+             from tasks as t
+             left join tasks as p on p.organization_id = t.organization_id and p.id = t.parent_id
+             left join tasks as r on r.organization_id = t.organization_id and r.id = t.archive_root_id
+            where t.organization_id = $1 and t.key_prefix || '-' || t.key_number = any($2::text[])`,
+          [atelierNordId, keys],
+        );
+        return new Map(rows.map((row) => [row.key, row]));
+      }
+
+      it('races the archive of « Lot de traduction » with the move of its subtask « Traduire les emails » and its own subtask to « Maintenance du site »: the move commits first and stays live, or answers 409 and is archived with the rest', async () => {
+        const unforced: Race = async (_held, archive, move) => Promise.all([archive(), move()]);
+        const unforcedMoveSent: Race = async (_held, archive, move) => {
+          const [byMove, byArchive] = await Promise.all([move(), archive()]);
+          return [byArchive, byMove];
+        };
+        const rounds: readonly (readonly [string, 'moved' | 'archived' | null, Race])[] = [
+          // The archive waits for the held subtask while it locks the subtree, the move behind it:
+          // the archive takes the subtask, and the move then reads it archived.
+          [
+            'archive first',
+            'archived',
+            async (held, archive, move) => inOrderBehind(held, archive, move),
+          ],
+          // The move waits for its task first: it commits, and the archive locks the subtask after
+          // it left the subtree.
+          [
+            'move first',
+            'moved',
+            async (held, archive, move) => {
+              const [byMove, byArchive] = await inOrderBehind(held, move, archive);
+              return [byArchive, byMove];
+            },
+          ],
+          // Unforced, as two gateways would send them.
+          ['unforced 1', null, unforced],
+          ['unforced 2', null, unforcedMoveSent],
+          ['unforced 3', null, unforced],
+          ['unforced 4', null, unforcedMoveSent],
+        ];
+        const outcomes: string[] = [];
+
+        for (const [index, [name, expected, race]] of rounds.entries()) {
+          const round = String(index + 1);
+          const batch = await createTask(camille, refonte.id, {
+            name: `Lot de traduction ${round}`,
+          });
+          const pages = await createSubtask(batch.key, { name: `Traduire les pages ${round}` });
+          const mails = await createSubtask(batch.key, { name: `Traduire les emails ${round}` });
+          const subject = await createSubtask(mails.key, {
+            name: `Traduire les objets ${round}`,
+          });
+
+          const [archived, moved] = await race(
+            mails.key,
+            () => act('archive', 'tasks', batch.key, camille),
+            () =>
+              send('patch', `/internal/v1/tasks/${mails.key}`, camille, {
+                body: { listId: maintenance.id },
+              }),
+          );
+
+          const root = taskAnswer(archived, ArchiveTaskInternalResponse);
+          const rows = await storedTasks([batch.key, pages.key, mails.key, subject.key]);
+          const archivedAt = instantOf(root.archivedAt);
+          const asArchived = (key: string, parentKey: string | null): void => {
+            const row = rows.get(key);
+            expect(row, `${name}: ${key}`).toMatchObject({
+              list_id: refonte.id,
+              parent_key: parentKey,
+              archive_root_key: batch.key,
+            });
+            expect(row?.archived_at?.getTime(), `${name}: ${key}`).toBe(archivedAt);
+          };
+          asArchived(batch.key, null);
+          asArchived(pages.key, batch.key);
+          const outcome = moved.status === 200 ? 'moved' : 'archived';
+          outcomes.push(`${name}: ${outcome}`);
+          if (expected !== null) {
+            expect(outcome, name).toBe(expected);
+          }
+          if (outcome === 'moved') {
+            expect(conforms(UpdateTaskInternalResponse, bodyOf(moved))).toMatchObject({
+              key: mails.key,
+              listId: maintenance.id,
+              parentKey: null,
+              archivedAt: null,
+            });
+            expect(rows.get(mails.key), name).toMatchObject({
+              list_id: maintenance.id,
+              parent_key: null,
+              archived_at: null,
+              archive_root_key: null,
+            });
+            expect(rows.get(subject.key), name).toMatchObject({
+              list_id: maintenance.id,
+              parent_key: mails.key,
+              archived_at: null,
+              archive_root_key: null,
+            });
+            expect(root.subtaskCounts.total, name).toBe(1);
+          } else {
+            expectProblem(moved, 409, 'task.archived', { key: mails.key });
+            asArchived(mails.key, batch.key);
+            asArchived(subject.key, mails.key);
+            expect(root.subtaskCounts.total, name).toBe(2);
+          }
+          const events = (await outboxOf('rootKey', batch.key)).map(
+            (row) => conforms(taskEventSchemas['task.archived.v1'], row.payload).key,
+          );
+          expect(events, name).toEqual(
+            outcome === 'moved'
+              ? [batch.key, pages.key]
+              : [batch.key, pages.key, mails.key, subject.key],
+          );
+        }
+        console.info(`archive racing a move out of its list: ${outcomes.join(', ')}`);
+
+        // Whatever the order: no live task under an archived one, and every member of an archive
+        // carries the instant, the actor and the list of its root, under a parent of the same
+        // archive.
+        const [broken] = await asSystem<{
+          readonly orphans: number;
+          readonly split: number;
+          readonly detachedMembers: number;
+        }>(
+          `select
+             (select count(*)::int from tasks as child
+                join tasks as parent on parent.organization_id = child.organization_id and parent.id = child.parent_id
+               where child.organization_id = $1 and child.archived_at is null and parent.archived_at is not null) as orphans,
+             (select count(*)::int from tasks as member
+                join tasks as root on root.organization_id = member.organization_id and root.id = member.archive_root_id
+               where member.organization_id = $1
+                 and (member.archived_at <> root.archived_at or member.archived_by_id <> root.archived_by_id
+                      or member.list_id <> root.list_id)) as split,
+             (select count(*)::int from tasks as member
+                left join tasks as parent on parent.organization_id = member.organization_id and parent.id = member.parent_id
+               where member.organization_id = $1 and member.archive_root_id is not null
+                 and member.archive_root_id <> member.id
+                 and parent.archive_root_id is distinct from member.archive_root_id) as "detachedMembers"`,
+          [atelierNordId],
+        );
+        expect(broken).toEqual({ orphans: 0, split: 0, detachedMembers: 0 });
+      });
+    });
   });
 
   // The clocks of the spaces and tasks transactions truncate `now()` to the millisecond as the
@@ -3239,5 +3934,233 @@ describe('the archives of lists and tasks', () => {
         stamps.filter((stamp) => instantOf(stamp.archivedAt) !== instantOf(stamp.occurredAt)),
       ).toEqual([]);
     });
+  });
+
+  describe('a restoration appends its events in the trace of its request', () => {
+    it('stamps list.unarchived.v1 and the task.unarchived.v1 of one restoration with one traceparent, in another trace than the archives before it', async () => {
+      const press = await createList(camille, marketing.space.id, { name: 'Relations presse' });
+      const kit = await createTask(camille, press.id, {
+        name: 'Dossier de presse 2026',
+        subtasks: [{ name: 'Communiqué de lancement' }],
+      });
+      await archiveTask(kit.key);
+      await archiveList(press.id);
+      const before = (await outboxOf('listId', press.id)).length;
+
+      await unarchiveTask(kit.key);
+
+      const rows = await asSystem<{
+        readonly event_name: string;
+        readonly traceparent: string | null;
+      }>(
+        `select event_name, traceparent from outbox_events where payload ->> 'listId' = $1 order by id`,
+        [press.id],
+      );
+      const restoration = rows.slice(before);
+      expect(restoration.map((row) => row.event_name)).toEqual([
+        'list.unarchived.v1',
+        'task.unarchived.v1',
+        'task.unarchived.v1',
+      ]);
+      for (const row of restoration) {
+        expect(row.traceparent, row.event_name).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/u);
+      }
+      const traceparents = new Set(restoration.map((row) => row.traceparent));
+      console.info(`traceparents of one restoration: ${[...traceparents].join(', ')}`);
+      expect(traceparents.size).toBe(1);
+      const [traceparent] = [...traceparents];
+      const traceId = traceparent?.split('-')[1];
+      // The creations, the archive of the task and the archive of the list are other requests.
+      const earlier = rows.slice(0, before);
+      expect(earlier.map((row) => row.event_name)).toEqual([
+        'list.created.v1',
+        'task.created.v1',
+        'task.created.v1',
+        'task.archived.v1',
+        'task.archived.v1',
+        'list.archived.v1',
+      ]);
+      for (const row of earlier) {
+        expect(row.traceparent, row.event_name).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/u);
+        expect(row.traceparent?.split('-')[1], row.event_name).not.toBe(traceId);
+      }
+    });
+  });
+
+  // « Reprise de l’existant » in « Reprise des données », the largest tree the rules allow: the
+  // root, 25 subtasks and 25 subtasks under each, seeded through the routes (each subtask created
+  // with its 25 subtasks, then attached under the root), so that the keys come from `space_prefixes`.
+  describe('an archive and a restoration of a full tree of 651 tasks keep to their bounds', () => {
+    /** The full tree: the root, 25 subtasks and 625 below them. */
+    const treeSize = 1 + 25 + 25 * 25;
+
+    /** What one request sent to PostgreSQL. */
+    interface RequestCost {
+      readonly statements: number;
+      readonly control: number;
+      readonly outboxAppends: number;
+      readonly others: number;
+      readonly connections: number;
+      readonly milliseconds: number;
+    }
+
+    /**
+     * Sends a request and counts the statements it sends to PostgreSQL on the connections of the
+     * application (the clients that send anything but the control of a transaction, the outbox
+     * relay and the job queues, which run on their own connections and schedule), and its wall
+     * time.
+     *
+     * @param call - The request.
+     * @returns The response and what it cost.
+     */
+    async function measure(
+      call: () => Promise<request.Response>,
+    ): Promise<{ readonly response: request.Response; readonly cost: RequestCost }> {
+      const seen: { readonly client: unknown; readonly text: string }[] = [];
+      const prototype = pg.Client.prototype as unknown as {
+        query: (...args: unknown[]) => unknown;
+      };
+      const original = prototype.query;
+      prototype.query = function (this: unknown, ...args: unknown[]): unknown {
+        const first = args[0];
+        seen.push({
+          client: this,
+          text:
+            typeof first === 'string'
+              ? first
+              : ((first as { text?: string } | undefined)?.text ?? ''),
+        });
+        return Reflect.apply(original, this, args);
+      };
+      const started = performance.now();
+      let response: request.Response;
+      try {
+        response = await call();
+      } finally {
+        prototype.query = original;
+      }
+      const milliseconds = Math.round(performance.now() - started);
+      const control =
+        /^\s*(begin|commit|rollback|set |select set_config|start transaction|savepoint|release)/iu;
+      const background = /outbox_events|pgboss/u;
+      const ofRequest = new Set(
+        seen
+          .filter((statement) => !control.test(statement.text) && !background.test(statement.text))
+          .map((statement) => statement.client),
+      );
+      const sent = seen.filter((statement) => ofRequest.has(statement.client));
+      const outboxAppends = sent.filter(
+        (statement) =>
+          /^\s*insert into outbox_events/u.test(statement.text) ||
+          /^\s*select uuidv7\(\)::text as id,\s+to_char\(now\(\)/u.test(statement.text),
+      ).length;
+      const controlCount = sent.filter((statement) => control.test(statement.text)).length;
+      return {
+        response,
+        cost: {
+          statements: sent.length,
+          control: controlCount,
+          outboxAppends,
+          others: sent.length - controlCount - outboxAppends,
+          connections: ofRequest.size,
+          milliseconds,
+        },
+      };
+    }
+
+    /**
+     * Reads the events of an archive, checked against the contract.
+     *
+     * @param name - `task.archived.v1` or `task.unarchived.v1`.
+     * @param rootKey - The root of the archive.
+     * @returns The keys the events name, in the order of the outbox.
+     */
+    async function eventKeys(
+      name: 'task.archived.v1' | 'task.unarchived.v1',
+      rootKey: string,
+    ): Promise<string[]> {
+      const rows = (await outboxOf('rootKey', rootKey)).filter((row) => row.event_name === name);
+      return rows.map((row) => conforms(taskEventSchemas[name], row.payload).key);
+    }
+
+    it('archives the tree in one request, then restores it in one: every task archived then live, 651 task.archived.v1 then 651 task.unarchived.v1, two statements per event and a few dozen more', async () => {
+      const reprise = await createSpace(camille, { name: 'Reprise des données', prefix: 'REP' });
+      const list = reprise.firstList;
+      const root = await createTask(camille, list.id, { name: 'Reprise de l’existant' });
+      for (let batch = 1; batch <= 25; batch += 1) {
+        const lot = await createTask(camille, list.id, {
+          name: `Lot ${String(batch)}`,
+          subtasks: Array.from({ length: 25 }, (_, index) => ({
+            name: `Lot ${String(batch)} : fiche ${String(index + 1)}`,
+          })),
+        });
+        await patchTask(lot.key, { parentKey: root.key });
+      }
+      expect((await readTask(root.key)).subtaskCounts.total).toBe(25);
+      expect((await tasksOf(list.id, 'all')).total).toBe(treeSize);
+      const rootId = await taskIdOf(root.key);
+      const stateOfTree = async (): Promise<unknown> => {
+        const [row] = await asSystem<Record<string, number>>(
+          `select count(*)::int as tasks,
+                  (count(*) filter (where archived_at is null))::int as live,
+                  (count(*) filter (where archive_root_id = $3))::int as members,
+                  (count(distinct archived_at))::int as instants,
+                  (count(*) filter (where archive_root))::int as roots
+             from tasks where organization_id = $1 and list_id = $2`,
+          [atelierNordId, list.id, rootId],
+        );
+        return row;
+      };
+
+      const archive = await measure(() => act('archive', 'tasks', root.key, camille));
+
+      const archived = taskAnswer(archive.response, ArchiveTaskInternalResponse);
+      expect(archived).toMatchObject({ key: root.key, subtaskCounts: { total: 25, closed: 0 } });
+      expect(await stateOfTree()).toEqual({
+        tasks: treeSize,
+        live: 0,
+        members: treeSize,
+        instants: 1,
+        roots: 1,
+      });
+      const archivedKeys = await eventKeys('task.archived.v1', root.key);
+      expect(archivedKeys).toHaveLength(treeSize);
+      expect(new Set(archivedKeys).size).toBe(treeSize);
+      expect(archivedKeys[0]).toBe(root.key);
+
+      const restoration = await measure(() => act('unarchive', 'tasks', root.key, camille));
+
+      const restored = taskAnswer(restoration.response, UnarchiveTaskInternalResponse);
+      expect(restored).toMatchObject({
+        key: root.key,
+        archivedAt: null,
+        subtaskCounts: { total: 25, closed: 0 },
+      });
+      expect(await stateOfTree()).toEqual({
+        tasks: treeSize,
+        live: treeSize,
+        members: 0,
+        instants: 0,
+        roots: 0,
+      });
+      const unarchivedKeys = await eventKeys('task.unarchived.v1', root.key);
+      expect(unarchivedKeys).toHaveLength(treeSize);
+      expect(unarchivedKeys[0]).toBe(root.key);
+      expect(new Set(unarchivedKeys)).toEqual(new Set(archivedKeys));
+
+      console.info(
+        `full tree of ${String(treeSize)} tasks: ${JSON.stringify({ archive: archive.cost, restoration: restoration.cost })}`,
+      );
+      for (const [name, cost] of [
+        ['archive', archive.cost],
+        ['restoration', restoration.cost],
+      ] as const) {
+        // One outbox append per task, two round trips each; the rest does not grow with the tree.
+        expect(cost.outboxAppends, name).toBe(2 * treeSize);
+        expect(cost.others, name).toBeLessThan(100);
+        expect(cost.connections, name).toBe(1);
+        expect(cost.milliseconds, name).toBeLessThan(30_000);
+      }
+    }, 300_000);
   });
 });

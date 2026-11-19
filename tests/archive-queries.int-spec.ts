@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import type { TransactionDatabase } from '@cadenway/nest-common/database';
@@ -83,6 +84,11 @@ import { tasks } from '../src/modules/tasks/infrastructure/persistence/drizzle/s
 
 /** Compose file of the development dependencies. */
 const composeFile: string = fileURLToPath(new URL('../compose.dev.yaml', import.meta.url));
+
+/** The migration of the archives, whose deploy-time cost is measured on the seeded tables. */
+const archivesMigration: string = fileURLToPath(
+  new URL('../migrations/0006_archives.sql', import.meta.url),
+);
 
 /** Throwaway project name, distinct from the other specs and from any developer stack. */
 const project = `cadenway-task-service-archive-plans-test-${String(process.pid)}`;
@@ -1981,5 +1987,95 @@ describe('the live condition and the archives keep the statements of the tasks o
     expect(used).toContain('tasks_archive_root_index');
     expect(used).toContain('tasks_archive_member_index');
     expect(used).toContain('lists_organization_archived_index');
+  });
+
+  describe('deploying migrations/0006_archives.sql holds tasks and lists while it scans them', () => {
+    it('runs the statements of 0006 again under temporary names, as the migrator, in a transaction rolled back: the time of each and of all, and the locks it holds on tasks and lists', async () => {
+      const statements = readFileSync(archivesMigration, 'utf8')
+        .split('--> statement-breakpoint')
+        .map((statement) => statement.trim())
+        .filter((statement) => statement !== '');
+      // Every column, constraint and index 0006 introduces gets a temporary name: the columns are
+      // added empty, as on the day of the deploy, beside the ones the seed filled.
+      const introduced = new Set(
+        statements.flatMap((statement) =>
+          [...statement.matchAll(/(?:ADD COLUMN|ADD CONSTRAINT|CREATE INDEX) "([a-z_]+)"/gu)].map(
+            (match) => match[1] ?? '',
+          ),
+        ),
+      );
+      const probes = statements.map((statement) =>
+        statement.replace(/"([a-z_]+)"/gu, (quoted: string, name: string) =>
+          introduced.has(name) ? `"${name}_probe"` : quoted,
+        ),
+      );
+      expect(statements).toHaveLength(20);
+      expect(introduced.size).toBe(6 + 8 + 3);
+      expect(probes.filter((probe, index) => probe === statements[index])).toEqual([]);
+      const [volume] = await asSystem<{ readonly tasks: number; readonly lists: number }>(
+        'select (select count(*)::int from tasks) as tasks, (select count(*)::int from lists) as lists',
+      );
+
+      const client = await migrator.connect();
+      const timings: { readonly statement: string; readonly milliseconds: number }[] = [];
+      const replay = async (): Promise<{
+        readonly total: number;
+        readonly locks: readonly { readonly relation: string; readonly mode: string }[];
+      }> => {
+        await client.query('begin');
+        const started = performance.now();
+        for (const probe of probes) {
+          const before = performance.now();
+          await client.query(probe);
+          timings.push({
+            statement: probe.replace(/\s+/gu, ' ').slice(0, 140),
+            milliseconds: Math.round((performance.now() - before) * 10) / 10,
+          });
+        }
+        const elapsed = Math.round(performance.now() - started);
+        const held = await client.query<{ readonly relation: string; readonly mode: string }>(
+          `select relation::regclass::text as relation, mode from pg_locks
+            where pid = pg_backend_pid() and locktype = 'relation' and granted
+              and relation in ('tasks'::regclass, 'lists'::regclass)
+            order by relation::regclass::text, mode`,
+        );
+        return { total: elapsed, locks: held.rows };
+      };
+      let replayed: Awaited<ReturnType<typeof replay>>;
+      try {
+        replayed = await replay();
+      } finally {
+        await client.query('rollback');
+        client.release();
+      }
+      const { total, locks } = replayed;
+      const [leftover] = await asSystem<{ readonly columns: number; readonly indexes: number }>(
+        `select (select count(*)::int from information_schema.columns
+                  where table_name in ('tasks', 'lists') and column_name like '%\\_probe') as columns,
+                (select count(*)::int from pg_indexes where indexname like '%\\_probe') as indexes`,
+      );
+
+      console.info(
+        [
+          `migration 0006 on ${String(volume?.tasks ?? 0)} tasks and ${String(volume?.lists ?? 0)} lists: ${String(total)} ms in all`,
+          ...timings.map(
+            (timing) =>
+              `migration 0006 | ${timing.milliseconds.toFixed(1)} ms | ${timing.statement}`,
+          ),
+          `migration 0006 | locks held until the commit: ${locks.map((lock) => `${lock.relation} ${lock.mode}`).join(', ')}`,
+        ].join('\n'),
+      );
+      expect(volume?.tasks).toBeGreaterThan(100_000);
+      expect(volume?.lists).toBeGreaterThan(4_000);
+      expect(timings).toHaveLength(statements.length);
+      expect(total).toBeLessThan(60_000);
+      for (const relation of ['tasks', 'lists']) {
+        expect(
+          locks.filter((lock) => lock.relation === relation).map((lock) => lock.mode),
+          relation,
+        ).toContain('AccessExclusiveLock');
+      }
+      expect(leftover).toEqual({ columns: 0, indexes: 0 });
+    }, 300_000);
   });
 });
