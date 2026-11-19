@@ -63,17 +63,21 @@ const platformTables = [
 
 /**
  * Every table the migrations create, by name: the kit tables, the memberships, the spaces and the
- * tasks with what hangs from them.
+ * tasks with what hangs from them, the grants of the spaces and lists and the access requests.
  */
 const publicTables = [
+  'access_request_attempts',
+  'access_requests',
   'activity_entries',
   'checklist_items',
   'event_versions',
   'idempotency_keys',
+  'list_grants',
   'lists',
   'organization_members',
   'outbox_events',
   'processed_events',
+  'space_grants',
   'space_prefixes',
   'spaces',
   'task_assignees',
@@ -83,9 +87,10 @@ const publicTables = [
 
 /**
  * Migrations of the journal: the platform tables, the copy of the memberships, the spaces and their
- * lists, then the tasks, then the two indexes of the task queries.
+ * lists, then the tasks, then the two indexes of the task queries, then the grants, the switch of
+ * the lists and the access requests.
  */
-const appliedMigrations = 5;
+const appliedMigrations = 6;
 
 /**
  * Runs `docker compose` on the throwaway project.
@@ -466,14 +471,18 @@ describe('task-service wiring', () => {
     );
 
     expect(tables.rows).toEqual([
+      { relname: 'access_request_attempts', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'access_requests', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'activity_entries', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'checklist_items', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'event_versions', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'idempotency_keys', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'list_grants', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'lists', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'organization_members', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'outbox_events', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'processed_events', relrowsecurity: false, relforcerowsecurity: false },
+      { relname: 'space_grants', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'space_prefixes', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'spaces', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_assignees', relrowsecurity: true, relforcerowsecurity: true },
@@ -481,16 +490,23 @@ describe('task-service wiring', () => {
       { relname: 'tasks', relrowsecurity: true, relforcerowsecurity: true },
     ]);
     expect(policies.rows).toEqual([
+      {
+        tablename: 'access_request_attempts',
+        policyname: 'access_request_attempts_organization_isolation',
+      },
+      { tablename: 'access_requests', policyname: 'access_requests_organization_isolation' },
       { tablename: 'activity_entries', policyname: 'activity_entries_organization_isolation' },
       { tablename: 'checklist_items', policyname: 'checklist_items_organization_isolation' },
       { tablename: 'event_versions', policyname: 'event_versions_organization_isolation' },
       { tablename: 'idempotency_keys', policyname: 'idempotency_keys_organization_isolation' },
+      { tablename: 'list_grants', policyname: 'list_grants_organization_isolation' },
       { tablename: 'lists', policyname: 'lists_organization_isolation' },
       {
         tablename: 'organization_members',
         policyname: 'organization_members_organization_isolation',
       },
       { tablename: 'outbox_events', policyname: 'outbox_events_organization_isolation' },
+      { tablename: 'space_grants', policyname: 'space_grants_organization_isolation' },
       { tablename: 'space_prefixes', policyname: 'space_prefixes_organization_isolation' },
       { tablename: 'spaces', policyname: 'spaces_organization_isolation' },
       { tablename: 'task_assignees', policyname: 'task_assignees_organization_isolation' },
