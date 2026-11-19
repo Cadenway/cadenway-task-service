@@ -3,6 +3,7 @@ import type { OutboxRelay, OutboxWriter } from '@cadenway/nest-messaging/outbox'
 
 import type { SpacesStore } from '../../../../../application/models/transactions/spaces-store.model.js';
 import type { SpacesUnitOfWork } from '../../../../../application/ports/outbound/transactions/space/spaces-unit-of-work.port.js';
+import { PostgresqlTransactionClock } from '../../../../adapters/postgresql/transaction-clock.adapter.js';
 import { OutboxSpaceEvents } from '../../../../messaging/outbox/space/outbox-space-events.adapter.js';
 import { DrizzleGrantRepository } from '../../repositories/access/drizzle-grant.repository.js';
 import { DrizzleTaskListRepository } from '../../repositories/list/drizzle-task-list.repository.js';
@@ -16,7 +17,8 @@ import { DrizzleSpaceRepository } from '../../repositories/space/drizzle-space.r
  * `SpacesUnitOfWork` on the tenant transaction runner: the work runs in the organization context
  * of the caller, and row-level security limits it to that organization. A route marked
  * `@Idempotent()` and the handler of a member event run in the transaction a kit interceptor
- * opened: `run` joins it. The events appended go to the outbox of the same transaction.
+ * opened: `run` joins it. The events appended go to the outbox of the same transaction, and the
+ * clock reads the instant of that transaction (once per run).
  *
  * Once a run that appended events resolves, the relay is woken so they leave now instead of at
  * its next poll. A run joined to an outer transaction resolves before that one commits: the pass
@@ -100,6 +102,7 @@ export class TenantSpacesUnitOfWork implements SpacesUnitOfWork {
           events: new OutboxSpaceEvents(transaction, this.outbox, (): void => {
             appends.count += 1;
           }),
+          clock: new PostgresqlTransactionClock(transaction.db),
         }),
     );
     if (appends.count > 0) {

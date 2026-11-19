@@ -19,6 +19,7 @@ import {
   sprint14SharedWith,
   subtaskState,
   taskState,
+  archiveFrom,
 } from '../../../tasks.fixture.js';
 import type { ListMyTasksInput } from './list-my-tasks.input.js';
 import { ListMyTasks } from './list-my-tasks.use-case.js';
@@ -254,5 +255,35 @@ describe('ListMyTasks: the read runs in one read-only transaction', () => {
     expect(tasks.runs).toBe(1);
     expect(tasks.readOnlyRuns).toBe(1);
     expect(tasks.snapshotRuns).toBe(0);
+  });
+});
+
+describe('ListMyTasks: an archived task leaves "Mes tâches"', () => {
+  it('leaves it out of the page and the counts of the tabs', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [
+        queryTask(1, {
+          assigneeIds: [CAMILLE],
+          labels: ['Archivé'],
+          dueDate: '2026-11-08',
+          archive: archiveFrom(queryTask(1).id),
+          version: 2,
+        }),
+        queryTask(2, { assigneeIds: [CAMILLE], dueDate: '2026-11-08' }),
+      ],
+    });
+    const useCase = new ListMyTasks(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
+
+    const page = await useCase.execute({
+      organizationId: ATELIER_NORD,
+      actorUserId: CAMILLE,
+      userId: CAMILLE,
+      state: 'open',
+      after: null,
+      limit: 50,
+    });
+
+    expect(page.items.map((item) => item.key)).toEqual(['CAD-802']);
+    expect(page.counts).toEqual({ open: 1, closed: 0 });
   });
 });

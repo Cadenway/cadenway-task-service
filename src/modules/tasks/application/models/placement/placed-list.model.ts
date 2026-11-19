@@ -1,4 +1,5 @@
 import type { AccessRole } from '../../../domain/value-objects/access/access-role.value-object.js';
+import type { TaskActor } from '../../../domain/value-objects/task/task-actor.value-object.js';
 
 /**
  * Interface PlacedList
@@ -38,6 +39,16 @@ export interface PlacedList {
 
   /** The switch "Accès de l’organisation" of the list. */
   readonly organizationAccess: boolean;
+
+  /**
+   * When the list was archived, `null` for a live list: an archived list is left out of the lists
+   * of its space, of the overview and of "Accueil", and reads by its id ("Lists" of
+   * `openapi/public/archives.yaml`).
+   */
+  readonly archivedAt: Date | null;
+
+  /** Who archived the list, `null` for a live list. */
+  readonly archivedBy: TaskActor | null;
 
   /** The role of the actor on the list: any role reads its tasks, `edit` changes them. */
   readonly callerRole: AccessRole;

@@ -11,8 +11,10 @@ import type { ListVisibleListIdsOutput } from './list-visible-list-ids.output.js
  *
  * @description
  * Public operation of the spaces module for the tasks module: the ids of every list of the
- * organization a member has a role on ("Access" of `openapi/public/spaces.yaml`), in sidebar order
- * (spaces by creation, then lists by creation), so that "Mes tâches", "Accueil" and the other
+ * organization a member has a role on ("Access" of `openapi/public/spaces.yaml`), archived ones
+ * included (their tasks stay in "Mes tâches" and "Accueil", "Lists" of
+ * `openapi/public/archives.yaml`), in sidebar order (spaces by creation, then the lists of each by
+ * their position there, `positionInSpaceOf`), so that "Mes tâches", "Accueil" and the other
  * collections of tasks leave out what the member does not see. One lean query, unpaged (the lists
  * of an organization are few), which reads only what the role needs (no name, look or sprint),
  * with the one visibility condition of the lists; the role of each row comes from `listRoleOf`.

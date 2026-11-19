@@ -1,5 +1,6 @@
 import type { TaskEvents } from '../../ports/outbound/messaging/task/task-events.port.js';
 import type { ActivityRepository } from '../../ports/outbound/persistence/activity/activity-repository.port.js';
+import type { ArchiveReader } from '../../ports/outbound/persistence/archive/archive-reader.port.js';
 import type { AssignedTaskReader } from '../../ports/outbound/persistence/assignee/assigned-task-reader.port.js';
 import type { TaskCounter } from '../../ports/outbound/persistence/count/task-counter.port.js';
 import type { LabelReader } from '../../ports/outbound/persistence/label/label-reader.port.js';
@@ -37,6 +38,9 @@ export interface TasksStore {
 
   /** The labels of the tasks. */
   readonly labels: LabelReader;
+
+  /** The reads of the page "Archives". */
+  readonly archives: ArchiveReader;
 
   /** The outbox of the transaction. */
   readonly events: TaskEvents;

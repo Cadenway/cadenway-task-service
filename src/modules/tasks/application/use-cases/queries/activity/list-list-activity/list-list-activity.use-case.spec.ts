@@ -24,6 +24,8 @@ import {
   refusalOf,
   sprint14SharedWith,
   taskState,
+  archiveFrom,
+  queryTask,
 } from '../../../tasks.fixture.js';
 import type { ListListActivityInput } from './list-list-activity.input.js';
 import { ListListActivity } from './list-list-activity.use-case.js';
@@ -209,5 +211,40 @@ describe('ListListActivity: the read runs in one read-only transaction', () => {
     expect(tasks.runs).toBe(1);
     expect(tasks.readOnlyRuns).toBe(1);
     expect(tasks.snapshotRuns).toBe(0);
+  });
+});
+
+describe('ListListActivity: the entries of an archived task are left out', () => {
+  it('leaves them out of the items and the total', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [
+        taskState(),
+        queryTask(1, {
+          assigneeIds: [CAMILLE],
+          labels: ['Archivé'],
+          dueDate: '2026-11-08',
+          archive: archiveFrom(queryTask(1).id),
+          version: 2,
+        }),
+      ],
+      activity: [
+        priorityEntry(),
+        priorityEntry({ id: '019a7400-0000-7000-8000-000000000002', taskId: queryTask(1).id }),
+      ],
+    });
+    const useCase = new ListListActivity(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
+
+    const page = await useCase.execute({
+      organizationId: ATELIER_NORD,
+      actorUserId: CAMILLE,
+      listId: SPRINT_14,
+      kinds: null,
+      actorIds: null,
+      after: null,
+      limit: 50,
+    });
+
+    expect(page.items.map((entry) => entry.task.key)).toEqual(['CAD-482']);
+    expect(page.total).toBe(1);
   });
 });

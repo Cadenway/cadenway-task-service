@@ -21,6 +21,9 @@ import {
   sprint14SharedWith,
   subtaskState,
   taskState,
+  archiveFrom,
+  ARCHIVED_AT,
+  HUGO_ACTOR,
 } from '../../../tasks.fixture.js';
 import type { GetTaskInput } from './get-task.input.js';
 import { GetTask } from './get-task.use-case.js';
@@ -99,6 +102,8 @@ describe('GetTask: a member reads a task of a list they see', () => {
       createdBy: { type: 'user', id: CAMILLE },
       updatedAt: UPDATED_AT,
       version: 12,
+      archivedAt: null,
+      archivedBy: null,
     });
   });
 
@@ -194,5 +199,20 @@ describe('GetTask: the read runs in one read-only transaction', () => {
     expect(tasks.runs).toBe(1);
     expect(tasks.readOnlyRuns).toBe(1);
     expect(tasks.snapshotRuns).toBe(0);
+  });
+});
+
+describe('GetTask: an archived task reads by its key', () => {
+  it('answers the task with its archive and its version', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState({ archive: archiveFrom(CAD_482) })] });
+    const useCase = new GetTask(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
+
+    const view = await useCase.execute({
+      organizationId: ATELIER_NORD,
+      actorUserId: CAMILLE,
+      taskKey: 'CAD-482',
+    });
+
+    expect(view).toMatchObject({ archivedAt: ARCHIVED_AT, archivedBy: HUGO_ACTOR, version: 12 });
   });
 });

@@ -90,7 +90,7 @@ export class AssignTask {
    * accepts.
    * @returns {Promise<AssignTaskOutput>} The task after the assignment.
    * @throws {TaskRefusal} `organization-not-found`, `task-not-found`, `role-insufficient`,
-   * `version-mismatch`, `assignee-invalid` or `assignee-limit-reached`.
+   * `task-archived`, `version-mismatch`, `assignee-invalid` or `assignee-limit-reached`.
    */
   public async execute(input: AssignTaskInput): Promise<AssignTaskOutput> {
     return this.unitOfWork.run(async (store: TasksStore): Promise<AssignTaskOutput> => {
@@ -110,6 +110,7 @@ export class AssignTask {
         taskKey: input.taskKey,
         edit: true,
         lock: true,
+        archived: 'refuse',
         expectedVersions: input.expectedVersions,
       });
       const now: Date = await store.clock.now();

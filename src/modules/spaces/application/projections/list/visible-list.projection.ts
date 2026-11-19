@@ -113,6 +113,33 @@ export interface VisibleList {
   readonly organizationAccess: boolean;
 
   /**
+   * Property archivedAt
+   *
+   * @description
+   * When the list was archived (`archivedAt` of `TaskList`); `null` for a live list. An archived
+   * list reads by its id and is left out of the lists of its space, of the overview and of
+   * "Accueil" ("Lists" of `openapi/public/archives.yaml`).
+   *
+   * @type {Date | null}
+   * @readonly
+   */
+  readonly archivedAt: Date | null;
+
+  /**
+   * Property archivedBy
+   *
+   * @description
+   * Who archived the list (`archivedBy` of `TaskList`, an `Actor`); `null` for a live list.
+   *
+   * @type {{ readonly type: 'user' | 'automation' | 'git' | 'system'; readonly id: string } | null}
+   * @readonly
+   */
+  readonly archivedBy: {
+    readonly type: 'user' | 'automation' | 'git' | 'system';
+    readonly id: string;
+  } | null;
+
+  /**
    * Property callerRole
    *
    * @description

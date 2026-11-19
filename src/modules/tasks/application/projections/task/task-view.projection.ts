@@ -87,5 +87,11 @@ export interface TaskView {
 
   /** When the task last changed, collections included. */
   readonly updatedAt: Date;
+
+  /** When the archive the task belongs to was made, `null` for a live task. */
+  readonly archivedAt: Date | null;
+
+  /** Who made that archive, `null` for a live task. */
+  readonly archivedBy: TaskActor | null;
   // #endregion
 }

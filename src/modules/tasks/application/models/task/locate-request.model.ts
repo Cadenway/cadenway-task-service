@@ -23,6 +23,12 @@ export interface LocateRequest {
   /** `true` in a write: the task is locked `FOR NO KEY UPDATE` until the commit. */
   readonly lock: boolean;
 
+  /**
+   * `refuse` for a change of the task, which an archived task refuses (`task-archived`, after the
+   * role and before `If-Match`); `allow` for a read, the archive and the restoration.
+   */
+  readonly archived: 'refuse' | 'allow';
+
   /** The versions `If-Match` accepts, `null` when absent or `*`, or when the route has none. */
   readonly expectedVersions: readonly number[] | null;
   // #endregion

@@ -18,7 +18,10 @@ export interface TaskReader {
    * Method subtaskCounts
    *
    * @description
-   * Counts the direct subtasks of tasks and the closed ones (`done`, `cancelled`).
+   * Counts the direct subtasks of tasks and the closed ones (`done`, `cancelled`). The subtasks of
+   * a task are those of its archive (the one rule of the subtask reads, "Tasks" of
+   * `openapi/public/archives.yaml`): the live ones for a live task, the ones archived with it for
+   * an archived task; a subtask archived before keeps its own archive and is never counted.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} taskIds - The tasks.
@@ -34,8 +37,8 @@ export interface TaskReader {
    * Method childrenOf
    *
    * @description
-   * Reads a page of the direct subtasks of a task, in the order of their creation with the id as
-   * tie-breaker, with their assignees, labels and counts.
+   * Reads a page of the direct subtasks of a task of its archive (see `subtaskCounts`), in the
+   * order of their creation with the id as tie-breaker, with their assignees, labels and counts.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} parentId - The parent.
@@ -54,7 +57,7 @@ export interface TaskReader {
    * Method countChildren
    *
    * @description
-   * Counts the direct subtasks of a task.
+   * Counts the direct subtasks of a task of its archive (see `subtaskCounts`).
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} parentId - The parent.

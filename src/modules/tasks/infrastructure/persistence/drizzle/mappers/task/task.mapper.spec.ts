@@ -16,6 +16,7 @@ import {
   cad482,
   subtaskState,
   taskState,
+  archiveFrom,
 } from '../../../../../domain/tasks.fixture.js';
 import type { TaskState } from '../../../../../domain/value-objects/task/task-state.value-object.js';
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
@@ -55,6 +56,10 @@ function rowOf(state: TaskState, overrides: Partial<TaskRow> = {}): TaskRow {
     createdById: state.createdBy.id,
     updatedAt: state.updatedAt,
     version: state.version,
+    archivedAt: state.archive?.at ?? null,
+    archivedByType: state.archive?.by.type ?? null,
+    archivedById: state.archive?.by.id ?? null,
+    archiveRootId: state.archive?.rootId ?? null,
     ...overrides,
   };
 }
@@ -139,6 +144,26 @@ describe('toTask: a stored row becomes the task it stores', () => {
     );
   });
 
+  it('restores the archive of an archived task, null for a live one', () => {
+    const archived: TaskState = taskState({ archive: archiveFrom(CAD_482), version: 13 });
+
+    expect(toTask(rowOf(archived), null, [], [], []).snapshot.archive).toEqual(
+      archiveFrom(CAD_482),
+    );
+    expect(toTask(rowOf(taskState()), null, [], [], []).snapshot.archive).toBeNull();
+  });
+
+  it('refuses an archive stored in part only, or by an actor type outside the four', () => {
+    const archived: TaskState = taskState({ archive: archiveFrom(CAD_482) });
+
+    expect(() => toTask(rowOf(archived, { archiveRootId: null }), null, [], [], [])).toThrow(
+      'A stored archive is set in part only (task 019a7200-0000-7000-8000-000000000482)',
+    );
+    expect(() => toTask(rowOf(archived, { archivedByType: 'robot' }), null, [], [], [])).toThrow(
+      'A stored actor type is outside the actor types',
+    );
+  });
+
   it('refuses a done task stored without its completion instant', () => {
     const state: TaskState = taskState({ status: 'done', completedAt: NOW });
 
@@ -209,7 +234,7 @@ describe('toTaskUpdate: a changed task becomes the columns to write', () => {
     });
   });
 
-  it('never writes the key, the organization, the id or the creation', () => {
+  it('never writes the key, the organization, the id, the creation or the archive', () => {
     const set = toTaskUpdate(cad482());
 
     for (const column of [
@@ -220,6 +245,10 @@ describe('toTaskUpdate: a changed task becomes the columns to write', () => {
       'createdAt',
       'createdByType',
       'createdById',
+      'archivedAt',
+      'archivedByType',
+      'archivedById',
+      'archiveRootId',
     ]) {
       expect(set).not.toHaveProperty(column);
     }

@@ -78,6 +78,7 @@ export class GetTask {
         taskKey: input.taskKey,
         edit: false,
         lock: false,
+        archived: 'allow',
         expectedVersions: null,
       });
       return this.views.build(store.reader, task);

@@ -1,5 +1,6 @@
 import { TaskList } from '../../domain/aggregates/list/task-list.aggregate.js';
 import { Space } from '../../domain/aggregates/space/space.aggregate.js';
+import { positionInSpaceOf } from '../../domain/policies/list/list-position.policy.js';
 import type { AccessRole } from '../../domain/value-objects/access/access-role.value-object.js';
 import type { GrantEntry } from '../../domain/value-objects/access/grant-entry.value-object.js';
 import type { TaskListDraft } from '../../domain/value-objects/list/task-list-draft.value-object.js';
@@ -17,6 +18,7 @@ import type { ListWithGrants } from '../models/access/list-with-grants.model.js'
 import type { SpaceWithGrants } from '../models/access/space-with-grants.model.js';
 import type { StoredGrant } from '../models/access/stored-grant.model.js';
 import type { ViewerGrants } from '../models/access/viewer-grants.model.js';
+import type { ArchivedListPosition } from '../models/page/archived-list-position.model.js';
 import type { PagePosition } from '../models/page/page-position.model.js';
 import type { SpacesStore } from '../models/transactions/spaces-store.model.js';
 import type { MemberDirectory } from '../ports/outbound/members/membership/member-directory.port.js';
@@ -35,6 +37,7 @@ import { SpaceRefusal } from '../models/space/space-refusal.model.js';
 import type { SpaceRefusalReason } from '../models/space/space-refusal-reason.model.js';
 
 export {
+  ARCHIVED_AT,
   ATELIER_NORD,
   BACKLOG,
   CAMILLE,
@@ -68,6 +71,9 @@ export const GRANTED_AT: Date = new Date('2026-03-04T14:05:00Z');
 
 /** When the first space, list or grant created by a spec gets its instant; each next one is a second later. */
 const FIRST_CREATION: number = Date.parse('2026-11-18T10:00:00Z');
+
+/** The instant of the transactions of the fake store, unless a spec sets another. */
+export const TRANSACTION_INSTANT: Date = new Date('2026-11-19T08:30:00Z');
 
 /**
  * Builds the stored state of the space "Marketing" (MKT), seen by the whole organization.
@@ -200,6 +206,20 @@ export type RecordedEvent =
       readonly actor: EventActor;
     }
   | {
+      readonly kind: 'listArchived';
+      readonly listId: string;
+      readonly version: number;
+      readonly archivedAt: Date | null;
+      readonly actor: EventActor;
+    }
+  | {
+      readonly kind: 'listUnarchived';
+      readonly listId: string;
+      readonly version: number;
+      readonly restoredAt: Date | null;
+      readonly actor: EventActor;
+    }
+  | {
       readonly kind: 'spaceAccessChanged';
       readonly spaceId: string;
       readonly version: number;
@@ -276,6 +296,18 @@ export interface InMemorySpacesSeed {
    * @readonly
    */
   readonly lastNumbers?: Readonly<Record<string, number>>;
+
+  /**
+   * Property now
+   *
+   * @description
+   * The instant of every transaction of the fake (`TransactionClock.now`); `TRANSACTION_INSTANT`
+   * by default.
+   *
+   * @type {Date}
+   * @readonly
+   */
+  readonly now?: Date;
   // #endregion
 }
 
@@ -418,8 +450,11 @@ export class InMemoryMembers implements MemberDirectory {
  * no database: the work runs on a copy that is committed only when it resolves, as the tenant
  * transaction is, so a refusal leaves no row and no event. It scopes every read to the
  * organization as the repositories do, keeps in its collections the rows the one visibility
- * condition of each resource keeps (written again here from the SQL, not from the policies), and
- * records the calls and the locks the specs count.
+ * condition of each resource keeps (written again here from the SQL, not from the policies),
+ * leaves the archived lists out of the collections of a space, of the sprints and of the sidebar
+ * (`liveListCondition`), orders the lists of a space by `coalesce(restored_at, created_at)` then
+ * id, and records the calls and the locks the specs count. Its clock gives `now` to every
+ * transaction.
  */
 export class InMemorySpaces implements SpacesUnitOfWork {
   // #region Properties
@@ -622,6 +657,53 @@ export class InMemorySpaces implements SpacesUnitOfWork {
   }[] = [];
 
   /**
+   * Property listArchivedCalls
+   *
+   * @description
+   * The arguments of each `listArchivedVisibleTo` call.
+   *
+   * @type {{ organizationId: string; viewerUserId: string; after: ArchivedListPosition | null; limit: number }[]}
+   * @readonly
+   */
+  public readonly listArchivedCalls: {
+    readonly organizationId: string;
+    readonly viewerUserId: string;
+    readonly after: ArchivedListPosition | null;
+    readonly limit: number;
+  }[] = [];
+
+  /**
+   * Property listVisibleByIdsCalls
+   *
+   * @description
+   * The ids of each `listVisibleByIds` call.
+   *
+   * @type {(readonly string[])[]}
+   * @readonly
+   */
+  public readonly listVisibleByIdsCalls: (readonly string[])[] = [];
+
+  /**
+   * Property now
+   *
+   * @description
+   * The instant the clock gives to every transaction.
+   *
+   * @type {Date}
+   */
+  public now: Date;
+
+  /**
+   * Property clockReads
+   *
+   * @description
+   * How many times a transaction read the clock, committed or not.
+   *
+   * @type {number}
+   */
+  public clockReads: number = 0;
+
+  /**
    * Property lastNumbers
    *
    * @description
@@ -676,6 +758,7 @@ export class InMemorySpaces implements SpacesUnitOfWork {
         last,
       ]),
     );
+    this.now = seed.now ?? TRANSACTION_INSTANT;
   }
   // #endregion
 
@@ -878,7 +961,8 @@ export class InMemorySpaces implements SpacesUnitOfWork {
    *
    * @description
    * Compares two lists in sidebar order: their spaces by creation (id as tie-breaker), then the
-   * lists by creation (id as tie-breaker).
+   * lists by their position in the space (`coalesce(restored_at, created_at)`, id as
+   * tie-breaker).
    *
    * @param {ReadonlyMap<string, SpaceState>} spaces - The spaces of the work.
    * @param {TaskListState} left - One list.
@@ -895,9 +979,72 @@ export class InMemorySpaces implements SpacesUnitOfWork {
     return (
       (leftSpace?.createdAt.getTime() ?? 0) - (rightSpace?.createdAt.getTime() ?? 0) ||
       left.spaceId.localeCompare(right.spaceId) ||
-      left.createdAt.getTime() - right.createdAt.getTime() ||
+      InMemorySpaces.spaceOrder(left, right)
+    );
+  }
+
+  /**
+   * Method spaceOrder
+   *
+   * @description
+   * Compares two lists of a space by their position there, `coalesce(restored_at, created_at)`,
+   * id as tie-breaker.
+   *
+   * @param {TaskListState} left - One list.
+   * @param {TaskListState} right - The other.
+   * @returns {number} The order.
+   */
+  private static spaceOrder(left: TaskListState, right: TaskListState): number {
+    return (
+      positionInSpaceOf(left).getTime() - positionInSpaceOf(right).getTime() ||
       left.id.localeCompare(right.id)
     );
+  }
+
+  /**
+   * Method pageOfSpace
+   *
+   * @description
+   * Sorts the lists of a space by their position there and keeps those after a position, as the
+   * keyset query of the lists of a space does.
+   *
+   * @param {readonly TaskListState[]} rows - The lists.
+   * @param {PagePosition | null} after - The last list of the previous page, or `null`.
+   * @param {number} limit - How many lists at most.
+   * @returns {TaskListState[]} The lists of the page.
+   */
+  private static pageOfSpace(
+    rows: readonly TaskListState[],
+    after: PagePosition | null,
+    limit: number,
+  ): TaskListState[] {
+    return [...rows]
+      .sort((left: TaskListState, right: TaskListState): number =>
+        InMemorySpaces.spaceOrder(left, right),
+      )
+      .filter((row: TaskListState): boolean => {
+        const position: number = positionInSpaceOf(row).getTime();
+        return (
+          after === null ||
+          position > after.createdAt.getTime() ||
+          (position === after.createdAt.getTime() && row.id > after.id)
+        );
+      })
+      .slice(0, limit);
+  }
+
+  /**
+   * Method isLive
+   *
+   * @description
+   * Whether a list is live, the condition `liveListCondition` of the collections of a space, of
+   * the sprints and of the sidebar.
+   *
+   * @param {TaskListState} row - The list.
+   * @returns {boolean} Whether it is not archived.
+   */
+  private static isLive(row: TaskListState): boolean {
+    return row.archivedAt === null;
   }
 
   /**
@@ -984,6 +1131,18 @@ export class InMemorySpaces implements SpacesUnitOfWork {
           InMemorySpaces.listRow(list, spaces, grants, organizationId, viewer),
         )
         .filter((row: ListWithGrants | null): row is ListWithGrants => row !== null);
+    const archivedLists = (organizationId: string, viewer: Viewer): ListWithGrants[] =>
+      visibleLists(
+        organizationId,
+        viewer,
+        [...lists.values()]
+          .filter((row: TaskListState): boolean => row.archivedAt !== null)
+          .sort(
+            (left: TaskListState, right: TaskListState): number =>
+              (right.archivedAt?.getTime() ?? 0) - (left.archivedAt?.getTime() ?? 0) ||
+              right.id.localeCompare(left.id),
+          ),
+      );
     const store: SpacesStore = {
       spaces: {
         insert: (draft: SpaceDraft): Promise<Space> => {
@@ -1131,6 +1290,9 @@ export class InMemorySpaces implements SpacesUnitOfWork {
             ...draft,
             id: this.nextId('019a7300'),
             createdAt: this.nextInstant(),
+            archivedAt: null,
+            archivedBy: null,
+            restoredAt: null,
             version: 1,
           };
           lists.set(state.id, state);
@@ -1169,9 +1331,12 @@ export class InMemorySpaces implements SpacesUnitOfWork {
           const rows: ListWithGrants[] = visibleLists(
             organizationId,
             viewer,
-            [...lists.values()].filter((row: TaskListState): boolean => row.spaceId === spaceId),
+            [...lists.values()].filter(
+              (row: TaskListState): boolean =>
+                row.spaceId === spaceId && InMemorySpaces.isLive(row),
+            ),
           );
-          const kept: readonly TaskListState[] = InMemorySpaces.page(
+          const kept: readonly TaskListState[] = InMemorySpaces.pageOfSpace(
             rows.map((row: ListWithGrants): TaskListState => row.list.snapshot),
             after,
             limit,
@@ -1198,9 +1363,10 @@ export class InMemorySpaces implements SpacesUnitOfWork {
             visibleLists(
               organizationId,
               viewer,
-              InMemorySpaces.page(
+              InMemorySpaces.pageOfSpace(
                 [...lists.values()].filter(
-                  (row: TaskListState): boolean => row.spaceId === spaceId,
+                  (row: TaskListState): boolean =>
+                    row.spaceId === spaceId && InMemorySpaces.isLive(row),
                 ),
                 null,
                 Number.MAX_SAFE_INTEGER,
@@ -1223,7 +1389,10 @@ export class InMemorySpaces implements SpacesUnitOfWork {
           const current: TaskListState[] = [...lists.values()]
             .filter(
               (row: TaskListState): boolean =>
-                row.sprint !== null && row.sprint.startDate <= today && row.sprint.endDate >= today,
+                InMemorySpaces.isLive(row) &&
+                row.sprint !== null &&
+                row.sprint.startDate <= today &&
+                row.sprint.endDate >= today,
             )
             .sort(
               (left: TaskListState, right: TaskListState): number =>
@@ -1239,10 +1408,11 @@ export class InMemorySpaces implements SpacesUnitOfWork {
           limit: number,
         ): Promise<ListWithGrants[]> => {
           this.listFirstVisibleCalls.push({ organizationId, viewerUserId: viewer.userId, limit });
-          const ordered: TaskListState[] = [...lists.values()].sort(
-            (left: TaskListState, right: TaskListState): number =>
+          const ordered: TaskListState[] = [...lists.values()]
+            .filter((row: TaskListState): boolean => InMemorySpaces.isLive(row))
+            .sort((left: TaskListState, right: TaskListState): number =>
               InMemorySpaces.sidebarOrder(spaces, left, right),
-          );
+            );
           return Promise.resolve(visibleLists(organizationId, viewer, ordered).slice(0, limit));
         },
         listAccessesVisibleTo: (organizationId: string, viewer: Viewer): Promise<ListAccess[]> => {
@@ -1259,6 +1429,52 @@ export class InMemorySpaces implements SpacesUnitOfWork {
                 space: row.space,
                 grants: row.grants,
               }),
+            ),
+          );
+        },
+        listArchivedVisibleTo: (
+          organizationId: string,
+          viewer: Viewer,
+          after: ArchivedListPosition | null,
+          limit: number,
+        ): Promise<ListWithGrants[]> => {
+          this.listArchivedCalls.push({
+            organizationId,
+            viewerUserId: viewer.userId,
+            after,
+            limit,
+          });
+          return Promise.resolve(
+            archivedLists(organizationId, viewer)
+              .filter((row: ListWithGrants): boolean => {
+                const { archivedAt, id } = row.list.snapshot;
+                const at: number = archivedAt?.getTime() ?? 0;
+                return (
+                  after === null ||
+                  at < after.archivedAt.getTime() ||
+                  (at === after.archivedAt.getTime() && id < after.id)
+                );
+              })
+              .slice(0, limit),
+          );
+        },
+        countArchivedVisibleTo: (organizationId: string, viewer: Viewer): Promise<number> =>
+          Promise.resolve(archivedLists(organizationId, viewer).length),
+        listVisibleByIds: (
+          organizationId: string,
+          viewer: Viewer,
+          ids: readonly string[],
+        ): Promise<ListWithGrants[]> => {
+          this.listVisibleByIdsCalls.push(ids);
+          return Promise.resolve(
+            visibleLists(
+              organizationId,
+              viewer,
+              [...lists.values()]
+                .filter((row: TaskListState): boolean => ids.includes(row.id))
+                .sort((left: TaskListState, right: TaskListState): number =>
+                  left.id.localeCompare(right.id),
+                ),
             ),
           );
         },
@@ -1455,6 +1671,26 @@ export class InMemorySpaces implements SpacesUnitOfWork {
           });
           return Promise.resolve();
         },
+        listArchived: (list: TaskList, actor: EventActor): Promise<void> => {
+          events.push({
+            kind: 'listArchived',
+            listId: list.snapshot.id,
+            version: list.snapshot.version,
+            archivedAt: list.snapshot.archivedAt,
+            actor,
+          });
+          return Promise.resolve();
+        },
+        listUnarchived: (list: TaskList, actor: EventActor): Promise<void> => {
+          events.push({
+            kind: 'listUnarchived',
+            listId: list.snapshot.id,
+            version: list.snapshot.version,
+            restoredAt: list.snapshot.restoredAt,
+            actor,
+          });
+          return Promise.resolve();
+        },
         spaceAccessChanged: (
           space: Space,
           entries: readonly GrantEntry[],
@@ -1490,6 +1726,12 @@ export class InMemorySpaces implements SpacesUnitOfWork {
             actor,
           });
           return Promise.resolve();
+        },
+      },
+      clock: {
+        now: (): Promise<Date> => {
+          this.clockReads += 1;
+          return Promise.resolve(this.now);
         },
       },
     };

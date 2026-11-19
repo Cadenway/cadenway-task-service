@@ -36,6 +36,8 @@ const DETAIL: TaskDetailView = {
     checklist: [],
     createdBy: { type: 'user', id: CAMILLE },
     updatedAt: new Date('2026-11-18T10:15:30.123Z'),
+    archivedAt: null,
+    archivedBy: null,
   },
   space: {
     id: SPACE,
@@ -74,6 +76,8 @@ const DETAIL: TaskDetailView = {
     createdAt: new Date('2026-11-02T08:00:00.000Z'),
     version: 1,
     organizationAccess: true,
+    archivedAt: null,
+    archivedBy: null,
     callerRole: 'edit',
   },
   parent: { key: 'CAD-480', name: 'Authentification', status: 'progress' },

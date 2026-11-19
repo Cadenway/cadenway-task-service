@@ -1,15 +1,22 @@
 import type { TransactionDatabase } from '@cadenway/nest-common/database';
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 
 import type { ListAccess } from '../../../../../application/models/access/list-access.model.js';
 import type { ListWithGrants } from '../../../../../application/models/access/list-with-grants.model.js';
+import type { ArchivedListPosition } from '../../../../../application/models/page/archived-list-position.model.js';
 import type { PagePosition } from '../../../../../application/models/page/page-position.model.js';
 import type { TaskListRepository } from '../../../../../application/ports/outbound/persistence/list/task-list-repository.port.js';
 import type { TaskList } from '../../../../../domain/aggregates/list/task-list.aggregate.js';
 import type { TaskListDraft } from '../../../../../domain/value-objects/list/task-list-draft.value-object.js';
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
 import { listAccessColumns, toListAccess } from '../../mappers/list/list-access.mapper.js';
+import {
+  archivedListAfter,
+  archivedListCondition,
+  listPositionInSpace,
+  liveListCondition,
+} from '../../mappers/list/list-archive.mapper.js';
 import type { ListAccessRow } from '../../mappers/list/list-access.mapper.js';
 import { toTaskList } from '../../mappers/list/task-list.mapper.js';
 import type { TaskListRow } from '../../mappers/list/task-list.mapper.js';
@@ -40,9 +47,12 @@ import { spaces } from '../../schemas/space/space.schema.js';
  * condition of `visibleListCondition` over the left joins of the grants of the member on the space
  * and on the list (each one probe of the primary key of `space_grants` and `list_grants`, read once
  * per row), selecting those two roles; the application then
- * computes the role of each row with `listRoleOf`. `listOfSpaceVisibleTo` reads a page bounded by
- * the `limit` of the caller; the other collections read the few lists of one space or of the
- * organization.
+ * computes the role of each row with `listRoleOf`. The collections of a space, of the sprints and
+ * of the sidebar add `liveListCondition` and order the lists of a space by `listPositionInSpace`
+ * (`coalesce(restored_at, created_at)`, id as tie-breaker), which no index orders: they sort the
+ * few lists of one space or of the organization. `listOfSpaceVisibleTo` and
+ * `listArchivedVisibleTo` read a page bounded by the `limit` of the caller; the archives walk the
+ * partial index `lists_organization_archived_index` backwards.
  */
 export class DrizzleTaskListRepository implements TaskListRepository {
   // #region Properties
@@ -177,16 +187,28 @@ export class DrizzleTaskListRepository implements TaskListRepository {
    * Method update
    *
    * @description
-   * Writes the name, the look, the sprint and the switch "Accès de l’organisation" of a locked
-   * list, with its version and `updated_at`. The space of a list never changes.
+   * Writes the name, the look, the sprint, the switch "Accès de l’organisation" and the archive
+   * (`archived_at`, `archived_by_*`, `restored_at`) of a locked list, with its version and
+   * `updated_at`. The space of a list never changes.
    *
    * @param {TaskList} list - The list after the change.
    * @returns {Promise<void>} Resolves once written.
    * @throws {Error} When the row is gone, which a lock prevents.
    */
   public async update(list: TaskList): Promise<void> {
-    const { id, organizationId, name, icon, color, sprint, organizationAccess, version } =
-      list.snapshot;
+    const {
+      id,
+      organizationId,
+      name,
+      icon,
+      color,
+      sprint,
+      organizationAccess,
+      archivedAt,
+      archivedBy,
+      restoredAt,
+      version,
+    } = list.snapshot;
     const updated: { id: string }[] = await this.db
       .update(taskLists)
       .set({
@@ -197,6 +219,10 @@ export class DrizzleTaskListRepository implements TaskListRepository {
         sprintEndDate: sprint?.endDate ?? null,
         sprintGoal: sprint?.goal ?? null,
         organizationAccess,
+        archivedAt,
+        archivedByType: archivedBy?.type ?? null,
+        archivedById: archivedBy?.id ?? null,
+        restoredAt,
         version,
         updatedAt: sql`now()`,
       })
@@ -211,8 +237,9 @@ export class DrizzleTaskListRepository implements TaskListRepository {
    * Method listOfSpaceVisibleTo
    *
    * @description
-   * Loads a page of the lists of a space a member has a role on in the order `(created_at, id)`,
-   * after `after`, through `lists_organization_space_created_index`.
+   * Loads a page of the live lists of a space a member has a role on in the order
+   * `(coalesce(restored_at, created_at), id)`, after `after`; the lists of the space come from
+   * `lists_organization_space_created_index` and are sorted, a space holding few lists.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} spaceId - The space.
@@ -231,9 +258,13 @@ export class DrizzleTaskListRepository implements TaskListRepository {
     const rows: VisibleListRow[] = await this.visibleTo(
       organizationId,
       viewer,
-      and(eq(taskLists.spaceId, spaceId), keysetAfter(taskLists.createdAt, taskLists.id, after)),
+      and(
+        eq(taskLists.spaceId, spaceId),
+        liveListCondition(),
+        keysetAfter(listPositionInSpace(), taskLists.id, after),
+      ),
     )
-      .orderBy(asc(taskLists.createdAt), asc(taskLists.id))
+      .orderBy(asc(listPositionInSpace()), asc(taskLists.id))
       .limit(limit);
     return rows.map(toListWithGrants);
   }
@@ -242,7 +273,8 @@ export class DrizzleTaskListRepository implements TaskListRepository {
    * Method listAllOfSpaceVisibleTo
    *
    * @description
-   * Loads every list of a space a member has a role on in the order `(created_at, id)`, through
+   * Loads every live list of a space a member has a role on in the order
+   * `(coalesce(restored_at, created_at), id)`, the lists of the space read through
    * `lists_organization_space_created_index`.
    *
    * @param {string} organizationId - The organization of the transaction.
@@ -258,8 +290,8 @@ export class DrizzleTaskListRepository implements TaskListRepository {
     const rows: VisibleListRow[] = await this.visibleTo(
       organizationId,
       viewer,
-      eq(taskLists.spaceId, spaceId),
-    ).orderBy(asc(taskLists.createdAt), asc(taskLists.id));
+      and(eq(taskLists.spaceId, spaceId), liveListCondition()),
+    ).orderBy(asc(listPositionInSpace()), asc(taskLists.id));
     return rows.map(toListWithGrants);
   }
 
@@ -267,8 +299,9 @@ export class DrizzleTaskListRepository implements TaskListRepository {
    * Method listCurrentSprintsVisibleTo
    *
    * @description
-   * Loads the sprints a member has a role on whose period holds `today`, bounds included, in the
-   * order `(sprint_end_date, created_at, id)`, at most `limit`.
+   * Loads the live sprints a member has a role on whose period holds `today`, bounds included, in
+   * the order `(sprint_end_date, created_at, id)` ("by last day then in the order of their
+   * creation"), at most `limit`.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The member and its role.
@@ -286,6 +319,7 @@ export class DrizzleTaskListRepository implements TaskListRepository {
       organizationId,
       viewer,
       and(
+        liveListCondition(),
         sql`${taskLists.sprintStartDate} <= ${today}::date`,
         sql`${taskLists.sprintEndDate} >= ${today}::date`,
       ),
@@ -299,8 +333,9 @@ export class DrizzleTaskListRepository implements TaskListRepository {
    * Method listFirstVisibleTo
    *
    * @description
-   * Loads the first lists a member has a role on in the order
-   * `(spaces.created_at, spaces.id, lists.created_at, lists.id)`, at most `limit`.
+   * Loads the first live lists a member has a role on in the order
+   * `(spaces.created_at, spaces.id, coalesce(lists.restored_at, lists.created_at), lists.id)`, at
+   * most `limit`.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The member and its role.
@@ -312,8 +347,8 @@ export class DrizzleTaskListRepository implements TaskListRepository {
     viewer: Viewer,
     limit: number,
   ): Promise<ListWithGrants[]> {
-    const rows: VisibleListRow[] = await this.visibleTo(organizationId, viewer, undefined)
-      .orderBy(asc(spaces.createdAt), asc(spaces.id), asc(taskLists.createdAt), asc(taskLists.id))
+    const rows: VisibleListRow[] = await this.visibleTo(organizationId, viewer, liveListCondition())
+      .orderBy(asc(spaces.createdAt), asc(spaces.id), asc(listPositionInSpace()), asc(taskLists.id))
       .limit(limit);
     return rows.map(toListWithGrants);
   }
@@ -322,10 +357,10 @@ export class DrizzleTaskListRepository implements TaskListRepository {
    * Method listAccessesVisibleTo
    *
    * @description
-   * Loads what the role of a member reads of every list of the organization they have a role on
-   * (`listAccessColumns`: no name, look or sprint), with the condition and the joins of the other
-   * collections, in the order of `listFirstVisibleTo`, no limit: the lists of an organization are
-   * few.
+   * Loads what the role of a member reads of every list of the organization they have a role on,
+   * archived ones included (`listAccessColumns`: no name, look or sprint), with the visibility
+   * condition and the joins of the other collections, in the order of `listFirstVisibleTo`, no
+   * limit: the lists of an organization are few.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The member and its role.
@@ -345,8 +380,102 @@ export class DrizzleTaskListRepository implements TaskListRepository {
       .leftJoin(viewerSpaceGrant, viewerSpaceGrantJoin(organizationId, viewer.userId))
       .leftJoin(viewerListGrant, viewerListGrantJoin(organizationId, viewer.userId))
       .where(and(eq(taskLists.organizationId, organizationId), visibleListCondition(viewer)))
-      .orderBy(asc(spaces.createdAt), asc(spaces.id), asc(taskLists.createdAt), asc(taskLists.id));
+      .orderBy(
+        asc(spaces.createdAt),
+        asc(spaces.id),
+        asc(listPositionInSpace()),
+        asc(taskLists.id),
+      );
     return rows.map(toListAccess);
+  }
+
+  /**
+   * Method listArchivedVisibleTo
+   *
+   * @description
+   * Loads a page of the archived lists of the organization a member has a role on in the order
+   * `(archived_at desc, id desc)`, after `after`, at most `limit`: a backward walk of
+   * `lists_organization_archived_index`, whose predicate `archivedListCondition` repeats.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {Viewer} viewer - The member and its role.
+   * @param {ArchivedListPosition | null} after - Where the page starts, `null` for the first page.
+   * @param {number} limit - Most rows to return.
+   * @returns {Promise<ListWithGrants[]>} The archived lists, at most `limit`.
+   */
+  public async listArchivedVisibleTo(
+    organizationId: string,
+    viewer: Viewer,
+    after: ArchivedListPosition | null,
+    limit: number,
+  ): Promise<ListWithGrants[]> {
+    const rows: VisibleListRow[] = await this.visibleTo(
+      organizationId,
+      viewer,
+      and(archivedListCondition(), archivedListAfter(after)),
+    )
+      .orderBy(desc(taskLists.archivedAt), desc(taskLists.id))
+      .limit(limit);
+    return rows.map(toListWithGrants);
+  }
+
+  /**
+   * Method countArchivedVisibleTo
+   *
+   * @description
+   * Counts the archived lists of the organization a member has a role on, with the joins and the
+   * conditions of `listArchivedVisibleTo`, in one statement.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {Viewer} viewer - The member and its role.
+   * @returns {Promise<number>} The count.
+   */
+  public async countArchivedVisibleTo(organizationId: string, viewer: Viewer): Promise<number> {
+    const rows: { total: number }[] = await this.db
+      .select({ total: sql<number>`count(*)::int` })
+      .from(taskLists)
+      .innerJoin(
+        spaces,
+        and(eq(spaces.organizationId, taskLists.organizationId), eq(spaces.id, taskLists.spaceId)),
+      )
+      .leftJoin(viewerSpaceGrant, viewerSpaceGrantJoin(organizationId, viewer.userId))
+      .leftJoin(viewerListGrant, viewerListGrantJoin(organizationId, viewer.userId))
+      .where(
+        and(
+          eq(taskLists.organizationId, organizationId),
+          visibleListCondition(viewer),
+          archivedListCondition(),
+        ),
+      );
+    return rows[0]?.total ?? 0;
+  }
+
+  /**
+   * Method listVisibleByIds
+   *
+   * @description
+   * Loads those of some lists of the organization a member has a role on, archived ones included,
+   * by their primary keys, in one statement. No id reads nothing.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {Viewer} viewer - The member and its role.
+   * @param {readonly string[]} ids - The ids of the lists, UUIDs.
+   * @returns {Promise<ListWithGrants[]>} The lists the member has a role on, by id.
+   */
+  public async listVisibleByIds(
+    organizationId: string,
+    viewer: Viewer,
+    ids: readonly string[],
+  ): Promise<ListWithGrants[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+    const rows: VisibleListRow[] = await this.visibleTo(
+      organizationId,
+      viewer,
+      inArray(taskLists.id, [...ids]),
+    ).orderBy(asc(taskLists.id));
+    return rows.map(toListWithGrants);
   }
 
   /**

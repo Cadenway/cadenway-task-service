@@ -90,6 +90,19 @@ describe('UpdateList: a member with edit on the list changes it', () => {
     ]);
   });
 
+  it('changes an archived list and keeps its archive', async () => {
+    const archivedAt: Date = new Date('2026-11-03T09:00:00Z');
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [sprintState({ archivedAt, archivedBy: { type: 'user', id: CAMILLE }, version: 2 })],
+    });
+
+    const { list } = await new UpdateList(spaces, atelierNordMembers()).execute(updateSprint());
+
+    expect(list).toMatchObject({ name: 'Sprint 14 bis', archivedAt, version: 3 });
+    expect(spaces.events).toMatchObject([{ kind: 'listUpdated', listId: SPRINT_14, version: 3 }]);
+  });
+
   it('lets the owner of a private space change its lists', async () => {
     const { list } = await new UpdateList(atelierNord(), atelierNordMembers()).execute(
       updateSprint({ actorUserId: HUGO, listId: MAQUETTES, patch: { name: 'Wireframes' } }),

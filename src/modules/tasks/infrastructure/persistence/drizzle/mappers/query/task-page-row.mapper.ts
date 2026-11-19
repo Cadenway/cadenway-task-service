@@ -27,7 +27,7 @@ export type TaskPageRow = TaskSummaryRow & { readonly sortValue: string | number
  * @param {AnyPgColumn} column - A `timestamptz(3)` column.
  * @returns {SQL} The expression.
  */
-function instantText(column: AnyPgColumn): SQL {
+export function instantText(column: AnyPgColumn): SQL {
   return sql`to_char(${column} at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
 }
 

@@ -19,6 +19,7 @@ import {
   refusalOf,
   subtaskState,
   taskState,
+  archiveFrom,
 } from '../../../tasks.fixture.js';
 import type { ListListTasksInput } from './list-list-tasks.input.js';
 import { ListListTasks } from './list-list-tasks.use-case.js';
@@ -230,5 +231,46 @@ describe('ListListTasks: the read runs in one read-only transaction', () => {
     expect(tasks.runs).toBe(1);
     expect(tasks.readOnlyRuns).toBe(1);
     expect(tasks.snapshotRuns).toBe(0);
+  });
+});
+
+describe('ListListTasks: an archived task is left out of the page and the total', () => {
+  it('lists the live tasks of the list only', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [
+        taskState(),
+        queryTask(1, {
+          assigneeIds: [CAMILLE],
+          labels: ['Archivé'],
+          dueDate: '2026-11-08',
+          archive: archiveFrom(queryTask(1).id),
+          version: 2,
+        }),
+        queryTask(2, { assigneeIds: [CAMILLE], dueDate: '2026-11-08' }),
+      ],
+    });
+    const useCase = new ListListTasks(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
+
+    const page = await useCase.execute({
+      organizationId: ATELIER_NORD,
+      actorUserId: CAMILLE,
+      listId: SPRINT_14,
+      filter: {
+        statuses: null,
+        priorities: null,
+        assignees: null,
+        labels: null,
+        search: null,
+        dueFrom: null,
+        dueTo: null,
+        level: 'all',
+      },
+      order: { key: 'manual', descending: false },
+      after: null,
+      limit: 50,
+    });
+
+    expect(page.items.map((item) => item.key)).toEqual(['CAD-482', 'CAD-802']);
+    expect(page.total).toBe(2);
   });
 });

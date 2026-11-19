@@ -42,6 +42,9 @@ export const SPRINT_14_GOAL = 'Livrer la connexion SSO et la page des quotas d‚Ä
 /** When the spaces and lists of the specs were created. */
 export const CREATED_AT: Date = new Date('2026-10-20T09:00:00Z');
 
+/** When the specs archive a list ("archiv√©e le 3 nov."). */
+export const ARCHIVED_AT: Date = new Date('2026-11-03T09:00:00Z');
+
 /** Camille Martin acting as the owner of the organization. */
 export const CAMILLE_VIEWER: Viewer = { userId: CAMILLE, role: 'owner' };
 
@@ -119,6 +122,9 @@ export function sprintState(overrides: Partial<TaskListState> = {}): TaskListSta
     sprint: { startDate: '2026-11-03', endDate: '2026-11-17', goal: SPRINT_14_GOAL },
     organizationAccess: true,
     createdAt: CREATED_AT,
+    archivedAt: null,
+    archivedBy: null,
+    restoredAt: null,
     version: 1,
     ...overrides,
   };

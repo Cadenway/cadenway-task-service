@@ -14,6 +14,7 @@ import {
   refusalOf,
   sprint14SharedWith,
   taskState,
+  archiveFrom,
 } from '../../../tasks.fixture.js';
 import type { UnassignTaskInput } from './unassign-task.input.js';
 import { UnassignTask } from './unassign-task.use-case.js';
@@ -156,5 +157,34 @@ describe('UnassignTask: a change needs edit on the list of the task', () => {
     expect(
       await refusalOf(useCase.execute(unassign({ actorUserId: HUGO, expectedVersions: [3] }))),
     ).toEqual({ reason: 'role-insufficient', role: 'comment' });
+  });
+});
+
+describe('UnassignTask: an archived task refuses the change with task-archived', () => {
+  it('answers task-archived with its key, after the role and before If-Match, and writes nothing', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState({ archive: archiveFrom(CAD_482) })] });
+    const useCase = new UnassignTask(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
+
+    expect(await refusalOf(useCase.execute(unassign({ expectedVersions: [3] })))).toEqual({
+      reason: 'task-archived',
+      key: 'CAD-482',
+    });
+    expect(tasks.stored(CAD_482)).toEqual(taskState({ archive: archiveFrom(CAD_482) }));
+    expect(tasks.events).toEqual([]);
+    expect(tasks.activity.size).toBe(0);
+  });
+
+  it('answers role-insufficient before task-archived', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState({ archive: archiveFrom(CAD_482) })] });
+    const useCase = new UnassignTask(
+      tasks,
+      atelierNordMembers(),
+      sprint14SharedWith({ [HUGO]: 'view' }),
+    );
+
+    expect(await refusalOf(useCase.execute(unassign({ actorUserId: HUGO })))).toEqual({
+      reason: 'role-insufficient',
+      role: 'view',
+    });
   });
 });

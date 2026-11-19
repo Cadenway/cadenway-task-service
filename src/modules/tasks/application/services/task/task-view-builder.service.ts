@@ -11,7 +11,9 @@ import type { TaskView } from '../../projections/task/task-view.projection.js';
  *
  * @description
  * Builds the read model of a task: the state of the aggregate with the counts of its direct
- * subtasks, which are derived and not stored. The checklist counts come from the checklist itself.
+ * subtasks, which are derived and not stored (those of the same archive as the task: its live
+ * subtasks for a live task, the subtasks archived with it for an archived one). The checklist
+ * counts come from the checklist itself; the archive gives `archivedAt` and `archivedBy`.
  */
 export class TaskViewBuilder {
   // #region Methods
@@ -76,6 +78,8 @@ export class TaskViewBuilder {
       })),
       createdBy: state.createdBy,
       updatedAt: state.updatedAt,
+      archivedAt: state.archive === null ? null : state.archive.at,
+      archivedBy: state.archive === null ? null : state.archive.by,
     };
   }
   // #endregion

@@ -8,6 +8,7 @@ import type { TaskEvents } from '../../../../application/ports/outbound/messagin
 import type { Task } from '../../../../domain/aggregates/task/task.aggregate.js';
 import type { StatusKey } from '../../../../domain/value-objects/task/status-key.value-object.js';
 import type { TaskField } from '../../../../domain/value-objects/task/task-field.value-object.js';
+import type { TaskKey } from '../../../../domain/value-objects/task/task-key.value-object.js';
 import type { TaskState } from '../../../../domain/value-objects/task/task-state.value-object.js';
 
 /**
@@ -184,6 +185,52 @@ export class OutboxTaskEvents implements TaskEvents {
     await this.outbox.append(this.transaction, eventSchemas, 'task.assigned.v1', {
       ...this.payloadOf(task.snapshot, actor),
       assigneeId,
+    });
+    this.onAppend();
+  }
+
+  /**
+   * Method taskArchived
+   *
+   * @description
+   * Appends `task.archived.v1` for one task an archive took: the task after the archive, as
+   * `task.updated.v1` carries it without `changed`, with the key of the root
+   * (`asyncapi/task-service.yaml`). Its `occurredAt`, the instant PostgreSQL gives the row, is the
+   * transaction instant, the `archivedAt` of the task.
+   *
+   * @param {Task} task - The task, archived, at its version 2 or more.
+   * @param {TaskKey} rootKey - The key of the root of the archive.
+   * @param {EventActor} actor - Who archived it.
+   * @returns {Promise<void>} Resolves once appended.
+   * @throws {Error} When the payload does not match the schema of the contract: a defect, which
+   * rolls the transaction back.
+   */
+  public async taskArchived(task: Task, rootKey: TaskKey, actor: EventActor): Promise<void> {
+    await this.outbox.append(this.transaction, eventSchemas, 'task.archived.v1', {
+      ...this.payloadOf(task.snapshot, actor),
+      rootKey: rootKey.format(),
+    });
+    this.onAppend();
+  }
+
+  /**
+   * Method taskUnarchived
+   *
+   * @description
+   * Appends `task.unarchived.v1` for one task a restoration brought back: the task after it, its
+   * `parentKey` `null` for a root detached, with the key of the root.
+   *
+   * @param {Task} task - The task, live, at its version 3 or more.
+   * @param {TaskKey} rootKey - The key of the root of the archive.
+   * @param {EventActor} actor - Who restored it.
+   * @returns {Promise<void>} Resolves once appended.
+   * @throws {Error} When the payload does not match the schema of the contract: a defect, which
+   * rolls the transaction back.
+   */
+  public async taskUnarchived(task: Task, rootKey: TaskKey, actor: EventActor): Promise<void> {
+    await this.outbox.append(this.transaction, eventSchemas, 'task.unarchived.v1', {
+      ...this.payloadOf(task.snapshot, actor),
+      rootKey: rootKey.format(),
     });
     this.onAppend();
   }

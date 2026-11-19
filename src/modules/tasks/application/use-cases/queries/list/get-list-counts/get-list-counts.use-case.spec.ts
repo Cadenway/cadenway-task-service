@@ -16,6 +16,10 @@ import {
   refusalOf,
   subtaskState,
   taskState,
+  archiveFrom,
+  ARCHIVED_AT,
+  HUGO_ACTOR,
+  atelierNordLists,
 } from '../../../tasks.fixture.js';
 import type { GetListCountsInput } from './get-list-counts.input.js';
 import { GetListCounts } from './get-list-counts.use-case.js';
@@ -142,5 +146,36 @@ describe('GetListCounts: the read runs in one read-only transaction', () => {
     expect(tasks.runs).toBe(1);
     expect(tasks.readOnlyRuns).toBe(1);
     expect(tasks.snapshotRuns).toBe(0);
+  });
+});
+
+describe('GetListCounts: an archived task is not counted, an archived list still reads', () => {
+  it('counts the live top-level tasks and answers the list with its archive', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [
+        taskState(),
+        queryTask(1, {
+          assigneeIds: [CAMILLE],
+          labels: ['Archivé'],
+          dueDate: '2026-11-08',
+          archive: archiveFrom(queryTask(1).id),
+          version: 2,
+        }),
+        queryTask(2, { assigneeIds: [CAMILLE], dueDate: '2026-11-08' }),
+      ],
+    });
+    const spaces = new InMemorySpaceDirectory({
+      lists: atelierNordLists({ archivedAt: ARCHIVED_AT, archivedBy: HUGO_ACTOR }),
+    });
+
+    const counts = await new GetListCounts(tasks, atelierNordMembers(), spaces).execute({
+      organizationId: ATELIER_NORD,
+      actorUserId: CAMILLE,
+      listId: SPRINT_14,
+      today: '2026-11-08',
+    });
+
+    expect(counts.counts.total).toBe(2);
+    expect(counts.list).toMatchObject({ archivedAt: ARCHIVED_AT, archivedBy: HUGO_ACTOR });
   });
 });

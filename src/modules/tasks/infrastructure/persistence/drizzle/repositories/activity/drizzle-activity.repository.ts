@@ -16,6 +16,7 @@ import {
 import type { ActivityEntryRow } from '../../mappers/activity/activity-entry.mapper.js';
 import { anyOf } from '../../mappers/page/any-of.mapper.js';
 import { keysetBefore } from '../../mappers/page/keyset-before.mapper.js';
+import { liveTask } from '../../mappers/task/live-task.mapper.js';
 import { activityEntries } from '../../schemas/activity/activity-entry.schema.js';
 import { tasks } from '../../schemas/task/task.schema.js';
 
@@ -292,8 +293,9 @@ export class DrizzleActivityRepository implements ActivityRepository {
    *
    * @description
    * The conditions both list reads share: the organization on both tables, the list the entry was
-   * recorded in, the list of the task as it is now among the visible ones, and the optional kinds
-   * and actors.
+   * recorded in, the list of the task as it is now among the visible ones, the task live
+   * (`liveTask`: the entries of an archived task leave the activity of a list, items and total), and
+   * the optional kinds and actors.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {ListActivityFilter} filter - The list, the visible lists and the filters.
@@ -305,6 +307,7 @@ export class DrizzleActivityRepository implements ActivityRepository {
       eq(tasks.organizationId, organizationId),
       eq(activityEntries.listId, filter.listId),
       anyOf(tasks.listId, filter.listIds, 'uuid'),
+      liveTask(),
       filter.kinds === null ? undefined : anyOf(activityEntries.kind, filter.kinds, 'text'),
       filter.actorIds === null
         ? undefined

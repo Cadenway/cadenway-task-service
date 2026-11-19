@@ -1,6 +1,9 @@
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
+import type { ArchivePosition } from '../../../../models/archive/archive-position.model.js';
+import type { ArchivedLists } from '../../../../models/placement/archived-lists.model.js';
 import type { KeyAllocation } from '../../../../models/placement/key-allocation.model.js';
 import type { ListPlacement } from '../../../../models/placement/list-placement.model.js';
+import type { ListRestoration } from '../../../../models/placement/list-restoration.model.js';
 import type { PlacedList } from '../../../../models/placement/placed-list.model.js';
 
 /**
@@ -20,7 +23,7 @@ export interface SpaceDirectory {
    *
    * @description
    * Finds a list and its space when the viewer has a role on the list, with that role on the list
-   * and on the space; no lock.
+   * and on the space, an archived list included (with its archive); no lock.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The acting member, with the role of the copy.
@@ -38,8 +41,8 @@ export interface SpaceDirectory {
    * Method visibleListIds
    *
    * @description
-   * Lists every list of the organization the viewer has a role on, unpaged, in the order of the
-   * sidebar: the ids a cross-list read filters `tasks.list_id` by.
+   * Lists every list of the organization the viewer has a role on, archived ones included,
+   * unpaged, in the order of the sidebar: the ids a cross-list read filters `tasks.list_id` by.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The acting member, with the role of the copy.
@@ -52,8 +55,8 @@ export interface SpaceDirectory {
    * Method findVisibleSpaceLists
    *
    * @description
-   * Lists the lists of a space the viewer has a role on, with that role, when the viewer sees the
-   * space, unpaged, in the order of their creation (`created_at`, then id); no lock.
+   * Lists the live lists of a space the viewer has a role on, with that role, when the viewer sees
+   * the space, unpaged, in the order of the sidebar; an archived list is left out; no lock.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The acting member, with the role of the copy.
@@ -71,8 +74,8 @@ export interface SpaceDirectory {
    * Method currentSprints
    *
    * @description
-   * Lists the sprints the viewer has a role on that are current on a date (start on or before it,
-   * end on or after it), by end date then creation, at most `limit`.
+   * Lists the live sprints the viewer has a role on that are current on a date (start on or before
+   * it, end on or after it), by end date then creation, at most `limit`; archived ones left out.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The acting member, with the role of the copy.
@@ -91,9 +94,9 @@ export interface SpaceDirectory {
    * Method sidebarLists
    *
    * @description
-   * Lists the first lists the viewer has a role on in the order of the sidebar: the spaces in the
-   * order of their creation, then their lists in the order of their creation, sprints included,
-   * at most `limit`.
+   * Lists the first live lists the viewer has a role on in the order of the sidebar: the spaces in
+   * the order of their creation, then their lists, sprints included, at most `limit`; archived
+   * lists left out.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The acting member, with the role of the copy.
@@ -121,5 +124,67 @@ export interface SpaceDirectory {
    * @throws {Error} When the space is unknown or the numbers run out (a defect).
    */
   allocateKeys(organizationId: string, spaceId: string, count: number): Promise<KeyAllocation>;
+
+  /**
+   * Method restoreArchivedList
+   *
+   * @description
+   * Restores the archived list a restored task goes back to ("Restoring any task of an archive
+   * restores the whole archive, from its root, to its list, which is restored too when it is
+   * archived", "Tasks" of `openapi/public/archives.yaml`), with `edit` on it: the spaces module
+   * locks the list `FOR NO KEY UPDATE` (after the tasks the caller locked), restores it at the end
+   * of its space and appends `list.unarchived.v1` by the actor, in the transaction of the caller.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {Viewer} viewer - The acting member, with the role of the copy.
+   * @param {string} listId - The list.
+   * @returns {Promise<ListRestoration>} `restored`, `not-archived`, `not-found` or
+   * `role-insufficient` with the role of the actor; a refusal writes nothing.
+   */
+  restoreArchivedList(
+    organizationId: string,
+    viewer: Viewer,
+    listId: string,
+  ): Promise<ListRestoration>;
+
+  /**
+   * Method archivedLists
+   *
+   * @description
+   * Reads a page of the archived lists the viewer has a role on, the most recently archived first
+   * (`archived_at desc, id desc`), after a position, and their number; no lock.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {Viewer} viewer - The acting member, with the role of the copy.
+   * @param {ArchivePosition | null} after - The last list of the previous page, `null` for the
+   * first.
+   * @param {number} limit - How many lists at most.
+   * @returns {Promise<ArchivedLists>} The lists, each with the role of the viewer, and the total.
+   */
+  archivedLists(
+    organizationId: string,
+    viewer: Viewer,
+    after: ArchivePosition | null,
+    limit: number,
+  ): Promise<ArchivedLists>;
+
+  /**
+   * Method findVisibleLists
+   *
+   * @description
+   * Finds the lists among some ids the viewer has a role on, archived ones included, with that
+   * role; no lock.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {Viewer} viewer - The acting member, with the role of the copy.
+   * @param {readonly string[]} listIds - The lists, 100 at most.
+   * @returns {Promise<readonly PlacedList[]>} The lists found, in no particular order.
+   * @throws {Error} With more than 100 ids, a defect.
+   */
+  findVisibleLists(
+    organizationId: string,
+    viewer: Viewer,
+    listIds: readonly string[],
+  ): Promise<readonly PlacedList[]>;
   // #endregion
 }

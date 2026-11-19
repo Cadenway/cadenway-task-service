@@ -64,6 +64,25 @@ describe('ListManagedAccessTargets: what a member answers access requests for', 
     expect(targets).toEqual({ spaceIds: [PRODUIT, MARKETING], listIds: [BACKLOG, SPRINT_14] });
   });
 
+  it('keeps an archived list the member edits, whose access requests stay answerable', async () => {
+    const spaces = atelierNord();
+    const backlog = spaces.lists.get(BACKLOG);
+    if (backlog === undefined) {
+      throw new Error('Backlog is seeded.');
+    }
+    spaces.lists.set(BACKLOG, {
+      ...backlog,
+      archivedAt: new Date('2026-11-03T09:00:00Z'),
+      archivedBy: { type: 'user', id: CAMILLE },
+    });
+
+    const targets = await new ListManagedAccessTargets(spaces).execute(
+      managed({ viewerUserId: NADIA, viewerRole: 'guest' }),
+    );
+
+    expect(targets.listIds).toEqual([BACKLOG]);
+  });
+
   it('gives the owner of a private space that space and its lists', async () => {
     const targets = await new ListManagedAccessTargets(atelierNord()).execute(
       managed({ viewerUserId: HUGO }),

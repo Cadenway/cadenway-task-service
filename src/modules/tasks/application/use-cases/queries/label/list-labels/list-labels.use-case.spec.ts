@@ -19,6 +19,7 @@ import {
   refusalOf,
   subtaskState,
   taskState,
+  archiveFrom,
 } from '../../../tasks.fixture.js';
 import type { ListLabelsInput } from './list-labels.input.js';
 import { ListLabels } from './list-labels.use-case.js';
@@ -192,5 +193,33 @@ describe('ListLabels: the read runs in one read-only transaction', () => {
     expect(tasks.runs).toBe(1);
     expect(tasks.readOnlyRuns).toBe(1);
     expect(tasks.snapshotRuns).toBe(0);
+  });
+});
+
+describe('ListLabels: the labels of an archived task are left out', () => {
+  it('lists the labels of the live tasks only', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [
+        taskState(),
+        queryTask(1, {
+          assigneeIds: [CAMILLE],
+          labels: ['Archivé'],
+          dueDate: '2026-11-08',
+          archive: archiveFrom(queryTask(1).id),
+          version: 2,
+        }),
+      ],
+    });
+    const useCase = new ListLabels(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
+
+    const page = await useCase.execute({
+      organizationId: ATELIER_NORD,
+      actorUserId: CAMILLE,
+      search: null,
+      after: null,
+      limit: 50,
+    });
+
+    expect(page.items.map((label) => label.name)).toEqual(['Auth', 'Front']);
   });
 });

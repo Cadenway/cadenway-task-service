@@ -226,6 +226,81 @@ export class OutboxSpaceEvents implements SpaceEvents {
   }
 
   /**
+   * Method listArchived
+   *
+   * @description
+   * Appends `list.archived.v1`, the whole list after the archive, its switch "Accès de
+   * l’organisation" included. The outbox takes `occurredAt` from `now()` of the transaction, the
+   * instant the archive stored as `archived_at`.
+   *
+   * @param {TaskList} list - The list at its version after the archive.
+   * @param {EventActor} actor - Who archived it.
+   * @returns {Promise<void>} Resolves once appended.
+   * @throws {Error} When the payload does not match the schema of the contract: a defect, which
+   * rolls the transaction back.
+   */
+  public async listArchived(list: TaskList, actor: EventActor): Promise<void> {
+    const state: TaskListState = list.snapshot;
+    await this.outbox.append(this.transaction, eventSchemas, 'list.archived.v1', {
+      organizationId: state.organizationId,
+      actor: { type: actor.type, id: actor.id },
+      version: state.version,
+      listId: state.id,
+      spaceId: state.spaceId,
+      name: state.name,
+      icon: state.icon,
+      color: state.color,
+      sprint:
+        state.sprint === null
+          ? null
+          : {
+              startDate: state.sprint.startDate,
+              endDate: state.sprint.endDate,
+              goal: state.sprint.goal,
+            },
+      organizationAccess: state.organizationAccess,
+    });
+    this.onAppend();
+  }
+
+  /**
+   * Method listUnarchived
+   *
+   * @description
+   * Appends `list.unarchived.v1`, the whole list after the restoration, its switch "Accès de
+   * l’organisation" included.
+   *
+   * @param {TaskList} list - The list at its version after the restoration.
+   * @param {EventActor} actor - Who restored it, the list or a task of it.
+   * @returns {Promise<void>} Resolves once appended.
+   * @throws {Error} When the payload does not match the schema of the contract: a defect, which
+   * rolls the transaction back.
+   */
+  public async listUnarchived(list: TaskList, actor: EventActor): Promise<void> {
+    const state: TaskListState = list.snapshot;
+    await this.outbox.append(this.transaction, eventSchemas, 'list.unarchived.v1', {
+      organizationId: state.organizationId,
+      actor: { type: actor.type, id: actor.id },
+      version: state.version,
+      listId: state.id,
+      spaceId: state.spaceId,
+      name: state.name,
+      icon: state.icon,
+      color: state.color,
+      sprint:
+        state.sprint === null
+          ? null
+          : {
+              startDate: state.sprint.startDate,
+              endDate: state.sprint.endDate,
+              goal: state.sprint.goal,
+            },
+      organizationAccess: state.organizationAccess,
+    });
+    this.onAppend();
+  }
+
+  /**
    * Method spaceAccessChanged
    *
    * @description

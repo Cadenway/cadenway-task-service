@@ -55,7 +55,9 @@ interface ProblemShape {
  * @description
  * Maps a refusal of a use case to its problem. What the actor does not see answers `404`, like
  * what does not exist, and what they see without the role a change needs `403
- * access.role-insufficient`, as "Visibility and roles" of the contract says.
+ * access.role-insufficient`, as "Visibility and roles" of the contract says. A change of an archived
+ * task, or under an archived parent, answers `409 task.archived` with the key of the archived task
+ * (`TaskArchived`, and `TaskCreationConflict` for a new subtask or checklist item).
  *
  * @param {TaskRefusalReason} refusal - The refusal.
  * @returns {ProblemShape} The problem of the contract.
@@ -80,6 +82,8 @@ function shapeOf(refusal: TaskRefusalReason): ProblemShape {
         code: 'access.role-insufficient',
         details: { role: refusal.role, requiredRole: 'edit' },
       };
+    case 'task-archived':
+      return { status: 409, code: 'task.archived', details: { key: refusal.key } };
     case 'version-mismatch':
       return {
         status: 412,

@@ -1,5 +1,5 @@
 import type { TransactionDatabase } from '@cadenway/nest-common/database';
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, getTableColumns, sql } from 'drizzle-orm';
 
 import type { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import type { PagePosition } from '../../../../../application/models/page/page-position.model.js';
@@ -10,6 +10,11 @@ import type { TaskSummaryView } from '../../../../../application/projections/tas
 import type { TaskReader } from '../../../../../application/ports/outbound/persistence/task/task-reader.port.js';
 import { keysetAfter } from '../../mappers/page/keyset-after.mapper.js';
 import { anyOf } from '../../mappers/page/any-of.mapper.js';
+import {
+  parentOfTask,
+  parentTasks,
+  sameArchiveAsParent,
+} from '../../mappers/task/same-archive.mapper.js';
 import { toTaskLocation, toTaskReference } from '../../mappers/task/task-summary.mapper.js';
 import type { TaskRow } from '../../mappers/task/task.mapper.js';
 import { tasks } from '../../schemas/task/task.schema.js';
@@ -123,8 +128,8 @@ export class DrizzleTaskReader implements TaskReader {
    * Method childrenOf
    *
    * @description
-   * Reads a page of the direct subtasks of a task in the order `(created_at, id)`, after
-   * `after`, summarized by `DrizzleTaskCollections.summarize` (as the pages of the queries are):
+   * Reads a page of the direct subtasks of a task of its archive (`sameArchiveAsParent`, the
+   * parent joined by its primary key) in the order `(created_at, id)`, after `after`, summarized by `DrizzleTaskCollections.summarize` (as the pages of the queries are):
    * the assignees, labels, subtask counts and checklist counts, each loaded for the whole page in
    * one query, and the key of the parent. A parent that holds no subtask, or is unknown, gives no
    * row.
@@ -143,12 +148,14 @@ export class DrizzleTaskReader implements TaskReader {
     limit: number,
   ): Promise<readonly TaskSummaryView[]> {
     const rows: TaskRow[] = await this.db
-      .select()
+      .select(getTableColumns(tasks))
       .from(tasks)
+      .innerJoin(parentTasks, parentOfTask())
       .where(
         and(
           eq(tasks.organizationId, organizationId),
           eq(tasks.parentId, parentId),
+          sameArchiveAsParent(),
           keysetAfter(tasks.createdAt, tasks.id, after),
         ),
       )
@@ -161,7 +168,8 @@ export class DrizzleTaskReader implements TaskReader {
    * Method countChildren
    *
    * @description
-   * Counts the direct subtasks of a task through `tasks_parent_created_index`.
+   * Counts the direct subtasks of a task of its archive (`sameArchiveAsParent`) through
+   * `tasks_parent_created_index`.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} parentId - The parent.
@@ -171,7 +179,14 @@ export class DrizzleTaskReader implements TaskReader {
     const rows: { total: number }[] = await this.db
       .select({ total: sql<number>`count(*)::int` })
       .from(tasks)
-      .where(and(eq(tasks.organizationId, organizationId), eq(tasks.parentId, parentId)));
+      .innerJoin(parentTasks, parentOfTask())
+      .where(
+        and(
+          eq(tasks.organizationId, organizationId),
+          eq(tasks.parentId, parentId),
+          sameArchiveAsParent(),
+        ),
+      );
     return rows[0]?.total ?? 0;
   }
 

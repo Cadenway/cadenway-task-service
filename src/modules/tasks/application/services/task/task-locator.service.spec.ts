@@ -9,12 +9,14 @@ import type { TasksStore } from '../../models/transactions/tasks-store.model.js'
 import {
   ATELIER_NORD,
   BUGS,
+  CAD_482,
   CAMILLE,
   HUGO,
   InMemorySpaceDirectory,
   InMemoryTasks,
   LEA,
   NADIA,
+  archiveFrom,
   refusalOf,
   sprint14SharedWith,
   taskState,
@@ -37,6 +39,7 @@ function request(overrides: Partial<LocateRequest> = {}): LocateRequest {
     taskKey: 'CAD-482',
     edit: true,
     lock: true,
+    archived: 'refuse',
     expectedVersions: null,
     ...overrides,
   };
@@ -180,5 +183,69 @@ describe('TaskLocator: a change needs edit on the list of the task', () => {
     );
 
     expect(placement.list.callerRole).toBe('edit');
+  });
+});
+
+describe('TaskLocator: a change of an archived task answers task-archived', () => {
+  const archived = (): InMemoryTasks =>
+    InMemoryTasks.withCad482({ tasks: [taskState({ archive: archiveFrom(CAD_482) })] });
+
+  it('refuses a change of an archived task with its key, after the role and before If-Match', async () => {
+    expect(
+      await refusalOf(
+        locate(
+          sprint14SharedWith({ [HUGO]: 'edit' }),
+          request({ expectedVersions: [3] }),
+          archived(),
+        ),
+      ),
+    ).toEqual({ reason: 'task-archived', key: 'CAD-482' });
+  });
+
+  it('answers task-not-found, then role-insufficient, before task-archived', async () => {
+    expect(
+      await refusalOf(
+        locate(
+          sprint14SharedWith({}),
+          request({ viewer: { userId: LEA, role: 'member' } }),
+          archived(),
+        ),
+      ),
+    ).toEqual({ reason: 'task-not-found' });
+    expect(
+      await refusalOf(locate(sprint14SharedWith({ [HUGO]: 'view' }), request(), archived())),
+    ).toEqual({ reason: 'role-insufficient', role: 'view' });
+  });
+
+  it('lets a read, the archive and the restoration find an archived task', async () => {
+    const { task } = await locate(
+      new InMemorySpaceDirectory(),
+      request({ archived: 'allow', expectedVersions: [12] }),
+      archived(),
+    );
+
+    expect(task.snapshot.archive).toEqual(archiveFrom(CAD_482));
+  });
+
+  it('decides on the locked task, archived while the write waited for its lock', async () => {
+    const tasks = InMemoryTasks.withCad482();
+
+    const refusal = await refusalOf(
+      tasks.run((store: TasksStore): Promise<LocatedTask> => {
+        const archivedMeanwhile: TasksStore = {
+          ...store,
+          tasks: {
+            ...store.tasks,
+            findByKey: (organizationId: string, key: TaskKey, lock: boolean) =>
+              lock
+                ? Promise.resolve(Task.restore(taskState({ archive: archiveFrom(CAD_482) })))
+                : store.tasks.findByKey(organizationId, key, lock),
+          },
+        };
+        return new TaskLocator(new InMemorySpaceDirectory()).locate(archivedMeanwhile, request());
+      }),
+    );
+
+    expect(refusal).toEqual({ reason: 'task-archived', key: 'CAD-482' });
   });
 });

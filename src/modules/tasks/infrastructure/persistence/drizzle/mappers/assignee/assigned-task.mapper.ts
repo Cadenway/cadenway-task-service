@@ -4,6 +4,7 @@ import type { SQL } from 'drizzle-orm';
 import { taskAssignees } from '../../schemas/task/task-assignee.schema.js';
 import { tasks } from '../../schemas/task/task.schema.js';
 import { anyOf } from '../page/any-of.mapper.js';
+import { liveTask } from '../task/live-task.mapper.js';
 
 /**
  * Function assignedTasksSource
@@ -22,8 +23,9 @@ export function assignedTasksSource(): SQL {
  * Function assignedTasksCondition
  *
  * @description
- * The `where` of the tasks assigned to an account in the lists the actor has a role on, subtasks
- * included. It names the organization on both tables.
+ * The `where` of the live tasks assigned to an account in the lists the actor has a role on,
+ * subtasks included (`liveTask`: an archived task leaves "Mes tâches" and "Accueil"). It names the
+ * organization on both tables.
  *
  * @param {string} organizationId - The organization of the transaction.
  * @param {string} userId - The account.
@@ -41,6 +43,7 @@ export function assignedTasksCondition(
       eq(taskAssignees.userId, userId),
       eq(tasks.organizationId, organizationId),
       anyOf(tasks.listId, listIds, 'uuid'),
+      liveTask(),
     ) ?? sql`false`
   );
 }

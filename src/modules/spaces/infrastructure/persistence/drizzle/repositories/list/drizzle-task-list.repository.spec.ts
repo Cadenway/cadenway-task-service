@@ -2,6 +2,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import type { Pool } from 'pg';
 import { describe, expect, it } from 'vitest';
 
+import { TaskList } from '../../../../../domain/aggregates/list/task-list.aggregate.js';
 import { DrizzleTaskListRepository } from './drizzle-task-list.repository.js';
 
 /** The organization of the statements. */
@@ -15,17 +16,27 @@ const LEA = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b33';
  *
  * @returns The repository and the statements it sent.
  */
-function capturing(): { readonly lists: DrizzleTaskListRepository; readonly texts: string[] } {
+function capturing(): {
+  readonly lists: DrizzleTaskListRepository;
+  readonly texts: string[];
+  readonly values: unknown[][];
+} {
   const texts: string[] = [];
+  const values: unknown[][] = [];
   const client = {
-    query: (config: { readonly text: string }): Promise<{ rows: unknown[]; fields: unknown[] }> => {
+    query: (
+      config: { readonly text: string },
+      params: unknown[] | undefined,
+    ): Promise<{ rows: unknown[]; fields: unknown[] }> => {
       texts.push(config.text);
+      values.push(params ?? []);
       return Promise.resolve({ rows: [], fields: [] });
     },
   };
   return {
     lists: new DrizzleTaskListRepository(drizzle(client as unknown as Pool)),
     texts,
+    values,
   };
 }
 
@@ -91,5 +102,174 @@ describe('DrizzleTaskListRepository: the collections read each grant of the view
       expect(text).toContain('left join "space_grants" "viewer_space_grant"');
       expect(text).not.toContain('(select');
     }
+  });
+});
+
+/** The position of a list in its space, as the statements order by it. */
+const POSITION = 'coalesce("lists"."restored_at", "lists"."created_at")';
+
+/** The condition of the live lists. */
+const LIVE = '"lists"."archived_at" is null';
+
+describe('DrizzleTaskListRepository: the collections of a space, of the sprints and of the sidebar keep the live lists', () => {
+  it('leaves the archived lists out of the lists of a space and orders them by their position', async () => {
+    const { lists, texts } = capturing();
+
+    await lists.listOfSpaceVisibleTo(
+      ORGANIZATION,
+      '019a7000-0000-7000-8000-000000000001',
+      { userId: LEA, role: 'member' },
+      null,
+      51,
+    );
+    await lists.listAllOfSpaceVisibleTo(ORGANIZATION, '019a7000-0000-7000-8000-000000000001', {
+      userId: LEA,
+      role: 'member',
+    });
+
+    for (const text of texts) {
+      expect(text).toContain(LIVE);
+      expect(text).toContain(`order by ${POSITION} asc, "lists"."id" asc`);
+    }
+  });
+
+  it('continues the lists of a space after the position of the last list of the previous page', async () => {
+    const { lists, texts, values } = capturing();
+
+    await lists.listOfSpaceVisibleTo(
+      ORGANIZATION,
+      '019a7000-0000-7000-8000-000000000001',
+      { userId: LEA, role: 'member' },
+      {
+        createdAt: new Date('2026-11-08T17:00:00.000Z'),
+        id: '019a7100-0000-7000-8000-000000000001',
+      },
+      51,
+    );
+
+    expect(texts[0]).toMatch(
+      /\(coalesce\("lists"\."restored_at", "lists"\."created_at"\), "lists"\."id"\) > \(\$\d+::timestamptz, \$\d+::uuid\)/u,
+    );
+    expect(values[0]).toContain('2026-11-08T17:00:00.000Z');
+  });
+
+  it('leaves the archived sprints out of the sprints under way, in the order of their last day then creation', async () => {
+    const { lists, texts } = capturing();
+
+    await lists.listCurrentSprintsVisibleTo(
+      ORGANIZATION,
+      { userId: LEA, role: 'member' },
+      '2026-11-08',
+      10,
+    );
+
+    expect(texts[0]).toContain(LIVE);
+    expect(texts[0]).toContain(
+      'order by "lists"."sprint_end_date" asc, "lists"."created_at" asc, "lists"."id" asc',
+    );
+  });
+
+  it('leaves the archived lists out of the sidebar, the lists of each space by their position', async () => {
+    const { lists, texts } = capturing();
+
+    await lists.listFirstVisibleTo(ORGANIZATION, { userId: LEA, role: 'member' }, 6);
+
+    expect(texts[0]).toContain(LIVE);
+    expect(texts[0]).toContain(
+      `order by "spaces"."created_at" asc, "spaces"."id" asc, ${POSITION} asc, "lists"."id" asc`,
+    );
+  });
+
+  it('keeps the archived lists in the lean rows of the roles, in sidebar order', async () => {
+    const { lists, texts } = capturing();
+
+    await lists.listAccessesVisibleTo(ORGANIZATION, { userId: LEA, role: 'member' });
+
+    expect(texts[0]).not.toContain('"archived_at"');
+    expect(texts[0]).toContain(
+      `order by "spaces"."created_at" asc, "spaces"."id" asc, ${POSITION} asc, "lists"."id" asc`,
+    );
+  });
+});
+
+describe('DrizzleTaskListRepository: the archives and the lists read by id', () => {
+  it('reads a page of the archived lists the latest first, after a position, with the joins of the collections', async () => {
+    const { lists, texts, values } = capturing();
+
+    await lists.listArchivedVisibleTo(
+      ORGANIZATION,
+      { userId: LEA, role: 'member' },
+      {
+        archivedAt: new Date('2026-11-05T09:00:00.000Z'),
+        id: '019a7100-0000-7000-8000-000000000004',
+      },
+      50,
+    );
+
+    const text: string = texts[0] ?? '';
+    expect(text).toContain('"lists"."archived_at" is not null');
+    expect(text).toContain('("lists"."archived_at", "lists"."id") < ($');
+    expect(text).toContain('order by "lists"."archived_at" desc, "lists"."id" desc');
+    expect(text).toContain('left join "list_grants" "viewer_list_grant"');
+    expect(values[0]).toContain('2026-11-05T09:00:00.000Z');
+  });
+
+  it('counts the archived lists with the same condition, in one statement', async () => {
+    const { lists, texts } = capturing();
+
+    const total: number = await lists.countArchivedVisibleTo(ORGANIZATION, {
+      userId: LEA,
+      role: 'guest',
+    });
+
+    expect(total).toBe(0);
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).toContain('count(*)::int');
+    expect(texts[0]).toContain('"lists"."archived_at" is not null');
+    expect(texts[0]).toContain('"viewer_list_grant"."role" is not null');
+  });
+
+  it('reads some lists by id, archived ones included, and nothing without an id', async () => {
+    const { lists, texts } = capturing();
+
+    await lists.listVisibleByIds(ORGANIZATION, { userId: LEA, role: 'member' }, []);
+    await lists.listVisibleByIds(ORGANIZATION, { userId: LEA, role: 'member' }, [
+      '019a7100-0000-7000-8000-000000000001',
+      '019a7100-0000-7000-8000-000000000002',
+    ]);
+
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).toContain('"lists"."id" in ($');
+    expect(texts[0]).not.toContain('"archived_at" is');
+  });
+});
+
+describe('DrizzleTaskListRepository: an update writes the archive of the list', () => {
+  it('sets the archive columns and the restoration with the version', async () => {
+    const { lists, texts, values } = capturing();
+    const list = TaskList.restore({
+      id: '019a7100-0000-7000-8000-000000000002',
+      organizationId: ORGANIZATION,
+      spaceId: '019a7000-0000-7000-8000-000000000001',
+      name: 'Sprint 14',
+      icon: null,
+      color: 'indigo',
+      sprint: null,
+      organizationAccess: true,
+      createdAt: new Date('2026-10-20T09:00:00Z'),
+      archivedAt: new Date('2026-11-03T09:00:00.000Z'),
+      archivedBy: { type: 'user', id: LEA },
+      restoredAt: null,
+      version: 4,
+    });
+
+    await expect(lists.update(list)).rejects.toThrow('The list vanished while it was locked.');
+
+    const text: string = texts[0] ?? '';
+    expect(text).toContain('"archived_at" = $');
+    expect(text).toContain('"archived_by_type" = $');
+    expect(text).toContain('"archived_by_id" = $');
+    expect(text).toContain('"restored_at" = $');
+    expect(values[0]).toEqual(expect.arrayContaining(['user', LEA, 4]));
   });
 });

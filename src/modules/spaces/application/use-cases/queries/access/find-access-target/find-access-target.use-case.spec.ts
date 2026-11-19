@@ -101,6 +101,30 @@ describe('FindAccessTarget: the target of an access request, seen or not', () =>
     expect(ofLea).toMatchObject({ viewerRole: null, viewerManages: false });
   });
 
+  it('finds an archived list as a live one, so a request for it is stored and answered', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [
+        sprintState({
+          organizationAccess: false,
+          archivedAt: new Date('2026-11-03T09:00:00Z'),
+          archivedBy: { type: 'user', id: CAMILLE },
+        }),
+      ],
+      grants: [listGrantOf(PRODUIT, SPRINT_14, NADIA, 'edit')],
+    });
+
+    const target = await new FindAccessTarget(spaces).execute(
+      find({
+        viewerUserId: NADIA,
+        viewerRole: 'guest',
+        target: { kind: 'list', listId: SPRINT_14 },
+      }),
+    );
+
+    expect(target).toMatchObject({ listId: SPRINT_14, viewerRole: 'edit', viewerManages: true });
+  });
+
   it.each([
     ['a space', { kind: 'space', spaceId: UNKNOWN_SPACE }],
     ['a list', { kind: 'list', listId: UNKNOWN_LIST }],

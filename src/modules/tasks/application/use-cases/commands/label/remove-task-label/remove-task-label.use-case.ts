@@ -78,8 +78,8 @@ export class RemoveTaskLabel {
    * @param {RemoveTaskLabelInput} input - The actor, the task, the label and the versions
    * `If-Match` accepts.
    * @returns {Promise<RemoveTaskLabelOutput>} The task after the change.
-   * @throws {TaskRefusal} `organization-not-found`, `task-not-found`, `role-insufficient` or
-   * `version-mismatch`.
+   * @throws {TaskRefusal} `organization-not-found`, `task-not-found`, `role-insufficient`,
+   * `task-archived` or `version-mismatch`.
    */
   public async execute(input: RemoveTaskLabelInput): Promise<RemoveTaskLabelOutput> {
     return this.unitOfWork.run(async (store: TasksStore): Promise<RemoveTaskLabelOutput> => {
@@ -94,6 +94,7 @@ export class RemoveTaskLabel {
         taskKey: input.taskKey,
         edit: true,
         lock: true,
+        archived: 'refuse',
         expectedVersions: input.expectedVersions,
       });
       const now: Date = await store.clock.now();

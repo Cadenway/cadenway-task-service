@@ -19,6 +19,8 @@ const SPRINT_14: ListSummaryView = {
     createdAt: new Date('2026-11-01T08:00:00.000Z'),
     version: 2,
     organizationAccess: true,
+    archivedAt: null,
+    archivedBy: null,
     callerRole: 'edit',
   },
   counts: { total: 98, open: 72, done: 24, cancelled: 2, late: 3 },

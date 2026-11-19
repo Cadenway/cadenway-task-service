@@ -11,6 +11,7 @@ import { LabelLimitReachedError } from '../../../domain/errors/task/label-limit-
 import { ListInvalidError } from '../../../domain/errors/task/list-invalid.error.js';
 import { StartDateInvalidError } from '../../../domain/errors/task/start-date-invalid.error.js';
 import { StatusHiddenError } from '../../../domain/errors/task/status-hidden.error.js';
+import { TaskArchivedError } from '../../../domain/errors/task/task-archived.error.js';
 import { TaskRefusal } from '../../models/task/task-refusal.model.js';
 
 /**
@@ -51,6 +52,9 @@ export class TaskRuleGuard {
    * @returns {TaskRefusal | null} The refusal, `null` when the error is not a refusal of a rule.
    */
   private refusalOf(error: unknown): TaskRefusal | null {
+    if (error instanceof TaskArchivedError) {
+      return new TaskRefusal({ reason: 'task-archived', key: error.key });
+    }
     if (error instanceof StatusHiddenError) {
       return new TaskRefusal({ reason: 'status-hidden', status: error.status });
     }

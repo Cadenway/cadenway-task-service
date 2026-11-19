@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ARCHIVED_AT,
   ATELIER_NORD,
   BACKLOG,
   CAMILLE,
@@ -75,6 +76,19 @@ describe('GetList: a list is seen by whoever has a role on it', () => {
     );
 
     expect(list.spaceId).toBe(DESIGN);
+  });
+
+  it('reads an archived list by its id, with when and by whom it was archived', async () => {
+    const archived = sprintState({
+      archivedAt: ARCHIVED_AT,
+      archivedBy: { type: 'user', id: CAMILLE },
+      version: 2,
+    });
+    const spaces = new InMemorySpaces({ spaces: [spaceState()], lists: [archived] });
+
+    const view = await new GetList(spaces, atelierNordMembers()).execute(getSprint());
+
+    expect(view).toEqual({ list: archived, callerRole: 'edit' });
   });
 });
 

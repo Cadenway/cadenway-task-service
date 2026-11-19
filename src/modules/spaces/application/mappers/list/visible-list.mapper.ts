@@ -6,9 +6,9 @@ import type { VisibleList } from '../../projections/list/visible-list.projection
  * Function toVisibleList
  *
  * @description
- * Copies a stored list and the role of the member on it into its public projection, so that no
- * type of the domain crosses the public entry points. Shared by every operation that hands lists
- * to another module.
+ * Copies a stored list, its archive and the role of the member on it into its public projection,
+ * so that no type of the domain crosses the public entry points. Shared by every operation that
+ * hands lists to another module.
  *
  * @param {TaskListState} state - The stored list.
  * @param {AccessRole} callerRole - The effective role of the member on the list.
@@ -32,6 +32,9 @@ export function toVisibleList(state: TaskListState, callerRole: AccessRole): Vis
     createdAt: state.createdAt,
     version: state.version,
     organizationAccess: state.organizationAccess,
+    archivedAt: state.archivedAt,
+    archivedBy:
+      state.archivedBy === null ? null : { type: state.archivedBy.type, id: state.archivedBy.id },
     callerRole,
   };
 }

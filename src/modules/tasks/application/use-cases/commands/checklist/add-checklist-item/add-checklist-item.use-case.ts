@@ -83,8 +83,8 @@ export class AddChecklistItem {
    *
    * @param {AddChecklistItemInput} input - The actor, the task and the text.
    * @returns {Promise<AddChecklistItemOutput>} The task after the change and the id of the item.
-   * @throws {TaskRefusal} `organization-not-found`, `task-not-found`, `role-insufficient` or
-   * `checklist-limit-reached`.
+   * @throws {TaskRefusal} `organization-not-found`, `task-not-found`, `role-insufficient`,
+   * `task-archived` or `checklist-limit-reached`.
    */
   public async execute(input: AddChecklistItemInput): Promise<AddChecklistItemOutput> {
     return this.unitOfWork.run(async (store: TasksStore): Promise<AddChecklistItemOutput> => {
@@ -99,6 +99,7 @@ export class AddChecklistItem {
         taskKey: input.taskKey,
         edit: true,
         lock: true,
+        archived: 'refuse',
         expectedVersions: null,
       });
       const now: Date = await store.clock.now();

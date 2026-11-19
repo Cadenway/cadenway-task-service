@@ -3,13 +3,14 @@ import type { GrantRepository } from '../../ports/outbound/persistence/access/gr
 import type { TaskListRepository } from '../../ports/outbound/persistence/list/task-list-repository.port.js';
 import type { SpacePrefixRepository } from '../../ports/outbound/persistence/space/space-prefix-repository.port.js';
 import type { SpaceRepository } from '../../ports/outbound/persistence/space/space-repository.port.js';
+import type { TransactionClock } from '../../ports/outbound/time/transaction/transaction-clock.port.js';
 
 /**
  * Interface SpacesStore
  *
  * @description
- * The repositories and the events of the spaces module, all bound to the tenant transaction of one
- * unit of work: what they write commits together, or not at all.
+ * The repositories, the events and the clock of the spaces module, all bound to the tenant
+ * transaction of one unit of work: what they write commits together, or not at all.
  */
 export interface SpacesStore {
   // #region Properties
@@ -67,5 +68,16 @@ export interface SpacesStore {
    * @readonly
    */
   readonly events: SpaceEvents;
+
+  /**
+   * Property clock
+   *
+   * @description
+   * The instant of the transaction, which an archive and a restoration store.
+   *
+   * @type {TransactionClock}
+   * @readonly
+   */
+  readonly clock: TransactionClock;
   // #endregion
 }

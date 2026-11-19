@@ -14,10 +14,17 @@ import {
   SPRINT_14,
   cad482Parent,
 } from '../../tasks.fixture.js';
+import type { RestoredRootParent } from '../../value-objects/subtask/restored-root-parent.value-object.js';
 import type { SubtaskParent } from '../../value-objects/subtask/subtask-parent.value-object.js';
 import type { SubtreeShape } from '../../value-objects/subtask/subtree-shape.value-object.js';
 import { TaskKey } from '../../value-objects/task/task-key.value-object.js';
-import { checkAttachment, checkNewSubtask } from './subtask-tree.policy.js';
+import {
+  archiveHeight,
+  checkAttachment,
+  checkNewSubtask,
+  depthsUnder,
+  takesRestoredRoot,
+} from './subtask-tree.policy.js';
 
 /** The key of CAD-490, the task that attaches. */
 const cad490Key: TaskKey = TaskKey.of('CAD', 490);
@@ -241,5 +248,111 @@ describe('checkAttachment: a listId in the same patch is the list of the parent'
     expect(() => {
       checkAttachment(cad490Key, CAD_482, { parent: cad482Parent(), subtree: subtree(1) }, BUGS);
     }).toThrow(ListInvalidError);
+  });
+});
+
+/** The archive of CAD-483: CAD-483 under CAD-482, and its subtask CAD-484. */
+const CAD_483_ARCHIVE: readonly { readonly id: string; readonly parentId: string | null }[] = [
+  { id: CAD_484, parentId: CAD_483 },
+  { id: CAD_483, parentId: CAD_482 },
+];
+
+/**
+ * Builds the parent of a restored root: CAD-482, live, in Sprint 14, at level 1 with 2 live
+ * subtasks unless replaced.
+ *
+ * @param overrides - Fields to replace.
+ * @returns The parent.
+ */
+function restoredParent(overrides: Partial<RestoredRootParent> = {}): RestoredRootParent {
+  return { live: true, listId: SPRINT_14, level: 1, childCount: 2, ...overrides };
+}
+
+describe('depthsUnder and archiveHeight: the levels of an archive from its parent links', () => {
+  it('gives the root depth 0 and each member its depth below, in any order', () => {
+    expect([...depthsUnder(CAD_483, CAD_483_ARCHIVE).entries()]).toEqual([
+      [CAD_484, 1],
+      [CAD_483, 0],
+    ]);
+    expect(archiveHeight(CAD_483, CAD_483_ARCHIVE)).toBe(2);
+  });
+
+  it('counts a root alone as one level and a full tree as three', () => {
+    expect(archiveHeight(CAD_490, [{ id: CAD_490, parentId: null }])).toBe(1);
+    expect(
+      archiveHeight(CAD_482, [
+        { id: CAD_482, parentId: null },
+        { id: CAD_483, parentId: CAD_482 },
+        { id: CAD_484, parentId: CAD_483 },
+      ]),
+    ).toBe(3);
+  });
+
+  it.each<[string, string, readonly { readonly id: string; readonly parentId: string | null }[]]>([
+    ['a tree without its root', CAD_482, [{ id: CAD_483, parentId: CAD_482 }]],
+    [
+      'a member whose parent is outside the tree',
+      CAD_483,
+      [
+        { id: CAD_483, parentId: CAD_482 },
+        { id: CAD_490, parentId: CAD_482 },
+      ],
+    ],
+    [
+      'a task twice',
+      CAD_483,
+      [
+        { id: CAD_483, parentId: CAD_482 },
+        { id: CAD_483, parentId: CAD_482 },
+      ],
+    ],
+    [
+      'a fourth level',
+      CAD_482,
+      [
+        { id: CAD_482, parentId: null },
+        { id: CAD_483, parentId: CAD_482 },
+        { id: CAD_484, parentId: CAD_483 },
+        { id: CAD_490, parentId: CAD_484 },
+      ],
+    ],
+  ])('refuses %s', (_case, rootId, members) => {
+    expect(() => depthsUnder(rootId, members)).toThrow(InvalidTaskError);
+  });
+});
+
+describe('takesRestoredRoot: the parent takes the restored root back, or the root is detached', () => {
+  it('keeps a live parent of the same list with room and levels for the archive', () => {
+    expect(takesRestoredRoot(restoredParent(), SPRINT_14, 2)).toBe(true);
+    expect(takesRestoredRoot(restoredParent({ level: 2, childCount: 24 }), SPRINT_14, 1)).toBe(
+      true,
+    );
+  });
+
+  it('detaches from an archived parent', () => {
+    expect(takesRestoredRoot(restoredParent({ live: false }), SPRINT_14, 1)).toBe(false);
+  });
+
+  it('detaches from a parent that moved to another list', () => {
+    expect(takesRestoredRoot(restoredParent({ listId: BUGS }), SPRINT_14, 1)).toBe(false);
+  });
+
+  it('detaches from a parent with 25 live subtasks', () => {
+    expect(takesRestoredRoot(restoredParent({ childCount: 25 }), SPRINT_14, 1)).toBe(false);
+  });
+
+  it('detaches when the archive would reach below the third level', () => {
+    expect(takesRestoredRoot(restoredParent({ level: 2 }), SPRINT_14, 2)).toBe(false);
+    expect(takesRestoredRoot(restoredParent({ level: 1 }), SPRINT_14, 3)).toBe(false);
+  });
+
+  it('refuses a shape no tree has', () => {
+    expect(() => takesRestoredRoot(restoredParent({ level: 0 }), SPRINT_14, 1)).toThrow(
+      InvalidTaskError,
+    );
+    expect(() => takesRestoredRoot(restoredParent({ childCount: -1 }), SPRINT_14, 1)).toThrow(
+      InvalidTaskError,
+    );
+    expect(() => takesRestoredRoot(restoredParent(), SPRINT_14, 0)).toThrow(InvalidTaskError);
   });
 });

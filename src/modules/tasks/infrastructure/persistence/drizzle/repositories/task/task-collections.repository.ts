@@ -13,6 +13,11 @@ import { toChecklistItem } from '../../mappers/task/checklist-item.mapper.js';
 import type { ChecklistItemRow } from '../../mappers/task/checklist-item.mapper.js';
 import { toTaskSummary } from '../../mappers/task/task-summary.mapper.js';
 import type { TaskSummaryRow } from '../../mappers/task/task-summary.mapper.js';
+import {
+  parentOfTask,
+  parentTasks,
+  sameArchiveAsParent,
+} from '../../mappers/task/same-archive.mapper.js';
 import { toTask } from '../../mappers/task/task.mapper.js';
 import type { TaskRow } from '../../mappers/task/task.mapper.js';
 import { checklistItems } from '../../schemas/checklist/checklist-item.schema.js';
@@ -202,7 +207,9 @@ export class DrizzleTaskCollections {
    *
    * @description
    * Counts the direct subtasks of tasks, and the closed ones (`CLOSED_STATUS_KEYS`), in one grouped
-   * query through `tasks_parent_created_index`.
+   * query through `tasks_parent_created_index`, joined with each parent by its primary key to keep
+   * the subtasks of its archive only (`sameArchiveAsParent`): the live subtasks of a live task, the
+   * subtasks archived with an archived one.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} taskIds - The tasks.
@@ -224,11 +231,13 @@ export class DrizzleTaskCollections {
         closed: sql<number>`(count(*) filter (where ${anyOf(tasks.status, CLOSED_STATUS_KEYS, 'text')}))::int`,
       })
       .from(tasks)
+      .innerJoin(parentTasks, parentOfTask())
       .where(
         and(
           eq(tasks.organizationId, organizationId),
           isNotNull(tasks.parentId),
           anyOf(tasks.parentId, taskIds, 'uuid'),
+          sameArchiveAsParent(),
         ),
       )
       .groupBy(tasks.parentId);

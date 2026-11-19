@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ARCHIVED_AT,
   ATELIER_NORD,
   CAMILLE,
   DESIGN,
@@ -108,8 +109,38 @@ describe('ListCurrentSprints: the sprints under way in the spaces a member sees'
       createdAt: sprintState().createdAt,
       version: 1,
       organizationAccess: true,
+      archivedAt: null,
+      archivedBy: null,
       callerRole: 'edit',
     });
+  });
+
+  it('leaves an archived sprint out of Accueil', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState(), marketingState()],
+      lists: [
+        sprintState({ archivedAt: ARCHIVED_AT, archivedBy: { type: 'user', id: CAMILLE } }),
+        sprint(MARKETING_SPRINT, MARKETING, '2026-11-02', '2026-11-10'),
+      ],
+    });
+
+    const output = await new ListCurrentSprints(spaces).execute(current());
+
+    expect(output.lists.map((list) => list.id)).toEqual([MARKETING_SPRINT]);
+  });
+
+  it('keeps a restored sprint in the order of its last day then of its creation', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [
+        sprintState({ restoredAt: new Date('2026-11-07T09:00:00Z') }),
+        sprint(LATE_SPRINT, PRODUIT, '2026-11-03', '2026-11-17', '2026-10-25T09:00:00Z'),
+      ],
+    });
+
+    const output = await new ListCurrentSprints(spaces).execute(current());
+
+    expect(output.lists.map((list) => list.id)).toEqual([SPRINT_14, LATE_SPRINT]);
   });
 
   it.each([

@@ -20,6 +20,8 @@ import {
   refusalOf,
   sprint14SharedWith,
   taskState,
+  archiveFrom,
+  CAD_482,
 } from '../../../tasks.fixture.js';
 import type { CheckTaskAccessInput } from './check-task-access.input.js';
 import { CheckTaskAccess } from './check-task-access.use-case.js';
@@ -150,5 +152,20 @@ describe('CheckTaskAccess: one read-only run that writes nothing', () => {
     expect(tasks.trace).toContain('reader.locationByKey');
     expect(tasks.trace.filter((call) => call.startsWith('tasks.'))).toEqual([]);
     expect(tasks.events).toEqual([]);
+  });
+});
+
+describe('CheckTaskAccess: an archived task answers the role of the actor', () => {
+  it('checks it as a live task', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState({ archive: archiveFrom(CAD_482) })] });
+    const useCase = new CheckTaskAccess(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
+
+    expect(
+      await useCase.execute({
+        organizationId: ATELIER_NORD,
+        actorUserId: CAMILLE,
+        taskKey: 'CAD-482',
+      }),
+    ).toMatchObject({ role: 'edit', taskKey: 'CAD-482' });
   });
 });

@@ -8,7 +8,8 @@ import type { TaskView } from '../../../../application/projections/task/task-vie
  * @description
  * Maps a task of the use cases to the `Task` of `openapi/internal/task-service.yaml`: each assignee
  * as `{ userId }` in the order of the assignment, the checklist in the order of its items, the
- * instants in ISO 8601 and the creator as `{ type, id }`. The id and the organization of the task
+ * instants in ISO 8601, the creator as `{ type, id }`, and the archive (`archivedAt` and
+ * `archivedBy`), always present, `null` for a live task. The id and the organization of the task
  * are not part of the contract and do not leave the service. The body carries the `version`, which
  * the `EtagInterceptor` of the kit turns into the `ETag` of the response.
  *
@@ -40,5 +41,8 @@ export function toTask(view: TaskView): Task {
     createdBy: { type: view.createdBy.type, id: view.createdBy.id },
     updatedAt: view.updatedAt.toISOString(),
     version: view.version,
+    archivedAt: view.archivedAt === null ? null : view.archivedAt.toISOString(),
+    archivedBy:
+      view.archivedBy === null ? null : { type: view.archivedBy.type, id: view.archivedBy.id },
   };
 }

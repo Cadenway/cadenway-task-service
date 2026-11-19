@@ -83,6 +83,7 @@ export class GetTaskDetail {
           taskKey: input.taskKey,
           edit: false,
           lock: false,
+          archived: 'allow',
           expectedVersions: null,
         });
         const { id, parentId } = task.snapshot;

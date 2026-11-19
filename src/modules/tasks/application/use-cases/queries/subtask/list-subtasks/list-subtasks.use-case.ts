@@ -81,6 +81,7 @@ export class ListSubtasks {
         taskKey: input.taskKey,
         edit: false,
         lock: false,
+        archived: 'allow',
         expectedVersions: null,
       });
       const rows: readonly TaskSummaryView[] = await store.reader.childrenOf(

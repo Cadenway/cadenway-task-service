@@ -18,6 +18,10 @@ import {
   refusalOf,
   subtaskState,
   taskState,
+  archiveFrom,
+  ARCHIVED_AT,
+  HUGO_ACTOR,
+  atelierNordLists,
 } from '../../../tasks.fixture.js';
 import type { GetSpaceOverviewInput } from './get-space-overview.input.js';
 import { GetSpaceOverview } from './get-space-overview.use-case.js';
@@ -204,5 +208,47 @@ describe('GetSpaceOverview: the read runs in one read-only transaction on one sn
     expect(tasks.runs).toBe(1);
     expect(tasks.readOnlyRuns).toBe(1);
     expect(tasks.snapshotRuns).toBe(1);
+  });
+});
+
+describe('GetSpaceOverview: archived tasks and lists are left out', () => {
+  it('leaves an archived task out of the counts and an archived list out of the lists', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [
+        taskState(),
+        queryTask(1, {
+          assigneeIds: [CAMILLE],
+          labels: ['Archivé'],
+          dueDate: '2026-11-08',
+          archive: archiveFrom(queryTask(1).id),
+          version: 2,
+        }),
+        queryTask(2, { assigneeIds: [CAMILLE], dueDate: '2026-11-08' }),
+        queryTask(3, { listId: BUGS }),
+      ],
+    });
+    const useCase = new GetSpaceOverview(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
+    const archivedSprint = new GetSpaceOverview(
+      tasks,
+      atelierNordMembers(),
+      new InMemorySpaceDirectory({
+        lists: atelierNordLists({ archivedAt: ARCHIVED_AT, archivedBy: HUGO_ACTOR }),
+      }),
+    );
+    const input = {
+      organizationId: ATELIER_NORD,
+      actorUserId: CAMILLE,
+      spaceId: PRODUIT,
+      today: '2026-11-08',
+      after: null,
+      limit: 50,
+    };
+
+    const live = await useCase.execute(input);
+    const withoutSprint = await archivedSprint.execute(input);
+
+    expect(live.taskCount).toBe(3);
+    expect(withoutSprint.items.map((item) => item.list.id)).toEqual([BUGS]);
+    expect(withoutSprint).toMatchObject({ listCount: 1, taskCount: 1 });
   });
 });
