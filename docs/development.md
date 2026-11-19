@@ -24,7 +24,11 @@ the access requests (`src/modules/access-requests/MODULE.md`) have their interna
 route applies the effective role of the caller; the realtime gateway checks the access to a list or
 a task through two routes of its own. Lists and tasks are archived and restored, a task with its
 subtree, and the pages "Archives" list them (`src/modules/spaces/MODULE.md`,
-`src/modules/tasks/MODULE.md`). The tasks module also serves the seven task queries (the tasks of a list, the group counts, the counts of a list, the overview of a space, the labels, "Mes tâches" and "Accueil"). The target architecture in this guide is what
+`src/modules/tasks/MODULE.md`). A deleted task goes to the trash with its live subtree as one entry,
+which the page "Corbeille" lists and which is restored or erased as a whole; a deleted list or space
+becomes a tombstone whose tasks a job moves to the trash, and the trash is erased 30 days after a
+deletion by a daily job, or at once by "Vider la corbeille" (`src/modules/tasks/MODULE.md`,
+`src/modules/spaces/MODULE.md`, `src/modules/deletion-lifecycle/MODULE.md`). The tasks module also serves the seven task queries (the tasks of a list, the group counts, the counts of a list, the overview of a space, the labels, "Mes tâches" and "Accueil"). The target architecture in this guide is what
 the next modules must follow.
 
 The commands below are the documented workflow. Inspect the repository's actual manifests and files before running them, and report unavailable checks rather than inventing replacements. Run Git, pnpm, build, and test commands with this repository as the working directory, never from the parent workspace.
@@ -141,7 +145,9 @@ production stay in the secrets of cadenway-ops.
 (`pnpm migration:generate --name <what_it_does>` names the file). drizzle-kit enables row-level
 security on a table with a policy but never forces it: add
 `ALTER TABLE "<table>" FORCE ROW LEVEL SECURITY;` to the generated file for every new tenant table
-before it is merged, then never edit it again. `pnpm migration:run` builds and runs
+before it is merged, then never edit it again. Extended statistics (`CREATE STATISTICS`), which a
+schema cannot declare, are added the same way, with a comment saying why
+(`migrations/0007_trash.sql`). `pnpm migration:run` builds and runs
 `dist/migrate.js`, the command the GitOps agent runs in a one-off container before it starts a new
 version; it connects as the migrator role of `MIGRATION_DATABASE_URL` and applies what the journal
 does not list yet, then provisions the jobs with `provisionJobs` of `@cadenway/nest-jobs`: the
@@ -194,7 +200,15 @@ restoration of lists and tasks, their refusals and events, what an archived list
 keeps, the `409 task.archived` of every change, the detachment of a restored root, the two pages
 "Archives", access requests for archived targets, isolation and concurrent restorations;
 `tests/archive-queries.int-spec.ts` takes the plans of the archive statements and of the live reads
-on 83,000 tasks, and compares "Mes tâches" and "Accueil" with their P3a and PR 1 shapes. They move to the fixtures
+on 83,000 tasks, and compares "Mes tâches" and "Accueil" with their P3a and PR 1 shapes.
+`tests/trash.int-spec.ts` does the same for the trash and the deletions: every trash route and the
+two `DELETE` routes against their validators, `404 task.trashed` against `task.not-found` by role,
+what a task in the trash leaves, restorations (detachment, a deleted list and space brought back),
+erasures, "Vider la corbeille", the jobs of a deleted list or space and of the daily purge run
+through their real workers (no job left failed, no dead letter), the dropped access requests,
+concurrency and row-level security of `trash_entries`; `tests/trash-queries.int-spec.ts` takes the
+plans of the trash, purge and deletion statements on more than 200,000 tasks and the deploy-time
+cost of `migrations/0007_trash.sql`. They move to the fixtures
 of `@cadenway/nest-testing` once that package exports them.
 
 ## Minimum checks by change

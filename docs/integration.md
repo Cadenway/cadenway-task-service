@@ -30,6 +30,10 @@ The core of the product.
 - Subtasks: 3 levels at most, 25 children at most; dependencies never form a cycle.
 - Completing a recurring task creates the next occurrence (workdays skip the weekend), checklist unticked.
 - Trash keeps a task and its subtasks 30 days; restore is possible until purge.
+- The unit of the trash is a subtree: a deleted task and its live subtasks make one entry, restored
+  or erased as a whole; a deleted list or space stays a tombstone, seen by nobody, whose tasks a job
+  moves to the trash (one entry per top-level task and per archive) and which is erased with its last
+  entry; its prefixes stay reserved and its keys are never given again.
 - Fast status clicks: only the final status of a burst is applied, logged and fed to automations.
 - Each space may rename or hide statuses; todo and done stay mandatory.
 
