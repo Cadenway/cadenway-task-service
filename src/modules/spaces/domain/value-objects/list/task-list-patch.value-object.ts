@@ -55,5 +55,16 @@ export interface TaskListPatch {
    * @readonly
    */
   readonly sprint?: SprintInput | null;
+
+  /**
+   * Property organizationAccess
+   *
+   * @description
+   * Turns the switch "Accès de l’organisation" on or off; absent, it stays as it is.
+   *
+   * @type {boolean | undefined}
+   * @readonly
+   */
+  readonly organizationAccess?: boolean;
   // #endregion
 }

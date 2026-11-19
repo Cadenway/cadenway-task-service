@@ -5,10 +5,12 @@ import type { TaskListField } from './task-list-field.value-object.js';
  * Interface TaskListUpdate
  *
  * @description
- * The result of a change of a list: the list after it and the members that changed. When
- * `changed` is empty, nothing changed and `list` is the same instance as before: the application
- * stores nothing and emits no `list.updated.v1`, whose `changed` has at least one member
- * (`asyncapi/task-service.yaml`).
+ * The result of a change of a list: the list after it, the members of its content that changed
+ * and whether its switch "Accès de l’organisation" changed. When `changed` is empty and
+ * `accessChanged` is `false`, nothing changed and `list` is the same instance as before: the
+ * application stores nothing and emits nothing. A change of the content emits `list.updated.v1`
+ * with `changed`, a change of the switch `list.access-changed.v1`, both with the one next version
+ * the change took (`asyncapi/task-service.yaml`).
  */
 export interface TaskListUpdate {
   // #region Properties
@@ -33,5 +35,16 @@ export interface TaskListUpdate {
    * @readonly
    */
   readonly changed: readonly TaskListField[];
+
+  /**
+   * Property accessChanged
+   *
+   * @description
+   * Whether the switch "Accès de l’organisation" changed.
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  readonly accessChanged: boolean;
   // #endregion
 }

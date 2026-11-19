@@ -351,6 +351,7 @@ export class TaskList {
       icon: checkIcon(input.icon),
       color: checkColor(input.color),
       sprint: input.sprint === null ? null : normalizeSprint(input.sprint, null),
+      organizationAccess: input.organizationAccess,
     };
   }
 
@@ -402,6 +403,8 @@ export class TaskList {
     const icon: LookIcon | null = patch.icon === undefined ? current.icon : checkIcon(patch.icon);
     const color: LookColor = patch.color === undefined ? current.color : checkColor(patch.color);
     const sprint: Sprint | null = patchSprint(current.sprint, patch.sprint);
+    const organizationAccess: boolean = patch.organizationAccess ?? current.organizationAccess;
+    const accessChanged: boolean = organizationAccess !== current.organizationAccess;
 
     const changed: TaskListField[] = [];
     if (name !== current.name) {
@@ -417,8 +420,8 @@ export class TaskList {
     if (sprintChanged) {
       changed.push('sprint');
     }
-    if (changed.length === 0) {
-      return { list: this, changed };
+    if (changed.length === 0 && !accessChanged) {
+      return { list: this, changed, accessChanged };
     }
     return {
       list: new TaskList({
@@ -427,10 +430,25 @@ export class TaskList {
         icon,
         color,
         sprint: sprintChanged ? sprint : current.sprint,
+        organizationAccess,
         version: current.version + 1,
       }),
       changed,
+      accessChanged,
     };
+  }
+
+  /**
+   * Method recordAccessChange
+   *
+   * @description
+   * Takes the next version for a change of the grants of the list ("Every change adds one to the
+   * version of the space or the list" of `openapi/public/access.yaml`); nothing else changes.
+   *
+   * @returns {TaskList} The list at the next version.
+   */
+  public recordAccessChange(): TaskList {
+    return new TaskList({ ...this.state, version: this.state.version + 1 });
   }
   // #endregion
 }

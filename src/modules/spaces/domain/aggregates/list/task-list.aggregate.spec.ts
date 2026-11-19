@@ -29,6 +29,7 @@ function newList(overrides: Partial<NewTaskList> = {}): NewTaskList {
     icon: null,
     color: 'gris',
     sprint: null,
+    organizationAccess: true,
     ...overrides,
   };
 }
@@ -105,7 +106,12 @@ describe('TaskList.create: the name is trimmed and has 1 to 80 characters', () =
       icon: null,
       color: 'gris',
       sprint: null,
+      organizationAccess: true,
     });
+  });
+
+  it('keeps the switch of the organization off when the creation turns it off', () => {
+    expect(TaskList.create(newList({ organizationAccess: false })).organizationAccess).toBe(false);
   });
 });
 
@@ -463,5 +469,43 @@ describe('TaskList.update: the dates of a sprint and its goal', () => {
       }),
     ).toThrow(SprintDatesInvalidError);
     expect(list.snapshot.name).toBe('Sprint 14');
+  });
+});
+
+describe('TaskList.update: the switch "Accès de l’organisation" is a change of access', () => {
+  it('turns the switch off with the next version, and reports it apart from the content', () => {
+    const { list, changed, accessChanged }: TaskListUpdate = sprint14().update({
+      organizationAccess: false,
+    });
+
+    expect(changed).toEqual([]);
+    expect(accessChanged).toBe(true);
+    expect(list.snapshot).toMatchObject({ organizationAccess: false, version: 2 });
+  });
+
+  it('takes one version for a patch that renames the list and turns its switch', () => {
+    const { list, changed, accessChanged }: TaskListUpdate = sprint14().update({
+      name: 'Sprint 15',
+      organizationAccess: false,
+    });
+
+    expect(changed).toEqual(['name']);
+    expect(accessChanged).toBe(true);
+    expect(list.snapshot.version).toBe(2);
+  });
+
+  it('changes nothing when the switch is sent as it is', () => {
+    const before: TaskList = sprint14();
+    const update: TaskListUpdate = before.update({ organizationAccess: true });
+
+    expect(update).toEqual({ list: before, changed: [], accessChanged: false });
+  });
+});
+
+describe('TaskList.recordAccessChange: a change of the grants takes the next version', () => {
+  it('adds one to the version and keeps everything else', () => {
+    const list: TaskList = sprint14({ version: 5 }).recordAccessChange();
+
+    expect(list.snapshot).toEqual(sprintState({ version: 6 }));
   });
 });

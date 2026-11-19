@@ -100,5 +100,28 @@ export interface VisibleList {
    * @readonly
    */
   readonly version: number;
+
+  /**
+   * Property organizationAccess
+   *
+   * @description
+   * The switch "Accès de l’organisation" of the list (P3b-1).
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  readonly organizationAccess: boolean;
+
+  /**
+   * Property callerRole
+   *
+   * @description
+   * The effective role of the member on the list (decision 2 of P3b-1): reads need any
+   * role, changes of the list and its tasks need `edit`.
+   *
+   * @type {'edit' | 'comment' | 'view'}
+   * @readonly
+   */
+  readonly callerRole: 'edit' | 'comment' | 'view';
   // #endregion
 }

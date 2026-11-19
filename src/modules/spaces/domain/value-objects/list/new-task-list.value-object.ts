@@ -78,5 +78,16 @@ export interface NewTaskList {
    * @readonly
    */
   readonly sprint: SprintInput | null;
+
+  /**
+   * Property organizationAccess
+   *
+   * @description
+   * The switch "Accès de l’organisation" of the new list: on unless the creation turns it off.
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  readonly organizationAccess: boolean;
   // #endregion
 }

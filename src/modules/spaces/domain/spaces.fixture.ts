@@ -117,6 +117,7 @@ export function sprintState(overrides: Partial<TaskListState> = {}): TaskListSta
     icon: null,
     color: 'indigo',
     sprint: { startDate: '2026-11-03', endDate: '2026-11-17', goal: SPRINT_14_GOAL },
+    organizationAccess: true,
     createdAt: CREATED_AT,
     version: 1,
     ...overrides,
