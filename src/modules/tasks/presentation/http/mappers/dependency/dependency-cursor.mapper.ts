@@ -15,8 +15,12 @@ const LONE_SURROGATE: RegExp = /\p{Surrogate}/u;
 
 /** Task keys are unique within the authenticated organization. */
 interface DependencyCursorScope {
+  // #region Properties
+  /** The organization from the authenticated request. */
   readonly organizationId: string;
+  /** The anchor task key within the organization. */
   readonly taskKey: string;
+  // #endregion
 }
 
 /** Encodes the last visible edge in the task-bound dependency collection. */
