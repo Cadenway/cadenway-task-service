@@ -4,8 +4,10 @@ import { RecordCommentActivity } from '../tasks/public/task/record-comment-activ
 import { ChangeComment } from './application/use-cases/commands/comment/change-comment/change-comment.use-case.js';
 import { AllocateApprovalCommentId } from './public/comment/allocate-approval-comment-id.js';
 import { CreateApprovalComment } from './public/comment/create-approval-comment.js';
+import { FindCommentExcerpts } from './public/comment/find-comment-excerpts.js';
 import { CreateComment } from './application/use-cases/commands/comment/create-comment/create-comment.use-case.js';
 import { TasksCommentWriter } from './infrastructure/adapters/tasks/tasks-comment-writer.adapter.js';
+import { MarkdownCommentPreview } from './infrastructure/adapters/markdown/comment/markdown-comment-preview.adapter.js';
 import { Idempotent, TenantTransactionRunner } from '@cadenway/nest-common/database';
 import { Module } from '@nestjs/common';
 import { TasksModule } from '../tasks/tasks.module.js';
@@ -13,6 +15,7 @@ import { ResolveCommentTask } from '../tasks/public/task/resolve-comment-task.js
 import { GetComment } from './application/use-cases/queries/comment/get-comment/get-comment.use-case.js';
 import { ListComments } from './application/use-cases/queries/comment/list-comments/list-comments.use-case.js';
 import { TasksCommentDirectory } from './infrastructure/adapters/tasks/tasks-comment-directory.adapter.js';
+import { DrizzleCommentExcerptReader } from './infrastructure/persistence/drizzle/repositories/comment/drizzle-comment-excerpt.repository.js';
 import { TenantCommentUnitOfWork } from './infrastructure/persistence/drizzle/transactions/comment/tenant-comment.unit-of-work.js';
 import { CommentsController } from './presentation/http/controllers/comment/comments.controller.js';
 
@@ -28,7 +31,7 @@ markCreateIdempotent();
 @Module({
   imports: [TasksModule],
   controllers: [CommentsController],
-  exports: [AllocateApprovalCommentId, CreateApprovalComment],
+  exports: [AllocateApprovalCommentId, CreateApprovalComment, FindCommentExcerpts],
   providers: [
     {
       provide: AllocateApprovalCommentId,
@@ -106,6 +109,21 @@ markCreateIdempotent();
       inject: [TenantCommentUnitOfWork, TasksCommentDirectory],
       useFactory: (unit: TenantCommentUnitOfWork, tasks: TasksCommentDirectory): GetComment =>
         new GetComment(unit, tasks),
+    },
+    {
+      provide: FindCommentExcerpts,
+      inject: [TenantTransactionRunner],
+      useFactory: (runner: TenantTransactionRunner): FindCommentExcerpts =>
+        new FindCommentExcerpts(
+          {
+            findLive: (organizationId, pairs) =>
+              runner.run(
+                (tx) => new DrizzleCommentExcerptReader(tx.db).findLive(organizationId, pairs),
+                { readOnly: true, isolationLevel: 'repeatable read' },
+              ),
+          },
+          new MarkdownCommentPreview(),
+        ),
     },
   ],
 })

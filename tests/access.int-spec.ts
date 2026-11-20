@@ -4,6 +4,7 @@ import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 
 import { eventSchemas as taskEventSchemas } from '@cadenway/contracts/events/task-service';
+import { eventSchemas as notificationEventSchemas } from '@cadenway/contracts/events/notification-service';
 import type {
   MemberJoinedV1,
   MemberRemovedV1,
@@ -820,7 +821,7 @@ describe('the access model: grants, the switch, the effective role and access re
    * @returns The rows.
    */
   async function outboxOf(
-    member: 'spaceId' | 'listId' | 'accessRequestId',
+    member: 'spaceId' | 'listId' | 'accessRequestId' | 'authorizationRequestId',
     id: string,
   ): Promise<OutboxRow[]> {
     return asSystem<OutboxRow>(
@@ -3323,6 +3324,121 @@ describe('the access model: grants, the switch, the effective role and access re
   });
 
   describe('the access checks of the realtime gateway', () => {
+    it('resolves Notification subjects for the current signed member in input order', async () => {
+      const path = '/internal/v1/notification-subjects/resolve';
+      const body = {
+        subjects: [
+          { subject: { kind: 'task-key', taskKey: entretiensTask.key } },
+          { subject: { kind: 'list', listId: entretiens.id } },
+          { subject: { kind: 'task-id', taskId: randomUUID() } },
+        ],
+      };
+      const visible = await send('post', path, lea, {
+        body,
+        issuer: 'realtime-gateway',
+      });
+      expect(visible.status).toBe(200);
+      expect(visible.headers['cache-control']).toBe('no-store');
+      expect(bodyOf(visible)).toEqual({
+        results: [{ visible: true }, { visible: true }, { visible: false }],
+      });
+
+      const hidden = await send('post', path, camille, { body });
+      expect(hidden.status).toBe(200);
+      expect(bodyOf(hidden)).toEqual({
+        results: [{ visible: false }, { visible: false }, { visible: false }],
+      });
+
+      const display = {
+        subjects: [
+          {
+            subject: { kind: 'task-key', taskKey: entretiensTask.key },
+            display: { commentId: randomUUID() },
+          },
+        ],
+      };
+      const enriched = await send('post', path, hugo, { body: display });
+      expect(enriched.status).toBe(200);
+      expect(bodyOf(enriched)).toEqual({
+        results: [
+          {
+            visible: true,
+            display: {
+              taskId: expect.stringMatching(/^[0-9a-f-]{36}$/u) as unknown,
+              taskKey: entretiensTask.key,
+              taskName: entretiensTask.name,
+              commentExcerpt: null,
+            },
+          },
+        ],
+      });
+      expectProblem(
+        await send('post', path, hugo, { body: display, issuer: 'realtime-gateway' }),
+        403,
+        'auth.issuer-not-allowed',
+      );
+    });
+
+    it('persists one redacted Task decision for the exact Notification correlation', async () => {
+      const recipient = lea.userId;
+      const correlation = randomUUID();
+      const handler = 'decide-notification-delivery-authorization';
+      const eventName = 'notification.delivery-authorization-requested.v1';
+      const now = Date.now();
+      const sendDecisionRequest = async (recipientId: string, authorizationRequestId: string) => {
+        const request = notificationEventSchemas[eventName].parse({
+          id: randomUUID(),
+          occurredAt: new Date(now).toISOString(),
+          organizationId: atelierNordId,
+          actor: { type: 'system', id: 'notification-service' },
+          version: 1,
+          authorizationRequestId,
+          recipientId,
+          subject: { kind: 'task-key', taskKey: entretiensTask.key },
+          expiresAt: new Date(now + 30_000).toISOString(),
+        });
+        const before = consumerInfo(handler).delivered.consumer_seq;
+        compose(
+          'exec',
+          '-T',
+          'nats-streams',
+          'nats',
+          'pub',
+          '--jetstream',
+          '--header',
+          `Nats-Msg-Id:${request.id}`,
+          `evt.${eventName}`,
+          JSON.stringify(request),
+        );
+        await vi.waitFor(() => {
+          const info = consumerInfo(handler);
+          expect(info.ack_floor.consumer_seq).toBeGreaterThan(before);
+        }, waitOptions);
+      };
+      await sendDecisionRequest(recipient, correlation);
+      const [allowed] = await outboxOf('authorizationRequestId', correlation);
+      expect(allowed?.event_name).toBe('task.notification-delivery-authorized.v1');
+      expect(allowed?.payload).toMatchObject({
+        authorizationRequestId: correlation,
+        decision: 'permit',
+        version: 1,
+      });
+      expect(allowed?.payload).not.toHaveProperty('recipientId');
+      expect(allowed?.payload).not.toHaveProperty('subject');
+
+      await sendDecisionRequest(camille.userId, correlation);
+      expect(await outboxOf('authorizationRequestId', correlation)).toEqual([allowed]);
+
+      const deniedCorrelation = randomUUID();
+      await sendDecisionRequest(camille.userId, deniedCorrelation);
+      const deniedRows = await outboxOf('authorizationRequestId', deniedCorrelation);
+      expect(deniedRows).toHaveLength(1);
+      expect(deniedRows[0]?.payload).toMatchObject({
+        authorizationRequestId: deniedCorrelation,
+        decision: 'deny',
+      });
+    });
+
     it('authorizes attachment checks only for the API gateway with a current role', async () => {
       const path = `/internal/v1/tasks/${entretiensTask.key}/attachment-access`;
       for (const mode of ['read', 'write']) {

@@ -26,4 +26,4 @@ paths:
   `space.access-changed.v1` / `list.access-changed.v1` of its grants, then `task.restored.v1` per task,
   each task that comes back archived followed by its `task.archived.v1`; a tombstone and a task in the
   trash emit nothing until they come back.
-- Events emitted by this service: `space.*`, `list.*`, `task.created`, `task.updated`, `task.status-changed`, `task.assigned`, `task.access-requested`, `task.access-request-decided`, `task.archived`, `task.unarchived`, `task.trashed`, `task.restored`, `task.purged`, `comment.created`, `approval.requested`, `approval.decided`, `milestone.reached`.
+- Events emitted by this service: `space.*`, `list.*`, `task.created`, `task.updated`, `task.status-changed`, `task.assigned`, `task.access-requested`, `task.access-request-decided`, `task.archived`, `task.unarchived`, `task.trashed`, `task.restored`, `task.purged`, `task.notification-delivery-authorized`, `comment.created`, `approval.requested`, `approval.decided`, `milestone.reached`.

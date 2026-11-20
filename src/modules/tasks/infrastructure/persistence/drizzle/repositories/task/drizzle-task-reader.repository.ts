@@ -1,5 +1,5 @@
 import type { TransactionDatabase } from '@cadenway/nest-common/database';
-import { and, asc, eq, getTableColumns, sql } from 'drizzle-orm';
+import { and, asc, eq, getTableColumns, or, sql } from 'drizzle-orm';
 
 import type { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import type { PagePosition } from '../../../../../application/models/page/page-position.model.js';
@@ -326,6 +326,45 @@ export class DrizzleTaskReader implements TaskReader {
         and(
           eq(tasks.organizationId, organizationId),
           anyOf(tasks.id, taskIds, 'uuid'),
+          untrashedTask(),
+        ),
+      );
+    return rows.map((row: TaskLocationRow): TaskLocation => toTaskLocation(row));
+  }
+
+  /**
+   * Method locationsByKeys
+   *
+   * @description
+   * Reads up to 100 exact task keys in one tenant-scoped statement. Live and archived tasks
+   * are included, and trashed tasks are excluded.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {readonly TaskKey[]} keys - The task keys.
+   * @returns {Promise<readonly TaskLocation[]>} The matching tasks in no particular order.
+   * @throws {Error} When the batch exceeds 100 keys or a stored status is invalid.
+   */
+  public async locationsByKeys(
+    organizationId: string,
+    keys: readonly TaskKey[],
+  ): Promise<readonly TaskLocation[]> {
+    if (keys.length > 100) {
+      throw new Error('A task location batch may contain at most 100 keys.');
+    }
+    if (keys.length === 0) {
+      return [];
+    }
+    const rows: TaskLocationRow[] = await this.db
+      .select(LOCATION_COLUMNS)
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.organizationId, organizationId),
+          or(
+            ...keys.map((key: TaskKey) =>
+              and(eq(tasks.keyPrefix, key.prefix), eq(tasks.keyNumber, key.number)),
+            ),
+          ),
           untrashedTask(),
         ),
       );

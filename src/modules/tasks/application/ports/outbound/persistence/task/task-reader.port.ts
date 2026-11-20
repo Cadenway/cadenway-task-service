@@ -133,5 +133,20 @@ export interface TaskReader {
     organizationId: string,
     taskIds: readonly string[],
   ): Promise<readonly TaskLocation[]>;
+
+  /**
+   * Method locationsByKeys
+   *
+   * @description
+   * Reads current non-trashed task locations by exact keys in one statement.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {readonly TaskKey[]} keys - At most 100 task keys.
+   * @returns {Promise<readonly TaskLocation[]>} The tasks found, in no particular order.
+   */
+  locationsByKeys(
+    organizationId: string,
+    keys: readonly TaskKey[],
+  ): Promise<readonly TaskLocation[]>;
   // #endregion
 }
