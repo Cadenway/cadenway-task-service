@@ -173,9 +173,11 @@ export class DrizzleSprintReportRepository implements SprintReportReader {
       request.limit,
       request.timeZone,
     );
+    const openingDay = sprintLocalDay(current.startDate, request.timeZone);
+    const closesAt = sprintLocalDay(current.endDate, request.timeZone).endsAt;
     const timing = {
-      opensAt: sprintLocalDay(current.startDate, request.timeZone).startsAt,
-      closesAt: sprintLocalDay(current.endDate, request.timeZone).endsAt,
+      opensAt: openingDay.startsAt <= closesAt ? openingDay.startsAt : null,
+      closesAt,
       requestedDayEndsAt: sprintLocalDay(request.today, request.timeZone).endsAt,
       serverObservedAt: request.serverObservedAt,
     };
@@ -202,12 +204,19 @@ export class DrizzleSprintReportRepository implements SprintReportReader {
         },
       });
     };
-    addCutoff(current, timing.opensAt);
+    if (openingDay.hasInstants) addCutoff(current, openingDay.startsAt);
     addCutoff(current, observedAt);
-    for (const day of [...page.days, ...trendDays]) addCutoff(current, day.endsAt);
-    for (const sprint of prior) {
-      addCutoff(sprint, sprintLocalDay(sprint.startDate, request.timeZone).startsAt);
-      addCutoff(sprint, sprintLocalDay(sprint.endDate, request.timeZone).endsAt);
+    for (const day of [...page.days, ...trendDays]) {
+      if (day.hasInstants) addCutoff(current, day.endsAt);
+    }
+    const priorBounds = prior.map((sprint) => ({
+      sprint,
+      first: sprintLocalDay(sprint.startDate, request.timeZone),
+      last: sprintLocalDay(sprint.endDate, request.timeZone),
+    }));
+    for (const { sprint, first, last } of priorBounds) {
+      if (first.hasInstants) addCutoff(sprint, first.startsAt);
+      if (first.startsAt <= last.endsAt) addCutoff(sprint, last.endsAt);
     }
 
     const fields: SprintHistoryInput['currentFields'][number][] = [];
@@ -326,8 +335,8 @@ export class DrizzleSprintReportRepository implements SprintReportReader {
     };
     const dayResult = (day: CalendarDay): SprintReportInput['days'][number] => ({
       date: day.date,
-      endsAt: day.endsAt,
-      remainingPoints: summary(current, day.endsAt).remaining,
+      endsAt: day.hasInstants ? day.endsAt : null,
+      remainingPoints: day.hasInstants ? summary(current, day.endsAt).remaining : null,
     });
     return {
       snapshot,
@@ -337,18 +346,15 @@ export class DrizzleSprintReportRepository implements SprintReportReader {
         timing,
         observedDay: sprintObservedDay(observedAt, request.timeZone),
         coverageStartedAt,
-        openingPoints: summary(current, timing.opensAt).total,
+        openingPoints: openingDay.hasInstants ? summary(current, openingDay.startsAt).total : null,
         observedTasks: summary(current, observedAt).total === null ? null : observedTasks,
         days: page.days.map(dayResult),
         trendDays: trendDays.map(dayResult),
-        priorSprints: prior.map((sprint) => ({
+        priorSprints: priorBounds.map(({ sprint, first, last }) => ({
           ...sprint,
-          openingPoints: summary(
-            sprint,
-            sprintLocalDay(sprint.startDate, request.timeZone).startsAt,
-          ).total,
-          deliveredPoints: summary(sprint, sprintLocalDay(sprint.endDate, request.timeZone).endsAt)
-            .delivered,
+          openingPoints: first.hasInstants ? summary(sprint, first.startsAt).total : null,
+          deliveredPoints:
+            first.startsAt <= last.endsAt ? summary(sprint, last.endsAt).delivered : null,
         })),
       },
     };

@@ -354,7 +354,7 @@ where archived_at is null` is not used by "Mes tâches". To revisit by replacing
 
 The P3c-2 reporting contract uses a verified API gateway user and organization. The list reads
 serve sprint reports, workload, timesheets and CSV rows. The team dashboard spans the caller's
-visible lists. CSV rows carry encoded cells and assignee IDs for the gateway to resolve.
+visible live lists. CSV rows carry encoded cells and assignee IDs for the gateway to resolve.
 
 Normal task creation accepts an optional initial checklist. Its items are created in request
 order with fresh IDs and are unchecked. The items share the new task's version 1 and its
@@ -920,9 +920,10 @@ changes the assignees.
 ## Transactions
 
 The report providers use one read-only `REPEATABLE READ` tenant transaction for the verified
-membership, list visibility and report data. Sprint pages retain the observation and recheck
-current list access and physical purges. Space and list history comes from the Spaces public
-reporting providers, which join that same snapshot.
+membership, list visibility and report data. Sprint pages retain the observation and original
+sprint schedule and recheck current list access and physical purges. A civil date skipped by
+the requested time zone stays on the calendar axis with unknown actual points. Space and list
+history comes from the Spaces public reporting providers, which join that same snapshot.
 
 Task writes use the tenant transaction of the organization of the context
 (`TenantTasksUnitOfWork`). It joins the transaction the `Idempotency-Key` interceptor opened for

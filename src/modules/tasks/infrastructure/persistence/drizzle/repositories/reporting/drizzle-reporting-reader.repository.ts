@@ -188,7 +188,7 @@ export class DrizzleReportingReader implements ReportingReader {
   ): Promise<ReportingBatch<DashboardTransition>> {
     pageLimit(limit);
     if (visibleListIds.length === 0) return { items: [], next: null };
-    const rows = await this.db.execute<{ id: string; taskId: string; occurredAt: Date }>(sql`
+    const rows = await this.db.execute<{ id: string; taskId: string; occurredAt: string }>(sql`
       select ${activityEntries.id} as "id", ${activityEntries.taskId} as "taskId",
         ${activityEntries.occurredAt} as "occurredAt"
       from ${activityEntries} join ${tasks} on ${tasks.organizationId} = ${activityEntries.organizationId}
@@ -203,7 +203,7 @@ export class DrizzleReportingReader implements ReportingReader {
     return batch(rows.rows, limit, (row) => ({
       taskId: row.taskId,
       to: 'done',
-      occurredAt: row.occurredAt,
+      occurredAt: new Date(row.occurredAt),
     }));
   }
 

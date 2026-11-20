@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { SprintReportRead } from '../../../../../application/models/reporting/sprint-report-read.model.js';
 import type { SprintReportSnapshot } from '../../../../../application/models/reporting/sprint-report-snapshot.model.js';
+import { projectSprintReport } from '../../../../../domain/policies/reporting/sprint-report.policy.js';
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import type { DrizzleSprintHistoryRepository } from '../sprint-history/drizzle-sprint-history.repository.js';
 import { DrizzleSprintReportRepository } from './drizzle-sprint-report.repository.js';
@@ -84,5 +85,48 @@ describe('DrizzleSprintReportRepository', () => {
     );
     await repository.read('org', { ...request, snapshot: '100:110:' as SprintReportSnapshot });
     expect(source.captureObservation).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns unavailable points for a sprint entirely skipped by its time zone', async () => {
+    const skipped = { ...sprint, startDate: '2011-12-30', endDate: '2011-12-30' };
+    const coverage = new Date('2011-12-28T00:00:00Z');
+    const source = {
+      captureObservation: vi.fn().mockResolvedValue('100:110:'),
+      currentFields: vi.fn().mockResolvedValue([]),
+      fieldFacts: vi.fn().mockResolvedValue([]),
+      candidates: vi.fn().mockResolvedValue([]),
+    };
+    const repository = new DrizzleSprintReportRepository(
+      source as unknown as DrizzleSprintHistoryRepository,
+      () =>
+        Promise.resolve({
+          coverageStartedAt: coverage,
+          current: { ...skipped, intervals: [{ startsAt: coverage, endsBefore: null }] },
+          prior: [],
+        }),
+    );
+    const result = await repository.read('org', {
+      ...request,
+      sprint: skipped,
+      today: '2011-12-30',
+      timeZone: 'Pacific/Apia',
+    });
+    expect(result.next).toBeNull();
+    expect(result.input.trendDays).toEqual([]);
+    expect(projectSprintReport(result.input)).toMatchObject({
+      observedAt: new Date('2011-12-30T09:59:59.999Z'),
+      openingPoints: null,
+      delivered: null,
+      remaining: null,
+      projectedRemainingPoints: null,
+      items: [
+        {
+          date: '2011-12-30',
+          actualRemainingPoints: null,
+          idealRemainingPoints: null,
+          projectedRemainingPoints: null,
+        },
+      ],
+    });
   });
 });

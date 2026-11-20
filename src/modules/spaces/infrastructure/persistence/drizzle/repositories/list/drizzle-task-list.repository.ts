@@ -486,17 +486,19 @@ export class DrizzleTaskListRepository implements TaskListRepository {
    *
    * @description
    * Loads what the role of a member reads of every list of the organization they have a role on,
-   * archived ones included (`listAccessColumns`: no name, look or sprint), with the visibility
-   * condition and the joins of the other collections, in the order of `listFirstVisibleTo`, no
-   * limit: the lists of an organization are few.
+   * with archived lists included by default (`listAccessColumns`: no name, look or sprint).
+   * Applies the visibility condition and joins of the other collections, in the order of
+   * `listFirstVisibleTo`, unpaged.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The member and its role.
+   * @param {boolean} [liveOnly] - Restricts the result to live lists.
    * @returns {Promise<ListAccess[]>} The lean rows.
    */
   public async listAccessesVisibleTo(
     organizationId: string,
     viewer: Viewer,
+    liveOnly = false,
   ): Promise<ListAccess[]> {
     const rows: ListAccessRow[] = await this.db
       .select(listAccessColumns())
@@ -507,7 +509,13 @@ export class DrizzleTaskListRepository implements TaskListRepository {
       )
       .leftJoin(viewerSpaceGrant, viewerSpaceGrantJoin(organizationId, viewer.userId))
       .leftJoin(viewerListGrant, viewerListGrantJoin(organizationId, viewer.userId))
-      .where(and(eq(taskLists.organizationId, organizationId), visibleListCondition(viewer)))
+      .where(
+        and(
+          eq(taskLists.organizationId, organizationId),
+          visibleListCondition(viewer),
+          liveOnly ? liveListCondition() : undefined,
+        ),
+      )
       .orderBy(
         asc(spacePositionInSidebar()),
         asc(spaces.id),

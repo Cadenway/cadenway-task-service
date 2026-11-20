@@ -6,8 +6,8 @@ interface SprintObservedDay {
   /** The local calendar date. */
   readonly date: string;
 
-  /** The inclusive last observable instant of this date. */
-  readonly endsAt: Date;
+  /** The inclusive last observable instant, or null if the zone skipped this date. */
+  readonly endsAt: Date | null;
 
   /** The covered remaining points at that instant, or null. */
   readonly remainingPoints: number | null;
@@ -26,9 +26,9 @@ export interface SprintReportInput {
     readonly endDate: string;
   };
 
-  /** Cutoffs resolved by the caller in the report's IANA time zone. Ends are inclusive. */
+  /** Cutoffs in the IANA zone. Ends are inclusive; an entirely skipped sprint has no opening. */
   readonly timing: {
-    readonly opensAt: Date;
+    readonly opensAt: Date | null;
     readonly closesAt: Date;
     readonly requestedDayEndsAt: Date;
     readonly serverObservedAt: Date;

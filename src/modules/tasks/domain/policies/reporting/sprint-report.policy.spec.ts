@@ -234,9 +234,10 @@ describe('projectSprintReport', () => {
     expect(report.projectedRemainingPoints).toBeCloseTo(3);
     expect(report.items[0]).toMatchObject({
       actualRemainingPoints: 10,
-      idealRemainingPoints: 10,
       projectedRemainingPoints: 10,
     });
+    expect(report.items[0]?.idealRemainingPoints).toBeCloseTo((20 * 3) / 7);
+    expect(report.items[1]?.idealRemainingPoints).toBeCloseTo((20 * 2) / 7);
     expect(report.items[1]?.projectedRemainingPoints).toBeCloseTo(7);
     expect(report.items[2]?.projectedRemainingPoints).toBeCloseTo(3);
     expect(report.items[2]?.idealRemainingPoints).toBe(0);

@@ -18,6 +18,11 @@ import { GetSprintReport } from './get-sprint-report.use-case.js';
 
 const observedAt = new Date('2026-11-08T12:00:00Z');
 const snapshot = '20:24:21,23' as SprintReportSnapshot;
+const schedule = {
+  name: 'Sprint 14',
+  startDate: '2026-11-02',
+  endDate: '2026-11-15',
+};
 
 function request(overrides: Partial<GetSprintReportInput> = {}): GetSprintReportInput {
   return {
@@ -38,9 +43,7 @@ function history(coverageStartedAt: Date | null): SprintReportInput {
     sprint: {
       listId: SPRINT_14,
       spaceId: 'space',
-      name: 'Sprint 14',
-      startDate: '2026-11-02',
-      endDate: '2026-11-15',
+      ...schedule,
     },
     timing: {
       opensAt: new Date('2026-11-01T23:00:00Z'),
@@ -77,16 +80,33 @@ function setup(coverageStartedAt: Date | null = null) {
   const reader: SprintReportReader = { read };
   const work: SprintReportUnitOfWork = { runReadOnly: (run) => run(reader) };
   const members = atelierNordMembers();
-  const useCase = new GetSprintReport(work, members, new InMemorySpaceDirectory());
-  return { members, read, useCase };
+  const spaces = new InMemorySpaceDirectory();
+  const useCase = new GetSprintReport(work, members, spaces);
+  return { members, read, spaces, useCase };
 }
 
 describe('GetSprintReport', () => {
-  it('rechecks the viewer and keeps the server snapshot and observation across pages', async () => {
-    const { read, useCase } = setup();
+  it('rechecks the viewer and keeps the server observation and original schedule across pages', async () => {
+    const { read, spaces, useCase } = setup();
     const first = await useCase.execute(request());
     expect(read.mock.calls[0]?.[1].snapshot).toBeNull();
-    expect(first.next).toEqual({ date: '2026-11-02', serverObservedAt: observedAt, snapshot });
+    const position = { date: '2026-11-02', serverObservedAt: observedAt, snapshot, schedule };
+    expect(first.next).toEqual(position);
+
+    const findVisibleList = spaces.findVisibleList.bind(spaces);
+    const find = vi.spyOn(spaces, 'findVisibleList').mockImplementation(async (...parameters) => {
+      const placement = await findVisibleList(...parameters);
+      const sprint = placement?.list.sprint;
+      if (placement === null || sprint === undefined || sprint === null) return placement;
+      return {
+        ...placement,
+        list: {
+          ...placement.list,
+          name: 'Sprint shortened',
+          sprint: { ...sprint, endDate: '2026-11-07' },
+        },
+      };
+    });
 
     const result = await useCase.execute(
       request({
@@ -109,7 +129,14 @@ describe('GetSprintReport', () => {
       }),
     );
     expect(read.mock.calls[1]?.[1].visibleListIds).toContain(SPRINT_14);
-    expect(result.next).toEqual({ date: '2026-11-02', serverObservedAt: observedAt, snapshot });
+    expect(read.mock.calls[1]?.[1].sprint).toMatchObject(schedule);
+    expect(result.next).toEqual(position);
+
+    find.mockResolvedValueOnce(null);
+    await expect(useCase.execute(request({ after: first.next }))).rejects.toMatchObject({
+      refusal: { reason: 'list-not-found' },
+    });
+    expect(read).toHaveBeenCalledTimes(2);
   });
 
   it('preserves unknown coverage separately from a covered zero', async () => {

@@ -38,4 +38,23 @@ describe('sprint report calendar', () => {
     );
     expect(dates.map((day) => day.date)).toEqual(['2026-11-04', '2026-11-05']);
   });
+
+  it('pages a skipped local date without treating it as a trend sample', () => {
+    const zone = 'Pacific/Apia';
+    const page = sprintCalendarPage('2011-12-29', '2011-12-31', null, 3, zone);
+    expect(page.days.map(({ date, hasInstants }) => [date, hasInstants])).toEqual([
+      ['2011-12-29', true],
+      ['2011-12-30', false],
+      ['2011-12-31', true],
+    ]);
+    const skipped = sprintLocalDay('2011-12-30', zone);
+    expect(skipped.startsAt).toEqual(new Date('2011-12-30T10:00:00.000Z'));
+    expect(skipped.endsAt).toEqual(new Date('2011-12-30T09:59:59.999Z'));
+    const samples = sprintTrendDates(
+      [{ startDate: '2011-12-28', endDate: '2011-12-31' }],
+      new Date('2011-12-30T11:00:00.000Z'),
+      zone,
+    );
+    expect(samples.map(({ date }) => date)).toEqual(['2011-12-28', '2011-12-29']);
+  });
 });

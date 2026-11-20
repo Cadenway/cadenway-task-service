@@ -688,17 +688,19 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
    *
    * @param {string} organizationId - The organization.
    * @param {Viewer} viewer - The acting member.
+   * @param {object} [options] - Optional restrictions by effective edit role and live lifecycle.
    * @returns {Promise<readonly string[]>} Their ids.
    */
   public visibleListIds(
     organizationId: string,
     viewer: Viewer,
-    editOnly: boolean = false,
+    options: { readonly editOnly?: boolean; readonly liveOnly?: boolean } = {},
   ): Promise<readonly string[]> {
     this.trace.push('spaces.visibleListIds');
     return Promise.resolve(
       this.visibleLists(organizationId, viewer)
-        .filter((list: PlacedList): boolean => !editOnly || list.callerRole === 'edit')
+        .filter((list: PlacedList): boolean => !options.liveOnly || list.archivedAt === null)
+        .filter((list: PlacedList): boolean => !options.editOnly || list.callerRole === 'edit')
         .map((list: PlacedList): string => list.id),
     );
   }

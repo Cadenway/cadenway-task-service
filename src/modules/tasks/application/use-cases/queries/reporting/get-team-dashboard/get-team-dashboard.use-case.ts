@@ -42,7 +42,9 @@ export class GetTeamDashboard {
       // IANA offsets lie within a day of UTC; the policy applies the exact local boundary.
       const from = new Date(Date.parse(`${firstDay.format()}T00:00:00.000Z`) - 86_400_000);
       const viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
-      const listIds = await this.spaces.visibleListIds(input.organizationId, viewer);
+      const listIds = await this.spaces.visibleListIds(input.organizationId, viewer, {
+        liveOnly: true,
+      });
       const tasks =
         listIds.length === 0
           ? []

@@ -7,6 +7,7 @@ interface LocalDay {
   readonly date: string;
   readonly startsAt: Date;
   readonly endsAt: Date;
+  readonly hasInstants: boolean;
   // #endregion
 }
 
@@ -19,6 +20,7 @@ export function sprintLocalDay(date: string, timeZone: string): LocalDay {
     date: day.toString(),
     startsAt: new Date(startsAt),
     endsAt: new Date(nextStart - 1),
+    hasInstants: startsAt < nextStart,
   };
 }
 
@@ -77,9 +79,13 @@ export function sprintTrendDates(
     const first = Temporal.PlainDate.from(interval.startDate, { overflow: 'reject' });
     const last = Temporal.PlainDate.from(interval.endDate, { overflow: 'reject' });
     let day = Temporal.PlainDate.compare(last, latest) < 0 ? last : latest;
-    for (let count = 0; count < 2 && Temporal.PlainDate.compare(day, first) >= 0; count += 1) {
+    let count = 0;
+    while (count < 2 && Temporal.PlainDate.compare(day, first) >= 0) {
       const local = sprintLocalDay(day.toString(), timeZone);
-      results.set(local.date, local);
+      if (local.hasInstants) {
+        results.set(local.date, local);
+        count += 1;
+      }
       day = day.subtract({ days: 1 });
     }
   }

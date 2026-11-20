@@ -88,6 +88,8 @@ import { ListActivityController } from './presentation/http/controllers/activity
 import { TaskAccessController } from './presentation/http/controllers/access/task-access.controller.js';
 import { TaskActivityController } from './presentation/http/controllers/activity/task-activity.controller.js';
 import { TaskTimeController } from './presentation/http/controllers/time/task-time.controller.js';
+import { ListReportsController } from './presentation/http/controllers/reporting/list-reports.controller.js';
+import { TeamDashboardController } from './presentation/http/controllers/reporting/team-dashboard.controller.js';
 import { ArchivesController } from './presentation/http/controllers/archive/archives.controller.js';
 import { TaskArchiveController } from './presentation/http/controllers/archive/task-archive.controller.js';
 import { TaskAssigneesController } from './presentation/http/controllers/assignee/task-assignees.controller.js';
@@ -204,6 +206,8 @@ markIdempotent(TaskTimeController.prototype, 'create');
     ListDuplicateController,
     TaskActivityController,
     TaskTimeController,
+    ListReportsController,
+    TeamDashboardController,
     TaskArchiveController,
     ArchivesController,
     TaskTrashController,

@@ -15,7 +15,10 @@ export function sprintReportObservation(timing: SprintReportInput['timing']): Da
     requestedDayEndsAt.getTime(),
     serverObservedAt.getTime(),
   );
-  if (!Number.isFinite(cutoff) || !Number.isFinite(opensAt.getTime()) || closesAt < opensAt) {
+  if (
+    !Number.isFinite(cutoff) ||
+    (opensAt !== null && (!Number.isFinite(opensAt.getTime()) || closesAt < opensAt))
+  ) {
     throw new InvalidTaskError('a sprint report uses valid observation bounds');
   }
   return new Date(cutoff);
@@ -95,6 +98,7 @@ function burnRate(input: SprintReportInput, observedAt: Date): number | null {
     .filter(
       (day) =>
         day.remainingPoints !== null &&
+        day.endsAt !== null &&
         day.date >= input.sprint.startDate &&
         day.date <= input.sprint.endDate &&
         day.endsAt >= coverage &&
@@ -154,7 +158,7 @@ export function projectSprintReport(input: SprintReportInput): SprintReportProje
   const { sprint, timing, observedDay, coverageStartedAt } = input;
   const observedAt = sprintReportObservation(timing);
   const { opensAt } = timing;
-  const hasOpened = opensAt <= observedAt;
+  const hasOpened = opensAt !== null && opensAt <= observedAt;
   const openingPoints =
     hasOpened && coverageStartedAt !== null && coverageStartedAt <= opensAt
       ? input.openingPoints
@@ -171,23 +175,33 @@ export function projectSprintReport(input: SprintReportInput): SprintReportProje
     throw new InvalidTaskError('a sprint report ends on or after its start date');
   }
   const observedDate = observedDay.date;
-  const observationPosition =
-    startDay.daysUntil(CalendarDate.parse(observedDate)) +
-    observationDayFraction(observedDay, observedAt);
+  const observationPosition = hasOpened
+    ? startDay.daysUntil(CalendarDate.parse(observedDate)) +
+      observationDayFraction(observedDay, observedAt)
+    : null;
   const rate = burnRate(input, observedAt);
-  const forecast = (position: number): number | null => {
-    if (rate === null || remaining === null) return null;
-    return Math.max(0, remaining.points - rate * (position - observationPosition));
+  const forecast = (position?: number): number | null => {
+    if (rate === null || remaining === null || observationPosition === null) return null;
+    return Math.max(
+      0,
+      remaining.points - rate * ((position ?? observationPosition) - observationPosition),
+    );
   };
 
   const items = input.days.map((day) => {
     const { endsAt } = day;
     const elapsed = startDay.daysUntil(CalendarDate.parse(day.date));
     let actualRemainingPoints: number | null = null;
-    if (endsAt > observedAt && day.date === observedDate) {
-      actualRemainingPoints = remaining?.points ?? null;
-    } else if (endsAt <= observedAt && coverageStartedAt !== null && coverageStartedAt <= endsAt) {
-      actualRemainingPoints = day.remainingPoints;
+    if (endsAt !== null) {
+      if (endsAt > observedAt && day.date === observedDate) {
+        actualRemainingPoints = remaining?.points ?? null;
+      } else if (
+        endsAt <= observedAt &&
+        coverageStartedAt !== null &&
+        coverageStartedAt <= endsAt
+      ) {
+        actualRemainingPoints = day.remainingPoints;
+      }
     }
     return {
       date: day.date,
@@ -195,11 +209,11 @@ export function projectSprintReport(input: SprintReportInput): SprintReportProje
       idealRemainingPoints:
         openingPoints === null
           ? null
-          : openingPoints * ((elapsedAtEnd - elapsed) / Math.max(1, elapsedAtEnd)),
+          : openingPoints * ((elapsedAtEnd - elapsed) / (elapsedAtEnd + 1)),
       projectedRemainingPoints:
         day.date < observedDate
           ? null
-          : forecast(day.date === observedDate ? observationPosition : elapsed + 1),
+          : forecast(day.date === observedDate ? undefined : elapsed + 1),
     };
   });
 

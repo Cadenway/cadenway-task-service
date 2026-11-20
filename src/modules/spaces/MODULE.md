@@ -110,9 +110,10 @@ its authorization until the caller's tenant transaction commits.
   viewer does not see the space.
 - `ListCurrentSprints` (`{ …, today, limit }`) and `ListSidebarLists` (`{ …, limit }`): the live
   sprints under way and the first live lists in sidebar order the viewer has a role on.
-- `ListVisibleListIds` (`{ organizationId, viewerUserId, viewerRole, editOnly? }` to `{ listIds }`): every list
-  of the organization the viewer has a role on, archived ones included, in sidebar order (spaces by
-  their position in the sidebar, then the lists of each by their position). It replaces
+- `ListVisibleListIds` (`{ organizationId, viewerUserId, viewerRole, editOnly?, liveOnly? }` to
+  `{ listIds }`): every list of the organization the viewer has a role on, with archived lists
+  included by default, in sidebar order (spaces by their position in the sidebar, then the lists
+  of each by their position). It replaces
   `ListVisibleSpaceIds`, removed.
 - `ListArchivedLists` (`{ organizationId, viewerUserId, viewerRole, after, limit }`, `after` a
   `{ archivedAt, id }` or `null`, to `{ lists, total }`): the archived lists the viewer has a role

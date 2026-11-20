@@ -45,13 +45,16 @@ export class GetSprintReport {
 
       const visibleListIds = await this.spaces.visibleListIds(input.organizationId, viewer);
       const serverObservedAt = input.after?.serverObservedAt ?? input.serverObservedAt;
+      const schedule = input.after?.schedule ?? {
+        name: placement.list.name,
+        startDate: sprint.startDate,
+        endDate: sprint.endDate,
+      };
       const history: SprintReportHistory = await reader.read(input.organizationId, {
         sprint: {
           listId: placement.list.id,
           spaceId: placement.list.spaceId,
-          name: placement.list.name,
-          startDate: sprint.startDate,
-          endDate: sprint.endDate,
+          ...schedule,
         },
         visibleListIds,
         viewer,
@@ -67,7 +70,7 @@ export class GetSprintReport {
         next:
           history.next === null
             ? null
-            : { date: history.next, serverObservedAt, snapshot: history.snapshot },
+            : { date: history.next, serverObservedAt, snapshot: history.snapshot, schedule },
       };
     });
   }
