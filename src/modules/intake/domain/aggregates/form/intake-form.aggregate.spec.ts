@@ -25,6 +25,65 @@ function published(): IntakeForm {
 }
 
 describe('IntakeForm', () => {
+  it('preserves text-only submissions and permits attachments on configurations saved before P4', () => {
+    const form = published();
+    const text = { title: 'Refondre la connexion SSO', contactEmail: 'camille@example.test' };
+    const attachmentIds = ['019a7003-4d5e-7f6a-8b9c-0d1e2f3a4b01'];
+
+    expect(form.snapshot().fields.attachments).toBeUndefined();
+    expect(form.submit(publication, { ...text, attachmentIds })).toEqual(
+      form.submit(publication, text),
+    );
+  });
+
+  it('enforces attachment field modes and keeps the mode when another field is edited', () => {
+    const form = published();
+    const required = form.configure(
+      editor,
+      2,
+      { fields: { attachments: 'required' } },
+      eligibility,
+    );
+    const changed = required.configure(
+      editor,
+      3,
+      { fields: { priority: 'required' } },
+      eligibility,
+    );
+    const disabled = changed.configure(
+      editor,
+      4,
+      { fields: { attachments: 'disabled' } },
+      eligibility,
+    );
+    const text = {
+      title: 'Refondre la connexion SSO',
+      contactEmail: 'camille@example.test',
+      priority: 'moyenne',
+    };
+    const attachmentIds = ['019a7003-4d5e-7f6a-8b9c-0d1e2f3a4b01'];
+
+    expect(changed.publicForm(publication).fields.attachments).toBe('required');
+    expect(() => changed.submit(publication, text)).toThrow(
+      expect.objectContaining({
+        failure: {
+          kind: 'invalid-submission',
+          issues: [{ field: 'attachmentIds', reason: 'required' }],
+        },
+      }),
+    );
+    expect(() => changed.submit(publication, { ...text, attachmentIds })).not.toThrow();
+    expect(() => disabled.submit(publication, { ...text, attachmentIds })).toThrow(
+      expect.objectContaining({
+        failure: {
+          kind: 'invalid-submission',
+          issues: [{ field: 'attachmentIds', reason: 'disabled' }],
+        },
+      }),
+    );
+    expect(() => disabled.submit(publication, text)).not.toThrow();
+  });
+
   it('starts as an unpublished draft with neutral text and documented defaults', () => {
     expect(draft().configuration(editor)).toEqual({
       title: 'Déposer une demande',

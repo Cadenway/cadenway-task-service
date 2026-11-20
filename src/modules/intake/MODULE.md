@@ -35,12 +35,19 @@ routes return an ETag. Anonymous submissions use the publication-scoped idempote
 
 ## Events emitted
 
-None. Task creation records its ordinary task facts through the tasks module in the same
-transaction as intake storage.
+`intake.attachment-claimed.v1` and `intake.attachment-released.v1` record mutually exclusive
+terminal decisions for a tenant, publication and attachment. Claims include the permanent task key.
+The outbox rows and terminal reservations share a transaction. Task creation records ordinary
+task facts in that transaction too.
 
 ## Events consumed
 
-None.
+`intake.attachment-verified.v1` moves an exact, pending and unexpired reservation to verified.
+The durable `task-service__verify-intake-attachment` replays retained Storage facts and joins
+their deduplication transaction. Terminal, missing and expired reservations leave no change.
+The messaging kit retries transactional failures. At dead letter, inspect the failure and replay
+the original fact while the reservation is active. An expired reservation follows its normal
+release path.
 
 ## Invariants
 

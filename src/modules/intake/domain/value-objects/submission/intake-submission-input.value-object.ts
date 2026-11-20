@@ -15,5 +15,8 @@ export interface IntakeSubmissionInput {
 
   /** Optional applicant contact information. */
   readonly contactEmail?: string | null;
+
+  /** Optional UUIDv7 selection from the applicant's live draft. */
+  readonly attachmentIds?: readonly string[];
   // #endregion
 }

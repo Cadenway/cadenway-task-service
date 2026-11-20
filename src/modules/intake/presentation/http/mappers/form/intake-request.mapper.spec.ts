@@ -67,4 +67,26 @@ describe('intake request mapping', () => {
       submissionFingerprint({ title: 'A', contactEmail: 'a@example.com' }),
     );
   });
+
+  it('binds selected files to the draft while normalizing UUID order and case', () => {
+    const a = '019a7004-3b2c-7d4e-8f5a-6b7c8d9e0f15';
+    const b = '019a7004-3b2c-7d4e-8f5a-6b7c8d9e0f16';
+    const first = { title: 'Demande', attachmentIds: [a.toUpperCase(), b] };
+    const reordered = { title: 'Demande', attachmentIds: [b.toUpperCase(), a] };
+    expect(submissionFingerprint(first, 'a'.repeat(43))).toBe(
+      submissionFingerprint(reordered, 'a'.repeat(43)),
+    );
+    expect(submissionFingerprint(first, 'a'.repeat(43))).not.toBe(
+      submissionFingerprint(reordered, 'b'.repeat(43)),
+    );
+    expect(submissionFingerprint({ title: 'Demande' }, 'a'.repeat(43))).not.toBe(
+      submissionFingerprint({ title: 'Demande' }),
+    );
+    expect(submissionFingerprint({ title: 'Demande' }, 'a'.repeat(43))).not.toBe(
+      submissionFingerprint({ title: 'Demande' }, 'b'.repeat(43)),
+    );
+    expect(submissionFingerprint({ title: 'Demande' }, 'a'.repeat(43))).toBe(
+      submissionFingerprint({ title: 'Demande', attachmentIds: [] }, 'a'.repeat(43)),
+    );
+  });
 });

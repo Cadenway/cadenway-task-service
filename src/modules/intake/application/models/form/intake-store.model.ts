@@ -4,9 +4,14 @@ import type { IntakeEditorRequest } from './intake-editor-request.model.js';
 import type { IntakeEditor } from './intake-editor.model.js';
 import type { IntakePublication } from './intake-publication.model.js';
 import type { IntakeSubmissionClaim } from './intake-submission-claim.model.js';
+import type { IntakeAttachmentStore } from '../../ports/outbound/persistence/attachment/intake-attachment-store.port.js';
 
 /** Operations bound to one tenant transaction, including ordinary task and outbox writes. */
 export interface IntakeStore {
+  // #region Properties
+  /** Attachment operations share this tenant transaction when configured. */
+  readonly attachments?: IntakeAttachmentStore;
+  // #endregion
   // #region Methods
   /** Locks membership, list placement and draft when requested. Hidden lists and missing members
    * must be handled using the existing list access errors before returning. Eligibility includes

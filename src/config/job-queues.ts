@@ -76,6 +76,9 @@ export const SCHEDULE_TRASH_PURGE_QUEUE: string = 'task.schedule-trash-purge';
 /** System-only queue of the minutely intake receipt retention job. */
 export const PURGE_INTAKE_RECEIPTS_QUEUE: string = 'task.purge-intake-receipts';
 
+/** System-only queue releasing abandoned intake attachment reservations every minute. */
+export const EXPIRE_INTAKE_ATTACHMENT_DRAFTS_QUEUE: string = 'task.expire-intake-attachment-drafts';
+
 /**
  * Constant jobQueues
  *
@@ -124,6 +127,7 @@ export const jobQueues: readonly JobQueueDeclaration[] = [
   PURGE_TRASH_QUEUE,
   SCHEDULE_TRASH_PURGE_QUEUE,
   PURGE_INTAKE_RECEIPTS_QUEUE,
+  EXPIRE_INTAKE_ATTACHMENT_DRAFTS_QUEUE,
 ].map((name: string): JobQueueDeclaration => ({
   name,
   retryLimit: 8,

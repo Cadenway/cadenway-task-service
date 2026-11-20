@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { IntakeForm } from '../../../../../domain/aggregates/form/intake-form.aggregate.js';
+import { IntakeAttachmentDraft } from '../../../../../domain/aggregates/attachment/intake-attachment-draft.aggregate.js';
+import type { IntakeAttachmentStore } from '../../../../ports/outbound/persistence/attachment/intake-attachment-store.port.js';
 import type { IntakeStore } from '../../../../models/form/intake-store.model.js';
 import type { IntakeUnitOfWork } from '../../../../ports/outbound/transactions/form/intake-unit-of-work.port.js';
 import { SubmitIntakeForm } from './submit-intake-form.use-case.js';
@@ -20,8 +22,31 @@ const input = {
   fingerprint: 'body-fingerprint',
 };
 
-function fixture() {
+function fixture(clock: () => Date = () => new Date('2026-11-20T14:01:00Z')) {
+  const draft = IntakeAttachmentDraft.start(
+    {
+      organizationId: '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b2f',
+      publicationId: '019a7000-1b2c-7d3e-8f4a-5b6c7d8e9f01',
+      draftDigest: 'a'.repeat(64),
+    },
+    new Date('2026-11-20T14:00:00Z'),
+  );
+  const attachments = {
+    startDraft: vi.fn(),
+    loadDraft: vi.fn().mockResolvedValue(draft),
+    findReservationClaim: vi.fn(),
+    newAttachmentId: vi.fn(),
+    listReservations: vi.fn().mockResolvedValue([]),
+    insertReservation: vi.fn(),
+    findReservation: vi.fn(),
+    findByIdentity: vi.fn(),
+    saveReservation: vi.fn(),
+    recordDecision: vi.fn<IntakeAttachmentStore['recordDecision']>(),
+    saveDraft: vi.fn(),
+    createTask: vi.fn().mockResolvedValue({ receipt: 'opaque-receipt', taskKey: 'CAD-482' }),
+  } satisfies IntakeAttachmentStore;
   const store = {
+    attachments,
     loadEditor: vi.fn(),
     saveForm: vi.fn(),
     reservePublicationKey: vi.fn(),
@@ -36,10 +61,109 @@ function fixture() {
     run: async (_organizationId, callback) => callback(store),
     read: async (_organizationId, callback) => callback(store),
   };
-  return { store, subject: new SubmitIntakeForm(work) };
+  return {
+    store,
+    attachments,
+    draft,
+    subject: new SubmitIntakeForm(work, clock),
+  };
 }
 
 describe('SubmitIntakeForm', () => {
+  it('aborts the transaction if the draft expires while the task is being created', async () => {
+    let now = new Date('2026-11-20T14:01:00Z');
+    const { subject, attachments, draft, store } = fixture(() => now);
+    const id = '019a7003-4d5e-7f6a-8b9c-0d1e2f3a4b01';
+    const reserved = draft.reserve(id, 0, 'optional', now);
+    attachments.listReservations.mockResolvedValue([reserved.verify(reserved.snapshot, now)]);
+    attachments.createTask.mockImplementationOnce(() => {
+      now = new Date('2026-11-20T14:30:00Z');
+      return Promise.resolve({ receipt: 'opaque-receipt', taskKey: 'CAD-482' });
+    });
+    await expect(
+      subject.execute({
+        ...input,
+        draftKey: 'B'.repeat(43),
+        submission: { ...input.submission, attachmentIds: [id] },
+      }),
+    ).rejects.toMatchObject({ failure: 'unavailable' });
+    expect(attachments.recordDecision).not.toHaveBeenCalled();
+    expect(store.completeSubmission).not.toHaveBeenCalled();
+  });
+
+  it('commits a verified claim and releases the unused slot with the receipt', async () => {
+    const { subject, attachments, draft, store } = fixture();
+    const at = new Date('2026-11-20T14:01:00Z');
+    const firstId = '019a7003-4d5e-7f6a-8b9c-0d1e2f3a4b01';
+    const secondId = '019a7004-3b2c-7d4e-8f5a-6b7c8d9e0f15';
+    const first = draft.reserve(firstId, 0, 'optional', at);
+    const verified = first.verify(first.snapshot, at);
+    const unused = draft.reserve(secondId, 1, 'optional', at);
+    attachments.listReservations.mockResolvedValue([verified, unused]);
+
+    await expect(
+      subject.execute({
+        ...input,
+        draftKey: 'B'.repeat(43),
+        submission: { ...input.submission, attachmentIds: [firstId] },
+      }),
+    ).resolves.toEqual({ receipt: 'opaque-receipt' });
+    expect(attachments.recordDecision).toHaveBeenCalledTimes(2);
+    expect(attachments.recordDecision.mock.calls[0]?.[0].decision).toMatchObject({
+      kind: 'claimed',
+      attachmentId: firstId,
+      taskKey: 'CAD-482',
+    });
+    expect(attachments.recordDecision.mock.calls[1]?.[0].decision).toMatchObject({
+      kind: 'released',
+      attachmentId: secondId,
+    });
+    expect(attachments.saveDraft).toHaveBeenCalledOnce();
+    expect(store.completeSubmission).toHaveBeenCalledOnce();
+  });
+
+  it('does not create a task when the selected reservation is awaiting verification', async () => {
+    const { subject, attachments, draft, store } = fixture();
+    const id = '019a7003-4d5e-7f6a-8b9c-0d1e2f3a4b01';
+    attachments.listReservations.mockResolvedValue([
+      draft.reserve(id, 0, 'optional', new Date('2026-11-20T14:01:00Z')),
+    ]);
+    await expect(
+      subject.execute({
+        ...input,
+        draftKey: 'B'.repeat(43),
+        submission: { ...input.submission, attachmentIds: [id] },
+      }),
+    ).rejects.toMatchObject({ failure: 'upload-not-ready' });
+    expect(attachments.createTask).not.toHaveBeenCalled();
+    expect(store.completeSubmission).not.toHaveBeenCalled();
+  });
+
+  it('does not complete the receipt if recording a claim fails', async () => {
+    const { subject, attachments, draft, store } = fixture();
+    const id = '019a7003-4d5e-7f6a-8b9c-0d1e2f3a4b01';
+    const now = new Date('2026-11-20T14:01:00Z');
+    const reservation = draft.reserve(id, 0, 'optional', now);
+    attachments.listReservations.mockResolvedValue([reservation.verify(reservation.snapshot, now)]);
+    attachments.recordDecision.mockRejectedValueOnce(new Error('Outbox unavailable'));
+    await expect(
+      subject.execute({
+        ...input,
+        draftKey: 'B'.repeat(43),
+        submission: { ...input.submission, attachmentIds: [id] },
+      }),
+    ).rejects.toThrow('Outbox unavailable');
+    expect(store.completeSubmission).not.toHaveBeenCalled();
+  });
+
+  it('replays the receipt before looking up the already closed draft', async () => {
+    const { subject, attachments, store } = fixture();
+    vi.mocked(store.claimSubmission).mockResolvedValue({ kind: 'replay', receipt: 'old' });
+    await expect(subject.execute({ ...input, draftKey: 'B'.repeat(43) })).resolves.toEqual({
+      receipt: 'old',
+    });
+    expect(attachments.loadDraft).not.toHaveBeenCalled();
+  });
   it('claims before locking the publication and saves the receipt with task creation', async () => {
     const { subject, store } = fixture();
     await expect(subject.execute(input)).resolves.toEqual({ receipt: 'opaque-receipt' });

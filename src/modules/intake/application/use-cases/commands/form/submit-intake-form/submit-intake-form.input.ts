@@ -12,7 +12,10 @@ export interface SubmitIntakeFormInput {
   /** Provides idempotencyKey. */
   readonly idempotencyKey?: string;
 
-  /** Provides fingerprint. */
+  /** Optional private applicant draft credential. */
+  readonly draftKey?: string;
+
+  /** Canonical submission fingerprint, including the normalized draft and IDs when supplied. */
   readonly fingerprint: string;
   // #endregion
 }

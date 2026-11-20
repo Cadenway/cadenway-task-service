@@ -86,6 +86,8 @@ const publicTables = [
   'favorites',
   'goals',
   'idempotency_keys',
+  'intake_attachment_drafts',
+  'intake_attachment_reservations',
   'intake_contacts',
   'intake_forms',
   'intake_publications',
@@ -128,7 +130,7 @@ const publicTables = [
  * deletion of lists and spaces, then the trash root snapshot, collaboration, planning and the
  * task library, P3c-1 capabilities, goals, sprint reporting history, intake and delivery decisions.
  */
-const appliedMigrations = 20;
+const appliedMigrations = 21;
 
 /**
  * Runs `docker compose` on the throwaway project.
@@ -628,6 +630,7 @@ describe('task-service wiring', () => {
     const names = [
       'task.clean-up-removed-member',
       'task.drop-trashed-task-requests',
+      'task.expire-intake-attachment-drafts',
       'task.purge-intake-receipts',
       'task.purge-trash',
       'task.schedule-trash-purge',
@@ -750,6 +753,12 @@ describe('task-service wiring', () => {
       { relname: 'favorites', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'goals', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'idempotency_keys', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'intake_attachment_drafts', relrowsecurity: true, relforcerowsecurity: true },
+      {
+        relname: 'intake_attachment_reservations',
+        relrowsecurity: true,
+        relforcerowsecurity: true,
+      },
       { relname: 'intake_contacts', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'intake_forms', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'intake_publications', relrowsecurity: true, relforcerowsecurity: true },
@@ -800,6 +809,14 @@ describe('task-service wiring', () => {
       { tablename: 'favorites', policyname: 'favorites_organization_isolation' },
       { tablename: 'goals', policyname: 'goals_organization_isolation' },
       { tablename: 'idempotency_keys', policyname: 'idempotency_keys_organization_isolation' },
+      {
+        tablename: 'intake_attachment_drafts',
+        policyname: 'intake_attachment_drafts_organization_isolation',
+      },
+      {
+        tablename: 'intake_attachment_reservations',
+        policyname: 'intake_attachment_reservations_organization_isolation',
+      },
       { tablename: 'intake_contacts', policyname: 'intake_contacts_organization_isolation' },
       { tablename: 'intake_forms', policyname: 'intake_forms_organization_isolation' },
       {

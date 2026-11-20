@@ -3,6 +3,8 @@ import { Global, Module } from '@nestjs/common';
 import { OrganizationMembersModule } from '../organization-members/organization-members.module.js';
 import { SpacesModule } from '../spaces/spaces.module.js';
 import { TasksModule } from '../tasks/tasks.module.js';
+import { expireIntakeAttachmentDraftsHandlerProvider } from './composition/providers/adapters/attachment/expire-intake-attachment-drafts-handler.provider.js';
+import { intakeAttachmentEventProviders } from './composition/providers/adapters/attachment/intake-attachment-events.provider.js';
 import { intakeUnitOfWorkProvider } from './composition/providers/adapters/form/intake-unit-of-work.provider.js';
 import { purgeIntakeReceiptsHandlerProvider } from './composition/providers/adapters/form/purge-intake-receipts-handler.provider.js';
 import { intakeCleanupProviders } from './composition/providers/use-cases/form/intake-cleanup.provider.js';
@@ -20,6 +22,8 @@ import { RevokeDeletedListIntake } from './public/form/revoke-deleted-list-intak
   providers: [
     intakeUnitOfWorkProvider,
     ...intakeUseCaseProviders,
+    ...intakeAttachmentEventProviders,
+    expireIntakeAttachmentDraftsHandlerProvider,
     purgeExpiredIntakeReceiptsProvider,
     purgeIntakeReceiptsHandlerProvider,
   ],

@@ -17,5 +17,8 @@ export interface IntakeFormFields {
 
   /** Applicant contact field kept separate from the task. */
   readonly contactEmail: FieldMode;
+
+  /** Attachment field. Configurations saved before P4 default to optional. */
+  readonly attachments?: FieldMode;
   // #endregion
 }
