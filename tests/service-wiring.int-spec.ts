@@ -86,6 +86,10 @@ const publicTables = [
   'favorites',
   'goals',
   'idempotency_keys',
+  'intake_contacts',
+  'intake_forms',
+  'intake_publications',
+  'intake_submissions',
   'list_grants',
   'lists',
   'onboarding_states',
@@ -121,9 +125,9 @@ const publicTables = [
  * lists, then the tasks, then the two indexes of the task queries, then the grants, the switch of
  * the lists and the access requests, then the archives of lists and tasks, then the trash and the
  * deletion of lists and spaces, then the trash root snapshot, collaboration, planning and the
- * task library, P3c-1 capabilities, goals and sprint reporting history.
+ * task library, P3c-1 capabilities, goals, sprint reporting history and intake.
  */
-const appliedMigrations = 18;
+const appliedMigrations = 19;
 
 /**
  * Runs `docker compose` on the throwaway project.
@@ -476,7 +480,9 @@ describe('task-service wiring', () => {
       }>(
         `select relname, relrowsecurity, relforcerowsecurity from pg_class
           where relnamespace = 'public'::regnamespace
-            and relname in ('favorites', 'goals', 'onboarding_states', 'saved_views', 'space_custom_fields',
+            and relname in ('favorites', 'goals', 'intake_contacts', 'intake_forms',
+                            'intake_publications', 'intake_submissions', 'onboarding_states',
+                            'saved_views', 'space_custom_fields',
                             'sprint_field_history', 'sprint_history_coverage', 'sprint_list_history',
                             'sprint_task_history', 'sprint_value_history',
                             'task_approval_reviewers', 'task_approval_rounds', 'task_comments',
@@ -488,6 +494,10 @@ describe('task-service wiring', () => {
       expect(security.rows).toEqual([
         { relname: 'favorites', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'goals', relrowsecurity: true, relforcerowsecurity: true },
+        { relname: 'intake_contacts', relrowsecurity: true, relforcerowsecurity: true },
+        { relname: 'intake_forms', relrowsecurity: true, relforcerowsecurity: true },
+        { relname: 'intake_publications', relrowsecurity: true, relforcerowsecurity: true },
+        { relname: 'intake_submissions', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'onboarding_states', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'saved_views', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'space_custom_fields', relrowsecurity: true, relforcerowsecurity: true },
@@ -607,10 +617,11 @@ describe('task-service wiring', () => {
     );
 
     expect(schema.rows).toEqual([{ owner: 'task_migrator' }]);
-    // The clean-up of a removed member and the four queues of the trash and the deletions.
+    // Member, trash and intake cleanup queues.
     const names = [
       'task.clean-up-removed-member',
       'task.drop-trashed-task-requests',
+      'task.purge-intake-receipts',
       'task.purge-trash',
       'task.schedule-trash-purge',
       'task.trash-deleted-tasks',
@@ -732,6 +743,10 @@ describe('task-service wiring', () => {
       { relname: 'favorites', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'goals', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'idempotency_keys', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'intake_contacts', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'intake_forms', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'intake_publications', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'intake_submissions', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'list_grants', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'lists', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'onboarding_states', relrowsecurity: true, relforcerowsecurity: true },
@@ -773,6 +788,13 @@ describe('task-service wiring', () => {
       { tablename: 'favorites', policyname: 'favorites_organization_isolation' },
       { tablename: 'goals', policyname: 'goals_organization_isolation' },
       { tablename: 'idempotency_keys', policyname: 'idempotency_keys_organization_isolation' },
+      { tablename: 'intake_contacts', policyname: 'intake_contacts_organization_isolation' },
+      { tablename: 'intake_forms', policyname: 'intake_forms_organization_isolation' },
+      {
+        tablename: 'intake_publications',
+        policyname: 'intake_publications_organization_isolation',
+      },
+      { tablename: 'intake_submissions', policyname: 'intake_submissions_organization_isolation' },
       { tablename: 'list_grants', policyname: 'list_grants_organization_isolation' },
       { tablename: 'lists', policyname: 'lists_organization_isolation' },
       { tablename: 'onboarding_states', policyname: 'onboarding_states_organization_isolation' },
