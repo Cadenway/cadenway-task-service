@@ -1,5 +1,5 @@
 {
-  "id": "61e0d6a0-8114-4599-83cb-7936e3d5c885",
+  "id": "3ec1f734-d263-408e-9ebd-6751a0c46f68",
   "prevId": "24df7df9-def2-45f7-acf8-9d07b7752933",
   "version": "7",
   "dialect": "postgresql",
@@ -722,7 +722,42 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "intake_attachment_drafts_expiry_index": {
+          "name": "intake_attachment_drafts_expiry_index",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "publication_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "draft_digest",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"intake_attachment_drafts\".\"closed_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "intake_attachment_drafts_publication_fkey": {
           "name": "intake_attachment_drafts_publication_fkey",
@@ -806,9 +841,9 @@
           "primaryKey": false,
           "notNull": true
         },
-        "declaration": {
-          "name": "declaration",
-          "type": "jsonb",
+        "declaration_digest": {
+          "name": "declaration_digest",
+          "type": "text",
           "primaryKey": false,
           "notNull": true
         },
@@ -912,6 +947,34 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "intake_attachment_reservations_terminal_expiry_index": {
+          "name": "intake_attachment_reservations_terminal_expiry_index",
+          "columns": [
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "attachment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"intake_attachment_reservations\".\"status\" in ('claimed', 'released')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -960,9 +1023,9 @@
           "name": "intake_attachment_reservations_key_check",
           "value": "\"intake_attachment_reservations\".\"request_key_digest\" ~ '^[0-9a-f]{64}$'"
         },
-        "intake_attachment_reservations_declaration_check": {
-          "name": "intake_attachment_reservations_declaration_check",
-          "value": "jsonb_typeof(\"intake_attachment_reservations\".\"declaration\") = 'object'"
+        "intake_attachment_reservations_declaration_digest_check": {
+          "name": "intake_attachment_reservations_declaration_digest_check",
+          "value": "\"intake_attachment_reservations\".\"declaration_digest\" ~ '^[0-9a-f]{64}$'"
         },
         "intake_attachment_reservations_status_check": {
           "name": "intake_attachment_reservations_status_check",

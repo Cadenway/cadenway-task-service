@@ -19,6 +19,13 @@ function digest(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
+function declarationDigest(
+  attachmentId: string,
+  { fileName, contentType, sizeBytes }: IntakeAttachmentDeclaration,
+): string {
+  return digest(JSON.stringify([attachmentId, fileName, contentType, sizeBytes]));
+}
+
 /** Tenant-scoped attachment reservations using the caller's active transaction. */
 export class DrizzleIntakeAttachments {
   // #region Constructor
@@ -99,6 +106,7 @@ export class DrizzleIntakeAttachments {
   public async findReservationClaim(
     draft: IntakeAttachmentDraft,
     idempotencyKey: string,
+    declaration: IntakeAttachmentDeclaration,
   ): Promise<IntakeAttachmentReservationClaim | null> {
     const { publicationId, draftDigest } = this.binding(draft);
     const rows = await this.db
@@ -117,7 +125,8 @@ export class DrizzleIntakeAttachments {
     return row === undefined
       ? null
       : {
-          declaration: row.declaration,
+          matchesDeclaration:
+            row.declarationDigest === declarationDigest(row.attachmentId, declaration),
           reservation: IntakeAttachmentReservation.restore(row),
         };
   }
@@ -153,7 +162,7 @@ export class DrizzleIntakeAttachments {
     return rows.map((row) => IntakeAttachmentReservation.restore(row));
   }
 
-  /** Persists one allocation and its exact request declaration. */
+  /** Persists one allocation and its request fingerprint without its filename. */
   public async insertReservation(
     reservation: IntakeAttachmentReservation,
     idempotencyKey: string,
@@ -164,7 +173,7 @@ export class DrizzleIntakeAttachments {
     await this.db.insert(intakeAttachmentReservations).values({
       ...snapshot,
       requestKeyDigest: digest(idempotencyKey),
-      declaration,
+      declarationDigest: declarationDigest(snapshot.attachmentId, declaration),
     });
   }
 

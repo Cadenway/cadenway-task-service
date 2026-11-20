@@ -305,6 +305,9 @@ export class IntakeController {
   ): Promise<z.output<typeof ResolveIntakeAttachmentInternalResponse>> {
     response.setHeader('Cache-Control', 'no-store');
     requireUnscopedApplicant();
+    // This private authorization proof has no conditional response.
+    delete request.headers['if-none-match'];
+    delete request.headers['if-modified-since'];
     const headers = applicantHeaders(ResolveIntakeAttachmentInternalHeader, {
       'Intake-Draft-Key': request.headers['intake-draft-key'],
     });

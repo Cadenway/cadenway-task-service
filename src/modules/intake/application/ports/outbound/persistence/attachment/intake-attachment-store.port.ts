@@ -23,10 +23,11 @@ export interface IntakeAttachmentStore {
     now: Date,
   ): Promise<IntakeAttachmentDraft>;
 
-  /** Reads the allocation bound to an idempotency key under the draft lock. */
+  /** Reads the allocation and checks its request fingerprint under the draft lock. */
   findReservationClaim(
     draft: IntakeAttachmentDraft,
     idempotencyKey: string,
+    declaration: IntakeAttachmentDeclaration,
   ): Promise<IntakeAttachmentReservationClaim | null>;
 
   /** Allocates a UUID v7. */
@@ -35,7 +36,7 @@ export interface IntakeAttachmentStore {
   /** Returns at most five active draft reservations under the draft lock. */
   listReservations(draft: IntakeAttachmentDraft): Promise<readonly IntakeAttachmentReservation[]>;
 
-  /** Saves the allocation and its idempotency declaration in the same transaction. */
+  /** Saves the allocation and its idempotency fingerprint in the same transaction. */
   insertReservation(
     reservation: IntakeAttachmentReservation,
     idempotencyKey: string,
@@ -49,7 +50,7 @@ export interface IntakeAttachmentStore {
     lock: boolean,
   ): Promise<IntakeAttachmentReservation | null>;
 
-  /** Finds an exact verified-fact target in its signed tenant, including terminal tombstones. */
+  /** Finds a verified-fact target in its signed tenant, including retained terminal states. */
   findByIdentity(
     publicationId: string,
     attachmentId: string,

@@ -29,7 +29,10 @@ export const expireIntakeAttachmentDraftsHandlerProvider: FactoryProvider<Expire
       new ExpireIntakeAttachmentDraftsHandler(
         workers,
         scheduler,
-        new ExpireIntakeAttachmentDrafts(new DrizzleExpiredIntakeDrafts(system, tenant, outbox)),
+        new ExpireIntakeAttachmentDrafts(
+          new DrizzleExpiredIntakeDrafts(system, tenant, outbox),
+          () => new Date(),
+        ),
         EXPIRE_INTAKE_ATTACHMENT_DRAFTS_QUEUE,
       ),
   };

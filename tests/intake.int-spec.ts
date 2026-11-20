@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 
+import type { IntakeAttachmentVerifiedV1 } from '@cadenway/contracts/events/storage-service';
 import {
   CreateListInternalResponse,
   AllocateIntakeAttachmentInternalResponse,
@@ -10,6 +11,7 @@ import {
   GetPublicIntakeFormInternalResponse,
   SubmitPublicIntakeFormInternalResponse,
   GetTaskIntakeContactInternalResponse,
+  ResolveIntakeAttachmentInternalResponse,
   TrashTaskInternalResponse,
   GetTaskInternalResponse,
 } from '@cadenway/contracts/validators/internal/task-service';
@@ -458,6 +460,50 @@ describe('intake with PostgreSQL and NATS', () => {
       });
     }
 
+    async function publishStorageVerification(fact: IntakeAttachmentVerifiedV1): Promise<void> {
+      const consumerInfo = (): {
+        delivered: { consumer_seq: number };
+        ack_floor: { consumer_seq: number };
+      } =>
+        JSON.parse(
+          compose(
+            'exec',
+            '-T',
+            'nats-streams',
+            'nats',
+            'consumer',
+            'info',
+            'EVENTS',
+            'task-service__verify-intake-attachment',
+            '--json',
+          ),
+        ) as {
+          delivered: { consumer_seq: number };
+          ack_floor: { consumer_seq: number };
+        };
+      const sequenceBefore = consumerInfo().delivered.consumer_seq;
+      compose(
+        'exec',
+        '-T',
+        'nats-streams',
+        'nats',
+        'pub',
+        '--jetstream',
+        '--header',
+        `Nats-Msg-Id:${randomUUID()}`,
+        'evt.intake.attachment-verified.v1',
+        JSON.stringify(fact),
+      );
+      await vi.waitFor(
+        () => {
+          const info = consumerInfo();
+          expect(info.delivered.consumer_seq).toBeGreaterThan(sequenceBefore);
+          expect(info.ack_floor.consumer_seq).toBe(info.delivered.consumer_seq);
+        },
+        { timeout: 15_000 },
+      );
+    }
+
     it('binds five replayable reservations to the draft and rejects other draft keys', async () => {
       const first = await allocate(draftKey, 1);
       expect(first.status, first.text).toBe(201);
@@ -466,6 +512,23 @@ describe('intake with PostgreSQL and NATS', () => {
       const replay = await allocate(draftKey, 1);
       expect(replay.status, replay.text).toBe(201);
       expect(AllocateIntakeAttachmentInternalResponse.parse(replay.body as unknown)).toEqual(
+        reservation,
+      );
+      const changed = await send('post', `/internal/v1/intake-forms/${publicKey}/attachments`, {
+        system: true,
+        headers: { 'Intake-Draft-Key': draftKey, 'Idempotency-Key': 'attachment-1' },
+        body: { ...allocationBody, fileName: 'autre-capture.png' },
+      });
+      expect(changed.status, changed.text).toBe(422);
+      expect(changed.body).toMatchObject({ code: 'idempotency.key-reused' });
+      const proof = await send(
+        'get',
+        `/internal/v1/intake-forms/${publicKey}/attachments/${reservation.attachmentId}`,
+        { system: true, headers: { 'Intake-Draft-Key': draftKey, 'If-None-Match': '*' } },
+      );
+      expect(proof.status, proof.text).toBe(200);
+      expect(proof.headers['cache-control']).toBe('no-store');
+      expect(ResolveIntakeAttachmentInternalResponse.parse(proof.body as unknown)).toEqual(
         reservation,
       );
       const otherDraft = await send(
@@ -558,7 +621,7 @@ describe('intake with PostgreSQL and NATS', () => {
       );
       const selected = rows[0];
       if (selected === undefined) throw new Error('Missing attachment reservation');
-      const fact = {
+      const fact: IntakeAttachmentVerifiedV1 = {
         id: randomUUID(),
         occurredAt: new Date().toISOString(),
         organizationId: organizationId.toUpperCase(),
@@ -568,52 +631,13 @@ describe('intake with PostgreSQL and NATS', () => {
         attachmentId: selected.attachment_id.toUpperCase(),
       };
       for (let delivery = 0; delivery < 2; delivery += 1) {
-        const consumerInfo = (): {
-          delivered: { consumer_seq: number };
-          ack_floor: { consumer_seq: number };
-        } =>
-          JSON.parse(
-            compose(
-              'exec',
-              '-T',
-              'nats-streams',
-              'nats',
-              'consumer',
-              'info',
-              'EVENTS',
-              'task-service__verify-intake-attachment',
-              '--json',
-            ),
-          ) as {
-            delivered: { consumer_seq: number };
-            ack_floor: { consumer_seq: number };
-          };
-        const sequenceBefore = consumerInfo().delivered.consumer_seq;
-        compose(
-          'exec',
-          '-T',
-          'nats-streams',
-          'nats',
-          'pub',
-          '--jetstream',
-          '--header',
-          `Nats-Msg-Id:${randomUUID()}`,
-          'evt.intake.attachment-verified.v1',
-          JSON.stringify(fact),
-        );
-        await vi.waitFor(
-          async () => {
-            const info = consumerInfo();
-            expect(info.delivered.consumer_seq).toBeGreaterThan(sequenceBefore);
-            expect(info.ack_floor.consumer_seq).toBe(info.delivered.consumer_seq);
-            const result = await query<{ status: string }>(
-              'select status from intake_attachment_reservations where organization_id = $1 and attachment_id = $2',
-              [organizationId, selected.attachment_id],
-            );
-            expect(result).toEqual([{ status: 'verified' }]);
-          },
-          { timeout: 15_000 },
-        );
+        await publishStorageVerification(fact);
+        expect(
+          await query<{ status: string }>(
+            'select status from intake_attachment_reservations where organization_id = $1 and attachment_id = $2',
+            [organizationId, selected.attachment_id],
+          ),
+        ).toEqual([{ status: 'verified' }]);
       }
       const path = `/internal/v1/intake-forms/${publicKey}/submissions`;
       const submission = {
@@ -751,12 +775,17 @@ describe('intake with PostgreSQL and NATS', () => {
       SubmitPublicIntakeFormInternalResponse.parse(retried.body as unknown);
     });
 
-    it('releases an expired draft once when its scheduled job is repeated', async () => {
+    it('releases an expired draft once and prunes only reservations beyond retention', async () => {
       if (app === undefined) throw new Error('Application did not start');
       const allocated = await allocate(otherDraftKey, 7);
       expect(allocated.status, allocated.text).toBe(201);
-      const { attachmentId } = AllocateIntakeAttachmentInternalResponse.parse(
+      const { attachmentId, publicationId } = AllocateIntakeAttachmentInternalResponse.parse(
         allocated.body as unknown,
+      );
+      const recent = await allocate(otherDraftKey, 9);
+      expect(recent.status, recent.text).toBe(201);
+      const { attachmentId: recentId } = AllocateIntakeAttachmentInternalResponse.parse(
+        recent.body as unknown,
       );
       await query(
         `update intake_attachment_drafts set expires_at = now() - interval '1 minute'
@@ -764,8 +793,8 @@ describe('intake with PostgreSQL and NATS', () => {
         [organizationId, createHash('sha256').update(otherDraftKey).digest('hex')],
       );
       const handler = app.get(ExpireIntakeAttachmentDraftsHandler, { strict: false });
-      for (let run = 0; run < 2; run += 1) {
-        await handler.handle({
+      const sweep = (): Promise<void> =>
+        handler.handle({
           id: randomUUID(),
           queue: EXPIRE_INTAKE_ATTACHMENT_DRAFTS_QUEUE,
           payload: null,
@@ -773,21 +802,63 @@ describe('intake with PostgreSQL and NATS', () => {
           attempt: 1,
           signal: new AbortController().signal,
         });
-      }
+      await sweep();
+      await sweep();
+      const initial = await query<{
+        attachment_id: string;
+        status: string;
+        declaration_digest: string;
+      }>(
+        `select attachment_id, status, declaration_digest from intake_attachment_reservations
+         where organization_id = $1 and attachment_id in ($2, $3) order by attachment_id`,
+        [organizationId, attachmentId, recentId],
+      );
+      expect(initial).toMatchObject(
+        [attachmentId, recentId].sort().map((id) => ({ attachment_id: id, status: 'released' })),
+      );
+      for (const row of initial) expect(row.declaration_digest).toMatch(/^[0-9a-f]{64}$/u);
       expect(
         await query(
-          'select status from intake_attachment_reservations where organization_id = $1 and attachment_id = $2',
+          `update intake_attachment_reservations set updated_at = now() - interval '25 hours'
+           where organization_id = $1 and attachment_id = $2 returning attachment_id`,
           [organizationId, attachmentId],
         ),
-      ).toEqual([{ status: 'released' }]);
+      ).toEqual([{ attachment_id: attachmentId }]);
+      await sweep();
+      const lateFactId = randomUUID();
+      await publishStorageVerification({
+        id: lateFactId,
+        occurredAt: new Date().toISOString(),
+        organizationId,
+        actor: { type: 'system', id: 'storage-service' },
+        version: 1,
+        publicationId,
+        attachmentId,
+      });
       expect(
-        await query<{ total: number }>(
-          `select count(*)::int as total from outbox_events
-           where organization_id = $1 and event_name = 'intake.attachment-released.v1'
-             and payload->>'attachmentId' = $2`,
+        await query('select event_id from processed_events where event_id = $1 and consumer = $2', [
+          lateFactId,
+          'task-service__verify-intake-attachment',
+        ]),
+      ).toEqual([{ event_id: lateFactId }]);
+      expect(
+        await query(
+          `select attachment_id, status from intake_attachment_reservations
+           where organization_id = $1 and attachment_id in ($2, $3)`,
+          [organizationId, attachmentId, recentId],
+        ),
+      ).toEqual([{ attachment_id: recentId, status: 'released' }]);
+      const reopened = await allocate(otherDraftKey, 7);
+      expect(reopened.status, reopened.text).toBe(404);
+      expect(reopened.body).toMatchObject({ code: 'intake-form.not-found' });
+      expect(
+        await query(
+          `select event_name, count(*)::int as total from outbox_events
+           where organization_id = $1 and payload->>'attachmentId' = $2
+           group by event_name`,
           [organizationId, attachmentId],
         ),
-      ).toEqual([{ total: 1 }]);
+      ).toEqual([{ event_name: 'intake.attachment-released.v1', total: 1 }]);
     });
   });
 

@@ -39,14 +39,13 @@ export class AllocateIntakeAttachment {
       );
       const now = this.now();
       draft.requireOpen(draft.snapshot, now);
-      const previous = await attachments.findReservationClaim(draft, input.idempotencyKey);
+      const previous = await attachments.findReservationClaim(
+        draft,
+        input.idempotencyKey,
+        input.declaration,
+      );
       if (previous !== null) {
-        if (
-          previous.declaration.fileName !== input.declaration.fileName ||
-          previous.declaration.contentType !== input.declaration.contentType ||
-          previous.declaration.sizeBytes !== input.declaration.sizeBytes
-        )
-          throw new IntakeAttachmentError('idempotency-key-reused');
+        if (!previous.matchesDeclaration) throw new IntakeAttachmentError('idempotency-key-reused');
         previous.reservation.requireActive(draft.snapshot, this.now());
         const { organizationId, publicationId, attachmentId, expiresAt } =
           previous.reservation.snapshot;

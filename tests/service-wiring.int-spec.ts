@@ -887,6 +887,39 @@ describe('task-service wiring', () => {
     ]);
   });
 
+  it('installs partial indexes for draft expiry and terminal reservation cleanup', async () => {
+    const indexes = await migrator.query<{
+      name: string;
+      columns: string[];
+      predicate: string | null;
+    }>(
+      `select index_relation.relname as name,
+              array(select pg_get_indexdef(entry.indexrelid, position, true)
+                      from generate_series(1, entry.indnkeyatts) as position
+                      order by position) as columns,
+              pg_get_expr(entry.indpred, entry.indrelid) as predicate
+         from pg_index as entry
+         join pg_class as index_relation on index_relation.oid = entry.indexrelid
+        where index_relation.relnamespace = 'public'::regnamespace and entry.indisvalid
+          and index_relation.relname in ('intake_attachment_drafts_expiry_index',
+                                         'intake_attachment_reservations_terminal_expiry_index')
+        order by name`,
+    );
+
+    expect(indexes.rows).toMatchObject([
+      {
+        name: 'intake_attachment_drafts_expiry_index',
+        columns: ['expires_at', 'organization_id', 'publication_id', 'draft_digest'],
+      },
+      {
+        name: 'intake_attachment_reservations_terminal_expiry_index',
+        columns: ['updated_at', 'organization_id', 'attachment_id'],
+      },
+    ]);
+    expect(indexes.rows[0]?.predicate).toContain('closed_at IS NULL');
+    expect(indexes.rows[1]?.predicate).toMatch(/\bstatus\b.+\bclaimed\b.+\breleased\b/u);
+  });
+
   it('answers the liveness probe without a token', async () => {
     const response = await request(service().getHttpServer()).get('/health/live');
 

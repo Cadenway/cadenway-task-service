@@ -96,17 +96,22 @@ describe('AllocateIntakeAttachment', () => {
     const { subject, attachments, draft } = fixture();
     const reservation = draft.reserve(id, 0, 'optional', now);
     attachments.findReservationClaim.mockResolvedValue({
-      declaration: input.declaration,
+      matchesDeclaration: true,
       reservation,
     });
     await expect(subject.execute(input)).resolves.toMatchObject({ attachmentId: id });
+    expect(attachments.findReservationClaim).toHaveBeenCalledWith(
+      draft,
+      input.idempotencyKey,
+      input.declaration,
+    );
     expect(attachments.insertReservation).not.toHaveBeenCalled();
   });
 
   it('refuses a changed declaration for the same idempotency key', async () => {
     const { subject, attachments, draft } = fixture();
     attachments.findReservationClaim.mockResolvedValue({
-      declaration: { ...input.declaration, sizeBytes: 1025 },
+      matchesDeclaration: false,
       reservation: draft.reserve(id, 0, 'optional', now),
     });
     await expect(subject.execute(input)).rejects.toMatchObject({

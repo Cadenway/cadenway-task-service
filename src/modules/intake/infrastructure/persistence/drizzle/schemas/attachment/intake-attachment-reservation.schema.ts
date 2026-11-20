@@ -4,7 +4,6 @@ import {
   check,
   foreignKey,
   index,
-  jsonb,
   pgTable,
   primaryKey,
   text,
@@ -14,9 +13,8 @@ import {
 } from 'drizzle-orm/pg-core';
 
 import { intakeAttachmentDrafts } from './intake-attachment-draft.schema.js';
-import type { IntakeAttachmentDeclaration } from '../../../../../application/models/attachment/intake-attachment-declaration.model.js';
 
-/** A durable reservation remains after its terminal claim or release. */
+/** A reservation retains its request fingerprint and terminal state for cleanup and replay. */
 export const intakeAttachmentReservations = pgTable(
   'intake_attachment_reservations',
   {
@@ -27,7 +25,7 @@ export const intakeAttachmentReservations = pgTable(
       .notNull()
       .default(sql`uuidv7()`),
     requestKeyDigest: text('request_key_digest').notNull(),
-    declaration: jsonb('declaration').$type<IntakeAttachmentDeclaration>().notNull(),
+    declarationDigest: text('declaration_digest').notNull(),
     expiresAt: timestamp('expires_at', { withTimezone: true, precision: 3 }).notNull(),
     status: text('status').$type<'reserved' | 'verified' | 'claimed' | 'released'>().notNull(),
     taskKey: text('task_key'),
@@ -57,13 +55,16 @@ export const intakeAttachmentReservations = pgTable(
     index('intake_attachment_reservations_active_draft_index')
       .on(table.organizationId, table.publicationId, table.draftDigest, table.attachmentId)
       .where(sql`${table.status} in ('reserved', 'verified')`),
+    index('intake_attachment_reservations_terminal_expiry_index')
+      .on(table.updatedAt, table.organizationId, table.attachmentId)
+      .where(sql`${table.status} in ('claimed', 'released')`),
     check(
       'intake_attachment_reservations_key_check',
       sql`${table.requestKeyDigest} ~ '^[0-9a-f]{64}$'`,
     ),
     check(
-      'intake_attachment_reservations_declaration_check',
-      sql`jsonb_typeof(${table.declaration}) = 'object'`,
+      'intake_attachment_reservations_declaration_digest_check',
+      sql`${table.declarationDigest} ~ '^[0-9a-f]{64}$'`,
     ),
     check(
       'intake_attachment_reservations_status_check',
