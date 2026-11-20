@@ -26,6 +26,7 @@ describe('appConfigSchema', () => {
       LOG_LEVEL: 'info',
       LOG_PRETTY: false,
       DATABASE_URL: 'postgres://task_app:task_app@localhost:5432/task',
+      DATABASE_TRANSACTION_MAX_ATTEMPTS: 3,
       NATS_URL: 'nats://localhost:4222',
       NATS_USER: 'task',
       NATS_PASSWORD: 'task',
@@ -42,6 +43,15 @@ describe('appConfigSchema', () => {
       },
       TRASH_WRITES_ENABLED: false,
     });
+  });
+
+  it('accepts a single transaction attempt and rejects a limit below one', () => {
+    expect(
+      loadConfig(appConfigSchema, { ...complete, DATABASE_TRANSACTION_MAX_ATTEMPTS: '1' }),
+    ).toMatchObject({ DATABASE_TRANSACTION_MAX_ATTEMPTS: 1 });
+    expect(() =>
+      loadConfig(appConfigSchema, { ...complete, DATABASE_TRANSACTION_MAX_ATTEMPTS: '0' }),
+    ).toThrow(/DATABASE_TRANSACTION_MAX_ATTEMPTS/u);
   });
 
   it('serves the writes of the trash only when TRASH_WRITES_ENABLED says true', () => {

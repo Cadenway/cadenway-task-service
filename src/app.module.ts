@@ -157,6 +157,7 @@ function runJobInOrganization(
       useFactory: (config: AppConfig) => ({
         connectionString: config.DATABASE_URL,
         applicationName: 'task-service',
+        transactionMaxAttempts: config.DATABASE_TRANSACTION_MAX_ATTEMPTS,
         idempotency: true,
       }),
     }),
