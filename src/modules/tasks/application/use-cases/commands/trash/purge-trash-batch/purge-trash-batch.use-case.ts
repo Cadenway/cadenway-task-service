@@ -2,6 +2,7 @@ import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.
 import { erasureActorOf } from '../../../../../domain/policies/trash/trash-entry.policy.js';
 import { purgeDueBefore } from '../../../../../domain/policies/trash/trash-retention.policy.js';
 import type { TaskActor } from '../../../../../domain/value-objects/task/task-actor.value-object.js';
+import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
 import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
 import type { TrashEntryErasure } from '../../../../models/trash/trash-entry-erasure.model.js';
@@ -112,31 +113,57 @@ export class PurgeTrashBatch {
       if (first === undefined) {
         return { outcome: 'none-left' };
       }
-      if (first.taskCount > MAX_TASKS && !first.purgeStarted) {
-        const tasks: readonly Task[] = await store.tasks.lockTrashEntries(
-          organizationId,
-          [first.id],
-          true,
-        );
-        if (tasks.length !== first.taskCount)
-          throw new Error(`The task count of ${first.id} changed.`);
-        await this.eraser.announce(store, [{ entry: first, tasks, actor: this.actorOf(first) }]);
-        await store.trash.startPurge(
+      if (first.taskCount > MAX_TASKS || first.rootErased) {
+        const ids: readonly string[] = await store.trash.lockPart(
           organizationId,
           first.id,
-          await store.clock.now(),
-          erasureActorOf(first.purgeRequest),
-        );
-        return { outcome: 'purged', entries: 0, tasks: 0, listsPurged: 0, spacesPurged: 0 };
-      }
-      if (first.purgeStarted && first.taskCount > MAX_TASKS) {
-        const tasks = await store.trash.erasePart(
-          organizationId,
-          first.id,
-          first.rootTaskId,
           MAX_TASKS,
         );
-        return { outcome: 'purged', entries: 0, tasks, listsPurged: 0, spacesPurged: 0 };
+        const expected: number = Math.min(first.taskCount, MAX_TASKS);
+        if (ids.length !== expected)
+          throw new Error(`The forest of ${first.id} has missing or cyclic tasks.`);
+        const locked: readonly Task[] = await store.tasks.lockByIds(organizationId, ids, false);
+        const byId = new Map(locked.map((task: Task) => [task.snapshot.id, task]));
+        const now: Date = await store.clock.now();
+        const ordered: Task[] = ids.map((id: string): Task => {
+          const task = byId.get(id);
+          if (task?.snapshot.trash?.entryId !== first.id)
+            throw new Error(`The task ${id} left ${first.id}.`);
+          return task;
+        });
+        const rootKey: TaskKey = TaskKey.parse(first.root.key);
+        for (const task of ordered)
+          await store.events.taskPurged(task.purge(now), first.id, rootKey, this.actorOf(first));
+        if (expected === first.taskCount) {
+          const counts = await this.eraser.erase(
+            store,
+            organizationId,
+            [{ entry: first, tasks: ordered, actor: this.actorOf(first) }],
+            null,
+            true,
+          );
+          return {
+            outcome: 'purged',
+            entries: 1,
+            tasks: counts.tasks,
+            listsPurged: counts.listsPurged,
+            spacesPurged: counts.spacesPurged,
+          };
+        }
+        await store.trash.erasePart(
+          organizationId,
+          first,
+          ids,
+          now,
+          erasureActorOf(first.purgeRequest),
+        );
+        return {
+          outcome: 'purged',
+          entries: 0,
+          tasks: ids.length,
+          listsPurged: 0,
+          spacesPurged: 0,
+        };
       }
       const taken: readonly TrashEntryRecord[] = this.take(entries);
       const tasks: readonly Task[] = await store.tasks.lockTrashEntries(
@@ -156,7 +183,6 @@ export class PurgeTrashBatch {
         organizationId,
         erasures,
         null,
-        first.purgeStarted,
       );
       return {
         outcome: 'purged',
@@ -206,13 +232,13 @@ export class PurgeTrashBatch {
    */
   private take(entries: readonly TrashEntryRecord[]): readonly TrashEntryRecord[] {
     const [first] = entries;
-    if (first !== undefined && (first.taskCount > MAX_TASKS || first.purgeStarted)) {
+    if (first !== undefined && (first.taskCount > MAX_TASKS || first.rootErased)) {
       return [first];
     }
     const taken: TrashEntryRecord[] = [];
     let held: number = 0;
     for (const entry of entries) {
-      if (held >= MAX_TASKS || entry.taskCount > MAX_TASKS || entry.purgeStarted) {
+      if (held >= MAX_TASKS || entry.taskCount > MAX_TASKS || entry.rootErased) {
         break;
       }
       taken.push(entry);

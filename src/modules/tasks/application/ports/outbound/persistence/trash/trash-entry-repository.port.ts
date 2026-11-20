@@ -152,16 +152,17 @@ export interface TrashEntryRepository {
     limit: number,
   ): Promise<readonly TrashEntryRecord[]>;
 
-  /** Marks an entry as purging after its events are appended, hiding a due entry from restoration. */
-  startPurge(organizationId: string, entryId: string, at: Date, by: TaskActor): Promise<void>;
+  /** Locks up to the limit of tasks in breadth-first order, returning their IDs in event order. */
+  lockPart(organizationId: string, entryId: string, limit: number): Promise<readonly string[]>;
 
-  /** Deletes up to the requested number of deepest tasks from a locked purging entry. */
+  /** Deletes locked tasks and detaches their remaining children while handing over the entry. */
   erasePart(
     organizationId: string,
-    entryId: string,
-    rootId: string,
-    limit: number,
-  ): Promise<number>;
+    entry: TrashEntryRecord,
+    ids: readonly string[],
+    at: Date,
+    by: TaskActor,
+  ): Promise<void>;
 
   /**
    * Method erase

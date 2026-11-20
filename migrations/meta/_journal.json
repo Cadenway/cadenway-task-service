@@ -61,8 +61,8 @@
     {
       "idx": 8,
       "version": "7",
-      "when": 1795156723480,
-      "tag": "0008_purge_progress",
+      "when": 1795162488435,
+      "tag": "0008_trash_root_snapshot",
       "breakpoints": true
     }
   ]

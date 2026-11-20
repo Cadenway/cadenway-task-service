@@ -22,7 +22,7 @@ export interface TrashEntryRecord extends TrashEntryDraft {
   /** The hand-over to the purge job by "Vider la corbeille", `null` while in the trash. */
   readonly purgeRequest: TrashHandOver | null;
 
-  /** Whether the purge events for this entry have been committed. */
-  readonly purgeStarted: boolean;
+  /** Whether the original root has already been erased by a purge batch. */
+  readonly rootErased: boolean;
   // #endregion
 }

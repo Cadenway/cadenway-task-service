@@ -218,8 +218,8 @@ export interface StoredTrashEntry extends TrashEntryDraft {
   /** The hand-over to the purge, `null` while in the trash. */
   readonly purgeRequest: TrashHandOver | null;
 
-  /** Whether purge events were committed. */
-  readonly purgeStarted: boolean;
+  /** Original root after its row is erased. */
+  readonly rootSnapshot: TrashEntryRecord['root'] | null;
   // #endregion
 }
 
@@ -257,7 +257,7 @@ export function storedEntry(overrides: Partial<StoredTrashEntry> = {}): StoredTr
     trashedAt: TRASHED_AT,
     trashedBy: { type: 'user', id: CAMILLE },
     purgeRequest: null,
-    purgeStarted: false,
+    rootSnapshot: null,
     ...overrides,
   };
 }
@@ -2574,12 +2574,16 @@ export class InMemoryTasks implements TasksUnitOfWork {
     // An entry with its root as the statements join it; an entry whose root is gone is not read.
     const recordOf = (entry: StoredTrashEntry): TrashEntryRecord[] => {
       const root: TaskState | undefined = tasks.get(entry.rootTaskId);
-      return root?.organizationId !== entry.organizationId
+      return root?.organizationId !== entry.organizationId && entry.rootSnapshot === null
         ? []
         : [
             {
               ...entry,
-              root: { key: root.key.format(), name: root.name, status: root.status },
+              root:
+                root === undefined
+                  ? (entry.rootSnapshot as TrashEntryRecord['root'])
+                  : { key: root.key.format(), name: root.name, status: root.status },
+              rootErased: root === undefined,
             },
           ];
     };
@@ -2607,7 +2611,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
               ...draft,
               id: this.nextId('019a7006'),
               purgeRequest: null,
-              purgeStarted: false,
+              rootSnapshot: null,
             };
             entries.set(entry.id, entry);
             return recordOf(entry);
@@ -2719,49 +2723,59 @@ export class InMemoryTasks implements TasksUnitOfWork {
             .flatMap(recordOf),
         );
       },
-      startPurge: (organizationId, entryId, at, by): Promise<void> => {
-        const entry = entries.get(entryId);
-        if (entry?.organizationId !== organizationId || entry.purgeStarted)
-          return Promise.reject(new Error('Invalid purge start'));
-        entries.set(entryId, {
-          ...entry,
-          purgeStarted: true,
-          purgeRequest: entry.purgeRequest ?? { at, by },
-        });
-        return Promise.resolve();
-      },
-      erasePart: (organizationId, entryId, rootId, limit): Promise<number> => {
-        const entry = entries.get(entryId);
-        if (entry?.organizationId !== organizationId || !entry.purgeStarted)
-          return Promise.reject(new Error('Invalid purge entry'));
+      lockPart: (organizationId, entryId, limit): Promise<readonly string[]> => {
         const rows = inOrganization(organizationId).filter((row) => row.trash?.entryId === entryId);
         const depth = (row: TaskState): number => {
           let current: TaskState = row;
           let level = 0;
-          while (current.id !== rootId) {
+          while (current.parentId !== null) {
             const parent = rows.find((candidate) => candidate.id === current.parentId);
-            if (parent === undefined || level >= rows.length) throw new Error('Invalid purge tree');
+            if (parent === undefined) break;
+            if (level >= rows.length) throw new Error('Invalid purge tree');
             current = parent;
             level += 1;
           }
           return level;
         };
         const selected = rows
-          .sort((left, right) => depth(right) - depth(left) || compareText(left.id, right.id))
+          .sort((left, right) => depth(left) - depth(right) || compareText(left.id, right.id))
           .slice(0, limit);
-        if (selected.length !== limit || selected.some((row) => row.id === rootId))
-          return Promise.reject(new Error('Invalid purge batch'));
-        const erased = new Set(selected.map((row) => row.id));
+        return Promise.resolve(selected.map((row) => row.id));
+      },
+      erasePart: (organizationId, entry, ids, at, by): Promise<void> => {
+        const erased = new Set(ids);
         for (const [id, item] of activity)
           if (item.organizationId === organizationId && erased.has(item.taskId))
             activity.delete(id);
         for (const row of inOrganization(organizationId)) {
           if (erased.has(row.id)) tasks.delete(row.id);
-          else if (row.parentId !== null && erased.has(row.parentId))
-            tasks.set(row.id, { ...row, parentId: null, parentKey: null });
+          else if (
+            (row.parentId !== null && erased.has(row.parentId)) ||
+            (row.trash?.entryId === entry.id &&
+              row.archive !== null &&
+              erased.has(row.archive.rootId))
+          )
+            tasks.set(row.id, {
+              ...row,
+              ...(row.parentId !== null && erased.has(row.parentId)
+                ? { parentId: null, parentKey: null }
+                : {}),
+              ...(row.trash?.entryId === entry.id &&
+              row.archive !== null &&
+              erased.has(row.archive.rootId)
+                ? { archive: null }
+                : {}),
+            });
         }
-        entries.set(entryId, { ...entry, taskCount: entry.taskCount - selected.length });
-        return Promise.resolve(selected.length);
+        const stored = entries.get(entry.id);
+        if (stored === undefined) return Promise.reject(new Error('Invalid purge entry'));
+        entries.set(entry.id, {
+          ...stored,
+          rootSnapshot: entry.root,
+          purgeRequest: stored.purgeRequest ?? { at, by },
+          taskCount: entry.taskCount - ids.length,
+        });
+        return Promise.resolve();
       },
       erase: (organizationId: string, entryIds: readonly string[]): Promise<void> => {
         this.trace.push('trash.erase');

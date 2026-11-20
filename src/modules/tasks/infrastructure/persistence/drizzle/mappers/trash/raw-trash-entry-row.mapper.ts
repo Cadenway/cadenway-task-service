@@ -43,8 +43,8 @@ export interface RawTrashEntryRow {
   /** The id of who handed it over, or `null`. */
   readonly purgeRequestedById: string | null;
 
-  /** Whether all purge events have been committed. */
-  readonly purgeStarted: boolean;
+  /** Whether the original root is no longer present. */
+  readonly rootErased: boolean;
 
   /** The prefix of the key of the root. */
   readonly rootKeyPrefix: string;

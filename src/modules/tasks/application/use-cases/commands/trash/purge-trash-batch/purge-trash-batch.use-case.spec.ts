@@ -251,19 +251,19 @@ describe('PurgeTrashBatch: one batch of the erasure of the trash of an organizat
     expect(tasks.trashEntries.size).toBe(5);
   });
 
-  it('announces an oversized entry root first once, then erases at most 500 tasks per batch', async () => {
+  it('erases and announces an oversized entry root first in batches', async () => {
     const { large, tree } = bigEntry();
     const batch = new PurgeTrashBatch(large, new InMemorySpaceDirectory());
 
     expect(await batch.execute({ organizationId: ATELIER_NORD })).toEqual({
       outcome: 'purged',
       entries: 0,
-      tasks: 0,
+      tasks: 500,
       listsPurged: 0,
       spacesPurged: 0,
     });
-    expect(large.trashEntries.get(CAD_482_ENTRY)).toMatchObject({ purgeStarted: true });
-    expect(large.tasks.has(CAD_482)).toBe(true);
+    expect(large.trashEntries.get(CAD_482_ENTRY)?.taskCount).toBe(26);
+    expect(large.tasks.has(CAD_482)).toBe(false);
     expect(large.events.map((event) => event.key)).toEqual(
       [...tree]
         .sort(
@@ -271,6 +271,7 @@ describe('PurgeTrashBatch: one batch of the erasure of the trash of an organizat
             left.depth - right.depth ||
             (left.task.id < right.task.id ? -1 : left.task.id > right.task.id ? 1 : 0),
         )
+        .slice(0, 500)
         .map(({ task }) => task.key.format()),
     );
     expect(large.events[0]).toMatchObject({ kind: 'purged', key: 'CAD-482' });
@@ -282,11 +283,6 @@ describe('PurgeTrashBatch: one batch of the erasure of the trash of an organizat
           event.actor.id === 'task-service',
       ),
     ).toBe(true);
-    expect(await batch.execute({ organizationId: ATELIER_NORD })).toMatchObject({
-      entries: 0,
-      tasks: 500,
-    });
-    expect(large.trashEntries.get(CAD_482_ENTRY)?.taskCount).toBe(26);
     expect(await batch.execute({ organizationId: ATELIER_NORD })).toMatchObject({
       entries: 1,
       tasks: 26,
@@ -302,7 +298,6 @@ describe('PurgeTrashBatch: one batch of the erasure of the trash of an organizat
 
     await batch.execute({ organizationId: ATELIER_NORD });
     await batch.execute({ organizationId: ATELIER_NORD });
-    await batch.execute({ organizationId: ATELIER_NORD });
 
     expect(large.trashEntries.has(BUGS_ENTRY)).toBe(true);
     expect(large.tasks.has(CAD_490)).toBe(true);
@@ -316,7 +311,7 @@ describe('PurgeTrashBatch: one batch of the erasure of the trash of an organizat
     expect(large.trashEntries.size).toBe(0);
   });
 
-  it('resumes an announced entry after a failed erasure without announcing it twice', async () => {
+  it('rolls back a failed first batch and emits each event once on retry', async () => {
     const { large } = bigEntry();
     let fail = true;
     const work: TasksUnitOfWork = {
@@ -326,12 +321,12 @@ describe('PurgeTrashBatch: one batch of the erasure of the trash of an organizat
             ...store,
             trash: {
               ...store.trash,
-              erasePart: (organizationId, entryId, rootId, limit) => {
+              erasePart: (organizationId, entry, ids, at, by) => {
                 if (fail) {
                   fail = false;
                   return Promise.reject(new Error('purge batch failed'));
                 }
-                return store.trash.erasePart(organizationId, entryId, rootId, limit);
+                return store.trash.erasePart(organizationId, entry, ids, at, by);
               },
             },
           }),
@@ -340,12 +335,11 @@ describe('PurgeTrashBatch: one batch of the erasure of the trash of an organizat
     };
     const batch = new PurgeTrashBatch(work, new InMemorySpaceDirectory());
 
-    await batch.execute({ organizationId: ATELIER_NORD });
     await expect(batch.execute({ organizationId: ATELIER_NORD })).rejects.toThrow(
       'purge batch failed',
     );
     expect(large.trashEntries.get(CAD_482_ENTRY)?.taskCount).toBe(526);
-    expect(large.events).toHaveLength(526);
+    expect(large.events).toHaveLength(0);
     expect(await batch.execute({ organizationId: ATELIER_NORD })).toMatchObject({
       entries: 0,
       tasks: 500,
@@ -361,7 +355,6 @@ describe('PurgeTrashBatch: one batch of the erasure of the trash of an organizat
     const { large } = bigEntry({ purgeRequest: { at: NOW, by: camille } });
     const batch = new PurgeTrashBatch(large, new InMemorySpaceDirectory());
 
-    await batch.execute({ organizationId: ATELIER_NORD });
     await batch.execute({ organizationId: ATELIER_NORD });
     await batch.execute({ organizationId: ATELIER_NORD });
 

@@ -1,5 +1,5 @@
 {
-  "id": "b965caef-a8bf-4d6f-9ebc-f643b88f4061",
+  "id": "cf2a77c9-528f-4116-b531-24949ed1f371",
   "prevId": "855a8f5f-ff0b-4613-98df-2301439046a2",
   "version": "7",
   "dialect": "postgresql",
@@ -2861,12 +2861,23 @@
           "primaryKey": false,
           "notNull": false
         },
-        "purge_started": {
-          "name": "purge_started",
-          "type": "boolean",
+        "purge_root_key": {
+          "name": "purge_root_key",
+          "type": "text",
           "primaryKey": false,
-          "notNull": true,
-          "default": false
+          "notNull": false
+        },
+        "purge_root_name": {
+          "name": "purge_root_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "purge_root_status": {
+          "name": "purge_root_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {

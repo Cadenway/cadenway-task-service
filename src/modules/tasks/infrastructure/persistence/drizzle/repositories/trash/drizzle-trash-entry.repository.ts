@@ -268,39 +268,39 @@ export class DrizzleTrashEntryRepository implements TrashEntryRepository {
     return this.many(dueEntriesStatement(organizationId, dueBefore, limit));
   }
 
-  /** Records the event phase and hides an entry until the remaining rows are erased. */
-  public async startPurge(
+  /** Locks the first tasks of the remaining forest in breadth-first order. */
+  public async lockPart(
     organizationId: string,
     entryId: string,
-    at: Date,
-    by: TaskActor,
-  ): Promise<void> {
-    const result = await this.db.execute(sql`update ${trashEntries} set purge_started = true,
-      purge_requested_at = coalesce(purge_requested_at, ${at.toISOString()}::timestamptz),
-      purge_requested_by_type = coalesce(purge_requested_by_type, ${by.type}),
-      purge_requested_by_id = coalesce(purge_requested_by_id, ${by.id})
-      where organization_id = ${organizationId}::uuid and id = ${entryId}::uuid and not purge_started`);
-    if (result.rowCount !== 1) throw new Error(`The purge of ${entryId} could not be started.`);
-  }
-
-  /** Deletes a bounded deepest-first part, retaining the entry and its root. */
-  public async erasePart(
-    organizationId: string,
-    entryId: string,
-    rootId: string,
     limit: number,
-  ): Promise<number> {
-    const selected = await this.db.execute<{ id: string }>(sql`with recursive tree (id, depth) as (
-      select id, 0 from ${tasks} where organization_id = ${organizationId}::uuid and id = ${rootId}::uuid and trash_entry_id = ${entryId}::uuid
+  ): Promise<readonly string[]> {
+    const result = await this.db.execute<{
+      id: string;
+      depth: number;
+    }>(sql`with recursive tree (id, depth) as (
+      select t.id, 0 from ${tasks} as t where t.organization_id = ${organizationId}::uuid and t.trash_entry_id = ${entryId}::uuid
+      and not exists (select 1 from ${tasks} as p where p.organization_id = t.organization_id and p.id = t.parent_id and p.trash_entry_id = t.trash_entry_id)
       union all select child.id, tree.depth + 1 from ${tasks} as child join tree on child.parent_id = tree.id
       where child.organization_id = ${organizationId}::uuid and child.trash_entry_id = ${entryId}::uuid
     ) cycle id set is_cycle using path
-    select ${tasks.id} as id from ${tasks} join (select id from tree where not is_cycle order by depth desc, id limit ${limit}) as selected on selected.id = ${tasks.id}
-    where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.trashEntryId} = ${entryId}::uuid order by ${tasks.id} for update of ${tasks}`);
-    const ids: string[] = selected.rows.map((row) => row.id);
-    if (ids.length !== limit || ids.includes(rootId))
-      throw new Error(`The tree of ${entryId} cannot supply a bounded purge batch.`);
-    const array: SQL = sql`${sql.param(ids)}::uuid[]`;
+    select ${tasks.id} as id, picked.depth as depth from ${tasks} join
+      (select id, depth from tree where not is_cycle order by depth, id limit ${limit}) as picked on picked.id = ${tasks.id}
+    where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.trashEntryId} = ${entryId}::uuid
+    order by ${tasks.id} for update of ${tasks}`);
+    return result.rows
+      .sort((a, b) => a.depth - b.depth || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .map((row) => row.id);
+  }
+
+  /** Deletes locked tasks, detaches remaining references and stores the original root. */
+  public async erasePart(
+    organizationId: string,
+    entry: TrashEntryRecord,
+    ids: readonly string[],
+    at: Date,
+    by: TaskActor,
+  ): Promise<void> {
+    const array: SQL = sql`${sql.param([...ids])}::uuid[]`;
     for (const table of [activityEntries, checklistItems, taskAssignees, taskLabels]) {
       await this.db.execute(
         sql`delete from ${table} where ${table.organizationId} = ${organizationId}::uuid and ${table.taskId} = any(${array})`,
@@ -309,16 +309,21 @@ export class DrizzleTrashEntryRepository implements TrashEntryRepository {
     await this.db.execute(
       sql`update ${tasks} set parent_id = null where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.parentId} = any(${array}) and ${tasks.id} <> all(${array})`,
     );
+    await this.db
+      .execute(sql`update ${tasks} set archived_at = null, archived_by_type = null, archived_by_id = null, archive_root_id = null, archive_root = false
+      where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.trashEntryId} = ${entry.id}::uuid and ${tasks.archiveRootId} = any(${array}) and ${tasks.id} <> all(${array})`);
     const deleted = await this.db.execute(
-      sql`delete from ${tasks} where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.trashEntryId} = ${entryId}::uuid and ${tasks.id} = any(${array})`,
+      sql`delete from ${tasks} where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.trashEntryId} = ${entry.id}::uuid and ${tasks.id} = any(${array})`,
     );
     if (deleted.rowCount !== ids.length)
-      throw new Error(`A task of ${entryId} left the purge batch.`);
+      throw new Error(`A task of ${entry.id} left the purge batch.`);
     const updated = await this.db.execute(
-      sql`update ${trashEntries} set task_count = task_count - ${ids.length} where organization_id = ${organizationId}::uuid and id = ${entryId}::uuid and purge_started and task_count > ${ids.length}`,
+      sql`update ${trashEntries} set task_count = task_count - ${ids.length},
+        purge_root_key = coalesce(purge_root_key, ${entry.root.key}), purge_root_name = coalesce(purge_root_name, ${entry.root.name}), purge_root_status = coalesce(purge_root_status, ${entry.root.status}),
+        purge_requested_at = coalesce(purge_requested_at, ${at.toISOString()}::timestamptz), purge_requested_by_type = coalesce(purge_requested_by_type, ${by.type}), purge_requested_by_id = coalesce(purge_requested_by_id, ${by.id})
+        where organization_id = ${organizationId}::uuid and id = ${entry.id}::uuid and task_count > ${ids.length}`,
     );
-    if (updated.rowCount !== 1) throw new Error(`The purge count of ${entryId} changed.`);
-    return ids.length;
+    if (updated.rowCount !== 1) throw new Error(`The purge count of ${entry.id} changed.`);
   }
 
   /**

@@ -1,1 +1,0 @@
-ALTER TABLE "trash_entries" ADD COLUMN "purge_started" boolean DEFAULT false NOT NULL;

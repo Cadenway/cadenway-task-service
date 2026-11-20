@@ -4715,11 +4715,10 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
         );
       const remaining = async (): Promise<number> =>
         countOf('select count(*)::int as total from tasks where trash_entry_id = $1', [big.id]);
-      const lastLeaf = [...parents.keys()].at(-1) ?? '';
       const waits = await lockWaits();
 
-      // The announcement waits for a leaf lock; its events and marker commit together.
-      const during = await whileHeld([taskLock(await taskIdOf(lastLeaf))], async () => {
+      // The first batch waits for the root; neither deletions nor events commit while held.
+      const during = await whileHeld([taskLock(await taskIdOf(root.key))], async () => {
         const first = run();
         await waitForLockWait(waits);
         return { first, remaining: await remaining(), purged: (await purgedOf(big.id)).length };
@@ -4731,14 +4730,12 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       expect(first).toEqual({
         outcome: 'purged',
         entries: 0,
-        tasks: 0,
+        tasks: 500,
         listsPurged: 0,
         spacesPurged: 0,
       });
-      expect(await remaining()).toBe(1200);
-      expect((await purgedOf(big.id)).map((event) => event.key)).toEqual(treeOrder);
-      expect(await run()).toMatchObject({ outcome: 'purged', entries: 0, tasks: 500 });
       expect(await remaining()).toBe(700);
+      expect((await purgedOf(big.id)).map((event) => event.key)).toEqual(treeOrder.slice(0, 500));
       await expect(
         inTenant(atelierNordId, async () => {
           await batch.execute({ organizationId: atelierNordId });
@@ -4746,7 +4743,7 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
         }),
       ).rejects.toThrow('abort purge batch');
       expect(await remaining()).toBe(700);
-      expect(await purgedOf(big.id)).toHaveLength(1200);
+      expect(await purgedOf(big.id)).toHaveLength(500);
       expect(await run()).toMatchObject({ outcome: 'purged', entries: 0, tasks: 500 });
       expect(await remaining()).toBe(200);
       expect(await run()).toMatchObject({ outcome: 'purged', entries: 1, tasks: 200 });
@@ -4760,7 +4757,14 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       for (const event of events) {
         expect(event.actor).toEqual({ type: 'system', id: 'task-service' });
         expect(event.rootKey).toBe(root.key);
-        expect(event.parentKey, event.key).toBe(parents.get(event.key) ?? null);
+        const originalParent = parents.get(event.key);
+        const eventIndex = treeOrder.indexOf(event.key);
+        const parentIndex = originalParent === undefined ? -1 : treeOrder.indexOf(originalParent);
+        const expectedParent =
+          parentIndex < 0 || Math.floor(parentIndex / 500) < Math.floor(eventIndex / 500)
+            ? null
+            : originalParent;
+        expect(event.parentKey, event.key).toBe(expectedParent);
       }
       // The younger entry was left to the next batch, untouched.
       expect(await purgedOf(smallEntry.id)).toEqual([]);
