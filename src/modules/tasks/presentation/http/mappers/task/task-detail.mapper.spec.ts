@@ -18,6 +18,7 @@ const DETAIL: TaskDetailView = {
     status: 'progress',
     cancelReason: null,
     description: null,
+    descriptionMentions: [],
     cancelNote: null,
     priority: 'haute',
     assigneeIds: [CAMILLE],

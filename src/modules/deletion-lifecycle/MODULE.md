@@ -23,6 +23,9 @@ four job queues and one daily schedule:
   `task.purge-trash` per organization with an entry due or handed over
   (`ListOrganizationsWithTrashToPurge` of tasks).
 
+A task purge cascades to watcher-override and comment rows through their task foreign keys. This
+removes live comments and tombstones; no separate comment cleanup job is registered.
+
 It owns no data, no route, no event and no rule of the trash: the entries, the erasure and the
 retention belong to tasks, the tombstones of the lists and spaces to spaces, the requests to
 access-requests. A module of its own, like member-lifecycle: access-requests depends on spaces and
@@ -151,10 +154,11 @@ entry holds at most 651 live tasks and the archived subtasks of its root, which 
 not limit.
 
 **The purge.** `PurgeTrash` calls `PurgeTrashBatch` until `none-left`, each batch in a tenant
-transaction of its own: up to 20 entries, `for update skip locked`, until 500 tasks or more, with
-their assignees, labels, checklist items and activity, set-based. Two purge jobs of one
-organization (an emptied trash and the schedule) share the entries through the skipped locks: a
-batch skips the entries the other job holds, so no entry is erased twice.
+transaction of its own, locking up to 20 entries with `FOR UPDATE SKIP LOCKED` and erasing up to
+500 tasks with their assignees, labels, checklist items and activity. An oversized entry starts
+with its root and each batch commits its own deletion, events and progress together. The final
+batch removes the entry. Two purge jobs of one organization (an emptied trash and the schedule)
+share the work through the skipped locks.
 
 **The schedule.** `ScheduleTrashPurge` pages `ListOrganizationsWithTrashToPurge` by id, 1,000 at a
 time, each page in a read-only system transaction of the tasks module (the only cross-organization

@@ -1,21 +1,29 @@
 import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
+import type { DescriptionMentionChanges } from '../../../../../domain/value-objects/mention/description-mention-changes.value-object.js';
+import type { Recurrence } from '../../../../../domain/value-objects/task/recurrence.value-object.js';
 import type { StatusKey } from '../../../../../domain/value-objects/task/status-key.value-object.js';
 import type { TaskField } from '../../../../../domain/value-objects/task/task-field.value-object.js';
 import type { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
-import type { Recurrence } from '../../../../../domain/value-objects/task/recurrence.value-object.js';
+import type { WatcherOverride } from '../../../../../domain/value-objects/watcher/watcher-override.value-object.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
 
 /**
  * Interface TaskEvents
  *
  * @description
- * The events of the tasks (`asyncapi/task-service.yaml`), appended to the outbox in the transaction
- * of the change: they leave once it commits, or never. Each carries the whole task after the change
- * but its description, its cancel note and its checklist (the cancel note travels in
- * `task.status-changed.v1` only).
+ * The task facts of `asyncapi/task-service.yaml`, appended to the outbox in the transaction of the
+ * change and published after commit. They omit the task description and checklist. The cancel
+ * note travels only in `task.status-changed.v1`.
  */
 export interface TaskEvents {
   // #region Methods
+  /** Appends recipient ID changes for the task description in the write transaction. */
+  descriptionMentionsChanged(
+    task: Task,
+    change: DescriptionMentionChanges,
+    actor: EventActor,
+  ): Promise<void>;
+
   /**
    * Method taskCreated
    *
@@ -68,9 +76,15 @@ export interface TaskEvents {
    * @param {Task} task - The task after the change.
    * @param {StatusKey} previousStatus - Its status before the change.
    * @param {EventActor} actor - Who changed it.
+   * @param {readonly string[]} watcherIds - Eligible effective watchers of the resulting task.
    * @returns {Promise<void>} Resolves once appended.
    */
-  taskStatusChanged(task: Task, previousStatus: StatusKey, actor: EventActor): Promise<void>;
+  taskStatusChanged(
+    task: Task,
+    previousStatus: StatusKey,
+    actor: EventActor,
+    watcherIds: readonly string[],
+  ): Promise<void>;
 
   /**
    * Method taskAssigned
@@ -145,9 +159,16 @@ export interface TaskEvents {
    * @param {string} entryId - The entry it came from.
    * @param {TaskKey} rootKey - The key of the root of the entry, the task's own for the root.
    * @param {EventActor} actor - Who restored it.
+   * @param {Task} postRestore - Final state after rearchiving, when applicable.
    * @returns {Promise<void>} Resolves once appended.
    */
-  taskRestored(task: Task, entryId: string, rootKey: TaskKey, actor: EventActor): Promise<void>;
+  taskRestored(
+    task: Task,
+    entryId: string,
+    rootKey: TaskKey,
+    actor: EventActor,
+    postRestore?: Task,
+  ): Promise<void>;
 
   /**
    * Method taskPurged
@@ -190,5 +211,8 @@ export interface TaskEvents {
     cadence: Exclude<Recurrence, 'none'>,
     actor: EventActor,
   ): Promise<void>;
+
+  /** Appends the committed change to an eligible account's explicit watcher override. */
+  taskWatcherChanged(task: Task, override: WatcherOverride, actor: EventActor): Promise<void>;
   // #endregion
 }

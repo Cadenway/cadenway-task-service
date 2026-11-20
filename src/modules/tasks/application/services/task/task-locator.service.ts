@@ -116,14 +116,13 @@ export class TaskLocator {
    *
    * @description
    * Checks again, on the task as a lock taken after `locate` (without its lock) read it, what
-   * `locate` checked on the unlocked read: in the trash meanwhile, its list when it moved (its
-   * visibility and `edit` on it again), archived meanwhile when refused, then `If-Match` on the
+   * `locate` checked on the unlocked read: in the trash meanwhile, its current list (its
+   * visibility and `edit` again), archived meanwhile when refused, then `If-Match` on the
    * locked version. For a writer that locks the task with others in one ordered statement instead
    * of by key first, so that its lock order is the one of the other writers of the same rows.
    *
    * @param {TasksStore} store - The store of the transaction.
    * @param {LocateRequest} request - The request `locate` answered, with `lock` false.
-   * @param {LocatedTask} located - What `locate` answered.
    * @param {Task} locked - The same task, as read under its lock.
    * @returns {Promise<LocatedTask>} The locked task and its list and space.
    * @throws {TaskRefusal} `task-not-found`, `task-trashed` with its entry, `role-insufficient`,
@@ -132,14 +131,10 @@ export class TaskLocator {
   public async confirm(
     store: TasksStore,
     request: LocateRequest,
-    located: LocatedTask,
     locked: Task,
   ): Promise<LocatedTask> {
     await this.refuseTrashed(store, request, locked);
-    const placement: ListPlacement =
-      locked.snapshot.listId === located.task.snapshot.listId
-        ? located.placement
-        : await this.see(request, locked);
+    const placement: ListPlacement = await this.see(request, locked);
     if (request.archived === 'refuse') {
       this.rules.apply((): void => {
         locked.requireChangeable();

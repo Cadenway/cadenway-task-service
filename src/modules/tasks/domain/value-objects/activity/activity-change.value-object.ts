@@ -19,6 +19,7 @@ import type { StatusKey } from '../task/status-key.value-object.js';
  */
 export type ActivityChange =
   | { readonly kind: 'create' }
+  | { readonly kind: 'comment'; readonly commentId: string; readonly commentExcerpt: string }
   | {
       readonly kind: 'status';
       readonly status: { readonly from: StatusKey; readonly to: StatusKey };

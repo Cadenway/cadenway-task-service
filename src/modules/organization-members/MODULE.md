@@ -25,9 +25,9 @@ the removal committed.
 | `public/membership/find-organization-member`       | spaces, tasks, access-requests                   |
 | `public/membership/find-organization-member-roles` | tasks                                            |
 | `public/membership/find-organization-owner`        | spaces                                           |
+| `public/membership/list-active-members`            | tasks                                            |
 
-`OrganizationMembersModule` exports `ApplyMembershipChange`, `FindOrganizationMember`,
-`FindOrganizationMemberRoles` and `FindOrganizationOwner` with their inputs and outputs.
+`OrganizationMembersModule` exports each public provider with its input and output types.
 
 - `ApplyMembershipChange` applies one member event to the copy; the handler of the
   member-lifecycle module calls it in the tenant transaction the deduplicator of the kit opened
@@ -39,7 +39,8 @@ the removal committed.
   reads `FindOrganizationMember` for the role of the actor and the eligibility of the people it
   assigns; the access-requests module reads it for the role of the requester or of the person who
   answers, and for whether a former member joined again (the clean-up of their requests).
-
+- `ListActiveMembers` pages only `userId` and `memberId` in user ID order. It selects each
+  account's least privileged active membership before applying the list reader audience.
 - `FindOrganizationMemberRoles` applies the same least-privileged rule in a single batch. The
   task module holds these memberships before locking placement for a list copy.
 
@@ -125,7 +126,7 @@ together.
   organization of the event (`TenantMembershipsUnitOfWork` joins it). It locks the row; two events
   of a new membership handled at once both insert it with `on conflict do nothing`, the second
   then locks the stored row and applies itself.
-- `FindOrganizationMember` and `FindOrganizationOwner` run in the tenant transaction of their
+- Membership queries run in the tenant transaction of their
   caller and join it, so row-level security limits them to the organization of the context, which
   each query also names.
 

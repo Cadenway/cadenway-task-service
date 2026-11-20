@@ -15,6 +15,7 @@ import {
   CreateListInternalResponse,
   CreateSpaceInternalResponse,
   CreateSubtaskInternalResponse,
+  CreateTaskCommentInternalResponse,
   CreateTaskInternalResponse,
   EmptyTrashInternalResponse,
   GetHomeInternalResponse,
@@ -68,6 +69,7 @@ import {
   TRASH_DELETED_TASKS_QUEUE,
 } from '../src/config/job-queues.js';
 import { PurgeTrashEntry } from '../src/modules/tasks/application/use-cases/commands/trash/purge-trash-entry/purge-trash-entry.use-case.js';
+import { TrashTreeLocker } from '../src/modules/tasks/application/services/trash/trash-tree-locker.service.js';
 import { PurgeTrashBatch } from '../src/modules/tasks/public/trash/purge-trash-batch.js';
 import { TrashDeletedListTasks } from '../src/modules/tasks/public/trash/trash-deleted-list-tasks.js';
 import { ScheduleTrashPurgeHandler } from '../src/modules/deletion-lifecycle/presentation/jobs/handlers/trash/schedule-trash-purge.handler.js';
@@ -2161,6 +2163,52 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
         taskKey: live.key,
       });
     });
+
+    it('applies the task trash visibility to every comment route before consulting the comment', async () => {
+      const root = await createTask(hugo, entretiens.id, { name: 'Comment visibility parent' });
+      const task = await createSubtask(root.key, { name: 'Comment visibility child' }, hugo);
+      const entry = await trashTask(root.key, hugo);
+      const path = `/internal/v1/tasks/${task.key}/comments`;
+      const item = `${path}/${randomUUID()}`;
+      const routes = [
+        { method: 'get', path },
+        { method: 'get', path: item },
+        { method: 'post', path, options: { body: { body: 'Do not store' } } },
+        {
+          method: 'patch',
+          path: item,
+          options: { body: { body: 'Do not store' }, headers: { 'If-Match': '"1"' } },
+        },
+        { method: 'delete', path: item },
+      ] as const;
+      const expectedDetails = {
+        key: task.key,
+        name: task.name,
+        entryId: entry.id,
+        rootKey: root.key,
+        trashedAt: entry.trashedAt,
+        trashedBy: { type: 'user', id: hugo.userId },
+        purgeAt: entry.purgeAt,
+      };
+      try {
+        const total = await outboxTotal();
+        const version = (await storedTask(task.key))?.version;
+        for (const route of routes) {
+          const options = 'options' in route ? route.options : undefined;
+          const restorable = await send(route.method, route.path, hugo, options);
+          expectProblem(restorable, 404, 'task.trashed', expectedDetails);
+          for (const actor of [lea, camille, chloe]) {
+            const hidden = await send(route.method, route.path, actor, options);
+            expectProblem(hidden, 404, 'task.not-found');
+            expect(bodyOf(hidden)).not.toHaveProperty('details');
+          }
+        }
+        expect(await outboxTotal()).toBe(total);
+        expect((await storedTask(task.key))?.version).toBe(version);
+      } finally {
+        await purgeEntry(entry.id, hugo);
+      }
+    });
   });
 
   describe('a task in the trash is left out of every collection and count, and of its parent', () => {
@@ -2921,13 +2969,13 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       const since = (await outboxOf('spaceId', space.space.id)).slice(eventsBefore);
       expect(since.map((row) => row.event_name)).toEqual([
         'space.restored.v1',
-        'space.access-changed.v1',
+        'space.access-republished.v1',
         'list.restored.v1',
         'list.access-changed.v1',
         'task.restored.v1',
       ]);
       expect(
-        conforms(taskEventSchemas['space.access-changed.v1'], since[1]?.payload),
+        conforms(taskEventSchemas['space.access-republished.v1'], since[1]?.payload),
       ).toMatchObject({
         actor: { type: 'user', id: camille.userId },
         version: (deleted[0]?.version ?? 0) + 1,
@@ -2993,6 +3041,17 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
         body: { text: 'Archiver les maquettes' },
       });
       expect(item.status, item.text).toBe(201);
+      const comment = await send('post', `/internal/v1/tasks/${root.key}/comments`, camille, {
+        body: { body: 'Removed with the task' },
+      });
+      expect(comment.status, comment.text).toBe(201);
+      const commentId = conforms(CreateTaskCommentInternalResponse, bodyOf(comment)).id;
+      const deletedComment = await send(
+        'delete',
+        `/internal/v1/tasks/${root.key}/comments/${commentId}`,
+        camille,
+      );
+      expect(deletedComment.status, deletedComment.text).toBe(204);
       const sibling = await createSubtask(root.key, { name: 'Écran de fin' });
       const siblingEntry = await trashTask(sibling.key);
       const siblingVersion = (await storedTask(sibling.key))?.version;
@@ -3009,6 +3068,7 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
         'task_labels',
         'checklist_items',
         'activity_entries',
+        'task_comments',
       ]) {
         expect(await rowsOf(table), table).toBeGreaterThan(0);
       }
@@ -3021,6 +3081,7 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
         'task_labels',
         'checklist_items',
         'activity_entries',
+        'task_comments',
       ]) {
         expect(await rowsOf(table), table).toBe(0);
       }
@@ -4493,8 +4554,22 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
         const total = await outboxTotal();
         const refused = await restoreRequest(earlyEntry.id);
         const unknown = await restoreRequest(randomUUID());
+        const reported = await send(
+          'post',
+          `/internal/v1/trash/entries/${earlyEntry.id}/restore?reportNotReady=true`,
+          camille,
+          { body: {} },
+        );
+        const hidden = await send(
+          'post',
+          `/internal/v1/trash/entries/${randomUUID()}/restore?reportNotReady=true`,
+          camille,
+          { body: {} },
+        );
         return {
           refused,
+          reported,
+          hidden,
           unknown,
           appended: (await outboxTotal()) - total,
           list: (await storedLists([list.id])).get(list.id),
@@ -4507,6 +4582,8 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       });
 
       expectProblem(during.refused, 404, 'trash-entry.not-found');
+      expectProblem(during.reported, 409, 'trash-entry.not-restorable-yet');
+      expectProblem(during.hidden, 404, 'trash-entry.not-found');
       expect(problemOf(during.refused)).toEqual(problemOf(during.unknown));
       expect(during.appended).toBe(0);
       expect(during.list?.deleted_at).not.toBeNull();
@@ -4529,7 +4606,7 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
   });
 
   describe('a restored space and list republish who reaches them', () => {
-    it('appends space.access-changed.v1 and list.access-changed.v1 with the grants as they stand, between the restored events, and leaves a member removed meanwhile out of every snapshot', async () => {
+    it('appends space.access-republished.v1 and list.access-changed.v1 with the grants as they stand, between the restored events, and leaves a member removed meanwhile out of every snapshot', async () => {
       const space = await createSpace(camille, {
         name: 'Atelier de service',
         prefix: 'ATS',
@@ -4599,7 +4676,7 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       const events = await eventsAfter(marker);
       expect(events.map((row) => row.event_name)).toEqual([
         'space.restored.v1',
-        'space.access-changed.v1',
+        'space.access-republished.v1',
         'list.restored.v1',
         'list.access-changed.v1',
         'task.restored.v1',
@@ -4607,7 +4684,7 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       const [spaceRestored, spaceAccess, listRestored, listAccess] = events;
       const spaceEvent = conforms(taskEventSchemas['space.restored.v1'], spaceRestored?.payload);
       const spaceGrants = conforms(
-        taskEventSchemas['space.access-changed.v1'],
+        taskEventSchemas['space.access-republished.v1'],
         spaceAccess?.payload,
       );
       const listEvent = conforms(taskEventSchemas['list.restored.v1'], listRestored?.payload);
@@ -4630,8 +4707,8 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
     });
   });
 
-  describe('the purge erases an oversized entry whole, alone in its batch, root first', () => {
-    it('erases an entry of more than 500 tasks, archived subtasks included, alone and whole in one batch committed at once, with task.purged.v1 root first then by depth then by id, and the younger due entry in the next batch', async () => {
+  describe('the purge resumes oversized entries in bounded batches', () => {
+    it('erases 1,200 tasks root first with their events in bounded batches and resumes after a rollback', async () => {
       const list = await createList(camille, produit.space.id, { name: 'Gros dossier' });
       const root = await createTask(camille, list.id, {
         name: 'Dossier de reprise',
@@ -4657,6 +4734,23 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       }
       const big = await trashTask(root.key);
       expect(big.subtaskCount).toBe(525);
+      const synthetic = await asSystem<{ readonly key: string }>(
+        `with generated as (select uuidv7() as id, 800000000 + n as number from generate_series(1, 674) as n)
+         insert into tasks (organization_id, id, key_prefix, key_number, space_id, list_id, parent_id,
+           name, status, priority, created_by_type, created_by_id, archived_at, archived_by_type,
+           archived_by_id, archive_root_id, archive_root, trash_entry_id, version)
+         select root.organization_id, generated.id, root.key_prefix, generated.number, root.space_id,
+           root.list_id, root.id, 'Archived task', 'todo', 'basse', 'user', $3, now(), 'user', $3,
+           generated.id, true, $2::uuid, 3
+         from tasks as root cross join generated where root.organization_id = $1 and root.id = $4
+         returning key_prefix || '-' || key_number as key`,
+        [atelierNordId, big.id, camille.userId, await taskIdOf(root.key)],
+      );
+      for (const row of synthetic) parents.set(row.key, root.key);
+      await asSystem(
+        'update trash_entries set task_count = 1200 where organization_id = $1 and id = $2',
+        [atelierNordId, big.id],
+      );
       const small = await createTask(camille, list.id, {
         name: 'Petit dossier',
         subtasks: [{ name: 'Un' }, { name: 'Deux' }],
@@ -4671,25 +4765,30 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
         `update trash_entries set trashed_at = trashed_at - interval '31 days' where id = $1`,
         [smallEntry.id],
       );
-      // The order of the events: the root, then each depth, then the ids.
+      // Each batch traverses the remaining forest in breadth-first order, then by id.
       const members = await asSystem<{ readonly key: string; readonly id: string }>(
         `select key_prefix || '-' || key_number as key, id::text as id from tasks
           where organization_id = $1 and trash_entry_id = $2`,
         [atelierNordId, big.id],
       );
-      expect(members).toHaveLength(526);
+      expect(members).toHaveLength(1200);
+      const remainingKeys = new Set(members.map((member) => member.key));
       const depthOf = (key: string): number => {
         const parent = parents.get(key);
-        return parent === undefined ? 0 : 1 + depthOf(parent);
+        return parent === undefined || !remainingKeys.has(parent) ? 0 : 1 + depthOf(parent);
       };
-      const treeOrder = [...members]
-        .sort(
-          (left, right) =>
-            depthOf(left.key) - depthOf(right.key) ||
-            (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
-        )
-        .map((member) => member.key);
-      expect(treeOrder[0]).toBe(root.key);
+      const nextKeys = (): string[] =>
+        members
+          .filter((member) => remainingKeys.has(member.key))
+          .sort(
+            (left, right) =>
+              depthOf(left.key) - depthOf(right.key) ||
+              (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
+          )
+          .slice(0, 500)
+          .map((member) => member.key);
+      const firstKeys = nextKeys();
+      expect(firstKeys[0]).toBe(root.key);
       const batch = service().get(PurgeTrashBatch, { strict: false });
       const run = (): Promise<unknown> =>
         runWithOrganizationContext(contextOf(atelierNordId), () =>
@@ -4697,38 +4796,99 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
         );
       const remaining = async (): Promise<number> =>
         countOf('select count(*)::int as total from tasks where trash_entry_id = $1', [big.id]);
-      const lastLeaf = [...parents.keys()].at(-1) ?? '';
       const waits = await lockWaits();
 
-      // The batch needs a leaf another transaction holds: it waits with nothing of the entry
-      // erased or announced, since the whole entry commits at once.
-      const during = await whileHeld([taskLock(await taskIdOf(lastLeaf))], async () => {
+      // The first batch waits for the root; neither deletions nor events commit while held.
+      const during = await whileHeld([taskLock(await taskIdOf(root.key))], async () => {
         const first = run();
         await waitForLockWait(waits);
         return { first, remaining: await remaining(), purged: (await purgedOf(big.id)).length };
       });
       const first = await during.first;
 
-      expect(during.remaining).toBe(526);
+      expect(during.remaining).toBe(1200);
       expect(during.purged).toBe(0);
       expect(first).toEqual({
         outcome: 'purged',
-        entries: 1,
-        tasks: 526,
+        entries: 0,
+        tasks: 500,
         listsPurged: 0,
         spacesPurged: 0,
       });
+      expect(await remaining()).toBe(700);
+      expect((await purgedOf(big.id)).map((event) => event.key)).toEqual(firstKeys);
+      expect(await storedTasks(firstKeys)).toEqual(new Map());
+      expect(
+        await countOf('select count(*)::int as total from trash_entries where id = $1', [big.id]),
+      ).toBe(1);
+      for (const key of firstKeys) remainingKeys.delete(key);
+      const secondKeys = nextKeys();
+      await expect(
+        inTenant(atelierNordId, async (client) => {
+          expect(await batch.execute({ organizationId: atelierNordId })).toMatchObject({
+            outcome: 'purged',
+            entries: 0,
+            tasks: 500,
+          });
+          const tasks = await client.query(
+            'select count(*)::int as total from tasks where trash_entry_id = $1',
+            [big.id],
+          );
+          const events = await client.query(
+            `select payload ->> 'key' as key from outbox_events
+              where event_name = 'task.purged.v1' and payload ->> 'entryId' = $1 order by id`,
+            [big.id],
+          );
+          const erased = await client.query(
+            `select count(*)::int as total from tasks
+              where trash_entry_id = $1 and key_prefix || '-' || key_number = any($2::text[])`,
+            [big.id, secondKeys],
+          );
+          expect(tasks.rows).toEqual([{ total: 200 }]);
+          expect(erased.rows).toEqual([{ total: 0 }]);
+          expect(events.rows).toEqual([...firstKeys, ...secondKeys].map((key) => ({ key })));
+          throw new Error('abort purge batch');
+        }),
+      ).rejects.toThrow('abort purge batch');
+      expect(await remaining()).toBe(700);
+      expect((await purgedOf(big.id)).map((event) => event.key)).toEqual(firstKeys);
+      expect((await storedTasks(secondKeys)).size).toBe(500);
+      expect(
+        await countOf('select count(*)::int as total from trash_entries where id = $1', [big.id]),
+      ).toBe(1);
+      expect(await run()).toMatchObject({ outcome: 'purged', entries: 0, tasks: 500 });
+      expect(await remaining()).toBe(200);
+      expect((await purgedOf(big.id)).map((event) => event.key)).toEqual([
+        ...firstKeys,
+        ...secondKeys,
+      ]);
+      expect(await storedTasks(secondKeys)).toEqual(new Map());
+      expect(
+        await countOf('select count(*)::int as total from trash_entries where id = $1', [big.id]),
+      ).toBe(1);
+      for (const key of secondKeys) remainingKeys.delete(key);
+      const lastKeys = nextKeys();
+      expect(await run()).toMatchObject({ outcome: 'purged', entries: 1, tasks: 200 });
       expect(await remaining()).toBe(0);
       expect(
         await countOf('select count(*)::int as total from trash_entries where id = $1', [big.id]),
       ).toBe(0);
       expect(await storedTasks([root.key, ...parents.keys()])).toEqual(new Map());
       const events = await purgedOf(big.id);
+      const treeOrder = [...firstKeys, ...secondKeys, ...lastKeys];
       expect(events.map((event) => event.key)).toEqual(treeOrder);
+      expect(new Set(treeOrder).size).toBe(1200);
       for (const event of events) {
         expect(event.actor).toEqual({ type: 'system', id: 'task-service' });
         expect(event.rootKey).toBe(root.key);
-        expect(event.parentKey, event.key).toBe(parents.get(event.key) ?? null);
+        const originalParent = parents.get(event.key);
+        const eventIndex = treeOrder.indexOf(event.key);
+        const parentIndex = originalParent === undefined ? -1 : treeOrder.indexOf(originalParent);
+        const expectedParent =
+          parentIndex < 0 || Math.floor(parentIndex / 500) < Math.floor(eventIndex / 500)
+            ? null
+            : originalParent;
+        expect(event.parentKey, event.key).toBe(expectedParent);
       }
       // The younger entry was left to the next batch, untouched.
       expect(await purgedOf(smallEntry.id)).toEqual([]);
@@ -5387,6 +5547,10 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       expect(
         conforms(taskEventSchemas['task.restored.v1'], restoredEvent?.payload).parentKey,
       ).toBeNull();
+      expect(conforms(taskEventSchemas['task.restored.v1'], restoredEvent?.payload)).toMatchObject({
+        archivedAt: restored.task.archivedAt,
+        archivedBy: restored.task.archivedBy,
+      });
     });
   });
 
@@ -5520,9 +5684,8 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
 
         expect(removed.status, `${order}: ${removed.text}`).toBe(204);
         if (order === 'deletion first') {
-          // The target list is a tombstone: the move reads it as a list it does not see.
-          expect(moved.status, `${order}: ${moved.text}`).toBe(422);
-          expect(bodyOf(moved)).toMatchObject({ code: 'task.list-invalid' });
+          // The deleted space hides the source as well as the target; source refusal comes first.
+          expectProblem(moved, 404, 'task.not-found');
         } else {
           expect(moved.status, `${order}: ${moved.text}`).toBe(200);
         }
@@ -5845,6 +6008,59 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       expect(await eventsOf('list.deleted.v1', 'listId', lowered.id)).toEqual([]);
     });
 
+    it('refuses trash when a list grant is revoked or lowered while the task lock waits', async () => {
+      const revoked = await createList(camille, produit.space.id, { name: 'Trash grant revoked' });
+      const lowered = await createList(camille, produit.space.id, { name: 'Trash grant lowered' });
+      await grant(camille, 'lists', revoked.id, nadia.userId, 'edit');
+      await grant(camille, 'lists', lowered.id, rose.userId, 'edit');
+      const first = await createTask(camille, revoked.id, { name: 'Revoked task' });
+      const second = await createTask(camille, lowered.id, { name: 'Lowered task' });
+
+      const notFound = await revokedWhileQueued(
+        [taskLock(await taskIdOf(first.key)), ...listGrantChanged(revoked.id, nadia.userId, null)],
+        () => trashRequest(first.key, nadia),
+      );
+      const insufficient = await revokedWhileQueued(
+        [
+          taskLock(await taskIdOf(second.key)),
+          ...listGrantChanged(lowered.id, rose.userId, 'view'),
+        ],
+        () => trashRequest(second.key, rose),
+      );
+
+      expectProblem(notFound, 404, 'task.not-found');
+      expectProblem(insufficient, 403, 'access.role-insufficient');
+      expect((await storedTask(first.key))?.trash_entry_id).toBeNull();
+      expect((await storedTask(second.key))?.trash_entry_id).toBeNull();
+    });
+
+    it('refuses archive, unarchive and move when the list grant is revoked while the task lock waits', async () => {
+      const destination = await createList(camille, produit.space.id, { name: 'Move destination' });
+      await grant(camille, 'lists', destination.id, nadia.userId, 'edit');
+      for (const action of ['archive', 'unarchive', 'move'] as const) {
+        const list = await createList(camille, produit.space.id, { name: `Revoked ${action}` });
+        await grant(camille, 'lists', list.id, nadia.userId, 'edit');
+        const task = await createTask(camille, list.id, { name: `Waiting for ${action}` });
+        if (action === 'unarchive') await archiveTask(task.key);
+        const before = await storedTask(task.key);
+        const beforeEvents = await outboxOf('key', task.key);
+
+        const refused = await revokedWhileQueued(
+          [taskLock(await taskIdOf(task.key)), ...listGrantChanged(list.id, nadia.userId, null)],
+          () =>
+            action === 'move'
+              ? send('patch', `/internal/v1/tasks/${task.key}`, nadia, {
+                  body: { listId: destination.id },
+                })
+              : send('post', `/internal/v1/tasks/${task.key}/${action}`, nadia, { body: {} }),
+        );
+
+        expectProblem(refused, 404, 'task.not-found');
+        expect(await storedTask(task.key), action).toEqual(before);
+        expect(await outboxOf('key', task.key), action).toEqual(beforeEvents);
+      }
+    });
+
     it('refuses "Supprimer définitivement" with 404 trash-entry.not-found when the space of the entry was made private, or the list grant of a guest revoked, while the erasure waited for the entry, and erases nothing', async () => {
       const open = await createSpace(camille, {
         name: 'Corbeille bientôt privée',
@@ -6152,7 +6368,214 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
   });
 
   describe('a deletion of a task and the job of its deleted list lock its tree in one order', () => {
-    it('trashes a parent created after its subtask while the job of its deleted list waits for the same tree, without a deadlock: a deletion that read the list live and queued first moves the tree, and one started after the list was deleted answers 404 task.not-found at once', async () => {
+    it('retries when the task is restored between the tree query and fallback lookup', async () => {
+      const list = await createList(camille, produit.space.id, { name: 'Retry restored task' });
+      const task = await createTask(camille, list.id, { name: 'Restored between reads' });
+      let entered: () => void = () => undefined;
+      let queryEmpty: () => void = () => undefined;
+      let continueTree: () => void = () => undefined;
+      let continueFallback: () => void = () => undefined;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const empty = new Promise<void>((resolve) => {
+        queryEmpty = resolve;
+      });
+      const treeGate = new Promise<void>((resolve) => {
+        continueTree = resolve;
+      });
+      const fallbackGate = new Promise<void>((resolve) => {
+        continueFallback = resolve;
+      });
+      const locker = new TrashTreeLocker();
+      const original = locker.lock.bind(locker);
+      let calls = 0;
+      let firstTreeCount = -1;
+      const spy = vi.spyOn(TrashTreeLocker.prototype, 'lock').mockImplementation(async function (
+        ...args
+      ) {
+        calls += 1;
+        if (calls !== 1) return original(...args);
+        entered();
+        await treeGate;
+        const result = await original(...args);
+        firstTreeCount = result.trees.length;
+        queryEmpty();
+        await fallbackGate;
+        return result;
+      });
+      try {
+        const waiting = trashRequest(task.key);
+        await started;
+        const waits = await lockWaits();
+        const concurrent = await whileHeld([taskLock(await taskIdOf(task.key))], async () => {
+          const pending = trashRequest(task.key);
+          await waitForLockWait(waits);
+          return { pending };
+        });
+        const entry = entryAnswer(await concurrent.pending);
+        continueTree();
+        await Promise.race([
+          empty,
+          waiting.then((response) => {
+            throw new Error(
+              `Trash returned before its tree lookup completed: ${String(response.status)}`,
+            );
+          }),
+        ]);
+        expect(firstTreeCount).toBe(0);
+        await restoreEntry(entry.id);
+        continueFallback();
+        entryAnswer(await waiting);
+        expect(calls).toBeGreaterThan(2);
+      } finally {
+        continueTree();
+        continueFallback();
+        spy.mockRestore();
+      }
+    });
+
+    it('serializes trash and archive of an older child under a newer parent in both orders', async () => {
+      for (const order of ['trash first', 'archive first'] as const) {
+        const list = await createList(camille, produit.space.id, { name: `Archive race ${order}` });
+        const child = await createTask(camille, list.id, { name: 'Older child' });
+        const parent = await createTask(camille, list.id, { name: 'Newer parent' });
+        await patchTask(child.key, { parentKey: parent.key });
+        const childId = await taskIdOf(child.key);
+        const parentId = await taskIdOf(parent.key);
+        expect(childId < parentId).toBe(true);
+        const waits = await lockWaits();
+        const raced = await whileHeld([taskLock(parentId)], async () => {
+          const first =
+            order === 'trash first'
+              ? trashRequest(parent.key)
+              : send('post', `/internal/v1/tasks/${parent.key}/archive`, camille, { body: {} });
+          await waitForLockWait(waits);
+          const second =
+            order === 'trash first'
+              ? send('post', `/internal/v1/tasks/${parent.key}/archive`, camille, { body: {} })
+              : trashRequest(parent.key);
+          await waitForLockWait(waits + 1);
+          return { first, second };
+        });
+        const [first, second] = await Promise.all([raced.first, raced.second]);
+        expect(first.status, first.text).toBe(200);
+        if (order === 'trash first') expectProblem(second, 404, 'task.trashed');
+        else expectProblem(second, 409, 'task.archived');
+      }
+    });
+
+    it('serializes trash and move of an older child under a newer parent in both orders', async () => {
+      const target = await createList(camille, produit.space.id, { name: 'Move race destination' });
+      for (const order of ['trash first', 'move first'] as const) {
+        const list = await createList(camille, produit.space.id, { name: `Move race ${order}` });
+        const child = await createTask(camille, list.id, { name: 'Older child' });
+        const parent = await createTask(camille, list.id, { name: 'Newer parent' });
+        await patchTask(child.key, { parentKey: parent.key });
+        expect((await taskIdOf(child.key)) < (await taskIdOf(parent.key)), order).toBe(true);
+        const trash = (): Promise<request.Response> => trashRequest(parent.key);
+        const move = (): Promise<request.Response> =>
+          send('patch', `/internal/v1/tasks/${child.key}`, camille, {
+            body: { listId: target.id },
+          });
+
+        const [first, second] = await behindTask(
+          child.key,
+          order === 'trash first' ? trash : move,
+          order === 'trash first' ? move : trash,
+        );
+        const trashed = order === 'trash first' ? first : second;
+        const moved = order === 'trash first' ? second : first;
+        const entry = entryAnswer(trashed);
+        expect((await storedTask(parent.key))?.trash_entry_id, order).toBe(entry.id);
+        if (order === 'trash first') {
+          expectProblem(moved, 404, 'task.trashed', { key: child.key, rootKey: parent.key });
+          expect((await storedTask(child.key))?.trash_entry_id, order).toBe(entry.id);
+        } else {
+          expect(moved.status, moved.text).toBe(200);
+          expect(await storedTask(child.key), order).toMatchObject({
+            list_id: target.id,
+            parent_key: null,
+            trash_entry_id: null,
+          });
+        }
+      }
+    });
+
+    it('serializes trash and unarchive of an older child under a newer parent in both orders', async () => {
+      for (const order of ['trash first', 'unarchive first'] as const) {
+        const list = await createList(camille, produit.space.id, {
+          name: `Unarchive race ${order}`,
+        });
+        const child = await createTask(camille, list.id, { name: 'Older child' });
+        const parent = await createTask(camille, list.id, { name: 'Newer parent' });
+        await patchTask(child.key, { parentKey: parent.key });
+        await archiveTask(child.key);
+        expect((await taskIdOf(child.key)) < (await taskIdOf(parent.key)), order).toBe(true);
+        const trash = (): Promise<request.Response> => trashRequest(parent.key);
+        const unarchive = (): Promise<request.Response> =>
+          send('post', `/internal/v1/tasks/${child.key}/unarchive`, camille, { body: {} });
+
+        const [first, second] = await behindTask(
+          child.key,
+          order === 'trash first' ? trash : unarchive,
+          order === 'trash first' ? unarchive : trash,
+        );
+        const trashed = order === 'trash first' ? first : second;
+        const restored = order === 'trash first' ? second : first;
+        const entry = entryAnswer(trashed);
+        const stored = await storedTask(child.key);
+        expect(stored?.trash_entry_id, order).toBe(entry.id);
+        if (order === 'trash first') {
+          expectProblem(restored, 404, 'task.trashed', { key: child.key, rootKey: parent.key });
+          expect(stored?.archived_at, order).not.toBeNull();
+        } else {
+          expect(restored.status, restored.text).toBe(200);
+          expect(stored?.archived_at, order).toBeNull();
+        }
+      }
+    });
+
+    it('unarchives a child while its trashed parent waits for erasure, detaching without waiting for the parent lock', async () => {
+      const source = await createList(camille, produit.space.id, { name: 'Archived child list' });
+      const target = await createList(camille, produit.space.id, { name: 'Parent trash list' });
+      const child = await createTask(camille, source.id, { name: 'Older archived child' });
+      const parent = await createTask(camille, source.id, { name: 'Newer parent to erase' });
+      await patchTask(child.key, { parentKey: parent.key });
+      await archiveTask(child.key);
+      await patchTask(parent.key, { listId: target.id });
+      const entry = await trashTask(parent.key);
+      const parentId = await taskIdOf(parent.key);
+      const waits = await lockWaits();
+
+      const raced = await whileHeld([taskLock(parentId)], async () => {
+        const erasure = purgeRequest(entry.id);
+        await waitForLockWait(waits);
+        const unarchived = await send(
+          'post',
+          `/internal/v1/tasks/${child.key}/unarchive`,
+          camille,
+          {
+            body: {},
+          },
+        );
+        return { erasure, unarchived };
+      });
+
+      expect(raced.unarchived.status, raced.unarchived.text).toBe(200);
+      expect(await storedTask(child.key)).toMatchObject({
+        list_id: source.id,
+        parent_key: null,
+        archived_at: null,
+        trash_entry_id: null,
+      });
+      const erased = await raced.erasure;
+      expect(erased.status, erased.text).toBe(204);
+      expect(await storedTask(parent.key)).toBeUndefined();
+      expect(await purgedOf(entry.id)).toHaveLength(1);
+    });
+
+    it('trashes a parent created after its subtask while the task deletion and list job contend without a deadlock', async () => {
       for (const order of ['task deletion first', 'job first'] as const) {
         const list = await createList(camille, produit.space.id, {
           name: `Arbre inversé, ${order}`,
@@ -6198,13 +6621,8 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
         const entryId = stored.get(parent.key)?.trash_entry_id ?? null;
         expect(entryId, order).not.toBeNull();
         expect(stored.get(child.key)?.trash_entry_id, order).toBe(entryId);
-        if (order === 'task deletion first') {
-          expect(entryAnswer(trashed)).toMatchObject({ id: entryId, subtaskCount: 1 });
-          expect(moved, order).toMatchObject({ outcome: 'trashed', entries: 0 });
-        } else {
-          expectProblem(trashed, 404, 'task.not-found');
-          expect(moved, order).toMatchObject({ outcome: 'trashed', entries: 1 });
-        }
+        expectProblem(trashed, 404, 'task.not-found');
+        expect(moved, order).toMatchObject({ outcome: 'trashed', entries: 1 });
         expect(
           (await trashedOf(entryId ?? '')).map((event) => event.key),
           order,

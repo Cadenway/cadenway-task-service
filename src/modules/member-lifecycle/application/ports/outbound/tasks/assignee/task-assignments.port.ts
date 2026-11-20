@@ -1,11 +1,12 @@
 import type { TaskUnassignmentBatch } from '../../../../models/clean-up/task-unassignment-batch.model.js';
+import type { WatcherOverrideRemovalBatch } from '../../../../models/clean-up/watcher-override-removal-batch.model.js';
 
 /**
  * Interface TaskAssignments
  *
  * @description
  * What the clean-up after a member removal does to the tasks of the tasks module, owned by this
- * module and bound to the public operation of tasks.
+ * module and bound to the public cleanup operations of tasks.
  */
 export interface TaskAssignments {
   // #region Methods
@@ -29,5 +30,12 @@ export interface TaskAssignments {
     userId: string,
     afterTaskId: string | null,
   ): Promise<TaskUnassignmentBatch>;
+
+  /** Clears one bounded batch of explicit watcher overrides, stopping if the member rejoined. */
+  clearWatcherOverridesBatch(
+    organizationId: string,
+    userId: string,
+    afterTaskId: string | null,
+  ): Promise<WatcherOverrideRemovalBatch>;
   // #endregion
 }

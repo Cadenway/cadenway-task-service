@@ -39,6 +39,7 @@ import { TaskKey } from '../../domain/value-objects/task/task-key.value-object.j
 import type { TaskActor } from '../../domain/value-objects/task/task-actor.value-object.js';
 import type { TaskState } from '../../domain/value-objects/task/task-state.value-object.js';
 import type { TrashHandOver } from '../../domain/value-objects/trash/trash-hand-over.value-object.js';
+import type { DescriptionMentionChanges } from '../../domain/value-objects/mention/description-mention-changes.value-object.js';
 import type { EventActor } from '../models/actor/event-actor.model.js';
 import type { ArchivePosition } from '../models/archive/archive-position.model.js';
 import type { ActivityPosition } from '../models/activity/activity-position.model.js';
@@ -153,6 +154,13 @@ export const CLOTURES = '019a7100-0000-7000-8000-000000000005';
 /** An event the use cases appended to the outbox, as plain data. */
 export type RecordedEvent =
   | {
+      readonly kind: 'descriptionMentionsChanged';
+      readonly key: string;
+      readonly version: number;
+      readonly change: DescriptionMentionChanges;
+      readonly actor: EventActor;
+    }
+  | {
       readonly kind: 'created';
       readonly key: string;
       readonly version: number;
@@ -196,6 +204,7 @@ export type RecordedEvent =
       readonly version: number;
       readonly previousStatus: StatusKey;
       readonly actor: EventActor;
+      readonly watcherIds: readonly string[];
     }
   | {
       readonly kind: 'assigned';
@@ -243,6 +252,9 @@ export interface StoredTrashEntry extends TrashEntryDraft {
 
   /** The hand-over to the purge, `null` while in the trash. */
   readonly purgeRequest: TrashHandOver | null;
+
+  /** Original root after its row is erased. */
+  readonly rootSnapshot: TrashEntryRecord['root'] | null;
   // #endregion
 }
 
@@ -280,6 +292,7 @@ export function storedEntry(overrides: Partial<StoredTrashEntry> = {}): StoredTr
     trashedAt: TRASHED_AT,
     trashedBy: { type: 'user', id: CAMILLE },
     purgeRequest: null,
+    rootSnapshot: null,
     ...overrides,
   };
 }
@@ -2663,14 +2676,13 @@ export class InMemoryTasks implements TasksUnitOfWork {
     // An entry with its root as the statements join it; an entry whose root is gone is not read.
     const recordOf = (entry: StoredTrashEntry): TrashEntryRecord[] => {
       const root: TaskState | undefined = tasks.get(entry.rootTaskId);
-      return root?.organizationId !== entry.organizationId
-        ? []
-        : [
-            {
-              ...entry,
-              root: { key: root.key.format(), name: root.name, status: root.status },
-            },
-          ];
+      const liveRoot: TaskState | undefined =
+        root?.organizationId === entry.organizationId ? root : undefined;
+      const shown: TrashEntryRecord['root'] | null =
+        liveRoot === undefined
+          ? entry.rootSnapshot
+          : { key: liveRoot.key.format(), name: liveRoot.name, status: liveRoot.status };
+      return shown === null ? [] : [{ ...entry, root: shown, rootErased: root === undefined }];
     };
     const entriesOf = (organizationId: string): StoredTrashEntry[] =>
       [...entries.values()].filter(
@@ -2696,6 +2708,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
               ...draft,
               id: this.nextId('019a7006'),
               purgeRequest: null,
+              rootSnapshot: null,
             };
             entries.set(entry.id, entry);
             return recordOf(entry);
@@ -2807,6 +2820,60 @@ export class InMemoryTasks implements TasksUnitOfWork {
             .flatMap(recordOf),
         );
       },
+      lockPart: (organizationId, entryId, limit): Promise<readonly string[]> => {
+        const rows = inOrganization(organizationId).filter((row) => row.trash?.entryId === entryId);
+        const depth = (row: TaskState): number => {
+          let current: TaskState = row;
+          let level = 0;
+          while (current.parentId !== null) {
+            const parent = rows.find((candidate) => candidate.id === current.parentId);
+            if (parent === undefined) break;
+            if (level >= rows.length) throw new Error('Invalid purge tree');
+            current = parent;
+            level += 1;
+          }
+          return level;
+        };
+        const selected = rows
+          .sort((left, right) => depth(left) - depth(right) || compareText(left.id, right.id))
+          .slice(0, limit);
+        return Promise.resolve(selected.map((row) => row.id));
+      },
+      erasePart: (organizationId, entry, ids, at, by): Promise<void> => {
+        const erased = new Set(ids);
+        for (const [id, item] of activity)
+          if (item.organizationId === organizationId && erased.has(item.taskId))
+            activity.delete(id);
+        for (const row of inOrganization(organizationId)) {
+          if (erased.has(row.id)) tasks.delete(row.id);
+          else if (
+            (row.parentId !== null && erased.has(row.parentId)) ||
+            (row.trash?.entryId === entry.id &&
+              row.archive !== null &&
+              erased.has(row.archive.rootId))
+          )
+            tasks.set(row.id, {
+              ...row,
+              ...(row.parentId !== null && erased.has(row.parentId)
+                ? { parentId: null, parentKey: null }
+                : {}),
+              ...(row.trash?.entryId === entry.id &&
+              row.archive !== null &&
+              erased.has(row.archive.rootId)
+                ? { archive: null }
+                : {}),
+            });
+        }
+        const stored = entries.get(entry.id);
+        if (stored === undefined) return Promise.reject(new Error('Invalid purge entry'));
+        entries.set(entry.id, {
+          ...stored,
+          rootSnapshot: entry.root,
+          purgeRequest: stored.purgeRequest ?? { at, by },
+          taskCount: entry.taskCount - ids.length,
+        });
+        return Promise.resolve();
+      },
       erase: (organizationId: string, entryIds: readonly string[]): Promise<void> => {
         this.trace.push('trash.erase');
         const erased: ReadonlySet<string> = new Set(
@@ -2851,7 +2918,11 @@ export class InMemoryTasks implements TasksUnitOfWork {
       trash,
       dependencies: this.dependencies,
       copies: {
-        listSources: (organizationId: string, listId: string, limit: number): Promise<readonly Task[]> => {
+        listSources: (
+          organizationId: string,
+          listId: string,
+          limit: number,
+        ): Promise<readonly Task[]> => {
           this.trace.push('copies.listSources');
           return Promise.resolve(
             inOrganization(organizationId)
@@ -2865,11 +2936,13 @@ export class InMemoryTasks implements TasksUnitOfWork {
           this.trace.push('copies.insertChecklist');
           const state: TaskState = {
             ...task.snapshot,
-            checklist: source.map((item: ChecklistItemState, index: number): ChecklistItemState => ({
-              ...item,
-              id: this.nextId('019a7300'),
-              position: index + 1,
-            })),
+            checklist: source.map(
+              (item: ChecklistItemState, index: number): ChecklistItemState => ({
+                ...item,
+                id: this.nextId('019a7300'),
+                position: index + 1,
+              }),
+            ),
           };
           tasks.set(state.id, state);
           return Promise.resolve(Task.restore(state));
@@ -2992,9 +3065,13 @@ export class InMemoryTasks implements TasksUnitOfWork {
           Promise.resolve(liveChildrenOf(organizationId, parentId).length),
         lockArchive: (organizationId: string, rootId: string): Promise<readonly Task[]> => {
           this.trace.push('tasks.lockArchive');
+          const parentId: string | null = tasks.get(rootId)?.parentId ?? null;
           return Promise.resolve(
             inOrganization(organizationId)
-              .filter((row: TaskState): boolean => archiveOf(row) === rootId)
+              .filter(
+                (row: TaskState): boolean =>
+                  row.trash === null && (archiveOf(row) === rootId || row.id === parentId),
+              )
               .sort((left: TaskState, right: TaskState): number => left.id.localeCompare(right.id))
               // The members are locked without their checklists, as the statement loads them.
               .map((row: TaskState): Task => Task.restore({ ...row, checklist: [] })),
@@ -3153,12 +3230,14 @@ export class InMemoryTasks implements TasksUnitOfWork {
             }
           }
           return Promise.resolve(
-            nodes.sort(
-              (left: TrashTreeNode, right: TrashTreeNode): number =>
-                compareText(left.rootId, right.rootId) ||
-                left.depth - right.depth ||
-                compareText(left.id, right.id),
-            ).slice(0, readLimit),
+            nodes
+              .sort(
+                (left: TrashTreeNode, right: TrashTreeNode): number =>
+                  compareText(left.rootId, right.rootId) ||
+                  left.depth - right.depth ||
+                  compareText(left.id, right.id),
+              )
+              .slice(0, readLimit),
           );
         },
         lockUntrashedIds: (
@@ -3292,6 +3371,13 @@ export class InMemoryTasks implements TasksUnitOfWork {
           );
         },
       },
+      watcherOverrides: {
+        list: () => Promise.resolve([]),
+        set: () => Promise.resolve(),
+        lockTaskIdsForMember: () => Promise.resolve([]),
+        removeForMember: () => Promise.resolve(0),
+      },
+      savepoint: (work) => work(),
       activity: {
         latestOfKind: (
           organizationId: string,
@@ -3322,6 +3408,29 @@ export class InMemoryTasks implements TasksUnitOfWork {
         },
         remove: (_organizationId: string, entryId: string): Promise<void> => {
           activity.delete(entryId);
+          return Promise.resolve();
+        },
+        changeComment: (
+          organizationId: string,
+          taskId: string,
+          commentId: string,
+          excerpt: string | null,
+        ): Promise<void> => {
+          for (const entry of activity.values()) {
+            if (
+              entry.organizationId === organizationId &&
+              entry.taskId === taskId &&
+              entry.change.kind === 'comment' &&
+              entry.change.commentId === commentId
+            ) {
+              if (excerpt === null) activity.delete(entry.id);
+              else
+                activity.set(entry.id, {
+                  ...entry,
+                  change: { ...entry.change, commentExcerpt: excerpt },
+                });
+            }
+          }
           return Promise.resolve();
         },
         pageOfTask: (
@@ -3418,6 +3527,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
           task: Task,
           previousStatus: StatusKey,
           actor: EventActor,
+          watcherIds: readonly string[],
         ): Promise<void> => {
           events.push({
             kind: 'statusChanged',
@@ -3425,6 +3535,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
             version: task.snapshot.version,
             previousStatus,
             actor,
+            watcherIds,
           });
           return Promise.resolve();
         },
@@ -3501,6 +3612,18 @@ export class InMemoryTasks implements TasksUnitOfWork {
           });
           return Promise.resolve();
         },
+        descriptionMentionsChanged: (task, change, actor): Promise<void> => {
+          this.trace.push('events.descriptionMentionsChanged');
+          events.push({
+            kind: 'descriptionMentionsChanged',
+            key: task.snapshot.key.format(),
+            version: task.snapshot.version,
+            change,
+            actor,
+          });
+          return Promise.resolve();
+        },
+        taskWatcherChanged: () => Promise.resolve(),
         taskPurged: (
           task: Task,
           entryId: string,

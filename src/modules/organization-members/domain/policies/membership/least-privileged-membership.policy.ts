@@ -10,7 +10,7 @@ import type { MemberRole } from '../../value-objects/membership/member-role.valu
  *
  * @type {Readonly<Record<MemberRole, number>>}
  */
-const privilegeOf: Readonly<Record<MemberRole, number>> = Object.freeze({
+export const privilegeOf: Readonly<Record<MemberRole, number>> = Object.freeze({
   guest: 0,
   member: 1,
   admin: 2,

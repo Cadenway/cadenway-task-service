@@ -14,5 +14,8 @@ export interface CheckTaskAccessInput {
 
   /** The key of the task. */
   readonly taskKey: string;
+
+  /** Join an existing write transaction without requesting read-only access. */
+  readonly joinWrite?: boolean;
   // #endregion
 }

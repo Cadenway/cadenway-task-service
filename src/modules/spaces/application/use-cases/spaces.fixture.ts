@@ -256,7 +256,7 @@ export type RecordedEvent =
       readonly actor: EventActor;
     }
   | {
-      readonly kind: 'spaceAccessChanged';
+      readonly kind: 'spaceAccessChanged' | 'spaceAccessRepublished';
       readonly spaceId: string;
       readonly version: number;
       readonly grants: readonly GrantEntry[];
@@ -2092,6 +2092,22 @@ export class InMemorySpaces implements SpacesUnitOfWork {
         ): Promise<void> => {
           events.push({
             kind: 'spaceAccessChanged',
+            spaceId: space.snapshot.id,
+            version: space.snapshot.version,
+            grants: entries,
+            changedUserIds,
+            actor,
+          });
+          return Promise.resolve();
+        },
+        spaceAccessRepublished: (
+          space: Space,
+          entries: readonly GrantEntry[],
+          changedUserIds: readonly string[],
+          actor: EventActor,
+        ): Promise<void> => {
+          events.push({
+            kind: 'spaceAccessRepublished',
             spaceId: space.snapshot.id,
             version: space.snapshot.version,
             grants: entries,

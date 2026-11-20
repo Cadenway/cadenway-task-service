@@ -3687,6 +3687,7 @@ describe('the access model: grants, the switch, the effective role and access re
             grantsRemoved: 134,
             requestsDropped: 3,
             tasksUnassigned: assigned,
+            watcherOverridesRemoved: 0,
             batches: 4,
           },
         },
@@ -3739,6 +3740,7 @@ describe('the access model: grants, the switch, the effective role and access re
           grantsRemoved: 0,
           requestsDropped: 0,
           tasksUnassigned: 0,
+          watcherOverridesRemoved: 0,
           batches: 0,
         },
       });

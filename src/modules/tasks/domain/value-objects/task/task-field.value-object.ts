@@ -2,14 +2,13 @@
  * Type TaskField
  *
  * @description
- * A member of a task a change may change, the names `changed` of `task.updated.v1` lists today
- * (`asyncapi/task-service.yaml:922-924`). `completedAt` is never named: it follows from the status.
- *
- * @type {'name' | 'description' | 'status' | 'cancelReason' | 'cancelNote' | 'priority' | 'assigneeIds' | 'dueDate' | 'startDate' | 'estimateMinutes' | 'labels' | 'listId' | 'spaceId' | 'parentKey' | 'checklist' | 'dependencies' | 'milestone' | 'recurrence' | 'nextOccurrenceKey'}
+ * A field named by `changed` in `task.updated.v1`.
+ * `completedAt` follows from the status and has no separate entry.
  */
 export type TaskField =
   | 'name'
   | 'description'
+  | 'descriptionMentions'
   | 'status'
   | 'cancelReason'
   | 'cancelNote'
@@ -23,6 +22,7 @@ export type TaskField =
   | 'spaceId'
   | 'parentKey'
   | 'checklist'
+  | 'watchers'
   | 'dependencies'
   | 'milestone'
   | 'recurrence'
@@ -32,13 +32,15 @@ export type TaskField =
  * Constant TASK_FIELDS
  *
  * @description
- * The task's own fields in the order used to assemble an aggregate update.
+ * The task's own fields in aggregate-update order. Watcher and dependency changes have
+ * separate write paths.
  *
  * @type {readonly TaskField[]}
  */
 export const TASK_FIELDS: readonly TaskField[] = Object.freeze([
   'name',
   'description',
+  'descriptionMentions',
   'status',
   'cancelReason',
   'cancelNote',

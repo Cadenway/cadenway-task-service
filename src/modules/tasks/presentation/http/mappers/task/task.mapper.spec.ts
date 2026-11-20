@@ -23,6 +23,7 @@ const CAD_482: TaskView = {
   status: 'progress',
   cancelReason: null,
   description: '## Contexte',
+  descriptionMentions: [],
   cancelNote: null,
   priority: 'haute',
   assigneeIds: [CAMILLE, HUGO],

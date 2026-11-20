@@ -44,6 +44,7 @@ function rowOf(state: TaskState, overrides: Partial<TaskRow> = {}): TaskRow {
     parentId: state.parentId,
     name: state.name,
     description: state.description,
+    descriptionMentions: null,
     status: state.status,
     cancelReason: state.cancelReason,
     cancelNote: state.cancelNote,
@@ -83,6 +84,26 @@ describe('toTask: a stored row becomes the task it stores', () => {
       monthlyAnchorDay: null,
       nextOccurrenceKey: null,
     });
+  });
+
+  it('ignores stale spans from before a legacy writer replaced the description', () => {
+    const original = cad482();
+    const edit = original.update(
+      {
+        description: '@Inès',
+        descriptionMentions: [{ userId: INES, start: 0, end: 5 }],
+      },
+      ALL_STATUSES,
+      NOW,
+    );
+    const written = rowOf(edit.task.snapshot, toTaskUpdate(edit.task));
+
+    expect(toTask(written, null, [], [], []).snapshot.descriptionMentions).toEqual([
+      { userId: INES, start: 0, end: 5 },
+    ]);
+    expect(
+      toTask({ ...written, description: '@Jean' }, null, [], [], []).snapshot.descriptionMentions,
+    ).toEqual([]);
   });
 
   it('restores a subtask with the key of its parent', () => {

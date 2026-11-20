@@ -34,4 +34,3 @@ describe('the duplication body guard', () => {
     },
   );
 });
-

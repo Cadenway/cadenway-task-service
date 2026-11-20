@@ -95,7 +95,7 @@ function shapeOf(refusal: TaskRefusalReason): ProblemShape {
       return {
         status: 403,
         code: 'access.role-insufficient',
-        details: { role: refusal.role, requiredRole: 'edit' },
+        details: { role: refusal.role, requiredRole: refusal.requiredRole ?? 'edit' },
       };
     case 'task-archived':
       return { status: 409, code: 'task.archived', details: { key: refusal.key } };
@@ -103,16 +103,10 @@ function shapeOf(refusal: TaskRefusalReason): ProblemShape {
       return {
         status: 404,
         code: 'task.trashed',
-        details: {
-          key: refusal.key,
-          name: refusal.name,
-          entryId: refusal.entryId,
-          rootKey: refusal.rootKey,
-          trashedAt: refusal.trashedAt.toISOString(),
-          trashedBy: { type: refusal.trashedBy.type, id: refusal.trashedBy.id },
-          purgeAt: refusal.purgeAt.toISOString(),
-        },
+        details: { ...TaskRefusal.trashDetails(refusal) },
       };
+    case 'trash-entry-not-restorable-yet':
+      return { status: 409, code: 'trash-entry.not-restorable-yet' };
     case 'trash-entry-not-found':
       return { status: 404, code: 'trash-entry.not-found' };
     case 'trash-writes-disabled':
@@ -130,6 +124,23 @@ function shapeOf(refusal: TaskRefusalReason): ProblemShape {
       return { status: 422, code: 'task.cancel-reason-required' };
     case 'cancel-reason-unexpected':
       return { status: 422, code: 'task.cancel-reason-unexpected' };
+    case 'description-mentions-invalid':
+      return {
+        status: 400,
+        code: 'request.invalid',
+        details: {
+          issues: [
+            {
+              in: 'body',
+              path: 'descriptionMentions',
+              code: 'invalid_value',
+              message: 'Invalid description mention spans.',
+            },
+          ],
+        },
+      };
+    case 'mention-recipient-invalid':
+      return { status: 422, code: 'mention.recipient-invalid' };
     case 'assignee-invalid':
       return {
         status: 422,
@@ -150,6 +161,10 @@ function shapeOf(refusal: TaskRefusalReason): ProblemShape {
       return { status: 409, code: 'recurrence.already-spawned' };
     case 'recurrence-date-out-of-range':
       return { status: 422, code: 'recurrence.date-out-of-range' };
+    case 'watcher-recipient-invalid':
+      return { status: 422, code: 'watcher.recipient-invalid' };
+    case 'watcher-limit-reached':
+      return { status: 422, code: 'watcher.limit-reached' };
     case 'start-date-invalid':
       return { status: 422, code: 'task.start-date-invalid' };
     case 'list-invalid':

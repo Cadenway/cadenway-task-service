@@ -98,6 +98,14 @@ export function listRoleOf(
   return listRoleAsIfNotDeletedOf(space, list, viewer, grants);
 }
 
+/** The implicit role of non-guests from organization access, independent of explicit grants. */
+export function organizationListRoleOf(
+  space: AccessSpace,
+  list: Pick<TaskListState, 'organizationAccess'>,
+): AccessRole | null {
+  return space.visibility === 'organization' && list.organizationAccess ? 'edit' : null;
+}
+
 /**
  * Function listRoleAsIfNotDeletedOf
  *
@@ -133,7 +141,7 @@ export function listRoleAsIfNotDeletedOf(
   return highestRole([
     grants.list,
     space.ownerUserId === viewer.userId ? 'edit' : null,
-    space.visibility === 'organization' && list.organizationAccess ? 'edit' : null,
+    organizationListRoleOf(space, list),
     grants.space,
   ]);
 }

@@ -5,6 +5,7 @@ import type { GrantRemovalBatch } from '../../../../models/clean-up/grant-remova
 import type { RequestDropBatch } from '../../../../models/clean-up/request-drop-batch.model.js';
 import type { SpaceHandoverBatch } from '../../../../models/clean-up/space-handover-batch.model.js';
 import type { TaskUnassignmentBatch } from '../../../../models/clean-up/task-unassignment-batch.model.js';
+import type { WatcherOverrideRemovalBatch } from '../../../../models/clean-up/watcher-override-removal-batch.model.js';
 import type { MemberAccessRequests } from '../../../../ports/outbound/access-requests/access-request/member-access-requests.port.js';
 import type { MemberGrants } from '../../../../ports/outbound/spaces/access/member-grants.port.js';
 import type { PrivateSpaceHandover } from '../../../../ports/outbound/spaces/space/private-space-handover.port.js';
@@ -27,10 +28,11 @@ const NOTHING = {
   grantsRemoved: 0,
   requestsDropped: 0,
   tasksUnassigned: 0,
+  watcherOverridesRemoved: 0,
   batches: 0,
 } as const;
 
-/** The scripted answers of the four steps. */
+/** The scripted answers of the cleanup steps. */
 interface Scripts {
   // #region Properties
   /** The answers of the handover of the spaces. */
@@ -44,6 +46,9 @@ interface Scripts {
 
   /** The answers of the unassignment from the tasks. */
   readonly tasks?: readonly (TaskUnassignmentBatch | Error)[];
+
+  /** The answers of the removal of explicit watcher overrides. */
+  readonly watchers?: readonly (WatcherOverrideRemovalBatch | Error)[];
   // #endregion
 }
 
@@ -72,6 +77,7 @@ function scripted(scripts: Scripts, onCall: (call: string) => void = () => undef
   const grantAnswers = [...(scripts.grants ?? [])];
   const requestAnswers = [...(scripts.requests ?? [])];
   const taskAnswers = [...(scripts.tasks ?? [])];
+  const watcherAnswers = [...(scripts.watchers ?? [])];
   const next = <TBatch>(answers: (TBatch | Error)[], fallback: TBatch): Promise<TBatch> => {
     const answer: TBatch | Error = answers.shift() ?? fallback;
     return answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer);
@@ -104,6 +110,14 @@ function scripted(scripts: Scripts, onCall: (call: string) => void = () => undef
       record(`tasks:${organizationId}:${userId}:${afterTaskId ?? 'first'}`);
       return next<TaskUnassignmentBatch>(taskAnswers, { outcome: 'none-left' });
     },
+    clearWatcherOverridesBatch: (
+      organizationId: string,
+      userId: string,
+      afterTaskId: string | null,
+    ) => {
+      record(`watchers:${organizationId}:${userId}:${afterTaskId ?? 'first'}`);
+      return next<WatcherOverrideRemovalBatch>(watcherAnswers, { outcome: 'none-left' });
+    },
   };
   return { calls, useCase: new CleanUpRemovedMember(spaces, grants, requests, assignments) };
 }
@@ -134,6 +148,10 @@ describe('CleanUpRemovedMember: spaces, then grants, then access requests, then 
         { outcome: 'unassigned', unassigned: 500, lastTaskId: 'task-500' },
         { outcome: 'unassigned', unassigned: 200, lastTaskId: 'task-700' },
       ],
+      watchers: [
+        { outcome: 'removed', removed: 500, lastTaskId: 'task-550' },
+        { outcome: 'removed', removed: 3, lastTaskId: 'task-553' },
+      ],
     });
 
     const output = await useCase.execute(input);
@@ -145,7 +163,8 @@ describe('CleanUpRemovedMember: spaces, then grants, then access requests, then 
       grantsRemoved: 103,
       requestsDropped: 7,
       tasksUnassigned: 700,
-      batches: 7,
+      watcherOverridesRemoved: 503,
+      batches: 9,
     });
     expect(calls).toEqual([
       `spaces:${ATELIER_NORD}:${HUGO}`,
@@ -159,6 +178,9 @@ describe('CleanUpRemovedMember: spaces, then grants, then access requests, then 
       `tasks:${ATELIER_NORD}:${HUGO}:first`,
       `tasks:${ATELIER_NORD}:${HUGO}:task-500`,
       `tasks:${ATELIER_NORD}:${HUGO}:task-700`,
+      `watchers:${ATELIER_NORD}:${HUGO}:first`,
+      `watchers:${ATELIER_NORD}:${HUGO}:task-550`,
+      `watchers:${ATELIER_NORD}:${HUGO}:task-553`,
     ]);
   });
 
@@ -172,7 +194,13 @@ describe('CleanUpRemovedMember: spaces, then grants, then access requests, then 
 
     await useCase.execute(input);
 
-    expect([...new Set(stepsOf(calls))]).toEqual(['spaces', 'grants', 'requests', 'tasks']);
+    expect([...new Set(stepsOf(calls))]).toEqual([
+      'spaces',
+      'grants',
+      'requests',
+      'tasks',
+      'watchers',
+    ]);
   });
 
   it('goes on after a short batch, and stops only on an empty one', async () => {
@@ -203,6 +231,7 @@ describe('CleanUpRemovedMember: spaces, then grants, then access requests, then 
       'tasks',
       'tasks',
       'tasks',
+      'watchers',
     ]);
   });
 
@@ -232,6 +261,7 @@ describe('CleanUpRemovedMember: spaces, then grants, then access requests, then 
       `grants:${ATELIER_NORD}:${HUGO}`,
       `requests:${ATELIER_NORD}:${HUGO}`,
       `tasks:${ATELIER_NORD}:${HUGO}:first`,
+      `watchers:${ATELIER_NORD}:${HUGO}:first`,
     ]);
   });
 });
@@ -304,6 +334,27 @@ describe('CleanUpRemovedMember: the job stops for good once the person is a memb
 
     expect(output).toMatchObject({ outcome: 'member-again', tasksUnassigned: 500, batches: 1 });
     expect(calls.filter((call) => call.startsWith('tasks'))).toHaveLength(2);
+    expect(stepsOf(calls)).not.toContain('watchers');
+  });
+
+  it('preserves the remaining overrides when the member rejoins between watcher batches', async () => {
+    const { calls, useCase } = scripted({
+      watchers: [
+        { outcome: 'removed', removed: 500, lastTaskId: 'task-500' },
+        { outcome: 'member-again' },
+        { outcome: 'removed', removed: 1, lastTaskId: 'task-501' },
+      ],
+    });
+
+    await expect(useCase.execute(input)).resolves.toMatchObject({
+      outcome: 'member-again',
+      watcherOverridesRemoved: 500,
+      batches: 1,
+    });
+    expect(calls.filter((call) => call.startsWith('watchers'))).toEqual([
+      `watchers:${ATELIER_NORD}:${HUGO}:first`,
+      `watchers:${ATELIER_NORD}:${HUGO}:task-500`,
+    ]);
   });
 });
 

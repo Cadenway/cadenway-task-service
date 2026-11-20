@@ -1,3 +1,4 @@
+import type { DescriptionMention } from '../mention/description-mention.value-object.js';
 import type { CancelReason } from './cancel-reason.value-object.js';
 import type { PriorityKey } from './priority-key.value-object.js';
 import type { Recurrence } from './recurrence.value-object.js';
@@ -92,6 +93,9 @@ export interface TaskDraft {
    * @readonly
    */
   readonly description: string | null;
+
+  /** Structured mentions of the description in their supplied order. */
+  readonly descriptionMentions: readonly DescriptionMention[];
 
   /**
    * Property status

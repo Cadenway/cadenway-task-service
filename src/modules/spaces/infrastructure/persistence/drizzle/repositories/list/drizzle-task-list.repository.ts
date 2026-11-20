@@ -229,7 +229,12 @@ export class DrizzleTaskListRepository implements TaskListRepository {
     const rows: TaskListRow[] = await this.db
       .select()
       .from(taskLists)
-      .where(and(eq(taskLists.organizationId, organizationId), inArray(taskLists.id, [...ids])))
+      .where(
+        and(
+          eq(taskLists.organizationId, organizationId),
+          sql`${taskLists.id} = any(${sql.param([...ids])}::uuid[])`,
+        ),
+      )
       .orderBy(asc(taskLists.id))
       .for(mode === 'update' ? 'no key update' : mode === 'delete' ? 'update' : 'share');
     return rows.map(toTaskList);
@@ -256,7 +261,12 @@ export class DrizzleTaskListRepository implements TaskListRepository {
     const rows: TaskListRow[] = await this.db
       .select()
       .from(taskLists)
-      .where(and(eq(taskLists.organizationId, organizationId), inArray(taskLists.id, [...ids])));
+      .where(
+        and(
+          eq(taskLists.organizationId, organizationId),
+          sql`${taskLists.id} = any(${sql.param([...ids])}::uuid[])`,
+        ),
+      );
     return rows.map(toTaskList);
   }
 

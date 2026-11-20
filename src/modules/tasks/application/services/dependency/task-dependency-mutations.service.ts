@@ -123,7 +123,7 @@ export class TaskDependencyMutations {
     );
     if (lockedAnchor === undefined) throw new TaskRefusal({ reason: 'task-not-found' });
     if (lockedAnchor.isInTrash) {
-      await this.locator.confirm(store, this.request(input, viewer), anchor, lockedAnchor);
+      await this.locator.confirm(store, this.request(input, viewer), lockedAnchor);
     }
     const lockedOther: Task | undefined = tasks.find(
       (task: Task) => task.snapshot.id === other.task.snapshot.id,

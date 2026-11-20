@@ -1,3 +1,4 @@
+import type { DescriptionMention } from '../../../domain/value-objects/mention/description-mention.value-object.js';
 import type { StatusKey } from '../../../domain/value-objects/task/status-key.value-object.js';
 import type { PriorityKey } from '../../../domain/value-objects/task/priority-key.value-object.js';
 import type { CancelReason } from '../../../domain/value-objects/task/cancel-reason.value-object.js';
@@ -34,6 +35,9 @@ export interface TaskView {
 
   /** Description, Markdown. */
   readonly description: string | null;
+
+  /** Structured mentions in the stored description. */
+  readonly descriptionMentions: readonly DescriptionMention[];
 
   /** Note of the cancellation, `null` unless cancelled. */
   readonly cancelNote: string | null;

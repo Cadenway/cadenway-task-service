@@ -70,6 +70,7 @@ describe('DuplicateTask', () => {
       startDate: '2026-11-12',
       dueDate: '2026-11-12',
       description: '@Camille stays as Markdown text',
+      descriptionMentions: [{ userId: CAMILLE, start: 0, end: 8 }],
       assigneeIds: [CAMILLE, INES, NADIA],
       checklist: taskState().checklist,
     });
@@ -86,6 +87,7 @@ describe('DuplicateTask', () => {
       updatedAt: NOW,
       version: 1,
       description: source.description,
+      descriptionMentions: [],
       assigneeIds: [CAMILLE],
       subtaskCounts: { total: 0, closed: 0 },
       checklist: source.checklist.map(({ text, done }) => ({ text, done })),

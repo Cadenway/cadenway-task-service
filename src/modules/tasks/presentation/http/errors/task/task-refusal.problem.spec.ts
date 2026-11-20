@@ -51,6 +51,12 @@ describe('answerRefusals', () => {
         purgeAt: '2026-12-06T16:20:00.000Z',
       },
     ],
+    [
+      { reason: 'trash-entry-not-restorable-yet' },
+      409,
+      'trash-entry.not-restorable-yet',
+      undefined,
+    ],
     [{ reason: 'trash-entry-not-found' }, 404, 'trash-entry.not-found', undefined],
     [{ reason: 'trash-writes-disabled' }, 404, 'http.not-found', undefined],
     [{ reason: 'version-mismatch', version: 13 }, 412, 'request.version-mismatch', { version: 13 }],
@@ -83,8 +89,8 @@ describe('answerRefusals', () => {
     [{ reason: 'subtask-limit-reached' }, 422, 'task.subtask-limit-reached', undefined],
   ];
 
-  it('covers the twenty-four reasons of a refusal', () => {
-    expect(new Set(answers.map(([refusal]) => refusal.reason)).size).toBe(24);
+  it('covers the twenty-five reasons of a refusal', () => {
+    expect(new Set(answers.map(([refusal]) => refusal.reason)).size).toBe(25);
   });
 
   it('answers a write of the trash while its switch is off exactly as a route the service lacks', async () => {

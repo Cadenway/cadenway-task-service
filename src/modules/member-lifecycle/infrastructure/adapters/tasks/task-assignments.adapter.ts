@@ -2,15 +2,17 @@ import type {
   UnassignRemovedMember,
   UnassignRemovedMemberOutput,
 } from '../../../../tasks/public/assignee/unassign-removed-member.js';
+import type { RemoveMemberWatcherOverrides } from '../../../../tasks/public/watcher/remove-member-watcher-overrides.js';
 import type { TaskUnassignmentBatch } from '../../../application/models/clean-up/task-unassignment-batch.model.js';
+import type { WatcherOverrideRemovalBatch } from '../../../application/models/clean-up/watcher-override-removal-batch.model.js';
 import type { TaskAssignments } from '../../../application/ports/outbound/tasks/assignee/task-assignments.port.js';
 
 /**
  * Class TasksTaskAssignments
  *
  * @description
- * `TaskAssignments` on the public operation `UnassignRemovedMember` of the tasks module, which
- * opens one tenant transaction per batch in the organization context of the clean-up job.
+ * `TaskAssignments` on the public assignment and watcher cleanup operations of tasks, which
+ * open one tenant transaction per batch in the organization context of the job.
  */
 export class TasksTaskAssignments implements TaskAssignments {
   // #region Properties
@@ -24,6 +26,9 @@ export class TasksTaskAssignments implements TaskAssignments {
    * @readonly
    */
   private readonly unassignRemovedMember: UnassignRemovedMember;
+
+  /** One batch of the removal of a former member's explicit watcher overrides. */
+  private readonly removeMemberWatcherOverrides: RemoveMemberWatcherOverrides;
   // #endregion
 
   // #region Constructor
@@ -31,13 +36,18 @@ export class TasksTaskAssignments implements TaskAssignments {
    * Constructor
    *
    * @description
-   * Takes the public operation of the tasks module.
+   * Takes the public operations of the tasks module.
    *
    * @param {UnassignRemovedMember} unassignRemovedMember - One batch of the unassignment.
+   * @param {RemoveMemberWatcherOverrides} removeMemberWatcherOverrides - One watcher batch.
    * @constructor
    */
-  public constructor(unassignRemovedMember: UnassignRemovedMember) {
+  public constructor(
+    unassignRemovedMember: UnassignRemovedMember,
+    removeMemberWatcherOverrides: RemoveMemberWatcherOverrides,
+  ) {
     this.unassignRemovedMember = unassignRemovedMember;
+    this.removeMemberWatcherOverrides = removeMemberWatcherOverrides;
   }
   // #endregion
 
@@ -66,6 +76,15 @@ export class TasksTaskAssignments implements TaskAssignments {
     return outcome.outcome === 'unassigned'
       ? { outcome: 'unassigned', unassigned: outcome.unassigned, lastTaskId: outcome.lastTaskId }
       : outcome;
+  }
+
+  /** Runs one watcher cleanup batch for this former member. */
+  public async clearWatcherOverridesBatch(
+    organizationId: string,
+    userId: string,
+    afterTaskId: string | null,
+  ): Promise<WatcherOverrideRemovalBatch> {
+    return this.removeMemberWatcherOverrides.execute({ organizationId, userId, afterTaskId });
   }
   // #endregion
 }

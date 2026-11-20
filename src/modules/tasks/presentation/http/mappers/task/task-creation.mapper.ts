@@ -28,6 +28,14 @@ export function toCreateTaskInput(
     listId: listId.toLowerCase(),
     name: body.name,
     description: body.description ?? null,
+    ...(body.descriptionMentions === undefined
+      ? {}
+      : {
+          descriptionMentions: body.descriptionMentions.map((span) => ({
+            ...span,
+            userId: span.userId.toLowerCase(),
+          })),
+        }),
     status: body.status,
     cancelReason: body.cancelReason ?? null,
     cancelNote: body.cancelNote ?? null,

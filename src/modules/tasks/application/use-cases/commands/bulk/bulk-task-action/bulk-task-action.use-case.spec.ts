@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import type { TaskState } from '../../../../../domain/value-objects/task/task-state.value-object.js';
 import { BulkTaskExpansionError } from '../../../../models/bulk/bulk-task-expansion.model.js';
+import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
 import {
   ATELIER_NORD,
@@ -10,6 +11,7 @@ import {
   CAD_482,
   CAD_483,
   CAMILLE,
+  HUGO,
   INES,
   InMemorySpaceDirectory,
   InMemoryTasks,
@@ -197,6 +199,51 @@ describe('BulkTaskAction', () => {
     );
     expect(tasks.events.filter(({ kind }) => kind === 'occurrenceCreated')).toHaveLength(1);
     expect(tasks.events.filter(({ kind }) => kind === 'statusChanged')).toHaveLength(2);
+  });
+
+  it('retries a new watcher with the full membership lock set before recording a milestone', async () => {
+    const { tasks, members, spaces, trace } = fixture([
+      taskState({
+        milestone: true,
+        status: 'todo',
+        estimateMinutes: null,
+        dueDate: '2026-11-12',
+        startDate: '2026-11-12',
+      }),
+    ]);
+    const list = vi
+      .fn<TasksStore['watcherOverrides']['list']>()
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([{ userId: HUGO, following: true }]);
+    const unit: TasksUnitOfWork = {
+      run: (work) =>
+        tasks.run((store) =>
+          work({
+            ...store,
+            watcherOverrides: { ...store.watcherOverrides, list },
+          }),
+        ),
+      runReadOnly: (work, snapshot) => tasks.runReadOnly(work, snapshot),
+    };
+    const useCase = new BulkTaskAction(TRASH_WRITES_ON, unit, members, spaces);
+
+    await useCase.execute({
+      ...request({ type: 'status', status: 'done' }),
+      selection: [{ taskKey: 'CAD-482', version: 12 }],
+    });
+
+    const taskLocks = trace.filter((call) => call === 'tasks.lockByIds');
+    expect(taskLocks).toHaveLength(2);
+    const watcherLock = trace.indexOf(`members.roleOf:${HUGO}:lock`);
+    expect(watcherLock).toBeGreaterThan(trace.indexOf('tasks.lockByIds'));
+    expect(watcherLock).toBeLessThan(trace.lastIndexOf('tasks.lockByIds'));
+    expect(tasks.events.filter(({ kind }) => kind !== 'updated')).toEqual([
+      expect.objectContaining({ kind: 'statusChanged', watcherIds: [CAMILLE, HUGO, INES].sort() }),
+      expect.objectContaining({
+        kind: 'milestoneReached',
+        watcherIds: [CAMILLE, HUGO, INES].sort(),
+      }),
+    ]);
   });
 
   it('makes one copy per selected key and keeps the live parent of the copied subtask', async () => {

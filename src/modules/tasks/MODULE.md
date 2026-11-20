@@ -52,16 +52,29 @@ the archive and the deletion of a list; this module never writes a list.
 
 ## Public entry points
 
-| Entry point                                           | Consumers                                             |
-| ----------------------------------------------------- | ----------------------------------------------------- |
-| `tasks.module`                                        | member-lifecycle, access-requests, deletion-lifecycle |
-| `public/assignee/unassign-removed-member`             | member-lifecycle                                      |
-| `public/task/find-task-reference`                     | access-requests                                       |
-| `public/task/find-task-references`                    | access-requests                                       |
-| `public/trash/trash-deleted-list-tasks`               | deletion-lifecycle                                    |
-| `public/trash/purge-trash-batch`                      | deletion-lifecycle                                    |
-| `public/trash/list-organizations-with-trash-to-purge` | deletion-lifecycle                                    |
-| `public/trash/list-untrashed-task-ids`                | deletion-lifecycle                                    |
+| Entry point                                           | Consumers                                                            |
+| ----------------------------------------------------- | -------------------------------------------------------------------- |
+| `tasks.module`                                        | member-lifecycle, access-requests, deletion-lifecycle, task-comments |
+| `public/assignee/unassign-removed-member`             | member-lifecycle                                                     |
+| `public/watcher/remove-member-watcher-overrides`      | member-lifecycle                                                     |
+| `public/task/record-comment-activity`                 | task-comments                                                        |
+| `public/task/begin-comment`                           | task-comments                                                        |
+| `public/task/resolve-comment-task`                    | task-comments                                                        |
+| `public/task/find-task-reference`                     | access-requests                                                      |
+| `public/task/find-task-references`                    | access-requests                                                      |
+| `public/trash/trash-deleted-list-tasks`               | deletion-lifecycle                                                   |
+| `public/trash/purge-trash-batch`                      | deletion-lifecycle                                                   |
+| `public/trash/list-organizations-with-trash-to-purge` | deletion-lifecycle                                                   |
+| `public/trash/list-untrashed-task-ids`                | deletion-lifecycle                                                   |
+
+`BeginComment` and `RecordCommentActivity` are exported to task-comments for an authorized task
+version advance and comment activity creation, excerpt update or removal inside the caller's transaction.
+For comment writes, `BeginComment` locks supplied recipient memberships after the actor, then the task,
+and holds its space and list before recipient access is checked; access revocations wait for commit. `ResolveCommentTask`
+checks reply-author visibility without taking membership locks after the task lock.
+
+`ResolveCommentTask` is exported to task-comments. It checks task visibility and resolves the
+internal task ID in the read transaction of the caller, without exposing an inaccessible task.
 
 `TasksModule` exports the `FindTaskReference` and `FindTaskReferences` providers, which the
 access-requests module reads the task of a request with: `{ organizationId, taskKey }` to a
@@ -88,6 +101,13 @@ member from their tasks, in a tenant transaction of its own of the organization 
 The clean-up job of member-lifecycle calls it once the private spaces of the former member were
 handed over, from `afterTaskId: null`, then after each `lastTaskId`, until `none-left` or
 `member-again`.
+
+`RemoveMemberWatcherOverrides` takes the same organization, account and task-id cursor. One
+tenant transaction locks up to 500 tasks with an explicit override for the account, in task-id
+order, including archived and trashed tasks. It reads membership after the locks, returns
+`member-again` if the account rejoined, or deletes that account's overrides. The next batch
+starts after the last locked task. The task and its version stay unchanged and cleanup emits no
+event: the membership copy already removes the former member from the effective audience.
 
 `TasksModule` exports the three batches of the deletion-lifecycle jobs; the first two join the
 tenant transaction of their caller (`TasksUnitOfWork.run`) or open their own:
@@ -129,25 +149,30 @@ from a deletion, `task.purge-trash` (`{ traceparent? }`, no key) from "Vider la 
 
 ## Owned tables
 
-| Table               | Key                                     | Organization scoping                                     |
-| ------------------- | --------------------------------------- | -------------------------------------------------------- |
-| `tasks`             | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
-| `task_assignees`    | `(organization_id, task_id, user_id)`   | `organization_id`, policy of the kit, enabled and forced |
-| `task_labels`       | `(organization_id, task_id, label_key)` | `organization_id`, policy of the kit, enabled and forced |
-| `checklist_items`   | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
-| `activity_entries`  | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
-| `task_dependencies` | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
-| `trash_entries`     | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
+| Table                    | Key                                     | Organization scoping                                     |
+| ------------------------ | --------------------------------------- | -------------------------------------------------------- |
+| `tasks`                  | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
+| `task_assignees`         | `(organization_id, task_id, user_id)`   | `organization_id`, policy of the kit, enabled and forced |
+| `task_labels`            | `(organization_id, task_id, label_key)` | `organization_id`, policy of the kit, enabled and forced |
+| `checklist_items`        | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
+| `activity_entries`       | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
+| `task_dependencies`      | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
+| `trash_entries`          | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
+| `task_watcher_overrides` | `(organization_id, task_id, user_id)`   | `organization_id`, policy of the kit, enabled and forced |
 
 Created by `migrations/0003_tasks.sql`, which forces the five policies by hand;
 `migrations/0004_task_queries.sql` adds the two indexes below, as plain `CREATE INDEX` (see Decisions);
 `migrations/0006_archives.sql` adds the archive of a task (expand only: every existing task stays
 live); `migrations/0007_trash.sql` adds the trash (expand only: every existing task stays out of
-it).
+it). The collaboration migration adds the watcher override table.
 
 - `task_dependencies`: one oriented blocker-to-blocked pair per organization. Both endpoint
   foreign keys include the organization and cascade on physical purge. Indexes starting with
   each endpoint within the organization support directed traversal and incident paging.
+- `task_watcher_overrides`: one explicit follow or unfollow per account and task; the task foreign key
+  cascades on purge, and the tenant-first user index supports member cleanup. The watcher policy
+  combines the human creator and active assignees with up to 100 explicit overrides. A candidate
+  counts only while their membership and list visibility permit a read.
 - `trash_entries`: one row per entry, a task and its subtasks deleted together. `root_task_id` and
   `list_id` carry no foreign key (the entry and its tasks are erased together; the lists belong to
   spaces); `parent_key` is the parent of the root as it read when deleted, `null` for a top-level
@@ -440,12 +465,55 @@ id)` (the `position` of the lists spaces answers), and its cursor carries that p
   unknown space gives `404 space.not-found`. For list tasks and task groups, `milestone=true` selects
   milestones and `false` selects ordinary tasks. Both values bind the cursor to the filter.
 
+- Creation and `PATCH` store structured description mentions as Unicode code-point spans. A description
+  or spans patch requires `If-Match`. Changing the description without supplying replacement spans
+  clears them. Invalid spans give `400 request.invalid`. Supplied recipients, including guests, must
+  be current members who can read the resulting list. A recipient refusal gives
+  `422 mention.recipient-invalid` after the edit-role check. The stored spans carry a digest of the
+  text they annotate. Reads omit stale spans if a previous service version replaced that text.
+
+### Collaboration operations in the installed contract
+
+| Internal operation                                         | Serving file and state                                                       |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `GET /internal/v1/tasks/{taskKey}/comments`                | `task-comments/presentation/http/controllers/comment/comments.controller.ts` |
+| `POST /internal/v1/tasks/{taskKey}/comments`               | `task-comments/presentation/http/controllers/comment/comments.controller.ts` |
+| `GET /internal/v1/tasks/{taskKey}/comments/{commentId}`    | `task-comments/presentation/http/controllers/comment/comments.controller.ts` |
+| `PATCH /internal/v1/tasks/{taskKey}/comments/{commentId}`  | `task-comments/presentation/http/controllers/comment/comments.controller.ts` |
+| `DELETE /internal/v1/tasks/{taskKey}/comments/{commentId}` | `task-comments/presentation/http/controllers/comment/comments.controller.ts` |
+| `GET /internal/v1/tasks/{taskKey}/participants`            | `tasks/presentation/http/controllers/task/task-participants.controller.ts`   |
+| `GET /internal/v1/tasks/{taskKey}/watchers`                | `tasks/presentation/http/controllers/watcher/task-watchers.controller.ts`    |
+| `PUT /internal/v1/tasks/{taskKey}/watchers/{userId}`       | `tasks/presentation/http/controllers/watcher/task-watchers.controller.ts`    |
+| `DELETE /internal/v1/tasks/{taskKey}/watchers/{userId}`    | `tasks/presentation/http/controllers/watcher/task-watchers.controller.ts`    |
+
+Paths in the table are relative to `src/modules/`. The participants query requires `comment` or
+`edit`. It reads task visibility, list grants and current memberships in one tenant snapshot.
+It returns only `userId` and `memberId`, ordered by user ID, including guests with list read
+access. The cursor is bound to the tenant and task.
+
+Watcher pages are ordered by account ID in one tenant snapshot. Every page includes the total and
+whether the caller follows the task. A caller with comment or edit access can change their own
+override. Only an editor can change another account's override. The account needs current read
+access. PUT follows explicitly and DELETE opts out explicitly. Both honor the task's `If-Match`
+and return its ETag. Repeating an override preserves the version.
+
 ## Events emitted
 
 - `task.dependency-added.v1` and `task.dependency-removed.v1` name the edge and both endpoint
   placements and versions, with the blocker version in the envelope. Explicit writes also append
   one `task.updated.v1` per endpoint with `dependencies` in `changed`. Endpoint purge removes its
   edges through the foreign keys and uses the existing purge fact.
+
+`task.description-mentions-changed.v1` is appended in the same transaction when the stored description
+recipient set changes. It carries account IDs and task placement, with no description or span text.
+
+A changed watcher override advances the task version and appends `task.updated.v1` with
+`changed: ['watchers']`, then `task.watcher-changed.v1`, in the same transaction. It creates no
+activity entry. The watcher fact states the requested override and its effective subscription.
+`task.status-changed.v1` includes the effective eligible `watcherIds` of the resulting task, including
+its new list when a patch changes its placement and status together. Status and comment creation
+snapshot the audience under task and placement locks. The notification consumer rechecks visibility
+before delivery and suppresses the actor.
 
 `task.created.v1`, `task.updated.v1` (with `changed`), `task.status-changed.v1`,
 `task.assigned.v1`, `task.archived.v1`, `task.unarchived.v1`, `task.trashed.v1`,
@@ -503,15 +571,12 @@ description, the checklist nor, outside `task.status-changed.v1`, the cancel not
   order of the entry). A consumer that follows the contract ignores a version it already applied,
   so a second event at the same version would not hide it again; an archive lies wholly inside an
   entry, so every member of an archive changes together.
-- To report to cadenway-api-contracts: `task.restored.v1` has no archive state, and an archived
-  member of a restored entry comes back archived (in its archive). The service keeps one
-  `task.restored.v1` per task, as the contract says, followed by the `task.archived.v1` above (one
-  version on);
-  proposal: an additive nullable `archivedAt` / `archivedBy` on `task.restored.v1`, so a consumer
-  knows the task is not live again without the second event.
+- `task.restored.v1` carries `archivedAt` and `archivedBy` from the final post-restore state,
+  null for a live task and the new archive instant and actor for an archived task.
 - A part of an entry too large for one batch of the purge emits one `task.purged.v1` per task it
-  erases, in the order they are erased (the deepest first, then by id), each with the entry, the
-  key of its root and its parent as stored before any detachment; the root goes with the last part.
+  erases in that transaction, breadth-first by depth and id in the remaining forest. The root
+  goes with the first part. Every event includes the original root key and the task's parent
+  at the time of erasure, which can be absent after detachment in an earlier batch.
 
 ## Events consumed
 
@@ -675,12 +740,16 @@ changes the assignees.
   attachments count the live height only, so archived chains can deepen). It stays in one
   organization and one list, and PostgreSQL detects a cycle of parent links
   (`CYCLE id SET is_cycle USING path`), a defect that throws. A batch of the deletion job still
-  stops adding roots once it holds 500 tasks or more. A batch of the purge erases whole entries of
-  500 tasks or fewer while it holds fewer than 500 tasks (999 at most), and an entry larger than
-  that, when it comes first, alone and whole: an entry is always erased in one transaction, so its
-  `task.purged.v1` commit with its erasure, the root first as `asyncapi/task-service.yaml` says,
-  or not at all. Known limit, to report: "Supprimer la tâche", a deletion batch, "Supprimer
-  définitivement", a batch of the purge and a restoration move or erase an entry in one
+  stops adding roots once it holds 500 tasks or more. A purge transaction erases up to 500 tasks,
+  taking consecutive whole entries that fit. It erases an oversized entry breadth-first, starting
+  with its root, then walking the remaining forest in each subsequent transaction. The entry
+  stores its original root key, name and status when the root is erased. It is then unavailable
+  for restoration and leaves with its final tasks. Each batch appends a `task.purged.v1` for
+  every task it erases in that transaction, so a failed batch leaves its work available for retry.
+  Enable the trash only after all purge workers support partially erased entries. Once enabled,
+  keep a compatible worker when rolling back or disabling trash writes.
+  Known limit, to report: "Supprimer la tâche", a deletion batch, "Supprimer
+  définitivement" and a restoration move or erase an entry in one
   transaction, whatever the archived subtasks it holds (an erasure costs what the trash of the
   entry cost, in one transaction too: two outbox round trips per task; the 651 tasks of the
   largest live tree were measured in the plans of `tests/trash-queries.int-spec.ts`). An entry
@@ -708,8 +777,8 @@ changes the assignees.
   space at the end of the sidebar (spaces); an archived list stays archived; the entry row is
   deleted. The answer is the root as it reads, archived for an archived root.
 - An entry of a deleted list whose deletion job has not moved every task of the list yet cannot be
-  restored: a list that still holds a task out of the trash answers `404 trash-entry.not-found`
-  (the only refusal the contract declares for a restoration), writing nothing. Those tasks are the
+  restored: a list that still holds a task out of the trash answers `409 trash-entry.not-restorable-yet`
+  when `reportNotReady=true`, otherwise `404 trash-entry.not-found`, writing nothing. Those tasks are the
   pending work of the job (no task enters or leaves a deleted list: creations and moves hold their
   lists, and its tasks are invisible), and the entry is restorable once the job finished, within
   minutes. The check runs twice: under `LockDeletedList` for a list read deleted (an early
@@ -798,12 +867,12 @@ Global lock order: one order for every writer of the service, whatever its modul
 access-requests modules follow it and point here), so that no two transactions wait on each other
 in a cycle:
 
-1. memberships `FOR SHARE`: the actor, then the people being assigned or given access; an access
+1. memberships `FOR SHARE`: the actor, then the people being assigned, mentioned or given access; an access
    request then takes its advisory lock and its attempts. Dependency writes take the organization
    graph advisory lock before the task rows;
 2. trash entry rows `FOR UPDATE` (several in one statement by id, or `SKIP LOCKED` in the purge);
-3. tasks: a writer of a tree (a deletion, a restoration, an erasure, the batches of the deletion,
-   purge and clean-up jobs) locks it in one statement in ascending id; a task write of one task
+3. tasks: a writer of a tree (a move, an archive, a restoration, a deletion, an erasure, or a
+   job batch) locks its participating tasks in one statement in ascending id; a task write of one task
    locks it by key, then the others it involves by id (below);
 4. spaces, several in `(created_at, id)` order;
 5. lists, several in one statement in ascending id;
@@ -824,6 +893,28 @@ limited to 50 distinct keys and the action to 1,000 affected rows, including cop
 successors. Changes, activity, outbox and trash cleanup jobs commit together. A changed expansion
 or watcher audience restarts discovery under a fresh savepoint before any write.
 
+The task delete during purge cascades to watcher-override and comment rows; PostgreSQL takes the child-row
+locks during that delete, after the task locks and before the subsequent space and list locks.
+A comment write holds the acting membership and supplied recipient memberships, then its task,
+then the task's space and list `FOR SHARE`. It subsequently inserts or updates the comment row,
+its activity and outbox. A status change holds the task's space and list after its task lock.
+A patch moving a task holds both placements in global order and rereads the actor's role.
+Description-mention assignments lock supplied recipient memberships in user ID order before
+the task or list. They check recipient visibility on the resulting list while the actor's
+edit role and the placement are held.
+Status and comment creation pre-read watcher candidates and hold their current memberships in
+account order before the task. A reply's human author joins the same preflight. After locking the
+task and the resulting placement the write checks visibility under those locks. A newly found
+candidate rolls back the preflight savepoint and retries it, with at most three attempts. The
+savepoint keeps the caller's idempotency reservation and is released before writing or emitting.
+Every comment mutation holds the owning task before the comment row, so it cannot conflict
+on a child row with a purge that already holds that task; the purge cascades child rows before it
+locks spaces and lists. Watcher cleanup locks task rows in ascending id, reads membership without
+a lock, then deletes the overrides under the owning task locks.
+An explicit watcher write holds the actor and target memberships before locking the task. It then
+holds the task's space and list, rechecks the actor's role and the target's read access, and writes
+the override, task version and outbox together.
+
 A row is locked in its final mode before the next level: no transaction takes a shared lock and
 strengthens it later (the one strengthening left, the `FOR NO KEY UPDATE` of a deleted space to
 the `FOR UPDATE` of its erasure, waits for no other writer). A level may be skipped, never taken
@@ -831,11 +922,12 @@ again after a later one: an erasure finishes every write of its tasks (the detac
 before it locks a list. A write that needs a role on a list checks it on rows read without a
 lock first (a target the actor may not see answers at once, whatever another transaction holds),
 then holds the space and the list and reads the role again under those locks when it erases or
-deletes (`DeleteList`, "Supprimer définitivement", "Vider la corbeille"): a revocation committed
+deletes or moves a tree (`DeleteList`, `TrashTask`, archive, unarchive, move,
+"Supprimer définitivement", "Vider la corbeille"): a revocation committed
 while it waited is seen. A read that must not wait on a row the actor may not see (an access
 request) takes `FOR SHARE SKIP LOCKED` instead. The known exceptions, answered `500` (`40P01`) by
-PostgreSQL aborting one transaction (or a retry of a job batch), are: nested trees whose writers
-take a task by key first (an archive, a move) or lock a tree that changed in a second pass
+PostgreSQL aborting one transaction (or a retry of a job batch), are: trees that changed and
+are locked in a second pass
 (below); and the approval of an access request, which locks its request row `FOR UPDATE` before
 the membership of the requester and the space and the list of its target (`GrantRequestedAccess`,
 `src/modules/access-requests/MODULE.md`), while a batch of a deletion job holds the tasks, the
@@ -846,19 +938,20 @@ started, an interleaving that needs the approval to stall for the whole start of
 Lock order of a task write:
 
 1. the memberships `FOR SHARE`: the actor, then the people being assigned;
-2. the tasks `FOR NO KEY UPDATE`: the task by key, then, when a patch involves several, the others
-   (the new parent, the moving descendants) in one statement in ascending id order; a restoration
-   locks the members of an archive in one statement by id, then the parent of its root;
-3. the `space_prefixes` row, last, by `AllocateTaskKeys`, which serializes the creations of a prefix
-   until the commit; or the space `FOR SHARE` and the list of a restored task, last, by
-   `RestoreArchivedList`, which locks the list whether it is archived or not.
+2. the tasks `FOR NO KEY UPDATE`: a single-task write locks by key; an archive or move locks the
+   live subtree and the destination parent for a move in one statement by id; an unarchive locks
+   only the archive members and the root's parent outside the trash, also in one statement by id;
+3. the spaces and lists held for placement or role checks, in the global order. Unarchive holds
+   the space `FOR SHARE` and locks the list through `RestoreArchivedList`;
+4. the `space_prefixes` row when allocating keys, which serializes the creations of a prefix
+   until the commit.
 
 A task write does not lock before it knows the actor may see and change the task: it reads the
 task without a lock, checks the visibility of its list and `edit` on it, then locks it and reads
 it again, and checks both again when the locked task is in another list (a move committed
-meanwhile). An attachment does the same for the new parent. The role is read once per list, with
-no lock on the grants: a grant changed while the write runs is seen by the next request (accepted).
-A refused subtask creation that inherits its assignee locks no membership but the actor's. A move or an attachment locks the descendants in
+meanwhile). An attachment does the same for the new parent. Single-task writes read the role once;
+tree writes check it again under the placement locks. A refused subtask creation that inherits its
+assignee locks no membership but the actor's. A move or an attachment locks the descendants in
 ordered statements until the subtree read under the locks holds nothing unlocked, and carries only
 the tasks that are still descendants then; a valid subtree has three levels and at most 650
 descendants, which bounds the passes, and a larger one is a defect that answers 500. A subtask
@@ -866,7 +959,7 @@ created without `assigneeIds` reads the first assignee of the parent and locks t
 before the parent; no membership is locked once the parent is, so the order cannot deadlock with a
 removal. If the parent was reassigned in between, the subtask keeps the account that was read while
 it is still one of the parent's assignees, and is created without assignee otherwise (accepted
-race). A task write takes no space lock. The removal of a member locks its membership exclusively,
+race). The removal of a member locks its membership exclusively,
 and no space and no task; each task batch of its clean-up job locks up to 500 tasks in ascending
 id order in one statement, then reads the copy without lock. A sequential task lock that is not
 globally ordered could still meet another writer that holds several: PostgreSQL then aborts one
@@ -874,17 +967,17 @@ transaction, and the request answers an error or the batch of the clean-up job i
 412 is checked inside the transaction, after the visibility of the task and the role on its list,
 and before the target of a move or an attachment and the domain rules.
 
-An archive locks the membership of the actor `FOR SHARE`, the task by key, then its live
-descendants in ordered statements, without their checklists, until the live subtree holds nothing
-unlocked (`TaskSubtreeLocker`, 5 passes at most): at most 651 tasks (1 + 25 + 625), written in one
+An archive locks the membership of the actor `FOR SHARE`, then the live subtree in ascending id,
+without checklists, and checks the role again under the space and list locks. The live members are written in one
 `UPDATE ... FROM unnest(...)` guarded by each version (the row count checked, a failure naming the
 root), with one outbox row per task. A concurrent subtask creation or move under a member either
 commits first (the subtask is taken, the moved task is not) or reads the archived task under its
-lock and answers `409`. A restoration locates the task without a lock, then locks every member of
-its archive in one statement ordered by id, without their checklists, then the parent of the root
-in one lean statement (its archive and its list), then its space `FOR SHARE` and the list
-(`RestoreArchivedList` of spaces, always called, deciding on the locked list): lock order members,
-parent, space, list. Two restorations of
+lock and answers `409`. Archive and unarchive return an immediate no-op when the initial read
+and version check show the requested archive state already holds. A restoration locates the task
+without a lock, then locks the archive members and the root's parent if it is outside the trash,
+in one statement ordered by id and without checklists. It then holds its space `FOR SHARE`
+and the list (`RestoreArchivedList` of spaces, deciding
+on the locked list). Two restorations of
 one archive through two members serialize on that statement; the second finds the archive empty
 and reads the task again (live: `200` with its version), 3 attempts at most. A root that is no
 longer in the list of the task located (the archive was restored, moved and archived again
@@ -903,9 +996,10 @@ The trash follows the global lock order above:
   the task read without a lock, then again on the task as locked (`TaskLocator.confirm`). It
   inserts the entry, writes every task in one `UPDATE ... FROM unnest(...)` guarded by the
   versions (row count checked, a failure naming the entry) and enqueues its job, with one outbox
-  row per task. It holds no list (a task write takes none): a deletion of its list that
-  commits while it waits for the tree leaves it to trash the tree itself, by the person, and the
-  job of the deletion then finds nothing left of it (accepted: one entry, the same end state).
+  row per task. After the tree it holds the space and list `FOR SHARE` and checks the current
+  role; a list deleted while it waits is refused. If the tree disappears but the task is live on
+  the fallback read, the transaction rolls back and retries the ordered acquisition at most three
+  times, releasing any task locks first.
 - A restoration locks the membership, the entry `FOR UPDATE` (checked again: there, not handed
   over, same list), every task of the entry `FOR NO KEY UPDATE` in one statement ordered by id
   (`tasks_trash_entry_index`, no checklists), then reads the parent of the root without a lock and
@@ -957,11 +1051,12 @@ The trash follows the global lock order above:
   and answers `list-live` or `list-gone` unless it is still deleted, `rescan` when the list still
   holds a task out of the trash, so the checks of the tasks left and the erasure of the tombstone
   (`PurgeDeletedList`) run under those locks. A batch of the purge (`PurgeTrashBatch`) locks up to
-  20 entries `FOR UPDATE SKIP LOCKED` (handed over first, else due, oldest first), takes whole
-  entries of 500 tasks or fewer in that order while their stored `task_count` stays under 500, or
-  an entry of more than 500 tasks alone when it comes first, and locks the tasks of all the entries
-  taken in one statement (`trash_entry_id = any($entries) order by id for update`); the entries it
-  locked and did not take wait for the next batch. Then it erases them as a person's erasure does,
+  20 entries `FOR UPDATE SKIP LOCKED` (handed over first, else due, oldest first) and erases at most
+  500 tasks. For part of an oversized entry it orders the remaining forest breadth-first and
+  locks the selected rows and all surviving rows with references into that part by id. It appends
+  the events, detaches the surviving references and updates the count in the transaction that
+  erases the selected rows. The number of detached rows can exceed the erasure limit. The final batch
+  removes the entry and erases tombstones as a person's erasure does,
   without a role (`LockTrashLists` in `erase` with no viewer). A creation or a move holds its target
   list after its task locks and before the key counter, so a deletion of the list either committed
   first or waits for it and its job moves the new task too; a move to another list holds the list
@@ -969,17 +1064,9 @@ The trash follows the global lock order above:
   the list it leaves (`HoldList`), so a deletion of that list either committed first
   (`task-not-found`) or waits; a new subtask and an attachment lock their parent, which the job
   locks too.
-- A deletion and the batches lock each tree in one statement by id, so they do not wait on each
-  other in a cycle on their first pass; a tree that changes while it is locked takes one more
-  statement, whose order is not global, and a move holds its task by key first: two writers on
-  nested trees can then still deadlock, PostgreSQL aborts one (`40P01`), the request answers `500`
-  or the batch is retried.
-
-Neither the archive nor a move is free of deadlocks: their order (the task by key, then the others
-by id) is not global, so two writers on nested trees (an archive of a task and a move or an
-archive of one of its descendants or ancestors, each holding its task by key) can each wait for
-the other. PostgreSQL then aborts one (SQLSTATE `40P01`, answered `500`), as the moves of P3a
-accept; the other commits.
+- A tree that changes while the first statement acquires locks may require another ordered pass.
+  That pass can overlap with another writer on a nested tree. PostgreSQL aborts one transaction
+  on a deadlock (`40P01`), and the job runner can retry a failed batch.
 
 Reads (`GET` routes) run in read-only transactions without locks (see above). The tasks of a list,
 the groups, the counters of a list, the labels and "Mes tâches" read each statement as committed
@@ -1121,7 +1208,7 @@ member-lifecycle (its MODULE.md).
   it, so a change by another actor breaks the chain; an entry written with a move in the same patch
   records the list after the patch. A cursor walked across a merge may skip or repeat the merged
   entry, whose position moved.
-- No lock on the space in a task write: a status hidden, a prefix changed or a space made private
+- Except for tree writes and restoration, no lock on the space in a task write: a status hidden, a prefix changed or a space made private
   concurrently with a write is accepted (the key stays unique and under a prefix of the space).
 - `PUT /assignees/{userId}` has a body, the empty object of the contract (`AssignTaskBody`): it is
   validated, so a missing body or an array answers `400`, and not read. The generated schema is not
@@ -1175,7 +1262,7 @@ member-lifecycle (its MODULE.md).
   consumer dropped it at `task.trashed.v1`, and `task.restored.v1` carries the assignees), so its
   `task.purged.v1` can come more than one version after its `task.trashed.v1` (the contract says
   "one more": to report to cadenway-api-contracts); an entry of a list whose deletion job is still
-  moving its tasks cannot be restored until the job finished (`404 trash-entry.not-found`, the
+  moving its tasks cannot be restored until the job finished (`409 trash-entry.not-restorable-yet` when `reportNotReady=true`, otherwise `404 trash-entry.not-found`, the
   only refusal the contract declares; to report to cadenway-api-contracts: a code of its own would
   be clearer), so a restoration never exposes the tasks the job has not moved (checked under
   `LockDeletedList`, and again under the lock `RestoreDeletedList` holds on a list it brings back,

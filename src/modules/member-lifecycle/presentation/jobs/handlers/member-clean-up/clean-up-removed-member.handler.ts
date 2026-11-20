@@ -215,6 +215,7 @@ export class CleanUpRemovedMemberHandler implements OnApplicationBootstrap {
           grantsRemoved: result.grantsRemoved,
           requestsDropped: result.requestsDropped,
           tasksUnassigned: result.tasksUnassigned,
+          watcherOverridesRemoved: result.watcherOverridesRemoved,
           batches: result.batches,
         },
         'removed member clean-up job handled',

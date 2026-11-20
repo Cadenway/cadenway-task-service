@@ -18,6 +18,7 @@ const copied: TaskView = {
   status: 'progress',
   cancelReason: null,
   description: '## Contexte',
+  descriptionMentions: [],
   cancelNote: null,
   priority: 'haute',
   assigneeIds: [CAMILLE],

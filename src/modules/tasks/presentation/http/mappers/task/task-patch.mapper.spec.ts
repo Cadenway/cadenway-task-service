@@ -80,6 +80,20 @@ describe('toTaskChange', () => {
     });
   });
 
+  it('preserves description mention spans and normalizes account IDs', () => {
+    expect(
+      toTaskChange(
+        parse({
+          descriptionMentions: [
+            { userId: '019A5F3C-8D2E-7C4A-9B1F-3E5D7A9C1B30', start: 2, end: 6 },
+          ],
+        }),
+      ),
+    ).toStrictEqual({
+      descriptionMentions: [{ userId: '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b30', start: 2, end: 6 }],
+    });
+  });
+
   it('ignores the collections, which change through their own routes', () => {
     expect(
       toTaskChange(parse({ assigneeIds: ['019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b31'], labels: ['a'] })),
@@ -92,6 +106,10 @@ describe('editsDescription', () => {
     expect(editsDescription(parse({ description: 'Nouveau texte' }))).toBe(true);
     expect(editsDescription(parse({ description: null }))).toBe(true);
     expect(editsDescription(parse({ description: '' }))).toBe(true);
+  });
+
+  it('requires a condition for a spans-only patch', () => {
+    expect(editsDescription(parse({ descriptionMentions: [] }))).toBe(true);
   });
 
   it('is false for a patch without the description', () => {

@@ -152,6 +152,18 @@ export interface TrashEntryRepository {
     limit: number,
   ): Promise<readonly TrashEntryRecord[]>;
 
+  /** Locks up to the limit of tasks in breadth-first order, returning their IDs in event order. */
+  lockPart(organizationId: string, entryId: string, limit: number): Promise<readonly string[]>;
+
+  /** Deletes locked tasks and detaches their remaining children while handing over the entry. */
+  erasePart(
+    organizationId: string,
+    entry: TrashEntryRecord,
+    ids: readonly string[],
+    at: Date,
+    by: TaskActor,
+  ): Promise<void>;
+
   /**
    * Method erase
    *

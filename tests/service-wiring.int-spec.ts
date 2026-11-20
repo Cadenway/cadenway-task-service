@@ -1,6 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -18,6 +21,8 @@ import { SystemTransactionRunner, TenantTransactionRunner } from '@cadenway/nest
 import { Controller, Get, Injectable, Module } from '@nestjs/common';
 import type { BeforeApplicationShutdown } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import pg from 'pg';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -53,6 +58,12 @@ const otherOrganizationId = '01938f6e-0000-7000-8000-000000000002';
 /** Camille Martin (CM), the member of Atelier Nord the mockup signs in as. */
 const camilleMartinId = '01938f6e-8a42-7d5b-b2c9-5e1f3a6d9c24';
 
+/** IDs for a task and its activity created before the collaboration migration. */
+const legacySpaceId = '01938f6e-0000-7000-8000-000000000101';
+const legacyListId = '01938f6e-0000-7000-8000-000000000102';
+const legacyTaskId = '01938f6e-0000-7000-8000-000000000103';
+const legacyActivityId = '01938f6e-0000-7000-8000-000000000104';
+
 /** The tables of the platform module, as the kit names them. */
 const platformTables = [
   'event_versions',
@@ -82,7 +93,10 @@ const publicTables = [
   'space_prefixes',
   'spaces',
   'task_assignees',
+  'task_comments',
+  'task_dependencies',
   'task_labels',
+  'task_watcher_overrides',
   'tasks',
   'trash_entries',
 ] as const;
@@ -91,9 +105,9 @@ const publicTables = [
  * Migrations of the journal: the platform tables, the copy of the memberships, the spaces and their
  * lists, then the tasks, then the two indexes of the task queries, then the grants, the switch of
  * the lists and the access requests, then the archives of lists and tasks, then the trash and the
- * deletion of lists and spaces.
+ * deletion of lists and spaces, then the trash root snapshot and task collaboration.
  */
-const appliedMigrations = 8;
+const appliedMigrations = 11;
 
 /**
  * Runs `docker compose` on the throwaway project.
@@ -209,6 +223,73 @@ async function runMigrator(): Promise<void> {
   }
 }
 
+/** Applies the actual journal through 0007 before seeding pre-existing data. */
+async function migrateThroughTrash(pool: pg.Pool): Promise<void> {
+  const source = fileURLToPath(new URL('../migrations/', import.meta.url));
+  const temporary = await mkdtemp(join(tmpdir(), 'cadenway-task-migrations-'));
+  try {
+    const journal = JSON.parse(await readFile(join(source, 'meta', '_journal.json'), 'utf8')) as {
+      readonly version: string;
+      readonly dialect: string;
+      readonly entries: readonly { readonly tag: string }[];
+    };
+    const trash = journal.entries.findIndex((entry) => entry.tag === '0007_trash');
+    if (trash < 0) throw new Error('The migration journal does not contain 0007_trash.');
+    const entries = journal.entries.slice(0, trash + 1);
+    await mkdir(join(temporary, 'meta'));
+    await writeFile(
+      join(temporary, 'meta', '_journal.json'),
+      JSON.stringify({ ...journal, entries }),
+    );
+    for (const entry of entries) {
+      await copyFile(join(source, `${entry.tag}.sql`), join(temporary, `${entry.tag}.sql`));
+    }
+    await migrate(drizzle({ client: pool }), { migrationsFolder: temporary });
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+}
+
+/** Creates the existing task and activity using the schema ending at 0007. */
+async function seedLegacyTask(pool: pg.Pool): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    await client.query(`select set_config('app.organization_id', $1, true)`, [atelierNordId]);
+    await client.query(
+      `insert into spaces (organization_id, id, name, prefix, color, visibility, owner_user_id, statuses)
+       values ($1, $2, 'Produit', 'CAD', 'violet', 'organization', $3, '[]'::jsonb)`,
+      [atelierNordId, legacySpaceId, camilleMartinId],
+    );
+    await client.query(
+      `insert into lists (organization_id, id, space_id, name, color)
+       values ($1, $2, $3, 'Sprint 14', 'violet')`,
+      [atelierNordId, legacyListId, legacySpaceId],
+    );
+    await client.query(
+      `insert into tasks
+         (organization_id, id, key_prefix, key_number, space_id, list_id, name, description,
+          status, priority, created_by_type, created_by_id)
+       values ($1, $2, 'CAD', 482, $3, $4, 'Préparer la démo', 'Description existante',
+               'progress', 'moyenne', 'user', $5)`,
+      [atelierNordId, legacyTaskId, legacySpaceId, legacyListId, camilleMartinId],
+    );
+    await client.query(
+      `insert into activity_entries
+         (organization_id, id, task_id, list_id, kind, actor_type, actor_id, occurred_at,
+          status_from, status_to)
+       values ($1, $2, $3, $4, 'status', 'user', $5, '2026-11-01T10:00:00Z', 'todo', 'progress')`,
+      [atelierNordId, legacyActivityId, legacyTaskId, legacyListId, camilleMartinId],
+    );
+    await client.query('commit');
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 /** Releases the shutdown held by `ShutdownGate`. */
 let releaseShutdown: () => void = () => undefined;
 
@@ -242,6 +323,7 @@ describe('task-service wiring', () => {
   let app: NestExpressApplication | undefined;
   let signer: InternalTokenSigner;
   let migrator: pg.Pool;
+  let postgresPort = '';
 
   /**
    * The running application.
@@ -267,13 +349,12 @@ describe('task-service wiring', () => {
       'nats',
       'nats-streams',
     );
-    const postgresPort = hostPort('postgres', '5432');
+    postgresPort = hostPort('postgres', '5432');
 
     vi.stubEnv(
       'MIGRATION_DATABASE_URL',
       `postgres://task_migrator:task_migrator@127.0.0.1:${postgresPort}/task`,
     );
-    await runMigrator();
     migrator = new pg.Pool({
       connectionString: `postgres://task_migrator:task_migrator@127.0.0.1:${postgresPort}/task`,
       max: 1,
@@ -283,6 +364,9 @@ describe('task-service wiring', () => {
     // The client is terminated (57P01) when a test stops PostgreSQL; the pool reports it as an
     // `error` event, which would otherwise be an uncaught exception.
     migrator.on('error', () => undefined);
+    await migrateThroughTrash(migrator);
+    await seedLegacyTask(migrator);
+    await runMigrator();
 
     vi.stubEnv('PORT', '3013');
     vi.stubEnv('LOG_PRETTY', 'false');
@@ -345,6 +429,125 @@ describe('task-service wiring', () => {
       publicTables.map((tablename) => ({ tablename, tableowner: 'task_migrator' })),
     );
     expect(journal.rows).toEqual([{ applied: appliedMigrations }]);
+  });
+
+  it('applies the complete journal to a fresh database with forced isolation', async () => {
+    compose(
+      'exec',
+      '-T',
+      'postgres',
+      'createdb',
+      '-U',
+      'postgres',
+      '-O',
+      'task_migrator',
+      'task_fresh',
+    );
+    const fresh = new pg.Pool({
+      connectionString: `postgres://task_migrator:task_migrator@127.0.0.1:${postgresPort}/task_fresh`,
+    });
+    try {
+      await migrate(drizzle({ client: fresh }), {
+        migrationsFolder: fileURLToPath(new URL('../migrations/', import.meta.url)),
+      });
+      const journal = await fresh.query<{ readonly applied: number }>(
+        'select count(*)::int as applied from drizzle.__drizzle_migrations',
+      );
+      const security = await fresh.query<{
+        readonly relname: string;
+        readonly relrowsecurity: boolean;
+        readonly relforcerowsecurity: boolean;
+      }>(
+        `select relname, relrowsecurity, relforcerowsecurity from pg_class
+          where relnamespace = 'public'::regnamespace
+            and relname in ('task_comments', 'task_dependencies', 'task_watcher_overrides')
+          order by relname`,
+      );
+      expect(journal.rows).toEqual([{ applied: appliedMigrations }]);
+      expect(security.rows).toEqual([
+        { relname: 'task_comments', relrowsecurity: true, relforcerowsecurity: true },
+        { relname: 'task_dependencies', relrowsecurity: true, relforcerowsecurity: true },
+        { relname: 'task_watcher_overrides', relrowsecurity: true, relforcerowsecurity: true },
+      ]);
+    } finally {
+      await fresh.end();
+      compose('exec', '-T', 'postgres', 'dropdb', '-U', 'postgres', 'task_fresh');
+    }
+  });
+
+  it('upgrades the task and activity created before collaboration without losing their values', async () => {
+    const tenant = service().get(TenantTransactionRunner);
+    const rows = await runWithOrganizationContext(memberOf(atelierNordId), () =>
+      tenant.run((tx) =>
+        tx.client.query(
+          `select task.description, task.description_mentions, activity.kind,
+                  activity.status_from, activity.status_to, activity.comment_id, activity.comment_excerpt
+             from tasks as task
+             join activity_entries as activity on activity.organization_id = task.organization_id
+                  and activity.task_id = task.id
+            where task.id = $1 and activity.id = $2`,
+          [legacyTaskId, legacyActivityId],
+        ),
+      ),
+    );
+
+    expect(rows.rows).toEqual([
+      {
+        description: 'Description existante',
+        description_mentions: null,
+        kind: 'status',
+        status_from: 'todo',
+        status_to: 'progress',
+        comment_id: null,
+        comment_excerpt: null,
+      },
+    ]);
+  });
+
+  it('isolates the new comment and watcher rows by organization for the application role', async () => {
+    const tenant = service().get(TenantTransactionRunner);
+    await runWithOrganizationContext(memberOf(atelierNordId), () =>
+      tenant.run(async (tx) => {
+        await tx.client.query(
+          `insert into task_comments (organization_id, task_id, actor_type, actor_id, body)
+           values ($1, $2, 'user', $3, 'Prêt pour la démo')`,
+          [atelierNordId, legacyTaskId, camilleMartinId],
+        );
+        await tx.client.query(
+          `insert into task_watcher_overrides (organization_id, task_id, user_id, following)
+           values ($1, $2, $3, true)`,
+          [atelierNordId, legacyTaskId, camilleMartinId],
+        );
+      }),
+    );
+
+    const counts = async (organizationId: string): Promise<readonly unknown[]> =>
+      runWithOrganizationContext(memberOf(organizationId), () =>
+        tenant.run(async (tx) => {
+          const result = await tx.client.query(
+            `select (select count(*)::int from task_comments) as comments,
+                    (select count(*)::int from task_watcher_overrides) as watchers`,
+          );
+          return result.rows;
+        }),
+      );
+
+    expect(await counts(atelierNordId)).toEqual([{ comments: 1, watchers: 1 }]);
+    expect(await counts(otherOrganizationId)).toEqual([{ comments: 0, watchers: 0 }]);
+    for (const statement of [
+      `insert into task_comments (organization_id, task_id, actor_type, actor_id, body)
+       values ($1, $2, 'user', $3, 'Cross-organization comment')`,
+      `insert into task_watcher_overrides (organization_id, task_id, user_id, following)
+       values ($1, $2, $3, false)`,
+    ]) {
+      await expect(
+        runWithOrganizationContext(memberOf(otherOrganizationId), () =>
+          tenant.run((tx) =>
+            tx.client.query(statement, [atelierNordId, legacyTaskId, camilleMartinId]),
+          ),
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+    }
   });
 
   it('applies nothing when the migrator runs again', async () => {
@@ -498,7 +701,10 @@ describe('task-service wiring', () => {
       { relname: 'space_prefixes', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'spaces', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_assignees', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'task_comments', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'task_dependencies', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_labels', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'task_watcher_overrides', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'tasks', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'trash_entries', relrowsecurity: true, relforcerowsecurity: true },
     ]);
@@ -523,7 +729,13 @@ describe('task-service wiring', () => {
       { tablename: 'space_prefixes', policyname: 'space_prefixes_organization_isolation' },
       { tablename: 'spaces', policyname: 'spaces_organization_isolation' },
       { tablename: 'task_assignees', policyname: 'task_assignees_organization_isolation' },
+      { tablename: 'task_comments', policyname: 'task_comments_organization_isolation' },
+      { tablename: 'task_dependencies', policyname: 'task_dependencies_organization_isolation' },
       { tablename: 'task_labels', policyname: 'task_labels_organization_isolation' },
+      {
+        tablename: 'task_watcher_overrides',
+        policyname: 'task_watcher_overrides_organization_isolation',
+      },
       { tablename: 'tasks', policyname: 'tasks_organization_isolation' },
       { tablename: 'trash_entries', policyname: 'trash_entries_organization_isolation' },
     ]);

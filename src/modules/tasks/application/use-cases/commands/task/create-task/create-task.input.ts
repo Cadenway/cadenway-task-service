@@ -1,3 +1,4 @@
+import type { DescriptionMention } from '../../../../../domain/value-objects/mention/description-mention.value-object.js';
 import type { CancelReason } from '../../../../../domain/value-objects/task/cancel-reason.value-object.js';
 import type { PriorityKey } from '../../../../../domain/value-objects/task/priority-key.value-object.js';
 import type { Recurrence } from '../../../../../domain/value-objects/task/recurrence.value-object.js';
@@ -26,6 +27,9 @@ export interface CreateTaskInput {
 
   /** Description, Markdown. */
   readonly description: string | null;
+
+  /** Structured mentions supplied with the description. */
+  readonly descriptionMentions?: readonly DescriptionMention[];
 
   /** Status of the task. */
   readonly status: StatusKey;

@@ -189,7 +189,7 @@ export class BulkTaskTargetLocker {
         await this.locator.locate(store, request);
         throw new BulkTaskTargetsChanged();
       }
-      if (task.isInTrash) await this.locator.confirm(store, request, located, task);
+      if (task.isInTrash) await this.locator.confirm(store, request, task);
       ids.add(task.snapshot.listId);
       current.set(request, task);
     }
@@ -204,16 +204,10 @@ export class BulkTaskTargetLocker {
     const confirmed: LocatedTask[] = [];
     for (const [request, task] of current) {
       const { listId } = task.snapshot;
-      if (!placements.has(listId)) {
-        this.requireLive(held.get(listId), 'task-not-found');
-        placements.set(
-          listId,
-          await this.placement(organizationId, viewer, listId, 'task-not-found'),
-        );
-      }
-      const placement = placements.get(listId);
-      if (placement === undefined) throw new Error('The selected task placement was not held.');
-      confirmed.push(await this.locator.confirm(store, request, { task, placement }, task));
+      this.requireLive(held.get(listId), 'task-not-found');
+      const located = await this.locator.confirm(store, request, task);
+      placements.set(listId, located.placement);
+      confirmed.push(located);
     }
     if (destinationId === null) return { selection: confirmed, destination: null };
     this.requireLive(held.get(destinationId), 'list-not-found');

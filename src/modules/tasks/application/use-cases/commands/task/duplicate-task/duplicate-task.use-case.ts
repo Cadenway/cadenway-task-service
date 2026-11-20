@@ -4,7 +4,6 @@ import type { Viewer } from '../../../../../domain/value-objects/member/viewer.v
 import type { SubtaskParent } from '../../../../../domain/value-objects/subtask/subtask-parent.value-object.js';
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import type { KeyAllocation } from '../../../../models/placement/key-allocation.model.js';
-import type { ListPlacement } from '../../../../models/placement/list-placement.model.js';
 import type { TrashListLock } from '../../../../models/placement/trash-list-lock.model.js';
 import type { LocateRequest } from '../../../../models/task/locate-request.model.js';
 import type { LocatedTask } from '../../../../models/task/located-task.model.js';
@@ -17,7 +16,6 @@ import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/ta
 import { AssigneeChecker } from '../../../../services/member/assignee-checker.service.js';
 import { ViewerResolver } from '../../../../services/member/viewer-resolver.service.js';
 import { TaskCopyCreator } from '../../../../services/task/task-copy-creator.service.js';
-import { TaskEditGuard } from '../../../../services/task/task-edit-guard.service.js';
 import { TaskLocator } from '../../../../services/task/task-locator.service.js';
 import { TaskViewBuilder } from '../../../../services/task/task-view-builder.service.js';
 import type { DuplicateTaskInput } from './duplicate-task.input.js';
@@ -40,7 +38,6 @@ export class DuplicateTask {
   private readonly viewers: ViewerResolver;
   private readonly assignees: AssigneeChecker;
   private readonly locator: TaskLocator;
-  private readonly editing = new TaskEditGuard();
   private readonly creator = new TaskCopyCreator();
   private readonly views = new TaskViewBuilder();
   // #endregion
@@ -127,7 +124,7 @@ export class DuplicateTask {
     }
     const { listId, spaceId } = task.snapshot;
     if (task.snapshot.trash !== null) {
-      await this.locator.confirm(store, request, observed, task);
+      await this.locator.confirm(store, request, task);
     }
     const [held]: readonly TrashListLock[] = await this.spaces.lockTrashLists(
       organizationId,
@@ -138,16 +135,7 @@ export class DuplicateTask {
     if (held?.outcome !== 'live' || held.role === null) {
       throw new TaskRefusal({ reason: 'task-not-found' });
     }
-    const placement: ListPlacement | null = await this.spaces.findVisibleList(
-      organizationId,
-      viewer,
-      listId,
-    );
-    if (placement === null) {
-      throw new TaskRefusal({ reason: 'task-not-found' });
-    }
-    this.editing.requireEdit(placement.list);
-    await this.locator.confirm(store, request, observed, task);
+    const { placement }: LocatedTask = await this.locator.confirm(store, request, task);
 
     // A new parent or assignee is outside the ordered lock set of this attempt.
     if (

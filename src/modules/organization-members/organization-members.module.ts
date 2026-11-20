@@ -5,10 +5,12 @@ import { applyMembershipChangeProvider } from './composition/providers/use-cases
 import { findOrganizationMemberProvider } from './composition/providers/use-cases/membership/find-organization-member.provider.js';
 import { findOrganizationMemberRolesProvider } from './composition/providers/use-cases/membership/find-organization-member-roles.provider.js';
 import { findOrganizationOwnerProvider } from './composition/providers/use-cases/membership/find-organization-owner.provider.js';
+import { listActiveMembersProvider } from './composition/providers/use-cases/membership/list-active-members.provider.js';
 import { ApplyMembershipChange } from './public/membership/apply-membership-change.js';
 import { FindOrganizationMember } from './public/membership/find-organization-member.js';
 import { FindOrganizationMemberRoles } from './public/membership/find-organization-member-roles.js';
 import { FindOrganizationOwner } from './public/membership/find-organization-owner.js';
+import { ListActiveMembers } from './public/membership/list-active-members.js';
 
 /**
  * Class OrganizationMembersModule
@@ -18,10 +20,8 @@ import { FindOrganizationOwner } from './public/membership/find-organization-own
  * members and roles of this service (decision 4 of the P3a plan, never the `role` claim of the
  * internal token). It subscribes to no event itself: `MemberLifecycleModule` consumes the three
  * member events and applies each with `ApplyMembershipChange`, then drives the other modules a
- * removal concerns, which this module cannot call without a module cycle. It exports its
- * public operations (`public/membership/`): `ApplyMembershipChange`, `FindOrganizationMember`,
- * `FindOrganizationMemberRoles` and `FindOrganizationOwner`. They join the tenant transaction
- * of their caller.
+ * removal concerns, which this module cannot call without a module cycle. Its public operations
+ * join the tenant transaction of their caller.
  */
 @Module({
   providers: [
@@ -30,12 +30,14 @@ import { FindOrganizationOwner } from './public/membership/find-organization-own
     findOrganizationMemberProvider,
     findOrganizationMemberRolesProvider,
     findOrganizationOwnerProvider,
+    listActiveMembersProvider,
   ],
   exports: [
     ApplyMembershipChange,
     FindOrganizationMember,
     FindOrganizationMemberRoles,
     FindOrganizationOwner,
+    ListActiveMembers,
   ],
 })
 export class OrganizationMembersModule {}
