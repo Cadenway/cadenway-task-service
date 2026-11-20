@@ -63,7 +63,7 @@ export class TaskDependencyReads {
         const listIds: readonly string[] = await this.spaces.visibleListIds(
           input.organizationId,
           viewer,
-          edit,
+          { editOnly: edit },
         );
         return query(store, task, listIds);
       },

@@ -84,9 +84,11 @@ const publicTables = [
   'checklist_items',
   'event_versions',
   'favorites',
+  'goals',
   'idempotency_keys',
   'list_grants',
   'lists',
+  'onboarding_states',
   'organization_members',
   'outbox_events',
   'processed_events',
@@ -95,6 +97,13 @@ const publicTables = [
   'space_grants',
   'space_prefixes',
   'spaces',
+  'sprint_field_history',
+  'sprint_history_coverage',
+  'sprint_list_history',
+  'sprint_task_history',
+  'sprint_value_history',
+  'task_approval_reviewers',
+  'task_approval_rounds',
   'task_assignees',
   'task_comments',
   'task_custom_field_values',
@@ -112,9 +121,9 @@ const publicTables = [
  * lists, then the tasks, then the two indexes of the task queries, then the grants, the switch of
  * the lists and the access requests, then the archives of lists and tasks, then the trash and the
  * deletion of lists and spaces, then the trash root snapshot, collaboration, planning and the
- * task library.
+ * task library, P3c-1 capabilities, goals and sprint reporting history.
  */
-const appliedMigrations = 14;
+const appliedMigrations = 18;
 
 /**
  * Runs `docker compose` on the throwaway project.
@@ -467,7 +476,10 @@ describe('task-service wiring', () => {
       }>(
         `select relname, relrowsecurity, relforcerowsecurity from pg_class
           where relnamespace = 'public'::regnamespace
-            and relname in ('favorites', 'saved_views', 'space_custom_fields', 'task_comments',
+            and relname in ('favorites', 'goals', 'onboarding_states', 'saved_views', 'space_custom_fields',
+                            'sprint_field_history', 'sprint_history_coverage', 'sprint_list_history',
+                            'sprint_task_history', 'sprint_value_history',
+                            'task_approval_reviewers', 'task_approval_rounds', 'task_comments',
                             'task_custom_field_values', 'task_dependencies', 'task_templates',
                             'task_time_entries', 'task_watcher_overrides')
           order by relname`,
@@ -475,8 +487,17 @@ describe('task-service wiring', () => {
       expect(journal.rows).toEqual([{ applied: appliedMigrations }]);
       expect(security.rows).toEqual([
         { relname: 'favorites', relrowsecurity: true, relforcerowsecurity: true },
+        { relname: 'goals', relrowsecurity: true, relforcerowsecurity: true },
+        { relname: 'onboarding_states', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'saved_views', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'space_custom_fields', relrowsecurity: true, relforcerowsecurity: true },
+        { relname: 'sprint_field_history', relrowsecurity: true, relforcerowsecurity: true },
+        { relname: 'sprint_history_coverage', relrowsecurity: false, relforcerowsecurity: false },
+        { relname: 'sprint_list_history', relrowsecurity: true, relforcerowsecurity: true },
+        { relname: 'sprint_task_history', relrowsecurity: true, relforcerowsecurity: true },
+        { relname: 'sprint_value_history', relrowsecurity: true, relforcerowsecurity: true },
+        { relname: 'task_approval_reviewers', relrowsecurity: true, relforcerowsecurity: true },
+        { relname: 'task_approval_rounds', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'task_comments', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'task_custom_field_values', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'task_dependencies', relrowsecurity: true, relforcerowsecurity: true },
@@ -709,9 +730,11 @@ describe('task-service wiring', () => {
       { relname: 'checklist_items', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'event_versions', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'favorites', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'goals', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'idempotency_keys', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'list_grants', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'lists', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'onboarding_states', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'organization_members', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'outbox_events', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'processed_events', relrowsecurity: false, relforcerowsecurity: false },
@@ -720,6 +743,13 @@ describe('task-service wiring', () => {
       { relname: 'space_grants', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'space_prefixes', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'spaces', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'sprint_field_history', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'sprint_history_coverage', relrowsecurity: false, relforcerowsecurity: false },
+      { relname: 'sprint_list_history', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'sprint_task_history', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'sprint_value_history', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'task_approval_reviewers', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'task_approval_rounds', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_assignees', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_comments', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_custom_field_values', relrowsecurity: true, relforcerowsecurity: true },
@@ -741,9 +771,11 @@ describe('task-service wiring', () => {
       { tablename: 'checklist_items', policyname: 'checklist_items_organization_isolation' },
       { tablename: 'event_versions', policyname: 'event_versions_organization_isolation' },
       { tablename: 'favorites', policyname: 'favorites_organization_isolation' },
+      { tablename: 'goals', policyname: 'goals_organization_isolation' },
       { tablename: 'idempotency_keys', policyname: 'idempotency_keys_organization_isolation' },
       { tablename: 'list_grants', policyname: 'list_grants_organization_isolation' },
       { tablename: 'lists', policyname: 'lists_organization_isolation' },
+      { tablename: 'onboarding_states', policyname: 'onboarding_states_organization_isolation' },
       {
         tablename: 'organization_members',
         policyname: 'organization_members_organization_isolation',
@@ -757,6 +789,30 @@ describe('task-service wiring', () => {
       { tablename: 'space_grants', policyname: 'space_grants_organization_isolation' },
       { tablename: 'space_prefixes', policyname: 'space_prefixes_organization_isolation' },
       { tablename: 'spaces', policyname: 'spaces_organization_isolation' },
+      {
+        tablename: 'sprint_field_history',
+        policyname: 'sprint_field_history_organization_isolation',
+      },
+      {
+        tablename: 'sprint_list_history',
+        policyname: 'sprint_list_history_organization_isolation',
+      },
+      {
+        tablename: 'sprint_task_history',
+        policyname: 'sprint_task_history_organization_isolation',
+      },
+      {
+        tablename: 'sprint_value_history',
+        policyname: 'sprint_value_history_organization_isolation',
+      },
+      {
+        tablename: 'task_approval_reviewers',
+        policyname: 'task_approval_reviewers_organization_isolation',
+      },
+      {
+        tablename: 'task_approval_rounds',
+        policyname: 'task_approval_rounds_organization_isolation',
+      },
       { tablename: 'task_assignees', policyname: 'task_assignees_organization_isolation' },
       { tablename: 'task_comments', policyname: 'task_comments_organization_isolation' },
       {

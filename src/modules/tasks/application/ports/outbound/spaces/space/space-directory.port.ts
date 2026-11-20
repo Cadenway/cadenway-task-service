@@ -49,19 +49,19 @@ export interface SpaceDirectory {
    * Method visibleListIds
    *
    * @description
-   * Lists every list of the organization the viewer has a role on, archived ones included,
+   * Lists every list of the organization the viewer has a role on, archived ones included by default,
    * unpaged, in the order of the sidebar: the ids a cross-list read filters `tasks.list_id` by.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The acting member, with the role of the copy.
-   * @param {boolean} [editOnly] - Includes only lists with an effective edit role when true.
+   * @param {object} [options] - Optional restrictions by effective edit role and live lifecycle.
    * @returns {Promise<readonly string[]>} The ids of the lists; empty when the viewer has a role on
    * none.
    */
   visibleListIds(
     organizationId: string,
     viewer: Viewer,
-    editOnly?: boolean,
+    options?: { readonly editOnly?: boolean; readonly liveOnly?: boolean },
   ): Promise<readonly string[]>;
 
   /**
@@ -319,6 +319,7 @@ export interface SpaceDirectory {
    * @param {readonly string[]} listIds - The lists.
    * @param {'hold' | 'erase'} mode - How the caller holds them.
    * @param {Viewer | null} viewer - The member whose role is read again, `null` for the service.
+   * @param {readonly string[]} [additionalSpaceIds] - Additional spaces to hold in the same order.
    * @returns {Promise<readonly TrashListLock[]>} What the lock found for each list.
    */
   lockTrashLists(
@@ -326,6 +327,7 @@ export interface SpaceDirectory {
     listIds: readonly string[],
     mode: 'hold' | 'erase',
     viewer: Viewer | null,
+    additionalSpaceIds?: readonly string[],
   ): Promise<readonly TrashListLock[]>;
   // #endregion
 }

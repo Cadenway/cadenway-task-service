@@ -11,6 +11,8 @@ The tasks of each organization (P3a, "Tâches") and what hangs from a task:
 - directed dependencies between tasks in the same organization, including across spaces;
 - the activity log of the tasks (creation, status, priority, due date, assignment), read by task
   and by list;
+- sprint burndown and velocity, workload, timesheets, team dashboards and the task rows for CSV
+  exports;
 - the unassignment of a member who left the organization from their tasks, one batch per call,
   which the clean-up job of member-lifecycle runs after the removal;
 - the seven queries the product screens read: the tasks of a list with filters and sorts, the
@@ -52,23 +54,31 @@ the archive and the deletion of a list; this module never writes a list.
 
 ## Public entry points
 
-| Entry point                                           | Consumers                                                                                    |
-| ----------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `tasks.module`                                        | access-requests, deletion-lifecycle, intake, member-lifecycle, task-comments, task-templates |
-| `public/intake/create-intake-task`                    | intake                                                                                       |
-| `public/intake/resolve-intake-contact-task`           | intake                                                                                       |
-| `public/assignee/unassign-removed-member`             | member-lifecycle                                                                             |
-| `public/watcher/remove-member-watcher-overrides`      | member-lifecycle                                                                             |
-| `public/task/record-comment-activity`                 | task-comments                                                                                |
-| `public/task/begin-comment`                           | task-comments                                                                                |
-| `public/task/resolve-comment-task`                    | task-comments                                                                                |
-| `public/task/find-task-reference`                     | access-requests                                                                              |
-| `public/task/find-task-references`                    | access-requests                                                                              |
-| `public/trash/trash-deleted-list-tasks`               | deletion-lifecycle                                                                           |
-| `public/trash/purge-trash-batch`                      | deletion-lifecycle                                                                           |
-| `public/trash/list-organizations-with-trash-to-purge` | deletion-lifecycle                                                                           |
-| `public/trash/list-untrashed-task-ids`                | deletion-lifecycle                                                                           |
-| `public/task/read-task-template-source`               | task-templates                                                                               |
+| Entry point                                           | Consumers                                                                                                                       |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `tasks.module`                                        | access-requests, deletion-lifecycle, goals, intake, member-lifecycle, onboarding, task-approvals, task-comments, task-templates |
+| `public/goal/measure-goal-targets`                    | goals                                                                                                                           |
+| `public/onboarding/create-onboarding-example`         | onboarding                                                                                                                      |
+| `public/approval/change-task-approval`                | task-approvals                                                                                                                  |
+| `public/approval/read-task-approval`                  | task-approvals                                                                                                                  |
+| `public/assignee/unassign-removed-member`             | member-lifecycle                                                                                                                |
+| `public/watcher/remove-member-watcher-overrides`      | member-lifecycle                                                                                                                |
+| `public/task/record-comment-activity`                 | task-comments                                                                                                                   |
+| `public/task/begin-comment`                           | task-comments                                                                                                                   |
+| `public/task/resolve-comment-task`                    | task-comments                                                                                                                   |
+| `public/task/find-task-reference`                     | access-requests                                                                                                                 |
+| `public/task/find-task-references`                    | access-requests                                                                                                                 |
+| `public/trash/trash-deleted-list-tasks`               | deletion-lifecycle                                                                                                              |
+| `public/trash/purge-trash-batch`                      | deletion-lifecycle                                                                                                              |
+| `public/trash/list-organizations-with-trash-to-purge` | deletion-lifecycle                                                                                                              |
+| `public/trash/list-untrashed-task-ids`                | deletion-lifecycle                                                                                                              |
+| `public/task/read-task-template-source`               | task-templates                                                                                                                  |
+| `public/intake/create-intake-task`                    | intake                                                                                                                          |
+| `public/intake/resolve-intake-contact-task`           | intake                                                                                                                          |
+
+`MeasureGoalTargets` projects readable list progress and milestone completion in the goal
+transaction. It uses current list visibility, including readable archives, and skips deleted
+targets. A goal write can hold the linked placements and milestone rows until commit.
 
 `BeginComment` and `RecordCommentActivity` are exported to task-comments for an authorized task
 version advance and comment activity creation, excerpt update or removal inside the caller's transaction.
@@ -78,6 +88,15 @@ checks reply-author visibility without taking membership locks after the task lo
 
 `ResolveCommentTask` is exported to task-comments. It checks task visibility and resolves the
 internal task ID in the read transaction of the caller, without exposing an inaccessible task.
+
+`CreateOnboardingExample` creates one preset example with the ordinary task policies and outbox,
+joining the provisioning transaction. Normal task creation updates the verified actor's first-task
+checklist marker in that transaction. Examples, subtasks, copies and recurrence do not advance it.
+
+`ReadTaskApproval` exposes an authorized task and eligible reviewers within one task snapshot.
+`ChangeTaskApproval` holds reviewed memberships, the task and its placement, checks the task
+version and uses the ordinary status, recurrence and watcher policies. It calls the approval
+module's decision and finalization inside the same transaction as the task write and outbox.
 
 `TasksModule` exports the `FindTaskReference` and `FindTaskReferences` providers, which the
 access-requests module reads the task of a request with: `{ organizationId, taskKey }` to a
@@ -165,6 +184,14 @@ from a deletion, `task.purge-trash` (`{ traceparent? }`, no key) from "Vider la 
 | `task_dependencies`        | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
 | `trash_entries`            | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
 | `task_watcher_overrides`   | `(organization_id, task_id, user_id)`   | `organization_id`, policy of the kit, enabled and forced |
+| `sprint_task_history`      | `(organization_id, sequence)`           | `organization_id`, policy of the kit, enabled and forced |
+| `sprint_field_history`     | `(organization_id, sequence)`           | `organization_id`, policy of the kit, enabled and forced |
+| `sprint_value_history`     | `(organization_id, sequence)`           | `organization_id`, policy of the kit, enabled and forced |
+| `sprint_history_coverage`  | `singleton`                             | Instance-wide history rollout marker                     |
+
+Sprint history records task state, point-field designation and point values as separate facts.
+Physical task or field removal cascades to the respective facts. The coverage marker records
+when the history triggers were installed.
 
 Created by `migrations/0003_tasks.sql`, which forces the five policies by hand;
 `migrations/0004_task_queries.sql` adds the two indexes below, as plain `CREATE INDEX` (see Decisions);
@@ -326,6 +353,10 @@ where archived_at is null` is not used by "Mes tâches". To revisit by replacing
   a new migration (a merged migration is never edited).
 
 ## API
+
+The P3c-2 reporting contract uses a verified API gateway user and organization. The list reads
+serve sprint reports, workload, timesheets and CSV rows. The team dashboard spans the caller's
+visible live lists. CSV rows carry encoded cells and assignee IDs for the gateway to resolve.
 
 Normal task creation accepts an optional initial checklist. Its items are created in request
 order with fresh IDs and are unchecked. The items share the new task's version 1 and its
@@ -890,10 +921,16 @@ changes the assignees.
 
 ## Transactions
 
-Every use case runs in one tenant transaction of the organization of the context
-(`TenantTasksUnitOfWork`), joined to the one the `Idempotency-Key` interceptor opened for a creation
-or to the one the deduplicator opened for the removal of a member: the task, its collections, its
-activity entries and their outbox rows commit together, or nothing does. A refusal rolls it back.
+The report providers use one read-only `REPEATABLE READ` tenant transaction for the verified
+membership, list visibility and report data. Sprint pages retain the observation and original
+sprint schedule and recheck current list access and physical purges. A civil date skipped by
+the requested time zone stays on the calendar axis with unknown actual points. Space and list
+history comes from the Spaces public reporting providers, which join that same snapshot.
+
+Task writes use the tenant transaction of the organization of the context
+(`TenantTasksUnitOfWork`). It joins the transaction the `Idempotency-Key` interceptor opened for
+a creation or the deduplicator opened for the removal of a member. The task, its collections,
+its activity entries and their outbox rows commit together, and a refusal rolls them back.
 The readings of the copy of the memberships, the operations of the spaces module (`FindVisibleList`,
 `ListVisibleListIds` and the others, which read the roles of the actor) and `AllocateTaskKeys`
 join the same transaction. The unit of work wakes the relay once its `run`

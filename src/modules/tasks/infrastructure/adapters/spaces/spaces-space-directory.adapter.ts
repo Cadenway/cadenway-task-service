@@ -465,19 +465,19 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The acting member, with the role of the copy.
-   * @param {boolean} [editOnly] - Includes only lists the viewer can edit.
+   * @param {object} [options] - Optional restrictions by effective edit role and live lifecycle.
    * @returns {Promise<readonly string[]>} The ids of the lists the viewer has a role on.
    */
   public async visibleListIds(
     organizationId: string,
     viewer: Viewer,
-    editOnly: boolean = false,
+    options: { readonly editOnly?: boolean; readonly liveOnly?: boolean } = {},
   ): Promise<readonly string[]> {
     const output: ListVisibleListIdsOutput = await this.listVisibleListIds.execute({
       organizationId,
       viewerUserId: viewer.userId,
       viewerRole: viewer.role,
-      ...(editOnly ? { editOnly } : {}),
+      ...options,
     });
     return output.listIds;
   }
@@ -852,6 +852,7 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
    * @param {readonly string[]} listIds - The lists.
    * @param {'hold' | 'erase'} mode - How the caller holds them.
    * @param {Viewer | null} viewer - The member whose role is read again, `null` for the service.
+   * @param {readonly string[]} [additionalSpaceIds] - Other spaces held in the same order.
    * @returns {Promise<readonly TrashListLock[]>} What the lock found for each list.
    */
   public async lockTrashLists(
@@ -859,12 +860,14 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
     listIds: readonly string[],
     mode: 'hold' | 'erase',
     viewer: Viewer | null,
+    additionalSpaceIds?: readonly string[],
   ): Promise<readonly TrashListLock[]> {
     const output = await this.lockTrashListsOperation.execute({
       organizationId,
       listIds: [...listIds],
       mode,
       viewer: viewer === null ? null : { userId: viewer.userId, role: viewer.role },
+      additionalSpaceIds,
     });
     return output.lists.map((lock: SpacesTrashListLock): TrashListLock => ({
       listId: lock.listId,

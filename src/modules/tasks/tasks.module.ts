@@ -8,6 +8,7 @@ import { Idempotent } from '@cadenway/nest-common/database';
 import { Module } from '@nestjs/common';
 
 import { OrganizationMembersModule } from '../organization-members/organization-members.module.js';
+import { RecordFirstOnboardingTask } from '../onboarding/public/onboarding/record-first-onboarding-task.js';
 import { SpacesModule } from '../spaces/spaces.module.js';
 import { memberDirectoryProvider } from './composition/providers/adapters/membership/member-directory.provider.js';
 import { trashWritesProvider } from './composition/providers/adapters/feature/trash-writes.provider.js';
@@ -22,8 +23,13 @@ import { TimeEntryReplayAccessGuard } from './presentation/http/guards/time/time
 import { tasksUnitOfWorkProvider } from './composition/providers/adapters/task/tasks-unit-of-work.provider.js';
 import { trashSystemUnitOfWorkProvider } from './composition/providers/adapters/trash/trash-system-unit-of-work.provider.js';
 import { listListActivityProvider } from './composition/providers/use-cases/activity/list-list-activity.provider.js';
+import { taskApprovalProviders } from './composition/providers/use-cases/approval/task-approval.provider.js';
+import { ChangeTaskApproval } from './public/approval/change-task-approval.js';
+import { ReadTaskApproval } from './public/approval/read-task-approval.js';
 import { listTaskActivityProvider } from './composition/providers/use-cases/activity/list-task-activity.provider.js';
 import { taskTimeProviders } from './composition/providers/use-cases/time/task-time.provider.js';
+import { taskReportingProviders } from './composition/providers/use-cases/reporting/task-reporting.provider.js';
+import { getSprintReportProvider } from './composition/providers/use-cases/reporting/get-sprint-report.provider.js';
 import { archiveTaskProvider } from './composition/providers/use-cases/archive/archive-task.provider.js';
 import { listArchivedListsProvider } from './composition/providers/use-cases/archive/list-archived-lists.provider.js';
 import { listArchivedTasksProvider } from './composition/providers/use-cases/archive/list-archived-tasks.provider.js';
@@ -53,10 +59,15 @@ import { checkTaskAccessProvider } from './composition/providers/use-cases/task/
 import { createTaskProvider } from './composition/providers/use-cases/task/create-task.provider.js';
 import { createIntakeTaskProvider } from './composition/providers/use-cases/intake/create-intake-task.provider.js';
 import { resolveIntakeContactTaskProvider } from './composition/providers/use-cases/intake/resolve-intake-contact-task.provider.js';
+import { createOnboardingExampleProvider } from './composition/providers/use-cases/onboarding/create-onboarding-example.provider.js';
+import { CreateOnboardingExample } from './public/onboarding/create-onboarding-example.js';
+import { FIRST_ONBOARDING_TASK } from './composition/tokens/onboarding/first-onboarding-task.token.js';
+import type { FirstOnboardingTask } from './application/ports/outbound/onboarding/checklist/first-onboarding-task.port.js';
 import { findTaskReferenceProvider } from './composition/providers/use-cases/task/find-task-reference.provider.js';
 import { findTaskReferencesProvider } from './composition/providers/use-cases/task/find-task-references.provider.js';
 import { getTaskDetailProvider } from './composition/providers/use-cases/task/get-task-detail.provider.js';
 import { readTaskTemplateSourceProvider } from './composition/providers/use-cases/task/read-task-template-source.provider.js';
+import { measureGoalTargetsProvider } from './composition/providers/use-cases/goal/measure-goal-targets.provider.js';
 import { getTaskProvider } from './composition/providers/use-cases/task/get-task.provider.js';
 import { listTaskParticipantsProvider } from './composition/providers/use-cases/task/list-task-participants.provider.js';
 import { updateTaskProvider } from './composition/providers/use-cases/task/update-task.provider.js';
@@ -79,6 +90,8 @@ import { ListActivityController } from './presentation/http/controllers/activity
 import { TaskAccessController } from './presentation/http/controllers/access/task-access.controller.js';
 import { TaskActivityController } from './presentation/http/controllers/activity/task-activity.controller.js';
 import { TaskTimeController } from './presentation/http/controllers/time/task-time.controller.js';
+import { ListReportsController } from './presentation/http/controllers/reporting/list-reports.controller.js';
+import { TeamDashboardController } from './presentation/http/controllers/reporting/team-dashboard.controller.js';
 import { ArchivesController } from './presentation/http/controllers/archive/archives.controller.js';
 import { TaskArchiveController } from './presentation/http/controllers/archive/task-archive.controller.js';
 import { TaskAssigneesController } from './presentation/http/controllers/assignee/task-assignees.controller.js';
@@ -93,6 +106,7 @@ import { SpaceCustomFieldsController } from './presentation/http/controllers/cus
 import { TaskLabelsController } from './presentation/http/controllers/label/task-labels.controller.js';
 import { SubtasksController } from './presentation/http/controllers/subtask/subtasks.controller.js';
 import { ReadTaskTemplateSource } from './public/task/read-task-template-source.js';
+import { MeasureGoalTargets } from './public/goal/measure-goal-targets.js';
 import { ListTasksController } from './presentation/http/controllers/task/list-tasks.controller.js';
 import { TaskParticipantsController } from './presentation/http/controllers/task/task-participants.controller.js';
 import { CreateIntakeTask } from './public/intake/create-intake-task.js';
@@ -196,6 +210,8 @@ markIdempotent(TaskTimeController.prototype, 'create');
     ListDuplicateController,
     TaskActivityController,
     TaskTimeController,
+    ListReportsController,
+    TeamDashboardController,
     TaskArchiveController,
     ArchivesController,
     TaskTrashController,
@@ -204,9 +220,18 @@ markIdempotent(TaskTimeController.prototype, 'create');
     TaskParticipantsController,
   ],
   providers: [
+    {
+      provide: FIRST_ONBOARDING_TASK,
+      inject: [RecordFirstOnboardingTask],
+      useFactory: (marker: RecordFirstOnboardingTask): FirstOnboardingTask => ({
+        record: (organizationId, actorUserId, spaceId) =>
+          marker.execute({ organizationId, actorUserId, spaceId }),
+      }),
+    },
     CustomFieldReplayAccessGuard,
     ...customFieldProviders,
     TimeEntryReplayAccessGuard,
+    ...taskApprovalProviders,
     RequiredDuplicateBodyGuard,
     tasksUnitOfWorkProvider,
     memberDirectoryProvider,
@@ -215,6 +240,7 @@ markIdempotent(TaskTimeController.prototype, 'create');
     createTaskProvider,
     createIntakeTaskProvider,
     resolveIntakeContactTaskProvider,
+    createOnboardingExampleProvider,
     duplicateTaskProvider,
     duplicateListProvider,
     updateTaskProvider,
@@ -222,6 +248,7 @@ markIdempotent(TaskTimeController.prototype, 'create');
     getTaskProvider,
     getTaskDetailProvider,
     readTaskTemplateSourceProvider,
+    measureGoalTargetsProvider,
     listTaskParticipantsProvider,
     createSubtaskProvider,
     listSubtasksProvider,
@@ -238,6 +265,8 @@ markIdempotent(TaskTimeController.prototype, 'create');
     ...taskDependencyProviders,
     listTaskActivityProvider,
     ...taskTimeProviders,
+    ...taskReportingProviders,
+    getSprintReportProvider,
     listListActivityProvider,
     listListTasksProvider,
     countListTaskGroupsProvider,
@@ -271,7 +300,11 @@ markIdempotent(TaskTimeController.prototype, 'create');
   exports: [
     CreateIntakeTask,
     ResolveIntakeContactTask,
+    CreateOnboardingExample,
+    ChangeTaskApproval,
+    ReadTaskApproval,
     ReadTaskTemplateSource,
+    MeasureGoalTargets,
     UnassignRemovedMember,
     RemoveMemberWatcherOverrides,
     FindTaskReference,

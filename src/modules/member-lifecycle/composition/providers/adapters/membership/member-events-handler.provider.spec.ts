@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { FavoritesStorageModule } from '../../../../../favorites/favorites.module.js';
 import { IntakeStorageModule } from '../../../../../intake/intake.module.js';
+import { OnboardingStateModule } from '../../../../../onboarding/onboarding.module.js';
 import { SavedViewsStorageModule } from '../../../../../saved-views/saved-views.module.js';
 import { TaskTemplatesStorageModule } from '../../../../../task-templates/task-templates.module.js';
 import { MemberLifecycleModule } from '../../../../member-lifecycle.module.js';
@@ -91,6 +92,7 @@ describe('MemberLifecycleModule composition of the member event consumers', () =
         KitDoubles,
         FavoritesStorageModule,
         IntakeStorageModule,
+        OnboardingStateModule,
         SavedViewsStorageModule,
         TaskTemplatesStorageModule,
         MemberLifecycleModule,

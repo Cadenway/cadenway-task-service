@@ -35,6 +35,8 @@ import { lockDeletedListProvider } from './composition/providers/use-cases/list/
 import { lockTrashListsProvider } from './composition/providers/use-cases/list/lock-trash-lists.provider.js';
 import { listArchivedListsProvider } from './composition/providers/use-cases/list/list-archived-lists.provider.js';
 import { listCurrentSprintsProvider } from './composition/providers/use-cases/list/list-current-sprints.provider.js';
+import { listPriorSprintsProvider } from './composition/providers/use-cases/reporting/list-prior-sprints.provider.js';
+import { resolveSprintLifetimesProvider } from './composition/providers/use-cases/reporting/resolve-sprint-lifetimes.provider.js';
 import { listDeletedSpaceListsProvider } from './composition/providers/use-cases/list/list-deleted-space-lists.provider.js';
 import { listListsProvider } from './composition/providers/use-cases/list/list-lists.provider.js';
 import { listSidebarListsProvider } from './composition/providers/use-cases/list/list-sidebar-lists.provider.js';
@@ -47,8 +49,11 @@ import { unarchiveListProvider } from './composition/providers/use-cases/list/un
 import { updateListProvider } from './composition/providers/use-cases/list/update-list.provider.js';
 import { allocateTaskKeysProvider } from './composition/providers/use-cases/space/allocate-task-keys.provider.js';
 import { createSpaceProvider } from './composition/providers/use-cases/space/create-space.provider.js';
+import { provisionOnboardingSpaceProvider } from './composition/providers/use-cases/space/provision-onboarding-space.provider.js';
+import { ProvisionOnboardingSpace } from './public/space/provision-onboarding-space.js';
 import { deleteSpaceProvider } from './composition/providers/use-cases/space/delete-space.provider.js';
 import { findFavoriteSpacesProvider } from './composition/providers/use-cases/space/find-favorite-spaces.provider.js';
+import { resolveGoalSpacesProvider } from './composition/providers/use-cases/goal/resolve-goal-spaces.provider.js';
 import { getSpaceProvider } from './composition/providers/use-cases/space/get-space.provider.js';
 import { handOverAwaitingSpacesProvider } from './composition/providers/use-cases/space/hand-over-awaiting-spaces.provider.js';
 import { handOverPrivateSpacesProvider } from './composition/providers/use-cases/space/hand-over-private-spaces.provider.js';
@@ -78,6 +83,8 @@ import { LockDeletedList } from './public/list/lock-deleted-list.js';
 import { LockTrashLists } from './public/list/lock-trash-lists.js';
 import { ListArchivedLists } from './public/list/list-archived-lists.js';
 import { ListCurrentSprints } from './public/list/list-current-sprints.js';
+import { ListPriorSprints } from './public/reporting/list-prior-sprints.js';
+import { ResolveSprintLifetimes } from './public/reporting/resolve-sprint-lifetimes.js';
 import { ListDeletedSpaceLists } from './public/list/list-deleted-space-lists.js';
 import { ListSidebarLists } from './public/list/list-sidebar-lists.js';
 import { ListTrashLists } from './public/list/list-trash-lists.js';
@@ -87,6 +94,7 @@ import { RestoreArchivedList } from './public/list/restore-archived-list.js';
 import { RestoreDeletedList } from './public/list/restore-deleted-list.js';
 import { AllocateTaskKeys } from './public/space/allocate-task-keys.js';
 import { FindFavoriteSpaces } from './public/space/find-favorite-spaces.js';
+import { ResolveGoalSpaces } from './public/goal/resolve-goal-spaces.js';
 import { HandOverAwaitingSpaces } from './public/space/hand-over-awaiting-spaces.js';
 import { HandOverPrivateSpaces } from './public/space/hand-over-private-spaces.js';
 import { PurgeDeletedSpace } from './public/space/purge-deleted-space.js';
@@ -133,8 +141,9 @@ markIdempotent(SpaceListsController.prototype, 'create');
  * `HandOverPrivateSpaces` and `RemoveMemberGrants`, which the clean-up job runs batch after batch
  * once a member left the organization, and `HandOverAwaitingSpaces`, which it runs when the copy
  * learns the owner; for the tasks module `FindVisibleList`, `FindVisibleLists`,
- * `FindVisibleSpaceLists`, `ListCurrentSprints`, `ListSidebarLists`, `ListVisibleListIds`,
- * `ListArchivedLists`, `RestoreArchivedList`, `AllocateTaskKeys`, and for the trash
+ * `FindVisibleSpaceLists`, `ListCurrentSprints`, `ListPriorSprints`, `ResolveSprintLifetimes`,
+ * `ListSidebarLists`, `ListVisibleListIds`, `ListArchivedLists`, `RestoreArchivedList`,
+ * `AllocateTaskKeys`, and for the trash
  * `ListTrashLists`, `FindTrashList`, `RestoreDeletedList`, `PurgeDeletedList`, `HoldList`,
  * `LockDeletedList` and `LockTrashLists`; for the deletion-lifecycle module
  * `ListDeletedSpaceLists` and `PurgeDeletedSpace`; for the access-requests module
@@ -156,11 +165,13 @@ markIdempotent(SpaceListsController.prototype, 'create');
     memberDirectoryProvider,
     trashWritesProvider,
     createSpaceProvider,
+    provisionOnboardingSpaceProvider,
     listSpacesProvider,
     getSpaceProvider,
     updateSpaceProvider,
     deleteSpaceProvider,
     findFavoriteSpacesProvider,
+    resolveGoalSpacesProvider,
     handOverPrivateSpacesProvider,
     handOverAwaitingSpacesProvider,
     createListProvider,
@@ -176,6 +187,8 @@ markIdempotent(SpaceListsController.prototype, 'create');
     findVisibleListsProvider,
     findVisibleSpaceListsProvider,
     listCurrentSprintsProvider,
+    listPriorSprintsProvider,
+    resolveSprintLifetimesProvider,
     listSidebarListsProvider,
     listVisibleListIdsProvider,
     listArchivedListsProvider,
@@ -206,9 +219,11 @@ markIdempotent(SpaceListsController.prototype, 'create');
     removeMemberGrantsProvider,
   ],
   exports: [
+    ProvisionOnboardingSpace,
     ResolveTaskTemplateSpace,
     ResolveCustomFieldSpace,
     FindFavoriteSpaces,
+    ResolveGoalSpaces,
     CreateListCopy,
     HandOverPrivateSpaces,
     HandOverAwaitingSpaces,
@@ -218,6 +233,8 @@ markIdempotent(SpaceListsController.prototype, 'create');
     FindVisibleLists,
     FindVisibleSpaceLists,
     ListCurrentSprints,
+    ListPriorSprints,
+    ResolveSprintLifetimes,
     ListSidebarLists,
     ListVisibleListIds,
     ListArchivedLists,

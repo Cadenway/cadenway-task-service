@@ -1714,11 +1714,16 @@ export class InMemorySpaces implements SpacesUnitOfWork {
             );
           return Promise.resolve(visibleLists(organizationId, viewer, ordered).slice(0, limit));
         },
-        listAccessesVisibleTo: (organizationId: string, viewer: Viewer): Promise<ListAccess[]> => {
-          const ordered: TaskListState[] = [...lists.values()].sort(
-            (left: TaskListState, right: TaskListState): number =>
+        listAccessesVisibleTo: (
+          organizationId: string,
+          viewer: Viewer,
+          liveOnly = false,
+        ): Promise<ListAccess[]> => {
+          const ordered: TaskListState[] = [...lists.values()]
+            .filter((row: TaskListState): boolean => !liveOnly || InMemorySpaces.isLive(row))
+            .sort((left: TaskListState, right: TaskListState): number =>
               InMemorySpaces.sidebarOrder(spaces, left, right),
-          );
+            );
           return Promise.resolve(
             visibleLists(organizationId, viewer, ordered).map(
               (row: ListWithGrants): ListAccess => ({

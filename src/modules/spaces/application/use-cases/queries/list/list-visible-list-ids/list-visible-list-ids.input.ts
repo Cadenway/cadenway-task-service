@@ -44,5 +44,8 @@ export interface ListVisibleListIdsInput {
 
   /** Limits the returned ids to lists the viewer may edit. */
   readonly editOnly?: boolean;
+
+  /** Excludes archived lists when the caller needs live work only. */
+  readonly liveOnly?: boolean;
   // #endregion
 }
