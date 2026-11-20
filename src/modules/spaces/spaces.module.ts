@@ -6,6 +6,7 @@ import { memberDirectoryProvider } from './composition/providers/adapters/member
 import { spacesUnitOfWorkProvider } from './composition/providers/adapters/space/spaces-unit-of-work.provider.js';
 import { trashWritesProvider } from './composition/providers/adapters/trash/trash-writes.provider.js';
 import { checkListAccessProvider } from './composition/providers/use-cases/access/check-list-access.provider.js';
+import { resolveDocumentSpaceAccessProvider } from './composition/providers/use-cases/access/resolve-document-space-access.provider.js';
 import { findAccessTargetProvider } from './composition/providers/use-cases/access/find-access-target.provider.js';
 import { resolveTaskTemplateSpaceProvider } from './composition/providers/use-cases/space/resolve-task-template-space.provider.js';
 import { resolveCustomFieldSpaceProvider } from './composition/providers/use-cases/space/resolve-custom-field-space.provider.js';
@@ -61,6 +62,7 @@ import { listSpacesProvider } from './composition/providers/use-cases/space/list
 import { purgeDeletedSpaceProvider } from './composition/providers/use-cases/space/purge-deleted-space.provider.js';
 import { updateSpaceProvider } from './composition/providers/use-cases/space/update-space.provider.js';
 import { ListAccessController } from './presentation/http/controllers/access/list-access.controller.js';
+import { DocumentSpaceAccessController } from './presentation/http/controllers/access/document-space-access.controller.js';
 import { ListGrantsController } from './presentation/http/controllers/access/list-grants.controller.js';
 import { SpaceGrantsController } from './presentation/http/controllers/access/space-grants.controller.js';
 import { ListsController } from './presentation/http/controllers/list/lists.controller.js';
@@ -159,6 +161,7 @@ markIdempotent(SpaceListsController.prototype, 'create');
     SpaceGrantsController,
     ListGrantsController,
     ListAccessController,
+    DocumentSpaceAccessController,
   ],
   providers: [
     spacesUnitOfWorkProvider,
@@ -211,6 +214,7 @@ markIdempotent(SpaceListsController.prototype, 'create');
     setListGrantProvider,
     removeListGrantProvider,
     checkListAccessProvider,
+    resolveDocumentSpaceAccessProvider,
     findAccessTargetProvider,
     resolveTaskTemplateSpaceProvider,
     resolveCustomFieldSpaceProvider,

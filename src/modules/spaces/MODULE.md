@@ -309,6 +309,12 @@ Issuer `realtime-gateway` only, in a controller of its own: `GET /internal/v1/li
 (`checkListAccessInternal`), the role of the actor on a list they see, with `spaceId`, `listId` and
 `taskKey: null`; `404 list.not-found` for any other list. Read only, nothing emitted.
 
+Issuer `document-service` only: `POST /internal/v1/spaces/access/resolve`
+(`resolveDocumentSpaceAccessInternal`) checks up to 100 space IDs for the verified user and selected
+organization. It reads current membership and direct space roles in the same read-only
+`REPEATABLE READ` snapshot. An empty list still verifies membership. Hidden spaces, guest access and
+list-only grants do not yield a role. The response uses `Cache-Control: no-store` and emits no event.
+
 - Every `Space` answers `callerRole` and `callerCanManage`, every `TaskList` `organizationAccess`,
   `callerRole`, and always `archivedAt` and `archivedBy` (`null` for a live list).
 - `archive` and `unarchive` take the `EmptyRequest` body (an object, its members dropped) and an
