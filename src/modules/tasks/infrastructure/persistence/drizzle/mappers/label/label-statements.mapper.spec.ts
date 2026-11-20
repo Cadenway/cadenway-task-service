@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { foldedSql, renderSql } from '../query/query-sql.fixture.js';
 import { labelPageStatement } from './label-statements.mapper.js';
 
-const VISIBLE_HEAD: string = `select min("task_labels"."name" collate "C") as "name", ${foldedSql('"task_labels"."label_key"')} as "foldedKey", "task_labels"."label_key" as "labelKey" from "task_labels" join "tasks" on "tasks"."organization_id" = "task_labels"."organization_id" and "tasks"."id" = "task_labels"."task_id" where ("task_labels"."organization_id" = $1 and "tasks"."organization_id" = $2 and "tasks"."list_id" = any($3::uuid[]) and "tasks"."archived_at" is null) group by "task_labels"."label_key"`;
+const VISIBLE_HEAD: string = `select min("task_labels"."name" collate "C") as "name", ${foldedSql('"task_labels"."label_key"')} as "foldedKey", "task_labels"."label_key" as "labelKey" from "task_labels" join "tasks" on "tasks"."organization_id" = "task_labels"."organization_id" and "tasks"."id" = "task_labels"."task_id" where ("task_labels"."organization_id" = $1 and "tasks"."organization_id" = $2 and "tasks"."list_id" = any($3::uuid[]) and ("tasks"."archived_at" is null and "tasks"."trash_entry_id" is null)) group by "task_labels"."label_key"`;
 const SORT_KEY: string = 'left("foldedKey", 128)';
 const OUTER_HEAD: string = `with "visible_labels" as materialized (${VISIBLE_HEAD}) select "name", ${SORT_KEY} as "sortKey", "labelKey" from "visible_labels"`;
 const ORDER: string = `order by ${SORT_KEY} collate "C", "labelKey" collate "C"`;

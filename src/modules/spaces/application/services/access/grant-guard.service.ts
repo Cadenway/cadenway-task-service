@@ -2,10 +2,13 @@ import { canManageListAccess } from '../../../domain/policies/access/access-role
 import type { TaskList } from '../../../domain/aggregates/list/task-list.aggregate.js';
 import type { Space } from '../../../domain/aggregates/space/space.aggregate.js';
 import type { Viewer } from '../../../domain/value-objects/member/viewer.value-object.js';
+import type { CheckedLock } from '../../models/access/checked-lock.model.js';
 import type { ViewerAccess } from '../../models/access/viewer-access.model.js';
+import type { SpaceRefusalReason } from '../../models/space/space-refusal-reason.model.js';
 import { SpaceRefusal } from '../../models/space/space-refusal.model.js';
 import type { SpacesStore } from '../../models/transactions/spaces-store.model.js';
 import { AccessResolver } from './access-resolver.service.js';
+import { CheckedLocker } from './checked-locker.service.js';
 
 /**
  * Class GrantGuard
@@ -17,7 +20,10 @@ import { AccessResolver } from './access-resolver.service.js';
  * `412`; the rules of the grant come after, in the domain. The grants of a space are changed by
  * the people who manage it (`space.manage-forbidden`), those of a list by whoever has `edit` on it
  * (`access.role-insufficient`). A change of the grants of a list locks its space `FOR SHARE`
- * first: the owner of the space, whom no grant may name, cannot change meanwhile.
+ * first: the owner of the space, whom no grant may name, cannot change meanwhile. The actor is
+ * checked on the rows read without lock first, so a space or a list they do not see, or may not
+ * change, answers at once whatever another transaction holds, then again on the locked rows when
+ * they changed meanwhile (`CheckedLocker`); `If-Match` is checked on the locked rows.
  */
 export class GrantGuard {
   // #region Properties
@@ -31,6 +37,17 @@ export class GrantGuard {
    * @readonly
    */
   private readonly access: AccessResolver;
+
+  /**
+   * Property locker
+   *
+   * @description
+   * Checks the actor before the lock, and again on a row that changed.
+   *
+   * @type {CheckedLocker}
+   * @readonly
+   */
+  private readonly locker: CheckedLocker;
   // #endregion
 
   // #region Constructor
@@ -44,6 +61,7 @@ export class GrantGuard {
    */
   public constructor() {
     this.access = new AccessResolver();
+    this.locker = new CheckedLocker();
   }
   // #endregion
 
@@ -52,7 +70,8 @@ export class GrantGuard {
    * Method lockManagedSpace
    *
    * @description
-   * Locks a space `FOR NO KEY UPDATE` and checks that the actor manages it.
+   * Checks that the actor sees and manages a space, then locks it `FOR NO KEY UPDATE` and checks
+   * again when it changed, then `If-Match`.
    *
    * @param {SpacesStore} store - The store of the transaction.
    * @param {string} organizationId - The organization of the transaction.
@@ -69,31 +88,40 @@ export class GrantGuard {
     spaceId: string,
     expectedVersions: readonly number[] | null,
   ): Promise<Space> {
-    const space: Space | null = await store.spaces.lock(organizationId, spaceId);
-    if (space === null) {
-      throw new SpaceRefusal({ reason: 'space-not-found' });
-    }
-    const access: ViewerAccess = await this.access.resolve(
-      store.grants,
-      viewer,
-      space.snapshot,
-      null,
+    const checked: CheckedLock<Space, SpaceRefusalReason> = await this.locker.space(
+      store,
+      organizationId,
+      spaceId,
+      'update',
+      async (space: Space): Promise<SpaceRefusalReason | null> => {
+        const access: ViewerAccess = await this.access.resolve(
+          store.grants,
+          viewer,
+          space.snapshot,
+          null,
+        );
+        if (!access.seesSpace) {
+          return { reason: 'space-not-found' };
+        }
+        return access.canManage ? null : { reason: 'manage-forbidden' };
+      },
     );
-    if (!access.seesSpace) {
+    if (checked.outcome === 'unknown') {
       throw new SpaceRefusal({ reason: 'space-not-found' });
     }
-    if (!access.canManage) {
-      throw new SpaceRefusal({ reason: 'manage-forbidden' });
+    if (checked.outcome === 'refused') {
+      throw new SpaceRefusal(checked.refusal);
     }
-    this.checkVersion(space.snapshot.version, expectedVersions);
-    return space;
+    this.checkVersion(checked.locked.snapshot.version, expectedVersions);
+    return checked.locked;
   }
 
   /**
    * Method lockEditableList
    *
    * @description
-   * Locks a list, after its space `FOR SHARE`, and checks that the actor has `edit` on it.
+   * Checks that the actor has `edit` on a list, then locks it after its space `FOR SHARE` and
+   * checks again when one of them changed, then `If-Match`.
    *
    * @param {SpacesStore} store - The store of the transaction.
    * @param {string} organizationId - The organization of the transaction.
@@ -110,62 +138,37 @@ export class GrantGuard {
     listId: string,
     expectedVersions: readonly number[] | null,
   ): Promise<{ readonly space: Space; readonly list: TaskList }> {
-    const locked: { readonly space: Space; readonly list: TaskList } | null = await this.lockList(
+    const checked: CheckedLock<
+      { readonly space: Space; readonly list: TaskList },
+      SpaceRefusalReason
+    > = await this.locker.list(
       store,
       organizationId,
       listId,
+      'share',
+      async (space: Space, list: TaskList): Promise<SpaceRefusalReason | null> => {
+        const access: ViewerAccess = await this.access.resolve(
+          store.grants,
+          viewer,
+          space.snapshot,
+          list.snapshot,
+        );
+        if (access.listRole === null) {
+          return { reason: 'list-not-found' };
+        }
+        return canManageListAccess(access.listRole)
+          ? null
+          : { reason: 'role-insufficient', role: access.listRole };
+      },
     );
-    if (locked === null) {
+    if (checked.outcome === 'unknown') {
       throw new SpaceRefusal({ reason: 'list-not-found' });
     }
-    const access: ViewerAccess = await this.access.resolve(
-      store.grants,
-      viewer,
-      locked.space.snapshot,
-      locked.list.snapshot,
-    );
-    if (access.listRole === null) {
-      throw new SpaceRefusal({ reason: 'list-not-found' });
+    if (checked.outcome === 'refused') {
+      throw new SpaceRefusal(checked.refusal);
     }
-    if (!canManageListAccess(access.listRole)) {
-      throw new SpaceRefusal({ reason: 'role-insufficient', role: access.listRole });
-    }
-    this.checkVersion(locked.list.snapshot.version, expectedVersions);
-    return locked;
-  }
-
-  /**
-   * Method lockList
-   *
-   * @description
-   * Locks a list for a change of its grants: its space `FOR SHARE`, then the list
-   * `FOR NO KEY UPDATE`. The list is read first without lock to know its space, which never
-   * changes.
-   *
-   * @param {SpacesStore} store - The store of the transaction.
-   * @param {string} organizationId - The organization of the transaction.
-   * @param {string} listId - The list.
-   * @returns {Promise<{ readonly space: Space; readonly list: TaskList } | null>} The space and the
-   * list, or `null` when the organization has no such list.
-   */
-  public async lockList(
-    store: SpacesStore,
-    organizationId: string,
-    listId: string,
-  ): Promise<{ readonly space: Space; readonly list: TaskList } | null> {
-    const found: TaskList | null = await store.lists.find(organizationId, listId);
-    if (found === null) {
-      return null;
-    }
-    const space: Space | null = await store.spaces.lockShared(
-      organizationId,
-      found.snapshot.spaceId,
-    );
-    const list: TaskList | null = await store.lists.lock(organizationId, listId);
-    if (space === null || list === null) {
-      return null;
-    }
-    return { space, list };
+    this.checkVersion(checked.locked.list.snapshot.version, expectedVersions);
+    return checked.locked;
   }
 
   /**

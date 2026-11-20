@@ -132,5 +132,56 @@ export interface SpaceEvents {
     changedUserIds: readonly string[],
     actor: EventActor,
   ): Promise<void>;
+
+  /**
+   * Method spaceDeleted
+   *
+   * @description
+   * Appends `space.deleted.v1`: the space and its version after the deletion, once for the space
+   * and all its lists (none of them emits `list.deleted.v1`).
+   *
+   * @param {Space} space - The tombstone at its version after the deletion.
+   * @param {EventActor} actor - Who deleted it.
+   * @returns {Promise<void>} Resolves once appended.
+   */
+  spaceDeleted(space: Space, actor: EventActor): Promise<void>;
+
+  /**
+   * Method spaceRestored
+   *
+   * @description
+   * Appends `space.restored.v1`, the whole space after it came back from the trash, as
+   * `space.updated.v1` carries it, without `changed`.
+   *
+   * @param {Space} space - The space at its version after the restoration.
+   * @param {EventActor} actor - Who restored the task that brought it back.
+   * @returns {Promise<void>} Resolves once appended.
+   */
+  spaceRestored(space: Space, actor: EventActor): Promise<void>;
+
+  /**
+   * Method listDeleted
+   *
+   * @description
+   * Appends `list.deleted.v1`: the list, its space and its version after a deletion on its own.
+   *
+   * @param {TaskList} list - The tombstone at its version after the deletion.
+   * @param {EventActor} actor - Who deleted it.
+   * @returns {Promise<void>} Resolves once appended.
+   */
+  listDeleted(list: TaskList, actor: EventActor): Promise<void>;
+
+  /**
+   * Method listRestored
+   *
+   * @description
+   * Appends `list.restored.v1`, the whole list after it came back from the trash, its switch
+   * "Accès de l’organisation" included.
+   *
+   * @param {TaskList} list - The list at its version after the restoration.
+   * @param {EventActor} actor - Who restored the task that brought it back.
+   * @returns {Promise<void>} Resolves once appended.
+   */
+  listRestored(list: TaskList, actor: EventActor): Promise<void>;
   // #endregion
 }

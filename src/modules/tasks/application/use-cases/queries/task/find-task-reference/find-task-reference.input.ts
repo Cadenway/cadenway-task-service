@@ -27,5 +27,19 @@ export interface FindTaskReferenceInput {
    * @readonly
    */
   readonly taskKey: string;
+
+  /**
+   * Property lock
+   *
+   * @description
+   * `share` to lock the task of the key `FOR SHARE` until the commit of the caller, in the same
+   * statement whatever the outcome, so a concurrent deletion of the task either committed before
+   * (the task reads as not found) or waits for the caller; `none` (the default) for a read without
+   * a lock.
+   *
+   * @type {'none' | 'share' | undefined}
+   * @readonly
+   */
+  readonly lock?: 'none' | 'share';
   // #endregion
 }

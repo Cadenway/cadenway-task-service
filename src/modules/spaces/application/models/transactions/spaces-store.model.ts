@@ -1,3 +1,4 @@
+import type { TrashDeletedTasksQueue } from '../../ports/outbound/jobs/trash/trash-deleted-tasks-queue.port.js';
 import type { SpaceEvents } from '../../ports/outbound/messaging/space/space-events.port.js';
 import type { GrantRepository } from '../../ports/outbound/persistence/access/grant-repository.port.js';
 import type { TaskListRepository } from '../../ports/outbound/persistence/list/task-list-repository.port.js';
@@ -9,8 +10,8 @@ import type { TransactionClock } from '../../ports/outbound/time/transaction/tra
  * Interface SpacesStore
  *
  * @description
- * The repositories, the events and the clock of the spaces module, all bound to the tenant
- * transaction of one unit of work: what they write commits together, or not at all.
+ * The repositories, the events, the clock and the job queue of the spaces module, all bound to the
+ * tenant transaction of one unit of work: what they write commits together, or not at all.
  */
 export interface SpacesStore {
   // #region Properties
@@ -73,11 +74,22 @@ export interface SpacesStore {
    * Property clock
    *
    * @description
-   * The instant of the transaction, which an archive and a restoration store.
+   * The instant of the transaction, which an archive, a deletion and a restoration store.
    *
    * @type {TransactionClock}
    * @readonly
    */
   readonly clock: TransactionClock;
+
+  /**
+   * Property trashQueue
+   *
+   * @description
+   * The job of the transaction that moves the tasks of a deleted list or space to the trash.
+   *
+   * @type {TrashDeletedTasksQueue}
+   * @readonly
+   */
+  readonly trashQueue: TrashDeletedTasksQueue;
   // #endregion
 }

@@ -12,6 +12,7 @@ import { ListInvalidError } from '../../../domain/errors/task/list-invalid.error
 import { StartDateInvalidError } from '../../../domain/errors/task/start-date-invalid.error.js';
 import { StatusHiddenError } from '../../../domain/errors/task/status-hidden.error.js';
 import { TaskArchivedError } from '../../../domain/errors/task/task-archived.error.js';
+import { TaskInTrashError } from '../../../domain/errors/task/task-in-trash.error.js';
 import { TaskRefusal } from '../../models/task/task-refusal.model.js';
 
 /**
@@ -55,6 +56,12 @@ export class TaskRuleGuard {
     if (error instanceof TaskArchivedError) {
       return new TaskRefusal({ reason: 'task-archived', key: error.key });
     }
+    if (error instanceof TaskInTrashError) {
+      // The application answers a task in the trash before the domain sees it; reaching here is a
+      // defect, answered as a task not found, which leaks nothing of the entry.
+      return new TaskRefusal({ reason: 'task-not-found' });
+    }
+
     if (error instanceof StatusHiddenError) {
       return new TaskRefusal({ reason: 'status-hidden', status: error.status });
     }

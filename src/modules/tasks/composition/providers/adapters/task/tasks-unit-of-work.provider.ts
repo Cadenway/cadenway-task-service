@@ -1,4 +1,5 @@
 import { TenantTransactionRunner } from '@cadenway/nest-common/database';
+import { JobProducer } from '@cadenway/nest-jobs/runtime';
 import { OutboxRelay, OutboxWriter } from '@cadenway/nest-messaging/outbox';
 import type { FactoryProvider } from '@nestjs/common';
 
@@ -11,16 +12,18 @@ import { TASKS_UNIT_OF_WORK } from '../../../tokens/task/tasks-unit-of-work.toke
  *
  * @description
  * Binds the unit of work of the module to the tenant runner of the kit, with the outbox writer
- * that appends the events in the same transaction and the relay woken after the commit.
+ * that appends the events in the same transaction, the relay woken after the commit, and the job
+ * producer that inserts the jobs of the trash in the same transaction.
  *
  * @type {FactoryProvider<TasksUnitOfWork>}
  */
 export const tasksUnitOfWorkProvider: FactoryProvider<TasksUnitOfWork> = {
   provide: TASKS_UNIT_OF_WORK,
-  inject: [TenantTransactionRunner, OutboxWriter, OutboxRelay],
+  inject: [TenantTransactionRunner, OutboxWriter, OutboxRelay, JobProducer],
   useFactory: (
     runner: TenantTransactionRunner,
     outbox: OutboxWriter,
     relay: OutboxRelay,
-  ): TasksUnitOfWork => new TenantTasksUnitOfWork(runner, outbox, relay),
+    jobs: JobProducer,
+  ): TasksUnitOfWork => new TenantTasksUnitOfWork(runner, outbox, relay, jobs),
 };

@@ -19,8 +19,8 @@ export interface GrantRepository {
    *
    * @description
    * Reads, in one statement, the grant of a member on a space, their grant on one list of it, and
-   * whether they hold a grant of any list of the space: three lookups by primary key and by the
-   * index of the grants of a person.
+   * whether they hold a grant of any list of the space that is not deleted (a grant of a tombstone
+   * shows no space): three lookups by primary key and by the index of the grants of a person.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} viewerUserId - The account of the member.
@@ -116,5 +116,31 @@ export interface GrantRepository {
     userId: string,
     spaceIds: readonly string[],
   ): Promise<GrantedResource[]>;
+
+  /**
+   * Method eraseOfList
+   *
+   * @description
+   * Erases every grant of a deleted list its caller locked before erasing it (200 at most, one
+   * range of the primary key). No event: the contract defines none for the erasure of a tombstone.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} listId - The deleted list.
+   * @returns {Promise<number>} How many grants were erased.
+   */
+  eraseOfList(organizationId: string, listId: string): Promise<number>;
+
+  /**
+   * Method eraseOfSpace
+   *
+   * @description
+   * Erases every grant of a deleted space its caller locked before erasing it (200 at most, one
+   * range of the primary key), once none of its lists is left. No event.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} spaceId - The deleted space.
+   * @returns {Promise<number>} How many grants were erased.
+   */
+  eraseOfSpace(organizationId: string, spaceId: string): Promise<number>;
   // #endregion
 }

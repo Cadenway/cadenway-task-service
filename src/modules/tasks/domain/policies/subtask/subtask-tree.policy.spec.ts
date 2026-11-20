@@ -19,7 +19,7 @@ import type { SubtaskParent } from '../../value-objects/subtask/subtask-parent.v
 import type { SubtreeShape } from '../../value-objects/subtask/subtree-shape.value-object.js';
 import { TaskKey } from '../../value-objects/task/task-key.value-object.js';
 import {
-  archiveHeight,
+  treeHeight,
   checkAttachment,
   checkNewSubtask,
   depthsUnder,
@@ -269,19 +269,19 @@ function restoredParent(overrides: Partial<RestoredRootParent> = {}): RestoredRo
   return { live: true, listId: SPRINT_14, level: 1, childCount: 2, ...overrides };
 }
 
-describe('depthsUnder and archiveHeight: the levels of an archive from its parent links', () => {
+describe('depthsUnder and treeHeight: the levels of an archive or a trash entry from its parent links', () => {
   it('gives the root depth 0 and each member its depth below, in any order', () => {
     expect([...depthsUnder(CAD_483, CAD_483_ARCHIVE).entries()]).toEqual([
       [CAD_484, 1],
       [CAD_483, 0],
     ]);
-    expect(archiveHeight(CAD_483, CAD_483_ARCHIVE)).toBe(2);
+    expect(treeHeight(CAD_483, CAD_483_ARCHIVE)).toBe(2);
   });
 
   it('counts a root alone as one level and a full tree as three', () => {
-    expect(archiveHeight(CAD_490, [{ id: CAD_490, parentId: null }])).toBe(1);
+    expect(treeHeight(CAD_490, [{ id: CAD_490, parentId: null }])).toBe(1);
     expect(
-      archiveHeight(CAD_482, [
+      treeHeight(CAD_482, [
         { id: CAD_482, parentId: null },
         { id: CAD_483, parentId: CAD_482 },
         { id: CAD_484, parentId: CAD_483 },
@@ -358,12 +358,16 @@ describe('takesRestoredRoot: the parent takes the restored root back, or the roo
   });
 });
 
-describe('showsParent: a task reads with its parent only when the parent is in its list', () => {
+describe('showsParent: a task reads with its parent only when the parent is in its list and not in the trash', () => {
   it('shows a parent of the same list', () => {
-    expect(showsParent(SPRINT_14, SPRINT_14)).toBe(true);
+    expect(showsParent(SPRINT_14, SPRINT_14, false)).toBe(true);
   });
 
   it('reads an archived root whose live parent moved to another list as detached', () => {
-    expect(showsParent(SPRINT_14, BUGS)).toBe(false);
+    expect(showsParent(SPRINT_14, BUGS, false)).toBe(false);
+  });
+
+  it('reads an archived root whose parent is in the trash as detached', () => {
+    expect(showsParent(SPRINT_14, SPRINT_14, true)).toBe(false);
   });
 });

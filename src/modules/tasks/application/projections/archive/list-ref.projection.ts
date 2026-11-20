@@ -2,8 +2,9 @@
  * Interface ListRefView
  *
  * @description
- * The list of an archived task, with its name and state as they are now (`ListRef` of
- * `openapi/internal/task-service.yaml`): `archived` when the list is archived too ("Liste
+ * The list of an archived task or of a trash entry, with its name and state as they are now
+ * (`ListRef` of `openapi/internal/task-service.yaml`): `deleted` when the list or its space is
+ * deleted ("Liste supprimée", the trash only), else `archived` when the list is archived ("Liste
  * archivée"), `active` otherwise.
  */
 export interface ListRefView {
@@ -18,6 +19,6 @@ export interface ListRefView {
   readonly name: string;
 
   /** Its state now. */
-  readonly state: 'active' | 'archived';
+  readonly state: 'active' | 'archived' | 'deleted';
   // #endregion
 }

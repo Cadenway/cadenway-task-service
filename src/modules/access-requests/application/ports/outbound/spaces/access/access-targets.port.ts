@@ -1,5 +1,6 @@
 import type { MemberRole } from '../../../../../domain/value-objects/member/member-role.value-object.js';
 import type { GrantOutcome } from '../../../../models/grant/grant-outcome.model.js';
+import type { ReadLock } from '../../../../models/lock/read-lock.model.js';
 import type { GrantRequest } from '../../../../models/grant/grant-request.model.js';
 import type { ManagedTargets } from '../../../../models/target/managed-targets.model.js';
 import type { TargetAccess } from '../../../../models/target/target-access.model.js';
@@ -18,21 +19,26 @@ export interface AccessTargets {
    * Method find
    *
    * @description
-   * Reads a space or a list of the organization with the access of a member on it, without lock.
+   * Reads a space or a list of the organization with the access of a member on it, in the same
+   * statements for every outcome; with `share`, the row of the target (the space, or the list, whose
+   * space is read without a lock) is locked `FOR SHARE` until the end of the transaction. A deleted
+   * space or list is not found.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} viewerUserId - The account of the member.
    * @param {MemberRole} viewerRole - Its role in the organization, from the copy of the
    * memberships.
    * @param {TargetRef} target - The space or the list.
+   * @param {ReadLock} lock - The lock the read takes.
    * @returns {Promise<TargetAccess | null>} The target, or `null` when the organization has no such
-   * space or list.
+   * space or list, or it is deleted.
    */
   find(
     organizationId: string,
     viewerUserId: string,
     viewerRole: MemberRole,
     target: TargetRef,
+    lock: ReadLock,
   ): Promise<TargetAccess | null>;
 
   /**

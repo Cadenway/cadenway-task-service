@@ -725,3 +725,20 @@ describe('UpdateSpace: a space handed to the owner of the organization keeps no 
     ]);
   });
 });
+
+describe('UpdateSpace: the actor is checked on the space read without lock, before any lock', () => {
+  it('refuses a space the actor does not see without locking it', async () => {
+    const spaces = atelierNord();
+    const members = atelierNordMembers();
+    members.journal = spaces.journal;
+
+    const refusal = await refusalOf(
+      new UpdateSpace(spaces, members).execute(
+        updateProduit({ actorUserId: CAMILLE, spaceId: DESIGN }),
+      ),
+    );
+
+    expect(refusal).toEqual({ reason: 'space-not-found' });
+    expect(spaces.journal).toEqual([`membership ${CAMILLE}`]);
+  });
+});

@@ -54,7 +54,10 @@ interface Change {
  *    domain changed (one that lost the account between the read of its assignee rows and the lock
  *    is already as wanted), writes the batch in set-based statements, records one `assign` entry
  *    (`added: false`) and appends one `task.updated.v1` (`changed: ['assigneeIds']`) per changed
- *    task, all by the system actor `task-service`, and commits.
+ *    task, all by the system actor `task-service`, and commits. A task in the trash is unassigned
+ *    too (its next version, its entry), but emits no `task.updated.v1`: a consumer dropped it at
+ *    its `task.trashed.v1`, and `task.restored.v1` carries the assignees after a restoration (so
+ *    its `task.purged.v1` comes more than one version after its `task.trashed.v1`).
  *
  * A failed batch rolls back alone: the batches before it stay committed, and a new attempt that
  * starts again from `null` finds only the tasks still assigned, so it never writes a task twice. A
@@ -155,8 +158,11 @@ export class UnassignRemovedMember {
     );
     await this.recorder.record(store.activity, entries);
     for (const { update } of changes) {
-      await store.events.taskUpdated(update.task, update.changed, actor);
+      if (!update.task.isInTrash) {
+        await store.events.taskUpdated(update.task, update.changed, actor);
+      }
     }
+
     return {
       outcome: 'unassigned',
       locked: batch.length,

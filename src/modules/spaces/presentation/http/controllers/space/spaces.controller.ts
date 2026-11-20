@@ -7,6 +7,7 @@ import { formatEtag, InternalAccess } from '@cadenway/nest-common';
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Headers,
   HttpCode,
@@ -14,13 +15,15 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   Res,
 } from '@nestjs/common';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 
 import type { SpaceView } from '../../../../application/projections/space/space-view.projection.js';
 import type { CreateSpaceOutput } from '../../../../application/use-cases/commands/space/create-space/create-space.output.js';
 import { CreateSpace } from '../../../../application/use-cases/commands/space/create-space/create-space.use-case.js';
+import { DeleteSpace } from '../../../../application/use-cases/commands/space/delete-space/delete-space.use-case.js';
 import { UpdateSpace } from '../../../../application/use-cases/commands/space/update-space/update-space.use-case.js';
 import type { ListSpacesOutput } from '../../../../application/use-cases/queries/space/list-spaces/list-spaces.output.js';
 import { GetSpace } from '../../../../application/use-cases/queries/space/get-space/get-space.use-case.js';
@@ -44,13 +47,14 @@ import { toExpectedVersions } from '../../mappers/version/expected-versions.mapp
  *
  * @description
  * The spaces of `openapi/internal/task-service.yaml`, which the gateway calls for `POST`, `GET
- * /v1/spaces` and `GET`, `PATCH /v1/spaces/{spaceId}`. They accept the issuer `api-gateway` only,
- * with the actor `user` and an organization: the guard answers `403 auth.organization-required`
- * without one. The actor and the organization come from the verified internal token, never from
- * the request. The `ETag` (`"<version>"`) of a read or a change is set by the `EtagInterceptor` of
- * the kit from the `version` of the body; the creation sets it itself, its body having none at the
- * top level. The controller validates, maps and delegates: the rules, the visibility of a space
- * and the transaction belong to the use cases.
+ * /v1/spaces` and `GET`, `PATCH`, `DELETE /v1/spaces/{spaceId}`. They accept the issuer
+ * `api-gateway` only, with the actor `user` and an organization: the guard answers
+ * `403 auth.organization-required` without one. The actor and the organization come from the
+ * verified internal token, never from the request. The `ETag` (`"<version>"`) of a read or a
+ * change is set by the `EtagInterceptor` of the kit from the `version` of the body; the creation
+ * sets it itself, its body having none at the top level; a deletion answers `204` without one. The
+ * controller validates, maps and delegates: the rules, the visibility of a space and the
+ * transaction belong to the use cases.
  */
 @Controller('internal/v1/spaces')
 @InternalAccess({ issuers: ['api-gateway'], actors: ['user'], organization: 'required' })
@@ -99,6 +103,17 @@ export class SpacesController {
    * @readonly
    */
   private readonly updateSpace: UpdateSpace;
+
+  /**
+   * Property deleteSpace
+   *
+   * @description
+   * Use case of the deletion.
+   *
+   * @type {DeleteSpace}
+   * @readonly
+   */
+  private readonly deleteSpace: DeleteSpace;
   // #endregion
 
   // #region Constructor
@@ -112,6 +127,7 @@ export class SpacesController {
    * @param {ListSpaces} listSpaces - Use case of the list.
    * @param {GetSpace} getSpace - Use case of the reading.
    * @param {UpdateSpace} updateSpace - Use case of the change.
+   * @param {DeleteSpace} deleteSpace - Use case of the deletion.
    * @constructor
    */
   public constructor(
@@ -119,11 +135,13 @@ export class SpacesController {
     listSpaces: ListSpaces,
     getSpace: GetSpace,
     updateSpace: UpdateSpace,
+    deleteSpace: DeleteSpace,
   ) {
     this.createSpace = createSpace;
     this.listSpaces = listSpaces;
     this.getSpace = getSpace;
     this.updateSpace = updateSpace;
+    this.deleteSpace = deleteSpace;
   }
   // #endregion
 
@@ -246,6 +264,40 @@ export class SpacesController {
       }),
     );
     return toSpace(view);
+  }
+
+  /**
+   * Method delete
+   *
+   * @description
+   * `DELETE /internal/v1/spaces/{spaceId}` (`deleteSpaceInternal`): `204` without a body, once
+   * the space and its lists are tombstones and the job that moves their tasks to the trash is
+   * enqueued. `If-Match` is optional. `404 space.not-found` (a deleted space included),
+   * `403 space.manage-forbidden` for an actor who sees the space without managing it and
+   * `412 request.version-mismatch` with `details.version`, in this order, come from the use case.
+   * While the writes of the trash are off, the route answers as one the service does not have
+   * (`404 http.not-found`, detail `Cannot DELETE <url>`, after the guard and the validation).
+   *
+   * @param {SpacePath} path - The id of the space.
+   * @param {string | undefined} ifMatch - The `If-Match` header, optional.
+   * @param {Request} request - The request, whose route an answer of an unknown route names.
+   * @returns {Promise<void>} Resolves once deleted.
+   * @throws {ProblemException} The refusals above, or `400 request.invalid` for a malformed
+   * `If-Match`.
+   */
+  @Delete(':spaceId')
+  @HttpCode(204)
+  public async delete(
+    @Param() path: SpacePath,
+    @Headers('if-match') ifMatch: string | undefined,
+    @Req() request: Request,
+  ): Promise<void> {
+    const caller: Caller = toCaller();
+    const expectedVersions: readonly number[] | null = toExpectedVersions(ifMatch);
+    await answerRefusals(
+      () => this.deleteSpace.execute({ ...caller, spaceId: path.spaceId, expectedVersions }),
+      request,
+    );
   }
   // #endregion
 }

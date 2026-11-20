@@ -19,7 +19,7 @@ import {
 } from './archive-statements.mapper.js';
 
 const ROOTS: string =
-  '("tasks"."organization_id" = $1 and "tasks"."archive_root" and "tasks"."list_id" = any($2::uuid[]))';
+  '("tasks"."organization_id" = $1 and "tasks"."archive_root" and "tasks"."list_id" = any($2::uuid[]) and "tasks"."trash_entry_id" is null)';
 const ARCHIVE_COLUMNS: string =
   `to_char("tasks"."archived_at" at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "archivedAt", ` +
   '"tasks"."archived_by_type" as "archivedByType", "tasks"."archived_by_id" as "archivedById"';
@@ -61,7 +61,7 @@ describe('archiveMemberCountsStatement: the size of each archive', () => {
     expect(renderSql(archiveMemberCountsStatement('org', [CAD_482]))).toEqual({
       sql:
         'select "tasks"."archive_root_id" as "rootId", count(*)::int as "members" from "tasks" ' +
-        'where ("tasks"."organization_id" = $1 and "tasks"."archive_root_id" is not null and "tasks"."archive_root_id" = any($2::uuid[])) ' +
+        'where ("tasks"."organization_id" = $1 and "tasks"."archive_root_id" is not null and "tasks"."archive_root_id" = any($2::uuid[]) and "tasks"."trash_entry_id" is null) ' +
         'group by "tasks"."archive_root_id"',
       params: ['org', [CAD_482]],
     });
@@ -73,7 +73,7 @@ describe('liveRootCountsStatement: the task count of an archived list', () => {
     expect(renderSql(liveRootCountsStatement('org', ['l1']))).toEqual({
       sql:
         'select "tasks"."list_id" as "listId", count(*)::int as "total" from "tasks" ' +
-        'where ("tasks"."organization_id" = $1 and "tasks"."list_id" = any($2::uuid[]) and "tasks"."parent_id" is null and "tasks"."archived_at" is null) ' +
+        'where ("tasks"."organization_id" = $1 and "tasks"."list_id" = any($2::uuid[]) and "tasks"."parent_id" is null and ("tasks"."archived_at" is null and "tasks"."trash_entry_id" is null)) ' +
         'group by "tasks"."list_id"',
       params: ['org', ['l1']],
     });

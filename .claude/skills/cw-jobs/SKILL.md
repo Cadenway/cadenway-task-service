@@ -58,3 +58,11 @@ The member-lifecycle module enqueues `task.clean-up-removed-member` in the trans
 their access requests, then unassigns
 them from their tasks, in batches the spaces and tasks modules expose (its `MODULE.md`, with the
 retries, the dead-letter queue and the SQL an operator runs about them).
+
+The deletion-lifecycle module runs the workers of the trash and of the deletions, in batches the
+spaces, tasks and access-requests modules expose: `task.trash-deleted-tasks` (enqueued by the spaces
+module with the deletion of a list or a space), `task.drop-trashed-task-requests` and
+`task.purge-trash` (enqueued by the tasks module with "Supprimer la tâche" and "Vider la
+corbeille"), and the daily schedule `task.schedule-trash-purge` (03:00 UTC), whose job has no
+organization and enqueues one `task.purge-trash` per organization from a system transaction (its
+`MODULE.md`, with the dead letters).

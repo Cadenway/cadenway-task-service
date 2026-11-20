@@ -47,9 +47,13 @@ const LOOK_COLOR_VALUES: string = LOOK_COLORS.map((color: string): string => `'$
  * key and is not stored. `visibility` is `text` with a `CHECK`, never an enumeration type. The
  * primary key and both indexes start with `organization_id`: the listing reads
  * `(organization_id, created_at, id)` and the handover of private spaces reads
- * `(organization_id, owner_user_id)`. A tenant table: `organization_id` carries the policy of the
- * kit, which the migration forces by hand (`ALTER TABLE "spaces" FORCE ROW LEVEL SECURITY;`), as
- * drizzle-kit does not generate it.
+ * `(organization_id, owner_user_id)`. `deleted_at` and `deleted_by_*` are the tombstone of a
+ * deleted space ("Supprimer l'espace", P3b-1 PR 3), all three set or all three null: the row stays
+ * until the last trash entry of its tasks is erased, then it is erased too. `restored_at` is when
+ * the space last came back from the trash, with a restored task; a later deletion keeps it, and it
+ * places the space at the end of the sidebar: the order is `(coalesce(restored_at, created_at),
+ * id)`. A tenant table: `organization_id` carries the policy of the kit, which the migration forces
+ * by hand (`ALTER TABLE "spaces" FORCE ROW LEVEL SECURITY;`), as drizzle-kit does not generate it.
  */
 export const spaces = pgTable(
   'spaces',
@@ -69,6 +73,12 @@ export const spaces = pgTable(
     // of the memberships: seen by nobody until it passes to that owner.
     awaitingOwner: boolean('awaiting_owner').notNull().default(false),
     statuses: jsonb('statuses').$type<SpaceStatuses>().notNull(),
+    // The tombstone of a deleted space (P3b-1 PR 3): nullable, so the expand-only migration leaves
+    // every space of the running version live. `restored_at` is the last return from the trash.
+    deletedAt: timestamp('deleted_at', { withTimezone: true, precision: 3 }),
+    deletedByType: text('deleted_by_type'),
+    deletedById: text('deleted_by_id'),
+    restoredAt: timestamp('restored_at', { withTimezone: true, precision: 3 }),
     createdAt: timestamp('created_at', { withTimezone: true, precision: 3 }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     version: integer('version').notNull().default(1),
@@ -83,6 +93,18 @@ export const spaces = pgTable(
     check(
       'spaces_awaiting_owner_check',
       sql`not ${table.awaitingOwner} or ${table.visibility} = 'private'`,
+    ),
+    check(
+      'spaces_deleted_check',
+      sql`(${table.deletedAt} is null) = (${table.deletedByType} is null) and (${table.deletedAt} is null) = (${table.deletedById} is null)`,
+    ),
+    check(
+      'spaces_deleted_by_type_check',
+      sql`${table.deletedByType} is null or ${table.deletedByType} in ('user', 'automation', 'git', 'system')`,
+    ),
+    check(
+      'spaces_deleted_by_id_check',
+      sql`${table.deletedById} is null or ${table.deletedById} <> ''`,
     ),
     check(
       'spaces_icon_check',

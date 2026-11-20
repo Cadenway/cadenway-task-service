@@ -17,9 +17,16 @@ import {
   LEA,
   NADIA,
   archiveFrom,
+  atelierNordLists,
+  CAD_482_ENTRY,
+  NOW,
+  SPRINT_14,
+  TRASHED_AT,
   refusalOf,
   sprint14SharedWith,
+  storedEntry,
   taskState,
+  trashIn,
 } from '../../use-cases/tasks.fixture.js';
 import { TaskLocator } from './task-locator.service.js';
 
@@ -247,5 +254,138 @@ describe('TaskLocator: a change of an archived task answers task-archived', () =
     );
 
     expect(refusal).toEqual({ reason: 'task-archived', key: 'CAD-482' });
+  });
+});
+
+describe('TaskLocator: a task in the trash answers task-trashed to whoever could change its list', () => {
+  /** The refusal of CAD-482 in the trash, with its entry. */
+  const trashed = {
+    reason: 'task-trashed',
+    key: 'CAD-482',
+    name: 'Refondre l’écran de connexion SSO',
+    entryId: CAD_482_ENTRY,
+    rootKey: 'CAD-482',
+    trashedAt: TRASHED_AT,
+    trashedBy: { type: 'user', id: CAMILLE },
+    purgeAt: new Date('2026-12-06T16:20:00.000Z'),
+  } as const;
+
+  /**
+   * A store holding CAD-482 in the trash, in its entry.
+   *
+   * @param entry - What replaces the entry.
+   * @returns The fake store.
+   */
+  function inTrash(entry: Parameters<typeof storedEntry>[0] = {}): InMemoryTasks {
+    return new InMemoryTasks({
+      tasks: [taskState({ trash: trashIn(), version: 13 })],
+      trashEntries: [storedEntry({ taskCount: 1, ...entry })],
+    });
+  }
+
+  it.each([
+    ['a read', { edit: false, lock: false }],
+    ['a write', {}],
+  ] as const)(
+    'answers %s with the entry when the actor has edit on the list',
+    async (_case, overrides) => {
+      expect(
+        await refusalOf(locate(new InMemorySpaceDirectory(), request(overrides), inTrash())),
+      ).toEqual(trashed);
+    },
+  );
+
+  it.each(['view', 'comment'] as const)(
+    'answers task-not-found to an actor with %s on the list, before the role a change needs',
+    async (role) => {
+      expect(
+        await refusalOf(locate(sprint14SharedWith({ [HUGO]: role }), request(), inTrash())),
+      ).toEqual({ reason: 'task-not-found' });
+    },
+  );
+
+  it('answers task-not-found to an actor with no role on the list', async () => {
+    expect(
+      await refusalOf(
+        locate(sprint14SharedWith({}), request({ edit: false, lock: false }), inTrash()),
+      ),
+    ).toEqual({ reason: 'task-not-found' });
+  });
+
+  it.each(['refuse', 'allow'] as const)(
+    'answers an archived task in the trash task-trashed first, archives %s',
+    async (archived) => {
+      const tasks = new InMemoryTasks({
+        tasks: [taskState({ trash: trashIn(), archive: archiveFrom(CAD_482), version: 13 })],
+        trashEntries: [storedEntry({ taskCount: 1 })],
+      });
+
+      expect(
+        await refusalOf(locate(new InMemorySpaceDirectory(), request({ archived }), tasks)),
+      ).toEqual(trashed);
+    },
+  );
+
+  it('decides on the role the actor would have on a deleted list, as if it were not deleted', async () => {
+    const deleted = new InMemorySpaceDirectory({
+      deletedLists: { [SPRINT_14]: { type: 'user', id: CAMILLE } },
+    });
+    const guestOnly = new InMemorySpaceDirectory({
+      lists: atelierNordLists({ organizationAccess: false }),
+      listGrants: { [SPRINT_14]: { [NADIA]: 'view' } },
+      deletedLists: { [SPRINT_14]: { type: 'user', id: CAMILLE } },
+    });
+
+    expect(await refusalOf(locate(deleted, request(), inTrash()))).toEqual(trashed);
+    expect(
+      await refusalOf(
+        locate(guestOnly, request({ viewer: { userId: NADIA, role: 'guest' } }), inTrash()),
+      ),
+    ).toEqual({ reason: 'task-not-found' });
+  });
+
+  it('answers task-not-found once "Vider la corbeille" handed the entry to the purge', async () => {
+    const handedOver: InMemoryTasks = inTrash({
+      purgeRequest: { at: NOW, by: { type: 'user', id: CAMILLE } },
+    });
+
+    expect(await refusalOf(locate(new InMemorySpaceDirectory(), request(), handedOver))).toEqual({
+      reason: 'task-not-found',
+    });
+  });
+
+  it('answers task-not-found for a live task of a deleted list, which nobody sees', async () => {
+    const deleted = new InMemorySpaceDirectory({
+      deletedLists: { [SPRINT_14]: { type: 'user', id: CAMILLE } },
+    });
+
+    expect(await refusalOf(locate(deleted, request({ edit: false, lock: false })))).toEqual({
+      reason: 'task-not-found',
+    });
+  });
+
+  it('decides on the locked task, deleted while the write waited for its lock', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [taskState()],
+      trashEntries: [storedEntry({ taskCount: 1 })],
+    });
+
+    const refusal = await refusalOf(
+      tasks.run((store: TasksStore): Promise<LocatedTask> => {
+        const trashedMeanwhile: TasksStore = {
+          ...store,
+          tasks: {
+            ...store.tasks,
+            findByKey: (organizationId: string, key: TaskKey, lock: boolean) =>
+              lock
+                ? Promise.resolve(Task.restore(taskState({ trash: trashIn(), version: 13 })))
+                : store.tasks.findByKey(organizationId, key, lock),
+          },
+        };
+        return new TaskLocator(new InMemorySpaceDirectory()).locate(trashedMeanwhile, request());
+      }),
+    );
+
+    expect(refusal).toEqual(trashed);
   });
 });

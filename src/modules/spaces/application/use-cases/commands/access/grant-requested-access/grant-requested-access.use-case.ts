@@ -6,6 +6,7 @@ import type { GrantsUpdate } from '../../../../../domain/value-objects/access/gr
 import type { MemberRole } from '../../../../../domain/value-objects/member/member-role.value-object.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
 import type { GrantedResource } from '../../../../models/access/granted-resource.model.js';
+import type { CheckedLock } from '../../../../models/access/checked-lock.model.js';
 import type { ViewerAccess } from '../../../../models/access/viewer-access.model.js';
 import type { StoredGrant } from '../../../../models/access/stored-grant.model.js';
 import { SpaceRefusal } from '../../../../models/space/space-refusal.model.js';
@@ -13,7 +14,7 @@ import type { SpacesStore } from '../../../../models/transactions/spaces-store.m
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpacesUnitOfWork } from '../../../../ports/outbound/transactions/space/spaces-unit-of-work.port.js';
 import { AccessResolver } from '../../../../services/access/access-resolver.service.js';
-import { GrantGuard } from '../../../../services/access/grant-guard.service.js';
+import { CheckedLocker } from '../../../../services/access/checked-locker.service.js';
 import { GrantKeeper } from '../../../../services/access/grant-keeper.service.js';
 import type { GrantRequestedAccessInput } from './grant-requested-access.input.js';
 import type { GrantRequestedAccessOutput } from './grant-requested-access.output.js';
@@ -30,10 +31,11 @@ import type { GrantRequestedAccessOutput } from './grant-requested-access.output
  * `not-found` for a space or a list the organization no longer has, `manage-forbidden` when the
  * actor no longer answers requests for it, then the rules of the grant. Locks, in this order: the
  * membership of the requester `FOR SHARE`, then the space `FOR NO KEY UPDATE`, or for a list its
- * space `FOR SHARE` then the list `FOR NO KEY UPDATE`. On the locked rows it checks again, with the
- * role of the actor the caller read in the same transaction, that the actor manages the space
- * (`canManageSpace`) or the access of the list (`canManageListAccess`): the check of the caller
- * ran before the locks, and a grant given meanwhile could have taken that right away. A change
+ * space `FOR SHARE` then the list `FOR NO KEY UPDATE`. It checks, with the role of the actor the
+ * caller read in the same transaction, that the actor manages the space (`canManageSpace`) or the
+ * access of the list (`canManageListAccess`) on the rows read without lock first, then again on
+ * the locked rows when they changed meanwhile (`CheckedLocker`): a grant given meanwhile could
+ * have taken that right away. A change
  * writes the grant, takes the next version of the space or the list and appends
  * `space.access-changed.v1` or `list.access-changed.v1` with the actor
  * `{ type: 'user', id: actorUserId }`. It runs in `SpacesUnitOfWork.run`, which joins the
@@ -64,15 +66,15 @@ export class GrantRequestedAccess {
   private readonly members: MemberDirectory;
 
   /**
-   * Property guard
+   * Property locker
    *
    * @description
-   * Locks a list after its space.
+   * Checks the actor before the lock, and again on a row that changed.
    *
-   * @type {GrantGuard}
+   * @type {CheckedLocker}
    * @readonly
    */
-  private readonly guard: GrantGuard;
+  private readonly locker: CheckedLocker;
 
   /**
    * Property keeper
@@ -111,7 +113,7 @@ export class GrantRequestedAccess {
   public constructor(unitOfWork: SpacesUnitOfWork, members: MemberDirectory) {
     this.unitOfWork = unitOfWork;
     this.members = members;
-    this.guard = new GrantGuard();
+    this.locker = new CheckedLocker();
     this.keeper = new GrantKeeper();
     this.access = new AccessResolver();
   }
@@ -137,19 +139,28 @@ export class GrantRequestedAccess {
       const actor: EventActor = { type: 'user', id: input.actorUserId };
       const target: GrantRequestedAccessInput['target'] = input.target;
       if (target.kind === 'space') {
-        const space: Space | null = await store.spaces.lock(input.organizationId, target.spaceId);
-        if (space === null) {
+        const checked: CheckedLock<Space, GrantRequestedAccessOutput> = await this.locker.space(
+          store,
+          input.organizationId,
+          target.spaceId,
+          'update',
+          async (seen: Space): Promise<GrantRequestedAccessOutput | null> => {
+            const access: ViewerAccess = await this.access.resolve(
+              store.grants,
+              { userId: input.actorUserId, role: input.actorRole },
+              seen.snapshot,
+              null,
+            );
+            return access.canManage ? null : { outcome: 'refused', reason: 'manage-forbidden' };
+          },
+        );
+        if (checked.outcome === 'unknown') {
           return { outcome: 'refused', reason: 'not-found' };
         }
-        const access: ViewerAccess = await this.access.resolve(
-          store.grants,
-          { userId: input.actorUserId, role: input.actorRole },
-          space.snapshot,
-          null,
-        );
-        if (!access.canManage) {
-          return { outcome: 'refused', reason: 'manage-forbidden' };
+        if (checked.outcome === 'refused') {
+          return checked.refusal;
         }
+        const space: Space = checked.locked;
         const resource: GrantedResource = { kind: 'space', spaceId: space.snapshot.id };
         const raised: GrantsUpdate | GrantRequestedAccessOutput = await this.raise(
           store,
@@ -173,20 +184,36 @@ export class GrantRequestedAccess {
         }
         return { outcome: 'granted', changed: raised.changed };
       }
-      const locked: { readonly space: Space; readonly list: TaskList } | null =
-        await this.guard.lockList(store, input.organizationId, target.listId);
-      if (locked === null) {
+      const checked: CheckedLock<
+        { readonly space: Space; readonly list: TaskList },
+        GrantRequestedAccessOutput
+      > = await this.locker.list(
+        store,
+        input.organizationId,
+        target.listId,
+        'share',
+        async (
+          seenSpace: Space,
+          seenList: TaskList,
+        ): Promise<GrantRequestedAccessOutput | null> => {
+          const access: ViewerAccess = await this.access.resolve(
+            store.grants,
+            { userId: input.actorUserId, role: input.actorRole },
+            seenSpace.snapshot,
+            seenList.snapshot,
+          );
+          return canManageListAccess(access.listRole)
+            ? null
+            : { outcome: 'refused', reason: 'manage-forbidden' };
+        },
+      );
+      if (checked.outcome === 'unknown') {
         return { outcome: 'refused', reason: 'not-found' };
       }
-      const access: ViewerAccess = await this.access.resolve(
-        store.grants,
-        { userId: input.actorUserId, role: input.actorRole },
-        locked.space.snapshot,
-        locked.list.snapshot,
-      );
-      if (!canManageListAccess(access.listRole)) {
-        return { outcome: 'refused', reason: 'manage-forbidden' };
+      if (checked.outcome === 'refused') {
+        return checked.refusal;
       }
+      const locked: { readonly space: Space; readonly list: TaskList } = checked.locked;
       const resource: GrantedResource = {
         kind: 'list',
         spaceId: locked.list.snapshot.spaceId,

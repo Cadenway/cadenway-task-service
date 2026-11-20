@@ -1,8 +1,10 @@
 import { TaskList } from '../../domain/aggregates/list/task-list.aggregate.js';
 import { Space } from '../../domain/aggregates/space/space.aggregate.js';
 import { positionInSpaceOf } from '../../domain/policies/list/list-position.policy.js';
+import { positionInSidebarOf } from '../../domain/policies/space/space-position.policy.js';
 import type { AccessRole } from '../../domain/value-objects/access/access-role.value-object.js';
 import type { GrantEntry } from '../../domain/value-objects/access/grant-entry.value-object.js';
+import type { ListActor } from '../../domain/value-objects/list/list-actor.value-object.js';
 import type { TaskListDraft } from '../../domain/value-objects/list/task-list-draft.value-object.js';
 import type { TaskListField } from '../../domain/value-objects/list/task-list-field.value-object.js';
 import type { TaskListState } from '../../domain/value-objects/list/task-list-state.value-object.js';
@@ -18,9 +20,11 @@ import type { ListWithGrants } from '../models/access/list-with-grants.model.js'
 import type { SpaceWithGrants } from '../models/access/space-with-grants.model.js';
 import type { StoredGrant } from '../models/access/stored-grant.model.js';
 import type { ViewerGrants } from '../models/access/viewer-grants.model.js';
+import type { TrashListAccess } from '../models/list/trash-list-access.model.js';
 import type { ArchivedListPosition } from '../models/page/archived-list-position.model.js';
 import type { PagePosition } from '../models/page/page-position.model.js';
 import type { SpacesStore } from '../models/transactions/spaces-store.model.js';
+import type { TrashWrites } from '../ports/outbound/feature/trash/trash-writes.port.js';
 import type { MemberDirectory } from '../ports/outbound/members/membership/member-directory.port.js';
 import type { SpacesUnitOfWork } from '../ports/outbound/transactions/space/spaces-unit-of-work.port.js';
 import {
@@ -42,6 +46,7 @@ export {
   BACKLOG,
   CAMILLE,
   CREATED_AT,
+  DELETED_AT,
   DESIGN,
   HUGO,
   INES,
@@ -49,6 +54,7 @@ export {
   MARKETING,
   NADIA,
   PRODUIT,
+  RESTORED_FROM_TRASH_AT,
   SPRINT_14,
   SPRINT_14_GOAL,
   backlogState,
@@ -220,6 +226,36 @@ export type RecordedEvent =
       readonly actor: EventActor;
     }
   | {
+      readonly kind: 'spaceDeleted';
+      readonly spaceId: string;
+      readonly version: number;
+      readonly deletedAt: Date | null;
+      readonly actor: EventActor;
+    }
+  | {
+      readonly kind: 'spaceRestored';
+      readonly spaceId: string;
+      readonly version: number;
+      readonly restoredAt: Date | null;
+      readonly actor: EventActor;
+    }
+  | {
+      readonly kind: 'listDeleted';
+      readonly listId: string;
+      readonly spaceId: string;
+      readonly version: number;
+      readonly deletedAt: Date | null;
+      readonly actor: EventActor;
+    }
+  | {
+      readonly kind: 'listRestored';
+      readonly listId: string;
+      readonly version: number;
+      readonly restoredAt: Date | null;
+      readonly archivedAt: Date | null;
+      readonly actor: EventActor;
+    }
+  | {
       readonly kind: 'spaceAccessChanged';
       readonly spaceId: string;
       readonly version: number;
@@ -238,6 +274,33 @@ export type RecordedEvent =
       readonly changedUserIds: readonly string[];
       readonly actor: EventActor;
     };
+
+/** A job of `task.trash-deleted-tasks` the use cases enqueued, as plain data. */
+export interface RecordedTrashJob {
+  // #region Properties
+  /**
+   * Property payload
+   *
+   * @description
+   * The deleted list or space.
+   *
+   * @type {{ readonly listId: string } | { readonly spaceId: string }}
+   * @readonly
+   */
+  readonly payload: { readonly listId: string } | { readonly spaceId: string };
+
+  /**
+   * Property occurrenceKey
+   *
+   * @description
+   * The occurrence key the adapter gives the job.
+   *
+   * @type {string}
+   * @readonly
+   */
+  readonly occurrenceKey: string;
+  // #endregion
+}
 
 /** What a spec seeds in the fake store. */
 export interface InMemorySpacesSeed {
@@ -452,9 +515,12 @@ export class InMemoryMembers implements MemberDirectory {
  * organization as the repositories do, keeps in its collections the rows the one visibility
  * condition of each resource keeps (written again here from the SQL, not from the policies),
  * leaves the archived lists out of the collections of a space, of the sprints and of the sidebar
- * (`liveListCondition`), orders the lists of a space by `coalesce(restored_at, created_at)` then
- * id, and records the calls and the locks the specs count. Its clock gives `now` to every
- * transaction.
+ * (`liveListCondition`), leaves the tombstones out of every reading by id, lock before a change
+ * and collection (`undeletedListCondition`, `undeletedSpaceCondition`) and reads them in the
+ * trash with the role "as if not deleted" (`listAccessCondition`), orders the lists of a space by
+ * `coalesce(restored_at, created_at)` then id and the spaces by the same expression of theirs, and
+ * records the calls, the locks and the jobs the specs count. Its clock gives `now` to every
+ * transaction. Its erasures refuse what the foreign keys of the tables refuse.
  */
 export class InMemorySpaces implements SpacesUnitOfWork {
   // #region Properties
@@ -499,11 +565,23 @@ export class InMemorySpaces implements SpacesUnitOfWork {
   public events: RecordedEvent[] = [];
 
   /**
+   * Property jobs
+   *
+   * @description
+   * The jobs of `task.trash-deleted-tasks` of the committed work, in the order they were enqueued;
+   * an occurrence key enqueued again is a duplicate, as the kit keeps one job per occurrence.
+   *
+   * @type {RecordedTrashJob[]}
+   */
+  public jobs: RecordedTrashJob[] = [];
+
+  /**
    * Property journal
    *
    * @description
-   * The locks taken, in order (`space <id>`, `space <id> share`, `list <id>`), committed or not; a
-   * spec shares it with the journal of `InMemoryMembers` to check the lock order.
+   * The locks taken, in order (`space <id>`, `space <id> share`, `space <id> delete`,
+   * `list <id>`, `list <id> share`, `list <id> delete`), committed or not; a spec shares it with
+   * the journal of `InMemoryMembers` to check the lock order.
    *
    * @type {string[]}
    */
@@ -513,8 +591,9 @@ export class InMemorySpaces implements SpacesUnitOfWork {
    * Property reads
    *
    * @description
-   * The readings by id, in order (`space` and `list` for `find`, `grants` for `viewerGrants`),
-   * whatever they found: what a spec compares to tell whether a path reads more than another.
+   * The readings by id, in order (`space` and `list` for `find`, `lists` for
+   * `findManyIncludingDeleted`, `grants` for `viewerGrants`), whatever they found: what a spec
+   * compares to tell whether a path reads more than another.
    *
    * @type {string[]}
    * @readonly
@@ -829,9 +908,11 @@ export class InMemorySpaces implements SpacesUnitOfWork {
    * Method anyListGrant
    *
    * @description
-   * Whether an account holds a grant of at least one list of a space.
+   * Whether an account holds a grant of at least one list of a space that is not deleted: a
+   * grant of a tombstone shows no space.
    *
    * @param {readonly FakeGrant[]} grants - The grants of the work.
+   * @param {ReadonlyMap<string, TaskListState>} lists - The lists of the work.
    * @param {string} organizationId - The organization.
    * @param {string} spaceId - The space.
    * @param {string} userId - The account.
@@ -839,6 +920,7 @@ export class InMemorySpaces implements SpacesUnitOfWork {
    */
   private static anyListGrant(
     grants: readonly FakeGrant[],
+    lists: ReadonlyMap<string, TaskListState>,
     organizationId: string,
     spaceId: string,
     userId: string,
@@ -848,7 +930,8 @@ export class InMemorySpaces implements SpacesUnitOfWork {
         grant.organizationId === organizationId &&
         grant.userId === userId &&
         grant.resource.kind === 'list' &&
-        grant.resource.spaceId === spaceId,
+        grant.resource.spaceId === spaceId &&
+        (lists.get(grant.resource.listId)?.deletedAt ?? null) === null,
     );
   }
 
@@ -857,11 +940,13 @@ export class InMemorySpaces implements SpacesUnitOfWork {
    *
    * @description
    * A space with the grants of a member there, when the visibility condition of the spaces keeps
-   * it: not awaiting an owner, and for a member who is not a guest the whole organization, the
-   * owner or a grant of the space, for anyone a grant of one of its lists.
+   * it: not deleted, not awaiting an owner, and for a member who is not a guest the whole
+   * organization, the owner or a grant of the space, for anyone a grant of one of its lists that
+   * is not deleted.
    *
    * @param {SpaceState} space - The space.
    * @param {readonly FakeGrant[]} grants - The grants of the work.
+   * @param {ReadonlyMap<string, TaskListState>} lists - The lists of the work.
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The member.
    * @returns {SpaceWithGrants | null} The row, or `null` when the condition leaves it out.
@@ -869,10 +954,15 @@ export class InMemorySpaces implements SpacesUnitOfWork {
   private static spaceRow(
     space: SpaceState,
     grants: readonly FakeGrant[],
+    lists: ReadonlyMap<string, TaskListState>,
     organizationId: string,
     viewer: Viewer,
   ): SpaceWithGrants | null {
-    if (space.organizationId !== organizationId || space.awaitingOwner) {
+    if (
+      space.organizationId !== organizationId ||
+      space.awaitingOwner ||
+      space.deletedAt !== null
+    ) {
       return null;
     }
     const spaceGrant: AccessRole | null = InMemorySpaces.roleOfGrant(
@@ -883,6 +973,7 @@ export class InMemorySpaces implements SpacesUnitOfWork {
     );
     const anyList: boolean = InMemorySpaces.anyListGrant(
       grants,
+      lists,
       organizationId,
       space.id,
       viewer.userId,
@@ -903,9 +994,7 @@ export class InMemorySpaces implements SpacesUnitOfWork {
    *
    * @description
    * A list with the grants of a member there, when the visibility condition of the lists keeps
-   * it: not of a space awaiting an owner, and a grant of the list, or for a member who is not a
-   * guest the owner of the space, a space of the organization with the switch on, or a grant of
-   * the space.
+   * it: neither the list nor its space deleted, and `trashRow`.
    *
    * @param {TaskListState} list - The list.
    * @param {ReadonlyMap<string, SpaceState>} spaces - The spaces of the work.
@@ -915,6 +1004,35 @@ export class InMemorySpaces implements SpacesUnitOfWork {
    * @returns {ListWithGrants | null} The row, or `null` when the condition leaves it out.
    */
   private static listRow(
+    list: TaskListState,
+    spaces: ReadonlyMap<string, SpaceState>,
+    grants: readonly FakeGrant[],
+    organizationId: string,
+    viewer: Viewer,
+  ): ListWithGrants | null {
+    if (list.deletedAt !== null || spaces.get(list.spaceId)?.deletedAt !== null) {
+      return null;
+    }
+    return InMemorySpaces.trashRow(list, spaces, grants, organizationId, viewer);
+  }
+
+  /**
+   * Method trashRow
+   *
+   * @description
+   * A list with the grants of a member there, deleted or not, when the condition of the role "as if
+   * not deleted" keeps it: not of a space awaiting an owner, and a grant of the list, or for a
+   * member who is not a guest the owner of the space, a space of the organization with the switch
+   * on, or a grant of the space.
+   *
+   * @param {TaskListState} list - The list.
+   * @param {ReadonlyMap<string, SpaceState>} spaces - The spaces of the work.
+   * @param {readonly FakeGrant[]} grants - The grants of the work.
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {Viewer} viewer - The member.
+   * @returns {ListWithGrants | null} The row, or `null` when the condition leaves it out.
+   */
+  private static trashRow(
     list: TaskListState,
     spaces: ReadonlyMap<string, SpaceState>,
     grants: readonly FakeGrant[],
@@ -951,6 +1069,7 @@ export class InMemorySpaces implements SpacesUnitOfWork {
         visibility: space.visibility,
         ownerUserId: space.ownerUserId,
         awaitingOwner: space.awaitingOwner,
+        deletedAt: space.deletedAt,
       },
       grants: { space: spaceGrant, list: listGrant },
     };
@@ -960,9 +1079,9 @@ export class InMemorySpaces implements SpacesUnitOfWork {
    * Method sidebarOrder
    *
    * @description
-   * Compares two lists in sidebar order: their spaces by creation (id as tie-breaker), then the
-   * lists by their position in the space (`coalesce(restored_at, created_at)`, id as
-   * tie-breaker).
+   * Compares two lists in sidebar order: their spaces by their position in the sidebar
+   * (`coalesce(restored_at, created_at)`, id as tie-breaker), then the lists by their position in
+   * the space (`coalesce(restored_at, created_at)`, id as tie-breaker).
    *
    * @param {ReadonlyMap<string, SpaceState>} spaces - The spaces of the work.
    * @param {TaskListState} left - One list.
@@ -977,7 +1096,8 @@ export class InMemorySpaces implements SpacesUnitOfWork {
     const leftSpace: SpaceState | undefined = spaces.get(left.spaceId);
     const rightSpace: SpaceState | undefined = spaces.get(right.spaceId);
     return (
-      (leftSpace?.createdAt.getTime() ?? 0) - (rightSpace?.createdAt.getTime() ?? 0) ||
+      (leftSpace === undefined ? 0 : positionInSidebarOf(leftSpace).getTime()) -
+        (rightSpace === undefined ? 0 : positionInSidebarOf(rightSpace).getTime()) ||
       left.spaceId.localeCompare(right.spaceId) ||
       InMemorySpaces.spaceOrder(left, right)
     );
@@ -1048,6 +1168,40 @@ export class InMemorySpaces implements SpacesUnitOfWork {
   }
 
   /**
+   * Method pageOfSidebar
+   *
+   * @description
+   * Sorts spaces by their position in the sidebar (`coalesce(restored_at, created_at)`, id as
+   * tie-breaker) and keeps those after a position, as the keyset query of the spaces does.
+   *
+   * @param {readonly SpaceState[]} rows - The spaces.
+   * @param {PagePosition | null} after - The last space of the previous page, or `null`.
+   * @param {number} limit - How many spaces at most.
+   * @returns {SpaceState[]} The spaces of the page.
+   */
+  private static pageOfSidebar(
+    rows: readonly SpaceState[],
+    after: PagePosition | null,
+    limit: number,
+  ): SpaceState[] {
+    return [...rows]
+      .sort(
+        (left: SpaceState, right: SpaceState): number =>
+          positionInSidebarOf(left).getTime() - positionInSidebarOf(right).getTime() ||
+          left.id.localeCompare(right.id),
+      )
+      .filter((row: SpaceState): boolean => {
+        const position: number = positionInSidebarOf(row).getTime();
+        return (
+          after === null ||
+          position > after.createdAt.getTime() ||
+          (position === after.createdAt.getTime() && row.id > after.id)
+        );
+      })
+      .slice(0, limit);
+  }
+
+  /**
    * Method lastNumberOf
    *
    * @description
@@ -1109,17 +1263,38 @@ export class InMemorySpaces implements SpacesUnitOfWork {
     const prefixOwners = new Map<string, string>(this.prefixOwners);
     const lastNumbers = new Map<string, number>(this.lastNumbers);
     const events: RecordedEvent[] = [...this.events];
-    const findSpace = (organizationId: string, id: string): Space | null => {
+    const jobs: RecordedTrashJob[] = [...this.jobs];
+    const findAnySpace = (organizationId: string, id: string): Space | null => {
       const state: SpaceState | undefined = spaces.get(id);
       return state?.organizationId === organizationId ? Space.restore(state) : null;
     };
-    const findList = (organizationId: string, id: string): TaskList | null => {
+    const findSpace = (organizationId: string, id: string): Space | null => {
+      const space: Space | null = findAnySpace(organizationId, id);
+      return space === null || space.isDeleted ? null : space;
+    };
+    const findAnyList = (organizationId: string, id: string): TaskList | null => {
       const state: TaskListState | undefined = lists.get(id);
       return state?.organizationId === organizationId ? TaskList.restore(state) : null;
     };
+    const findList = (organizationId: string, id: string): TaskList | null => {
+      const list: TaskList | null = findAnyList(organizationId, id);
+      return list === null || list.isDeleted ? null : list;
+    };
+    const toTrashAccess = (row: ListWithGrants): TrashListAccess => ({
+      listId: row.list.snapshot.id,
+      spaceId: row.list.snapshot.spaceId,
+      name: row.list.snapshot.name,
+      organizationAccess: row.list.snapshot.organizationAccess,
+      archivedAt: row.list.snapshot.archivedAt,
+      deletedAt: row.list.snapshot.deletedAt,
+      space: row.space,
+      grants: row.grants,
+    });
     const visibleSpaces = (organizationId: string, viewer: Viewer): SpaceWithGrants[] =>
-      InMemorySpaces.page([...spaces.values()], null, Number.MAX_SAFE_INTEGER)
-        .map((space: SpaceState) => InMemorySpaces.spaceRow(space, grants, organizationId, viewer))
+      InMemorySpaces.pageOfSidebar([...spaces.values()], null, Number.MAX_SAFE_INTEGER)
+        .map((space: SpaceState) =>
+          InMemorySpaces.spaceRow(space, grants, lists, organizationId, viewer),
+        )
         .filter((row: SpaceWithGrants | null): row is SpaceWithGrants => row !== null);
     const visibleLists = (
       organizationId: string,
@@ -1150,6 +1325,9 @@ export class InMemorySpaces implements SpacesUnitOfWork {
             ...draft,
             id: this.nextId('019a7200'),
             createdAt: this.nextInstant(),
+            deletedAt: null,
+            deletedBy: null,
+            restoredAt: null,
             version: 1,
           };
           spaces.set(state.id, state);
@@ -1173,7 +1351,7 @@ export class InMemorySpaces implements SpacesUnitOfWork {
         ): Promise<Space[]> => {
           const found: Space[] = InMemorySpaces.page(
             locks
-              .map(({ id }): Space | null => findSpace(organizationId, id))
+              .map(({ id }): Space | null => findAnySpace(organizationId, id))
               .filter((space: Space | null): space is Space => space !== null)
               .map((space: Space): SpaceState => space.snapshot),
             null,
@@ -1204,7 +1382,7 @@ export class InMemorySpaces implements SpacesUnitOfWork {
             limit,
           });
           const rows: SpaceWithGrants[] = visibleSpaces(organizationId, viewer);
-          const kept: readonly SpaceState[] = InMemorySpaces.page(
+          const kept: readonly SpaceState[] = InMemorySpaces.pageOfSidebar(
             rows.map((row: SpaceWithGrants): SpaceState => row.space.snapshot),
             after,
             limit,
@@ -1243,6 +1421,35 @@ export class InMemorySpaces implements SpacesUnitOfWork {
               )
               .map((row: SpaceState): Space => Space.restore(row)),
           ),
+        findIncludingDeleted: (organizationId: string, id: string): Promise<Space | null> => {
+          this.reads.push('space');
+          return Promise.resolve(findAnySpace(organizationId, id));
+        },
+        lockIncludingDeleted: (
+          organizationId: string,
+          id: string,
+          mode: 'share' | 'update' | 'delete',
+        ): Promise<Space | null> => {
+          this.journal.push(`space ${id}${mode === 'update' ? '' : ` ${mode}`}`);
+          return Promise.resolve(findAnySpace(organizationId, id));
+        },
+        erase: (organizationId: string, id: string): Promise<void> => {
+          const space: Space | null = findAnySpace(organizationId, id);
+          if (!space?.isDeleted) {
+            return Promise.reject(new Error('The deleted space to erase is not a tombstone.'));
+          }
+          const referenced: boolean =
+            [...lists.values()].some((row: TaskListState): boolean => row.spaceId === id) ||
+            grants.some(
+              (grant: FakeGrant): boolean =>
+                grant.organizationId === organizationId && grant.resource.spaceId === id,
+            );
+          if (referenced) {
+            return Promise.reject(new Error('A foreign key refuses the erasure of the space.'));
+          }
+          spaces.delete(id);
+          return Promise.resolve();
+        },
       },
       prefixes: {
         claim: (organizationId: string, prefix: string, spaceId: string): Promise<boolean> => {
@@ -1293,6 +1500,8 @@ export class InMemorySpaces implements SpacesUnitOfWork {
             archivedAt: null,
             archivedBy: null,
             restoredAt: null,
+            deletedAt: null,
+            deletedBy: null,
             version: 1,
           };
           lists.set(state.id, state);
@@ -1306,15 +1515,49 @@ export class InMemorySpaces implements SpacesUnitOfWork {
           this.journal.push(`list ${id}`);
           return Promise.resolve(findList(organizationId, id));
         },
-        lockMany: (organizationId: string, ids: readonly string[]): Promise<TaskList[]> => {
-          const found: TaskList[] = [...ids]
+        lockShared: (organizationId: string, id: string): Promise<TaskList | null> => {
+          this.journal.push(`list ${id} share`);
+          return Promise.resolve(findList(organizationId, id));
+        },
+        lockMany: (
+          organizationId: string,
+          ids: readonly string[],
+          mode: 'update' | 'delete' = 'update',
+        ): Promise<TaskList[]> => {
+          const found: TaskList[] = [...new Set(ids)]
             .sort()
-            .map((id: string): TaskList | null => findList(organizationId, id))
+            .map((id: string): TaskList | null => findAnyList(organizationId, id))
             .filter((list: TaskList | null): list is TaskList => list !== null);
           for (const list of found) {
-            this.journal.push(`list ${list.snapshot.id}`);
+            this.journal.push(`list ${list.snapshot.id}${mode === 'delete' ? ' delete' : ''}`);
           }
           return Promise.resolve(found);
+        },
+        findManyIncludingDeleted: (
+          organizationId: string,
+          ids: readonly string[],
+        ): Promise<TaskList[]> => {
+          this.reads.push('lists');
+          return Promise.resolve(
+            [...new Set(ids)]
+              .map((id: string): TaskList | null => findAnyList(organizationId, id))
+              .filter((list: TaskList | null): list is TaskList => list !== null),
+          );
+        },
+        lockUndeletedOfSpace: (organizationId: string, spaceId: string): Promise<string[]> => {
+          const ids: string[] = [...lists.values()]
+            .filter(
+              (row: TaskListState): boolean =>
+                row.organizationId === organizationId &&
+                row.spaceId === spaceId &&
+                row.deletedAt === null,
+            )
+            .map((row: TaskListState): string => row.id)
+            .sort();
+          for (const id of ids) {
+            this.journal.push(`list ${id}`);
+          }
+          return Promise.resolve(ids);
         },
         update: (list: TaskList): Promise<void> => {
           lists.set(list.snapshot.id, list.snapshot);
@@ -1426,6 +1669,7 @@ export class InMemorySpaces implements SpacesUnitOfWork {
                 listId: row.list.snapshot.id,
                 spaceId: row.list.snapshot.spaceId,
                 organizationAccess: row.list.snapshot.organizationAccess,
+                deletedAt: row.list.snapshot.deletedAt,
                 space: row.space,
                 grants: row.grants,
               }),
@@ -1478,6 +1722,99 @@ export class InMemorySpaces implements SpacesUnitOfWork {
             ),
           );
         },
+        findIncludingDeleted: (organizationId: string, id: string): Promise<TaskList | null> => {
+          this.reads.push('list');
+          return Promise.resolve(findAnyList(organizationId, id));
+        },
+        lockIncludingDeleted: (
+          organizationId: string,
+          id: string,
+          mode: 'share' | 'update' | 'delete',
+        ): Promise<TaskList | null> => {
+          this.journal.push(`list ${id}${mode === 'update' ? '' : ` ${mode}`}`);
+          return Promise.resolve(findAnyList(organizationId, id));
+        },
+        markDeletedWithSpace: (
+          organizationId: string,
+          spaceId: string,
+          by: ListActor,
+          at: Date,
+        ): Promise<number> => {
+          let marked: number = 0;
+          for (const row of [...lists.values()]) {
+            if (row.organizationId !== organizationId || row.spaceId !== spaceId) {
+              continue;
+            }
+            const list: TaskList = TaskList.restore(row);
+            const next: TaskList = list.deleteWithSpace(by, at);
+            if (next !== list) {
+              lists.set(row.id, next.snapshot);
+              marked += 1;
+            }
+          }
+          return Promise.resolve(marked);
+        },
+        listDeletedIdsOfSpace: (organizationId: string, spaceId: string): Promise<string[]> =>
+          Promise.resolve(
+            [...lists.values()]
+              .filter(
+                (row: TaskListState): boolean =>
+                  row.organizationId === organizationId &&
+                  row.spaceId === spaceId &&
+                  row.deletedAt !== null,
+              )
+              .map((row: TaskListState): string => row.id)
+              .sort(),
+          ),
+        anyOfSpace: (organizationId: string, spaceId: string): Promise<boolean> =>
+          Promise.resolve(
+            [...lists.values()].some(
+              (row: TaskListState): boolean =>
+                row.organizationId === organizationId && row.spaceId === spaceId,
+            ),
+          ),
+        erase: (organizationId: string, id: string): Promise<void> => {
+          const list: TaskList | null = findAnyList(organizationId, id);
+          if (!list?.isDeleted) {
+            return Promise.reject(new Error('The deleted list to erase is not a tombstone.'));
+          }
+          if (
+            grants.some(
+              (grant: FakeGrant): boolean =>
+                grant.organizationId === organizationId &&
+                grant.resource.kind === 'list' &&
+                grant.resource.listId === id,
+            )
+          ) {
+            return Promise.reject(new Error('A foreign key refuses the erasure of the list.'));
+          }
+          lists.delete(id);
+          return Promise.resolve();
+        },
+        listTrashAccessesVisibleTo: (
+          organizationId: string,
+          viewer: Viewer,
+        ): Promise<TrashListAccess[]> =>
+          Promise.resolve(
+            [...lists.values()]
+              .map((list: TaskListState) =>
+                InMemorySpaces.trashRow(list, spaces, grants, organizationId, viewer),
+              )
+              .filter((row: ListWithGrants | null): row is ListWithGrants => row !== null)
+              .map(toTrashAccess),
+          ),
+        findTrashAccessVisibleTo: (
+          organizationId: string,
+          viewer: Viewer,
+          id: string,
+        ): Promise<TrashListAccess | null> => {
+          const list: TaskListState | undefined = lists.get(id);
+          const row: ListWithGrants | null =
+            list === undefined
+              ? null
+              : InMemorySpaces.trashRow(list, spaces, grants, organizationId, viewer);
+          return Promise.resolve(row === null ? null : toTrashAccess(row));
+        },
       },
       grants: {
         viewerGrants: (
@@ -1504,7 +1841,13 @@ export class InMemorySpaces implements SpacesUnitOfWork {
                     { kind: 'list', spaceId, listId },
                     viewerUserId,
                   ),
-            anyList: InMemorySpaces.anyListGrant(grants, organizationId, spaceId, viewerUserId),
+            anyList: InMemorySpaces.anyListGrant(
+              grants,
+              lists,
+              organizationId,
+              spaceId,
+              viewerUserId,
+            ),
           });
         },
         listOf: (organizationId: string, resource: GrantedResource): Promise<StoredGrant[]> =>
@@ -1623,6 +1966,30 @@ export class InMemorySpaces implements SpacesUnitOfWork {
             ...held.filter((resource: GrantedResource): boolean => resource.kind === 'list'),
           ]);
         },
+        eraseOfList: (organizationId: string, listId: string): Promise<number> => {
+          const before: number = grants.length;
+          grants = grants.filter(
+            (grant: FakeGrant): boolean =>
+              !(
+                grant.organizationId === organizationId &&
+                grant.resource.kind === 'list' &&
+                grant.resource.listId === listId
+              ),
+          );
+          return Promise.resolve(before - grants.length);
+        },
+        eraseOfSpace: (organizationId: string, spaceId: string): Promise<number> => {
+          const before: number = grants.length;
+          grants = grants.filter(
+            (grant: FakeGrant): boolean =>
+              !(
+                grant.organizationId === organizationId &&
+                grant.resource.kind === 'space' &&
+                grant.resource.spaceId === spaceId
+              ),
+          );
+          return Promise.resolve(before - grants.length);
+        },
       },
       events: {
         spaceCreated: (space: Space, actor: EventActor): Promise<void> => {
@@ -1727,11 +2094,76 @@ export class InMemorySpaces implements SpacesUnitOfWork {
           });
           return Promise.resolve();
         },
+        spaceDeleted: (space: Space, actor: EventActor): Promise<void> => {
+          events.push({
+            kind: 'spaceDeleted',
+            spaceId: space.snapshot.id,
+            version: space.snapshot.version,
+            deletedAt: space.snapshot.deletedAt,
+            actor,
+          });
+          return Promise.resolve();
+        },
+        spaceRestored: (space: Space, actor: EventActor): Promise<void> => {
+          events.push({
+            kind: 'spaceRestored',
+            spaceId: space.snapshot.id,
+            version: space.snapshot.version,
+            restoredAt: space.snapshot.restoredAt,
+            actor,
+          });
+          return Promise.resolve();
+        },
+        listDeleted: (list: TaskList, actor: EventActor): Promise<void> => {
+          events.push({
+            kind: 'listDeleted',
+            listId: list.snapshot.id,
+            spaceId: list.snapshot.spaceId,
+            version: list.snapshot.version,
+            deletedAt: list.snapshot.deletedAt,
+            actor,
+          });
+          return Promise.resolve();
+        },
+        listRestored: (list: TaskList, actor: EventActor): Promise<void> => {
+          events.push({
+            kind: 'listRestored',
+            listId: list.snapshot.id,
+            version: list.snapshot.version,
+            restoredAt: list.snapshot.restoredAt,
+            archivedAt: list.snapshot.archivedAt,
+            actor,
+          });
+          return Promise.resolve();
+        },
       },
       clock: {
         now: (): Promise<Date> => {
           this.clockReads += 1;
           return Promise.resolve(this.now);
+        },
+      },
+      trashQueue: {
+        enqueue: (
+          deletion:
+            | { readonly kind: 'list'; readonly listId: string; readonly version: number }
+            | { readonly kind: 'space'; readonly spaceId: string; readonly version: number },
+        ): Promise<boolean> => {
+          const occurrenceKey: string =
+            deletion.kind === 'list'
+              ? `list:${deletion.listId}:${String(deletion.version)}`
+              : `space:${deletion.spaceId}:${String(deletion.version)}`;
+          if (jobs.some((job: RecordedTrashJob): boolean => job.occurrenceKey === occurrenceKey)) {
+            return Promise.resolve(false);
+          }
+          jobs.push({
+            payload:
+              deletion.kind === 'list'
+                ? { listId: deletion.listId }
+                : { spaceId: deletion.spaceId },
+            occurrenceKey,
+          });
+          return Promise.resolve(true);
         },
       },
     };
@@ -1742,6 +2174,7 @@ export class InMemorySpaces implements SpacesUnitOfWork {
     this.prefixOwners = prefixOwners;
     this.lastNumbers = lastNumbers;
     this.events = events;
+    this.jobs = jobs;
     return result;
   }
 
@@ -1787,6 +2220,12 @@ export class InMemorySpaces implements SpacesUnitOfWork {
   }
   // #endregion
 }
+
+/** The writes of the trash served (`TRASH_WRITES_ENABLED=true`). */
+export const TRASH_WRITES_ON: TrashWrites = Object.freeze({ isEnabled: (): boolean => true });
+
+/** The writes of the trash off, the default (`TRASH_WRITES_ENABLED=false`). */
+export const TRASH_WRITES_OFF: TrashWrites = Object.freeze({ isEnabled: (): boolean => false });
 
 /** An account the copy of the members does not know. */
 export const STRANGER = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1bff';

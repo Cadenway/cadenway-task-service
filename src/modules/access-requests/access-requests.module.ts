@@ -10,10 +10,12 @@ import { taskReferencesProvider } from './composition/providers/adapters/task/ta
 import { approveAccessRequestProvider } from './composition/providers/use-cases/access-request/approve-access-request.provider.js';
 import { createAccessRequestProvider } from './composition/providers/use-cases/access-request/create-access-request.provider.js';
 import { dropMemberAccessRequestsProvider } from './composition/providers/use-cases/access-request/drop-member-access-requests.provider.js';
+import { dropTargetAccessRequestsProvider } from './composition/providers/use-cases/access-request/drop-target-access-requests.provider.js';
 import { listAccessRequestsProvider } from './composition/providers/use-cases/access-request/list-access-requests.provider.js';
 import { refuseAccessRequestProvider } from './composition/providers/use-cases/access-request/refuse-access-request.provider.js';
 import { AccessRequestsController } from './presentation/http/controllers/access-request/access-requests.controller.js';
 import { DropMemberAccessRequests } from './public/access-request/drop-member-access-requests.js';
+import { DropTargetAccessRequests } from './public/access-request/drop-target-access-requests.js';
 
 /**
  * Class AccessRequestsModule
@@ -25,7 +27,10 @@ import { DropMemberAccessRequests } from './public/access-request/drop-member-ac
  * the copy of the memberships (`OrganizationMembersModule`), the spaces, lists and grants
  * (`SpacesModule`) and the tasks (`TasksModule`). A module of its own: it depends on spaces and
  * tasks, and neither may depend on it. It exports `DropMemberAccessRequests`, which the clean-up
- * job of the member-lifecycle module runs batch after batch once a member left the organization.
+ * job of the member-lifecycle module runs batch after batch once a member left the organization,
+ * and `DropTargetAccessRequests`, which the jobs of the deletion-lifecycle module run in their
+ * transactions to drop the pending requests of the deleted lists and spaces and of the tasks moved
+ * to the trash.
  */
 @Module({
   imports: [OrganizationMembersModule, SpacesModule, TasksModule],
@@ -40,7 +45,8 @@ import { DropMemberAccessRequests } from './public/access-request/drop-member-ac
     approveAccessRequestProvider,
     refuseAccessRequestProvider,
     dropMemberAccessRequestsProvider,
+    dropTargetAccessRequestsProvider,
   ],
-  exports: [DropMemberAccessRequests],
+  exports: [DropMemberAccessRequests, DropTargetAccessRequests],
 })
 export class AccessRequestsModule {}

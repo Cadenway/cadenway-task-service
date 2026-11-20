@@ -21,7 +21,9 @@ import {
   refusalOf,
   sprint14SharedWith,
 } from '../../../tasks.fixture.js';
+import type { HeldList } from '../../../../models/placement/held-list.model.js';
 import type { CreateTaskInput } from './create-task.input.js';
+
 import { CreateTask } from './create-task.use-case.js';
 
 /**
@@ -130,7 +132,7 @@ describe('CreateTask: a member creates a task in a list they see', () => {
     expect(view.completedAt).toEqual(NOW);
   });
 
-  it('locks the actor, then the assignees, and allocates the keys last', async () => {
+  it('locks the actor, then the assignees, holds the list and allocates the keys last', async () => {
     const { tasks, useCase } = atelierNord();
 
     await useCase.execute(createTask({ assigneeIds: [INES, CAMILLE] }));
@@ -140,7 +142,9 @@ describe('CreateTask: a member creates a task in a list they see', () => {
       'spaces.findVisibleList',
       `members.roleOf:${CAMILLE}:lock`,
       `members.roleOf:${INES}:lock`,
+      'spaces.holdList',
       'spaces.allocateKeys',
+
       'tasks.insert',
       'events.created',
     ]);
@@ -275,6 +279,44 @@ describe('CreateTask: what the actor does not see is not found', () => {
     expect(await refusalOf(useCase.execute(createTask(overrides)))).toEqual({
       reason: 'list-not-found',
     });
+    expect(tasks.tasks.size).toBe(0);
+  });
+});
+
+describe('CreateTask: a deleted list takes no new task', () => {
+  it('refuses a deleted list as list-not-found, as an unseen one', async () => {
+    const trace: string[] = [];
+    const tasks = new InMemoryTasks({ trace });
+    const spaces = new InMemorySpaceDirectory({
+      trace,
+      deletedLists: { [SPRINT_14]: { type: 'user', id: CAMILLE } },
+    });
+    const useCase = new CreateTask(tasks, atelierNordMembers([], trace), spaces);
+
+    expect(await refusalOf(useCase.execute(createTask()))).toEqual({ reason: 'list-not-found' });
+    expect(spaces.allocateCalls).toEqual([]);
+  });
+
+  it('refuses a list deleted while the creation ran, seen under its hold, and allocates no key', async () => {
+    /** A directory that sees Sprint 14 live, then deleted under the hold of the creation. */
+    class DeletedUnderHold extends InMemorySpaceDirectory {
+      // #region Methods
+      /**
+       * Answers the list deleted.
+       *
+       * @returns The list, deleted by Camille Martin.
+       */
+      public override holdList(): Promise<HeldList> {
+        return Promise.resolve({ outcome: 'deleted', deletedBy: { type: 'user', id: CAMILLE } });
+      }
+      // #endregion
+    }
+    const tasks = new InMemoryTasks();
+    const spaces = new DeletedUnderHold();
+    const useCase = new CreateTask(tasks, atelierNordMembers(), spaces);
+
+    expect(await refusalOf(useCase.execute(createTask()))).toEqual({ reason: 'list-not-found' });
+    expect(spaces.allocateCalls).toEqual([]);
     expect(tasks.tasks.size).toBe(0);
   });
 });

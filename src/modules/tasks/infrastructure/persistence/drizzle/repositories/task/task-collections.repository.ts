@@ -28,7 +28,8 @@ import { tasks } from '../../schemas/task/task.schema.js';
 
 /**
  * The parent of task rows as `parentsOf` reads it: its key, which the task keeps whatever its
- * list, and the list it is in now, which tells whether a summary shows it.
+ * list, and the list it is in now and whether it is in the trash, which tell whether a summary
+ * shows it.
  */
 interface ParentOfRow {
   // #region Properties
@@ -37,6 +38,9 @@ interface ParentOfRow {
 
   /** The list the parent is in now. */
   readonly listId: string;
+
+  /** Whether the parent is in the trash now. */
+  readonly inTrash: boolean;
   // #endregion
 }
 
@@ -192,9 +196,10 @@ export class DrizzleTaskCollections {
    * Method parentsOf
    *
    * @description
-   * Reads the keys and the lists of tasks (the parents of a set of rows) in one query by primary
-   * key: the key for the domain and the summaries, the list for the summaries, which show a parent
-   * only when it is in the list of the row (`showsParent`).
+   * Reads the keys, the lists and the trash of tasks (the parents of a set of rows) in one query
+   * by primary key: the key for the domain and the summaries, the list and the trash for the
+   * summaries, which show a parent only when it is in the list of the row and not in the trash
+   * (`showsParent`).
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} taskIds - The tasks.
@@ -209,18 +214,28 @@ export class DrizzleTaskCollections {
     if (taskIds.length === 0) {
       return parents;
     }
-    const rows: { id: string; keyPrefix: string; keyNumber: number; listId: string }[] =
-      await this.db
-        .select({
-          id: tasks.id,
-          keyPrefix: tasks.keyPrefix,
-          keyNumber: tasks.keyNumber,
-          listId: tasks.listId,
-        })
-        .from(tasks)
-        .where(and(eq(tasks.organizationId, organizationId), anyOf(tasks.id, taskIds, 'uuid')));
+    const rows: {
+      id: string;
+      keyPrefix: string;
+      keyNumber: number;
+      listId: string;
+      trashEntryId: string | null;
+    }[] = await this.db
+      .select({
+        id: tasks.id,
+        keyPrefix: tasks.keyPrefix,
+        keyNumber: tasks.keyNumber,
+        listId: tasks.listId,
+        trashEntryId: tasks.trashEntryId,
+      })
+      .from(tasks)
+      .where(and(eq(tasks.organizationId, organizationId), anyOf(tasks.id, taskIds, 'uuid')));
     for (const row of rows) {
-      parents.set(row.id, { key: TaskKey.of(row.keyPrefix, row.keyNumber), listId: row.listId });
+      parents.set(row.id, {
+        key: TaskKey.of(row.keyPrefix, row.keyNumber),
+        listId: row.listId,
+        inTrash: row.trashEntryId !== null,
+      });
     }
     return parents;
   }
@@ -232,7 +247,7 @@ export class DrizzleTaskCollections {
    * Counts the direct subtasks of tasks, and the closed ones (`CLOSED_STATUS_KEYS`), in one grouped
    * query through `tasks_parent_created_index`, joined with each parent by its primary key to keep
    * the subtasks of its archive only (`sameArchiveAsParent`): the live subtasks of a live task, the
-   * subtasks archived with an archived one.
+   * subtasks archived with an archived one, never a subtask in the trash.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} taskIds - The tasks.
@@ -319,9 +334,10 @@ export class DrizzleTaskCollections {
    * Turns the rows of a page into the summaries a list shows: the assignees, the labels, the
    * direct subtask counts and the checklist counts of all the rows in one query each, and the keys
    * and lists of their parents in one more (none when no row has a parent). A row shows its parent
-   * only when the parent is in its list (`showsParent`): an archived root whose live parent moved
-   * to another list since reads as detached, `parentKey: null`, in every summary (the archives,
-   * the subtasks, the pages of the queries). The summaries keep the order of the rows.
+   * only when the parent is in its list and not in the trash (`showsParent`): an archived root
+   * whose live parent moved to another list since, or whose parent is in the trash, reads as
+   * detached, `parentKey: null`, in every summary (the archives, the subtasks, the pages of the
+   * queries). The summaries keep the order of the rows.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly TaskSummaryRow[]} rows - The rows of the page.
@@ -355,7 +371,9 @@ export class DrizzleTaskCollections {
         if (parent === undefined) {
           throw new Error(`The parent ${row.parentId} of the stored task ${row.id} is missing.`);
         }
-        parentKey = showsParent(row.listId, parent.listId) ? parent.key.format() : null;
+        parentKey = showsParent(row.listId, parent.listId, parent.inTrash)
+          ? parent.key.format()
+          : null;
       }
       return toTaskSummary(
         row,

@@ -23,6 +23,8 @@ import type { StatusKey } from '../../../domain/value-objects/status/status-key.
  * - `guest-space-forbidden`: a grant of a space for a guest.
  * - `owner-unchangeable`: a grant given to, or removed from, the owner of the space.
  * - `grant-limit-reached`: a new grant on a space or a list that already holds 200.
+ * - `trash-writes-disabled`: a deletion of a list or a space while the writes of the trash are
+ *   off (`TRASH_WRITES_ENABLED`): the route answers as an unknown one.
  *
  * @type {object}
  */
@@ -41,4 +43,5 @@ export type SpaceRefusalReason =
   | { readonly reason: 'grantee-invalid'; readonly userId: string }
   | { readonly reason: 'guest-space-forbidden' }
   | { readonly reason: 'owner-unchangeable' }
-  | { readonly reason: 'grant-limit-reached' };
+  | { readonly reason: 'grant-limit-reached' }
+  | { readonly reason: 'trash-writes-disabled' };

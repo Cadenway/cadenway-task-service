@@ -15,7 +15,9 @@ import {
   archiveFrom,
   CAD_482,
   CAD_484,
+  trashIn,
 } from '../../../tasks.fixture.js';
+
 import type { ListSubtasksInput } from './list-subtasks.input.js';
 import { ListSubtasks } from './list-subtasks.use-case.js';
 
@@ -148,6 +150,26 @@ describe('ListSubtasks: the subtasks of a task are those of its archive', () => 
         ],
       }),
     );
+
+    expect(page.items.map((item) => item.key)).toEqual(['CAD-483']);
+    expect(page.total).toBe(1);
+  });
+
+  it('leaves a subtask in the trash out of the page, the total and the counts', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [
+        taskState(),
+        subtaskState(),
+        subtaskState({
+          id: CAD_484,
+          key: TaskKey.of('CAD', 484),
+          trash: trashIn(),
+          version: 2,
+        }),
+      ],
+    });
+
+    const page = await subtasksOf482(tasks);
 
     expect(page.items.map((item) => item.key)).toEqual(['CAD-483']);
     expect(page.total).toBe(1);

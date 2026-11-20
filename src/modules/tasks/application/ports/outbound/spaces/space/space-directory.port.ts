@@ -1,10 +1,16 @@
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
 import type { ArchivePosition } from '../../../../models/archive/archive-position.model.js';
 import type { ArchivedLists } from '../../../../models/placement/archived-lists.model.js';
+import type { DeletedListLock } from '../../../../models/placement/deleted-list-lock.model.js';
+import type { DeletedListPurge } from '../../../../models/placement/deleted-list-purge.model.js';
+import type { DeletedListRestoration } from '../../../../models/placement/deleted-list-restoration.model.js';
+import type { HeldList } from '../../../../models/placement/held-list.model.js';
 import type { KeyAllocation } from '../../../../models/placement/key-allocation.model.js';
 import type { ListPlacement } from '../../../../models/placement/list-placement.model.js';
 import type { ListRestoration } from '../../../../models/placement/list-restoration.model.js';
+import type { LockedDeletedList } from '../../../../models/placement/locked-deleted-list.model.js';
 import type { PlacedList } from '../../../../models/placement/placed-list.model.js';
+import type { TrashListAccess } from '../../../../models/placement/trash-list-access.model.js';
 
 /**
  * Interface SpaceDirectory
@@ -14,7 +20,9 @@ import type { PlacedList } from '../../../../models/placement/placed-list.model.
  * the lists an actor has a role on, and the keys of new tasks. Bound to the public operations of
  * spaces, which join the tenant transaction of the use case and decide every role ("Access" of
  * `openapi/public/spaces.yaml`: a guest has a role on the lists shared with them only). The tasks
- * module keeps no copy of a space, a list or a grant.
+ * module keeps no copy of a space, a list or a grant. A deleted list or space (a tombstone) is
+ * invisible to every method but the seven of the trash (`trashLists`, `findTrashList`,
+ * `restoreDeletedList`, `purgeDeletedList`, `holdList`, `lockDeletedList`, `lockDeletedLists`).
  */
 export interface SpaceDirectory {
   // #region Methods
@@ -186,5 +194,126 @@ export interface SpaceDirectory {
     viewer: Viewer,
     listIds: readonly string[],
   ): Promise<readonly PlacedList[]>;
+
+  /**
+   * Method trashLists
+   *
+   * @description
+   * Lists every list of the organization, live, archived or deleted, in a live or deleted space,
+   * on which the viewer has a role as if neither the list nor its space were deleted, with that
+   * role, in no particular order; no lock. The module keeps those its own threshold accepts
+   * (`canWriteTasksOf`: the lists whose entries the viewer may see, restore and erase, "Who" of
+   * `openapi/public/trash.yaml`).
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {Viewer} viewer - The acting member, with the role of the copy.
+   * @returns {Promise<readonly TrashListAccess[]>} The lists with the role of the viewer.
+   */
+  trashLists(organizationId: string, viewer: Viewer): Promise<readonly TrashListAccess[]>;
+
+  /**
+   * Method findTrashList
+   *
+   * @description
+   * Finds a list, live, archived or deleted, with the role the viewer would have on it as if
+   * neither the list nor its space were deleted; no lock.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {Viewer} viewer - The acting member, with the role of the copy.
+   * @param {string} listId - The list.
+   * @returns {Promise<TrashListAccess | null>} The list and the role, or `null` for an unknown or
+   * erased list, or one the viewer would have no role on.
+   */
+  findTrashList(
+    organizationId: string,
+    viewer: Viewer,
+    listId: string,
+  ): Promise<TrashListAccess | null>;
+
+  /**
+   * Method restoreDeletedList
+   *
+   * @description
+   * Hands the list of a trash entry being restored to the spaces module, which locks its space
+   * then the list `FOR NO KEY UPDATE`, decides the role of the viewer on the locked rows as if not
+   * deleted (`edit` needed), and brings back the space and the list when deleted, appending
+   * `space.restored.v1` and `list.restored.v1` (actor the viewer). A live list and space answer
+   * `restored` and write nothing.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {Viewer} viewer - The acting member.
+   * @param {string} listId - The list.
+   * @returns {Promise<DeletedListRestoration>} What came back, or the refusal.
+   */
+  restoreDeletedList(
+    organizationId: string,
+    viewer: Viewer,
+    listId: string,
+  ): Promise<DeletedListRestoration>;
+
+  /**
+   * Method purgeDeletedList
+   *
+   * @description
+   * Hands a list no task row references any more to the spaces module, which locks it `FOR
+   * UPDATE` and erases it when deleted (its grants, the row), then its deleted space once no list
+   * of it is left (its grants, the row; its prefix stays reserved). A live list is left alone.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} listId - The list.
+   * @returns {Promise<DeletedListPurge>} What was erased.
+   */
+  purgeDeletedList(organizationId: string, listId: string): Promise<DeletedListPurge>;
+
+  /**
+   * Method holdList
+   *
+   * @description
+   * Locks a list `FOR SHARE` until the commit, after the task locks and before the key counter:
+   * a deletion of the list either committed before and is seen here, or waits for this
+   * transaction.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} listId - The list.
+   * @returns {Promise<HeldList>} Whether the list is live, deleted (with who deleted it) or
+   * gone.
+   */
+  holdList(organizationId: string, listId: string): Promise<HeldList>;
+
+  /**
+   * Method lockDeletedList
+   *
+   * @description
+   * Locks a deleted list for a change that decides on its tombstone (`LockDeletedList` of the
+   * spaces module): reads the list without a lock; a live or unknown list answers at once without
+   * any lock; a deleted one has its space locked `FOR NO KEY UPDATE`, then the list `FOR UPDATE`
+   * (which conflicts with the `FOR SHARE` of `holdList` and of a deletion batch), and is read again
+   * under the lock until the commit. A restoration of an entry decides under it whether the
+   * deletion job of the list is done, and an erasure whether the tombstone goes.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} listId - The list.
+   * @returns {Promise<LockedDeletedList>} `deleted` under the lock, `live` or `not-found`.
+   */
+  lockDeletedList(organizationId: string, listId: string): Promise<LockedDeletedList>;
+
+  /**
+   * Method lockDeletedLists
+   *
+   * @description
+   * Locks several deleted lists in one global order (`LockDeletedLists` of the spaces module, 100
+   * lists at most): reads them without a lock; the live and unknown ones take no lock; the spaces of
+   * the deleted ones are locked `FOR NO KEY UPDATE` in `(created_at, id)` order, then those lists
+   * `FOR UPDATE` in ascending list id, and read again under the locks. An erasure decides under
+   * them whether each tombstone goes.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {readonly string[]} listIds - The lists, 100 at most.
+   * @returns {Promise<readonly DeletedListLock[]>} What the lock found for each list.
+   */
+  lockDeletedLists(
+    organizationId: string,
+    listIds: readonly string[],
+  ): Promise<readonly DeletedListLock[]>;
   // #endregion
 }

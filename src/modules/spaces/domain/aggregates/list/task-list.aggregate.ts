@@ -277,8 +277,8 @@ function checkStoredSprint(sprint: Sprint | null): void {
  * Function checkInstant
  *
  * @description
- * Refuses an instant that is not a valid `Date`: an archive or a restoration takes the instant of
- * its transaction, which the application reads from the database.
+ * Refuses an instant that is not a valid `Date`: an archive, a deletion or a restoration takes the
+ * instant of its transaction, which the application reads from the database.
  *
  * @param {Date} instant - The instant.
  * @returns {Date} The same instant.
@@ -286,7 +286,9 @@ function checkStoredSprint(sprint: Sprint | null): void {
  */
 function checkInstant(instant: Date): Date {
   if (Number.isNaN(instant.getTime())) {
-    throw new InvalidListError('the instants of the archive of a list are valid dates');
+    throw new InvalidListError(
+      'the instants of the archive and the deletion of a list are valid dates',
+    );
   }
   return instant;
 }
@@ -295,16 +297,16 @@ function checkInstant(instant: Date): Date {
  * Function checkActor
  *
  * @description
- * `Actor` of `openapi/internal/task-service.yaml`, as `archivedBy` carries it: a known type and a
- * non-empty id.
+ * `Actor` of `openapi/internal/task-service.yaml`, as `archivedBy` and the tombstone carry it: a
+ * known type and a non-empty id.
  *
- * @param {ListActor} actor - Who archives the list.
+ * @param {ListActor} actor - Who archives or deletes the list.
  * @returns {ListActor} The same actor.
  * @throws {InvalidListError} When the type is unknown or the id empty.
  */
 function checkActor(actor: ListActor): ListActor {
   if (!LIST_ACTOR_TYPES.includes(actor.type) || actor.id === '') {
-    throw new InvalidListError('the actor of an archive has a known type and an id');
+    throw new InvalidListError('the actor of an archive or a deletion has a known type and an id');
   }
   return actor;
 }
@@ -336,6 +338,28 @@ function checkStoredArchive(state: TaskListState): void {
 }
 
 /**
+ * Function checkStoredTombstone
+ *
+ * @description
+ * Refuses a stored tombstone no deletion can produce: `deletedAt` and `deletedBy` both set or both
+ * null (the check `lists_deleted_check` of the table), a valid instant and a valid actor.
+ *
+ * @param {TaskListState} state - The stored state.
+ * @throws {InvalidListError} When the tombstone breaks an invariant.
+ */
+function checkStoredTombstone(state: TaskListState): void {
+  if ((state.deletedAt === null) !== (state.deletedBy === null)) {
+    throw new InvalidListError('the instant and the actor of a deletion are set together');
+  }
+  if (state.deletedAt !== null) {
+    checkInstant(state.deletedAt);
+  }
+  if (state.deletedBy !== null) {
+    checkActor(state.deletedBy);
+  }
+}
+
+/**
  * Class TaskList
  *
  * @description
@@ -358,7 +382,13 @@ function checkStoredArchive(state: TaskListState): void {
  *   them and sets when it came back, which puts it at the end of its space; each takes the next
  *   version, an archived list archived again or a live list restored keeps the same instance. An
  *   archived list still changes (`update`, its grants): only the collections of its space leave
- *   it out.
+ *   it out;
+ * - whoever has `edit` on it deletes it, archived or not ("Deletion" and `DELETE
+ *   /v1/lists/{listId}` of `openapi/public/lists.yaml`): it becomes a tombstone that nobody sees,
+ *   at the next version; a deleted space makes a tombstone of each of its lists, at the same
+ *   version ("A list deleted with its space emitted no `list.deleted.v1` and kept its version" of
+ *   `list.restored.v1`); a task restored from the trash brings it back live at the end of its
+ *   space, at the next version.
  *
  * The name of the first list of a new space is chosen by the application, not by this class.
  */
@@ -386,6 +416,20 @@ export class TaskList {
    */
   public get snapshot(): TaskListState {
     return this.state;
+  }
+
+  /**
+   * Property isDeleted
+   *
+   * @description
+   * Whether the list is a tombstone, deleted on its own or with its space ("Deletion" of
+   * `openapi/public/lists.yaml`).
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  public get isDeleted(): boolean {
+    return this.state.deletedAt !== null;
   }
   // #endregion
 
@@ -439,7 +483,8 @@ export class TaskList {
    * @param {TaskListState} state - The stored state.
    * @returns {TaskList} The list.
    * @throws {InvalidListError} When the version is not a positive integer, or a member breaks an
-   * invariant (the order of the sprint dates and an archive set by halves included).
+   * invariant (the order of the sprint dates, and an archive or a tombstone set by halves
+   * included).
    */
   public static restore(state: TaskListState): TaskList {
     if (!Number.isInteger(state.version) || state.version < 1) {
@@ -455,6 +500,7 @@ export class TaskList {
     checkColor(state.color);
     checkStoredSprint(state.sprint);
     checkStoredArchive(state);
+    checkStoredTombstone(state);
     return new TaskList(state);
   }
 
@@ -586,6 +632,98 @@ export class TaskList {
       }),
       changed: true,
     };
+  }
+
+  /**
+   * Method delete
+   *
+   * @description
+   * Deletes the list on its own ("Supprimer la liste", archived or not, `DELETE /v1/lists/{listId}`
+   * of `openapi/public/lists.yaml`): it records when and by whom, at the next version
+   * (`list.deleted.v1` carries a version of 2 at least); its settings, its archive and its grants
+   * stay with the tombstone. Whether the actor has `edit` on it is checked by the application first.
+   *
+   * @param {ListActor} by - Who deletes it.
+   * @param {Date} at - The instant of the transaction.
+   * @returns {TaskList} The tombstone at the next version.
+   * @throws {InvalidListError} When the list is deleted already, or the actor or the instant is
+   * invalid.
+   */
+  public delete(by: ListActor, at: Date): TaskList {
+    const deletedBy: ListActor = checkActor(by);
+    const deletedAt: Date = checkInstant(at);
+    if (this.isDeleted) {
+      throw new InvalidListError('a deleted list is not deleted again');
+    }
+    return new TaskList({
+      ...this.state,
+      deletedAt,
+      deletedBy: { type: deletedBy.type, id: deletedBy.id },
+      version: this.state.version + 1,
+    });
+  }
+
+  /**
+   * Method deleteWithSpace
+   *
+   * @description
+   * Deletes the list with its space ("A deleted space disappears at once with its lists, archived
+   * ones included" of `openapi/public/spaces.yaml`): the same instant and actor as the space, and
+   * the same version, as no `list.deleted.v1` is emitted for it ("A list deleted with its space
+   * emitted no `list.deleted.v1` and kept its version" of `list.restored.v1`). A list deleted on
+   * its own before keeps its own tombstone: the same instance. The repository writes this rule for
+   * every list of a space in one statement.
+   *
+   * @param {ListActor} by - Who deletes the space.
+   * @param {Date} at - The instant of the transaction of the deletion of the space.
+   * @returns {TaskList} The tombstone, at the same version, or this same list when it was deleted
+   * already.
+   * @throws {InvalidListError} When the actor or the instant is invalid.
+   */
+  public deleteWithSpace(by: ListActor, at: Date): TaskList {
+    const deletedBy: ListActor = checkActor(by);
+    const deletedAt: Date = checkInstant(at);
+    if (this.isDeleted) {
+      return this;
+    }
+    return new TaskList({
+      ...this.state,
+      deletedAt,
+      deletedBy: { type: deletedBy.type, id: deletedBy.id },
+    });
+  }
+
+  /**
+   * Method restoreFromTrash
+   *
+   * @description
+   * Brings a deleted list back with a task restored from the trash ("a deleted list comes back with
+   * it, at the end of its space" of "Restoring" of `openapi/public/trash.yaml`, `listRestored` of
+   * `TrashRestored`, `list.restored.v1`): it clears the tombstone and records when it came back,
+   * which puts it at the end of its space (`positionInSpaceOf`), at the next version. A list
+   * archived before its deletion comes back live too: its archive is cleared, as the archived tasks
+   * of a deleted list come back live, and `list.restored.v1` shows it again (decision beyond the
+   * design, from the contract: "at the end of its space"). Its settings, its switch and its grants
+   * were kept.
+   *
+   * @param {Date} at - The instant of the transaction.
+   * @returns {TaskList} The list, live, at the next version.
+   * @throws {InvalidListError} When the list is not deleted, or the instant is invalid.
+   */
+  public restoreFromTrash(at: Date): TaskList {
+    const restoredAt: Date = checkInstant(at);
+    if (!this.isDeleted) {
+      throw new InvalidListError('only a deleted list comes back from the trash');
+    }
+    return new TaskList({
+      ...this.state,
+      archivedAt: null,
+      archivedBy: null,
+      deletedAt: null,
+      deletedBy: null,
+      restoredAt,
+      version: this.state.version + 1,
+    });
   }
   // #endregion
 }

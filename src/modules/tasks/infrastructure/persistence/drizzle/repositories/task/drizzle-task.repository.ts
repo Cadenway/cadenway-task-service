@@ -2,8 +2,13 @@ import type { TransactionDatabase } from '@cadenway/nest-common/database';
 import { and, asc, eq, getTableColumns, gt, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 
+import type { PagePosition } from '../../../../../application/models/page/page-position.model.js';
 import type { TaskStanding } from '../../../../../application/models/task/task-standing.model.js';
+import type { TrashCandidateRoot } from '../../../../../application/models/trash/trash-candidate-root.model.js';
+import type { TrashTaskWrite } from '../../../../../application/models/trash/trash-task-write.model.js';
+import type { TrashTreeNode } from '../../../../../application/models/trash/trash-tree-node.model.js';
 import type { TaskRepository } from '../../../../../application/ports/outbound/persistence/task/task-repository.port.js';
+import type { TaskLocation } from '../../../../../application/projections/task/task-location.projection.js';
 import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
 import type { SubtreeShape } from '../../../../../domain/value-objects/subtask/subtree-shape.value-object.js';
 import type { ChecklistItemDraft } from '../../../../../domain/value-objects/task/checklist-item-draft.value-object.js';
@@ -15,16 +20,54 @@ import type { TaskState } from '../../../../../domain/value-objects/task/task-st
 import { writeArchivesStatement } from '../../mappers/archive/archive-statements.mapper.js';
 import { anyOf } from '../../mappers/page/any-of.mapper.js';
 import { liveTask } from '../../mappers/task/live-task.mapper.js';
+import { untrashedTask } from '../../mappers/task/untrashed-task.mapper.js';
 import { subtreeStatement } from '../../mappers/task/subtree-statement.mapper.js';
 import { toChecklistItem } from '../../mappers/task/checklist-item.mapper.js';
 import type { ChecklistItemRow } from '../../mappers/task/checklist-item.mapper.js';
 import { toTask, toTaskInsert, toTaskUpdate } from '../../mappers/task/task.mapper.js';
 import type { TaskRow } from '../../mappers/task/task.mapper.js';
+import { toTaskLocation } from '../../mappers/task/task-summary.mapper.js';
+import {
+  entryTreeStatement,
+  listsWithTasksStatement,
+  trashCandidateRootsStatement,
+  trashTreesStatement,
+  untrashedIdsLockStatement,
+  writeTrashStatement,
+} from '../../mappers/trash/trash-statements.mapper.js';
 import { checklistItems } from '../../schemas/checklist/checklist-item.schema.js';
 import { taskAssignees } from '../../schemas/task/task-assignee.schema.js';
 import { taskLabels } from '../../schemas/task/task-label.schema.js';
 import { tasks } from '../../schemas/task/task.schema.js';
 import { DrizzleTaskCollections } from './task-collections.repository.js';
+
+/** A row of `trashTreesStatement`. */
+interface TrashTreeRow extends Record<string, unknown> {
+  // #region Properties
+  /** The task. */
+  readonly id: string;
+
+  /** The root of its tree. */
+  readonly rootId: string;
+
+  /** Its depth under the root, 0 for the root. */
+  readonly depth: number;
+
+  /** Whether PostgreSQL met the task again on its own path: a cycle of parent links. */
+  readonly isCycle: boolean;
+  // #endregion
+}
+
+/** The row of `shareLocationByKey`: a location and whether the task is in the trash. */
+interface SharedLocationRow extends Pick<
+  TaskRow,
+  'id' | 'keyPrefix' | 'keyNumber' | 'name' | 'status' | 'listId' | 'spaceId'
+> {
+  // #region Properties
+  /** Whether the task is in the trash. */
+  readonly inTrash: boolean;
+  // #endregion
+}
 
 /** A draft of `insertMany` with the row PostgreSQL stored for it. */
 interface StoredDraft {
@@ -62,6 +105,15 @@ interface StoredDraft {
  * - `lockAssignedTo` and `unassignBatch` are set-based: a batch is one locking read (a range scan
  *   of `task_assignees_user_index`, without the checklists), the loads of the assignees, labels and
  *   parents, one delete of the assignee rows and one update of the versions.
+ * - The trash locks the tasks of entries in one ordered statement through
+ *   `tasks_trash_entry_index`, without their checklists (`lockTrashEntries`), reads the trees of
+ *   the roots of entries in one recursive statement (`trashTrees`, every descendant in the list of
+ *   its root out of the trash, archived ones included, at any depth, a cycle of parent links
+ *   detected by PostgreSQL), locks tasks `FOR SHARE` for the drop of their requests
+ *   (`lockUntrashedIds`), writes a trash or a restoration in one
+ *   `UPDATE ... FROM unnest(...)` (`writeTrash`), reads the candidate roots of a deleted list in a
+ *   range of `tasks_list_created_index` (`trashCandidates`) and probes whether a list still holds a
+ *   task (`listsWithTasks`).
  */
 export class DrizzleTaskRepository implements TaskRepository {
   // #region Properties
@@ -173,7 +225,8 @@ export class DrizzleTaskRepository implements TaskRepository {
    *
    * @description
    * Locks one task by primary key `FOR NO KEY UPDATE` and reads only whether it is live
-   * (`liveTask`) and its list, in one statement without the collections.
+   * (`liveTask`: in no archive and not in the trash), whether it is in the trash and its list, in
+   * one statement without the collections.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} taskId - The task.
@@ -181,14 +234,18 @@ export class DrizzleTaskRepository implements TaskRepository {
    * such task.
    */
   public async lockStanding(organizationId: string, taskId: string): Promise<TaskStanding | null> {
-    const rows: { live: boolean; listId: string }[] = await this.db
-      .select({ live: sql<boolean>`${liveTask()}`, listId: tasks.listId })
+    const rows: TaskStanding[] = await this.db
+      .select({
+        live: sql<boolean>`${liveTask()}`,
+        inTrash: sql<boolean>`not ${untrashedTask()}`,
+        listId: tasks.listId,
+      })
       .from(tasks)
       .where(and(eq(tasks.organizationId, organizationId), eq(tasks.id, taskId)))
       .limit(1)
       .for('no key update');
-    const row: { live: boolean; listId: string } | undefined = rows[0];
-    return row === undefined ? null : { live: row.live, listId: row.listId };
+    const row: TaskStanding | undefined = rows[0];
+    return row === undefined ? null : { live: row.live, inTrash: row.inTrash, listId: row.listId };
   }
 
   /**
@@ -446,8 +503,9 @@ export class DrizzleTaskRepository implements TaskRepository {
    * `ORDER BY id FOR NO KEY UPDATE`, so two restorations of one archive through two members lock
    * in the same order and the second waits for the first; then loads their assignees, labels and
    * parent keys after the lock, not their checklists (a restoration never writes or emits them,
-   * so the members carry an empty one). PostgreSQL checks the condition again on a row it waited
-   * for, so a member restored meanwhile is left out.
+   * so the members carry an empty one). The members of an archive in the trash are left out
+   * (`untrashedTask`). PostgreSQL checks the condition again on a row it waited for, so a member
+   * restored or moved to the trash meanwhile is left out.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} rootId - The root of the archive.
@@ -457,7 +515,13 @@ export class DrizzleTaskRepository implements TaskRepository {
     const rows: TaskRow[] = await this.db
       .select()
       .from(tasks)
-      .where(and(eq(tasks.organizationId, organizationId), eq(tasks.archiveRootId, rootId)))
+      .where(
+        and(
+          eq(tasks.organizationId, organizationId),
+          eq(tasks.archiveRootId, rootId),
+          untrashedTask(),
+        ),
+      )
       .orderBy(asc(tasks.id))
       .for('no key update');
     return this.collections.assemble(organizationId, rows, false);
@@ -603,7 +667,332 @@ export class DrizzleTaskRepository implements TaskRepository {
   }
 
   /**
+   * Method lockTrashEntries
+   *
+   * @description
+   * Locks the tasks of entries in one statement through `tasks_trash_entry_index`
+   * (`trash_entry_id = ANY($entries)`), `ORDER BY id`, `FOR NO KEY UPDATE` (a restoration) or `FOR
+   * UPDATE` (an erasure, which deletes them), then loads their assignees, labels and parent keys
+   * after the lock, not their checklists. A task restored or erased by another transaction while
+   * the lock waited is not returned.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {readonly string[]} entryIds - The entries.
+   * @param {boolean} forErasure - `true` to lock `FOR UPDATE`.
+   * @returns {Promise<readonly Task[]>} The tasks without checklist, in ascending id order.
+   */
+  public async lockTrashEntries(
+    organizationId: string,
+    entryIds: readonly string[],
+    forErasure: boolean,
+  ): Promise<readonly Task[]> {
+    if (entryIds.length === 0) {
+      return [];
+    }
+    const query = this.db
+      .select()
+      .from(tasks)
+      .where(
+        and(eq(tasks.organizationId, organizationId), anyOf(tasks.trashEntryId, entryIds, 'uuid')),
+      )
+      .orderBy(asc(tasks.id));
+    const rows: TaskRow[] = forErasure
+      ? await query.for('update')
+      : await query.for('no key update');
+    return this.collections.assemble(organizationId, rows, false);
+  }
+
+  /**
+   * Method writeTrash
+   *
+   * @description
+   * Writes a trash or a restoration in one statement (`writeTrashStatement`), guarded by the
+   * version each task had under its lock, then checks that every task was written.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {readonly string[]} entryIds - The entries, which a failure names.
+   * @param {readonly TrashTaskWrite[]} writes - The tasks after the change, with their versions
+   * under their locks.
+   * @returns {Promise<void>} Resolves once written.
+   * @throws {Error} When a task vanished or changed version, which the locks prevent.
+   */
+  public async writeTrash(
+    organizationId: string,
+    entryIds: readonly string[],
+    writes: readonly TrashTaskWrite[],
+  ): Promise<void> {
+    if (writes.length === 0) {
+      return;
+    }
+    const result = await this.db.execute(
+      writeTrashStatement(
+        organizationId,
+        writes.map((write: TrashTaskWrite): TaskState => write.task.snapshot),
+        writes.map((write: TrashTaskWrite): number => write.versionBefore),
+      ),
+    );
+    if (result.rowCount !== writes.length) {
+      throw new Error(
+        `${String(writes.length - (result.rowCount ?? 0))} of the ${String(writes.length)} tasks of the trash entries ${entryIds.join(', ')} vanished or changed version while they were locked.`,
+      );
+    }
+  }
+
+  /**
+   * Method trashCandidates
+   *
+   * @description
+   * Reads the candidate roots of a deleted list (`trashCandidateRootsStatement`), without a lock.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} listId - The list.
+   * @param {PagePosition | null} after - The last root of the previous batch.
+   * @param {number} limit - How many roots at most.
+   * @returns {Promise<readonly TrashCandidateRoot[]>} The roots, in the order of the list.
+   */
+  public async trashCandidates(
+    organizationId: string,
+    listId: string,
+    after: PagePosition | null,
+    limit: number,
+  ): Promise<readonly TrashCandidateRoot[]> {
+    const result = await this.db.execute<{ id: string; createdAt: string }>(
+      trashCandidateRootsStatement(organizationId, listId, after, limit),
+    );
+    return result.rows.map((row: { id: string; createdAt: string }): TrashCandidateRoot => ({
+      id: row.id,
+      createdAt: new Date(row.createdAt),
+    }));
+  }
+
+  /**
+   * Method trashTrees
+   *
+   * @description
+   * Reads the trees of the roots of trash entries in one recursive statement
+   * (`trashTreesStatement`), at any depth, without a lock.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {readonly string[]} rootIds - The roots.
+   * @returns {Promise<readonly TrashTreeNode[]>} Each task of each tree with its root and depth.
+   * @throws {Error} When PostgreSQL detects a cycle of parent links in a tree, which the writers
+   * never make: a defect.
+   */
+  public async trashTrees(
+    organizationId: string,
+    rootIds: readonly string[],
+  ): Promise<readonly TrashTreeNode[]> {
+    if (rootIds.length === 0) {
+      return [];
+    }
+    const result = await this.db.execute<TrashTreeRow>(
+      trashTreesStatement(organizationId, rootIds),
+    );
+    const cycle: TrashTreeRow | undefined = result.rows.find(
+      (row: TrashTreeRow): boolean => row.isCycle,
+    );
+    if (cycle !== undefined) {
+      throw new Error(
+        `The tree of the task ${cycle.rootId} meets the task ${cycle.id} again on its own path: a cycle of parent links.`,
+      );
+    }
+    return result.rows.map((row: TrashTreeRow): TrashTreeNode => ({
+      id: row.id,
+      rootId: row.rootId,
+      depth: row.depth,
+    }));
+  }
+
+  /**
+   * Method lockUntrashedIds
+   *
+   * @description
+   * Locks the tasks of some ids `FOR SHARE` in one statement ordered by id
+   * (`untrashedIdsLockStatement`, by primary key), whether in the trash or not, and answers those
+   * out of the trash as read under the lock. No id reads nothing.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {readonly string[]} taskIds - The ids, UUIDs.
+   * @returns {Promise<readonly string[]>} Those that are tasks out of the trash, by id.
+   */
+  public async lockUntrashedIds(
+    organizationId: string,
+    taskIds: readonly string[],
+  ): Promise<readonly string[]> {
+    if (taskIds.length === 0) {
+      return [];
+    }
+    const result = await this.db.execute<{ id: string; untrashed: boolean }>(
+      untrashedIdsLockStatement(organizationId, taskIds),
+    );
+    return result.rows
+      .filter((row: { id: string; untrashed: boolean }): boolean => row.untrashed)
+      .map((row: { id: string; untrashed: boolean }): string => row.id);
+  }
+
+  /**
+   * Method listsWithTasks
+   *
+   * @description
+   * Probes each list for a task row (`listsWithTasksStatement`).
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {readonly string[]} listIds - The lists.
+   * @returns {Promise<ReadonlySet<string>>} The lists that still hold a task.
+   */
+  public async listsWithTasks(
+    organizationId: string,
+    listIds: readonly string[],
+  ): Promise<ReadonlySet<string>> {
+    if (listIds.length === 0) {
+      return new Set<string>();
+    }
+    const result = await this.db.execute<{ listId: string }>(
+      listsWithTasksStatement(organizationId, listIds),
+    );
+    return new Set(result.rows.map((row: { listId: string }): string => row.listId));
+  }
+
+  /**
+   * Method listsWithUntrashedTasks
+   *
+   * @description
+   * Probes each list for a task out of the trash (`listsWithTasksStatement` with `untrashedOnly`),
+   * without a lock.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {readonly string[]} listIds - The lists.
+   * @returns {Promise<ReadonlySet<string>>} The lists that still hold a task out of the trash.
+   */
+  public async listsWithUntrashedTasks(
+    organizationId: string,
+    listIds: readonly string[],
+  ): Promise<ReadonlySet<string>> {
+    if (listIds.length === 0) {
+      return new Set<string>();
+    }
+    const result = await this.db.execute<{ listId: string }>(
+      listsWithTasksStatement(organizationId, listIds, true),
+    );
+    return new Set(result.rows.map((row: { listId: string }): string => row.listId));
+  }
+
+  /**
+   * Method shareLocationByKey
+   *
+   * @description
+   * Locks the task of a key `FOR SHARE` and reads where it is, in one statement through
+   * `tasks_key_unique` whatever the outcome; a task in the trash is locked and answers `null`.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {TaskKey} key - The key.
+   * @returns {Promise<TaskLocation | null>} The task, or `null` when the organization has none or
+   * it is in the trash.
+   * @throws {Error} When the stored status is outside the status keys.
+   */
+  public async shareLocationByKey(
+    organizationId: string,
+    key: TaskKey,
+  ): Promise<TaskLocation | null> {
+    const rows: SharedLocationRow[] = await this.db
+      .select({
+        id: tasks.id,
+        keyPrefix: tasks.keyPrefix,
+        keyNumber: tasks.keyNumber,
+        name: tasks.name,
+        status: tasks.status,
+        listId: tasks.listId,
+        spaceId: tasks.spaceId,
+        inTrash: sql<boolean>`not ${untrashedTask()}`,
+      })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.organizationId, organizationId),
+          eq(tasks.keyPrefix, key.prefix),
+          eq(tasks.keyNumber, key.number),
+        ),
+      )
+      .limit(1)
+      .for('share');
+    const row: SharedLocationRow | undefined = rows[0];
+    return row === undefined || row.inTrash ? null : toTaskLocation(row);
+  }
+
+  /**
+   * Method entryTree
+   *
+   * @description
+   * Reads the tasks of one trash entry from their parent links in one recursive statement
+   * (`entryTreeStatement`), at any depth, without a lock.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} entryId - The entry.
+   * @param {string} rootTaskId - Its root.
+   * @returns {Promise<readonly TrashTreeNode[]>} The tasks, by depth and id.
+   * @throws {Error} When PostgreSQL detects a cycle of parent links, a defect.
+   */
+  public async entryTree(
+    organizationId: string,
+    entryId: string,
+    rootTaskId: string,
+  ): Promise<readonly TrashTreeNode[]> {
+    const result = await this.db.execute<TrashTreeRow>(
+      entryTreeStatement(organizationId, entryId, rootTaskId),
+    );
+    const cycle: TrashTreeRow | undefined = result.rows.find(
+      (row: TrashTreeRow): boolean => row.isCycle,
+    );
+    if (cycle !== undefined) {
+      throw new Error(
+        `The trash entry ${entryId} meets the task ${cycle.id} again on its own path: a cycle of parent links.`,
+      );
+    }
+    return result.rows.map((row: TrashTreeRow): TrashTreeNode => ({
+      id: row.id,
+      rootId: row.rootId,
+      depth: row.depth,
+    }));
+  }
+
+  /**
+   * Method lockEntryTasks
+   *
+   * @description
+   * Locks some tasks of one entry `FOR UPDATE` in one statement ordered by id (by primary key,
+   * guarded by the entry) and assembles them without their checklists.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} entryId - The entry.
+   * @param {readonly string[]} taskIds - The tasks.
+   * @returns {Promise<readonly Task[]>} Those still in the entry, in ascending id order.
+   */
+  public async lockEntryTasks(
+    organizationId: string,
+    entryId: string,
+    taskIds: readonly string[],
+  ): Promise<readonly Task[]> {
+    if (taskIds.length === 0) {
+      return [];
+    }
+    const rows: TaskRow[] = await this.db
+      .select()
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.organizationId, organizationId),
+          eq(tasks.trashEntryId, entryId),
+          anyOf(tasks.id, taskIds, 'uuid'),
+        ),
+      )
+      .orderBy(asc(tasks.id))
+      .for('update');
+    return this.collections.assemble(organizationId, rows, false);
+  }
+
+  /**
    * Method keyAt
+
    *
    * @description
    * Reads the key of the draft at an index.

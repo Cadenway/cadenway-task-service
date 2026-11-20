@@ -9,14 +9,17 @@ import {
   ATELIER_NORD,
   CAMILLE,
   CAMILLE_VIEWER,
+  DELETED_AT,
   HUGO,
   HUGO_VIEWER,
   INES_VIEWER,
   LEA_VIEWER,
   NADIA_VIEWER,
+  RESTORED_FROM_TRASH_AT,
   designState,
   spaceState,
 } from '../../spaces.fixture.js';
+import type { ListActor } from '../../value-objects/list/list-actor.value-object.js';
 import type { NewSpace } from '../../value-objects/space/new-space.value-object.js';
 import type { SpaceDraft } from '../../value-objects/space/space-draft.value-object.js';
 import type { SpaceState } from '../../value-objects/space/space-state.value-object.js';
@@ -847,5 +850,150 @@ describe('Space.handOver: a space that awaits an owner stops awaiting', () => {
     expect(() => Space.restore(designState({ awaitingOwner: true })).handOver('')).toThrow(
       InvalidSpaceError,
     );
+  });
+});
+
+/** Camille Martin, who deletes a space, as the actor of its tombstone. */
+const DELETED_BY_CAMILLE: ListActor = { type: 'user', id: CAMILLE };
+
+/**
+ * Restores "Produit" deleted by Camille Martin, at version 6.
+ *
+ * @param overrides - Fields to replace.
+ * @returns The tombstone.
+ */
+function deletedProduit(overrides: Partial<SpaceState> = {}): Space {
+  return produit({
+    deletedAt: DELETED_AT,
+    deletedBy: DELETED_BY_CAMILLE,
+    version: 6,
+    ...overrides,
+  });
+}
+
+describe('Space.delete: a deletion records when and by whom, at the next version', () => {
+  it('makes a tombstone of a live space at the next version and keeps everything else', () => {
+    const deleted: Space = produit({ version: 5 }).delete(DELETED_BY_CAMILLE, DELETED_AT);
+
+    expect(deleted.isDeleted).toBe(true);
+    expect(deleted.snapshot).toEqual(
+      spaceState({ deletedAt: DELETED_AT, deletedBy: DELETED_BY_CAMILLE, version: 6 }),
+    );
+  });
+
+  it('does not change the space it was called on', () => {
+    const live: Space = produit();
+
+    live.delete(DELETED_BY_CAMILLE, DELETED_AT);
+
+    expect(live.isDeleted).toBe(false);
+    expect(live.snapshot).toEqual(spaceState());
+  });
+
+  it('keeps when the space came back from the trash before, which a deletion does not clear', () => {
+    const deleted: Space = produit({ restoredAt: RESTORED_FROM_TRASH_AT }).delete(
+      DELETED_BY_CAMILLE,
+      DELETED_AT,
+    );
+
+    expect(deleted.snapshot.restoredAt).toEqual(RESTORED_FROM_TRASH_AT);
+  });
+
+  it('refuses to delete a deleted space again', () => {
+    expect(() => deletedProduit().delete(DELETED_BY_CAMILLE, DELETED_AT)).toThrow(
+      InvalidSpaceError,
+    );
+  });
+
+  it.each<[string, ListActor]>([
+    ['an unknown type', { type: 'robot', id: CAMILLE } as unknown as ListActor],
+    ['an empty id', { type: 'user', id: '' }],
+  ])('refuses an actor with %s', (_why: string, by: ListActor) => {
+    expect(() => produit().delete(by, DELETED_AT)).toThrow(InvalidSpaceError);
+  });
+
+  it('refuses an invalid instant', () => {
+    expect(() => produit().delete(DELETED_BY_CAMILLE, new Date(Number.NaN))).toThrow(
+      InvalidSpaceError,
+    );
+  });
+});
+
+describe('Space.restoreFromTrash: a deleted space comes back at the end of the sidebar', () => {
+  it('clears the tombstone, records when it came back and takes the next version', () => {
+    const back: Space = deletedProduit().restoreFromTrash(RESTORED_FROM_TRASH_AT);
+
+    expect(back.isDeleted).toBe(false);
+    expect(back.snapshot).toEqual(spaceState({ restoredAt: RESTORED_FROM_TRASH_AT, version: 7 }));
+  });
+
+  it('keeps the settings of the space', () => {
+    const back: Space = deletedProduit({
+      visibility: 'private',
+      ownerUserId: HUGO,
+    }).restoreFromTrash(RESTORED_FROM_TRASH_AT);
+
+    expect(back.snapshot).toMatchObject({
+      visibility: 'private',
+      ownerUserId: HUGO,
+      prefix: 'CAD',
+    });
+  });
+
+  it('refuses a live space', () => {
+    expect(() => produit().restoreFromTrash(RESTORED_FROM_TRASH_AT)).toThrow(InvalidSpaceError);
+  });
+
+  it('refuses an invalid instant', () => {
+    expect(() => deletedProduit().restoreFromTrash(new Date(Number.NaN))).toThrow(
+      InvalidSpaceError,
+    );
+  });
+});
+
+describe('Space.restore: a stored tombstone is whole', () => {
+  it('restores a deleted space unchanged', () => {
+    expect(deletedProduit().snapshot).toEqual(
+      spaceState({ deletedAt: DELETED_AT, deletedBy: DELETED_BY_CAMILLE, version: 6 }),
+    );
+  });
+
+  it('refuses a deletion with an instant and no actor, or an actor and no instant', () => {
+    expect(() => produit({ deletedAt: DELETED_AT })).toThrow(InvalidSpaceError);
+    expect(() => produit({ deletedBy: DELETED_BY_CAMILLE })).toThrow(InvalidSpaceError);
+  });
+
+  it('refuses a stored actor of an unknown type or with an empty id', () => {
+    expect(() =>
+      produit({
+        deletedAt: DELETED_AT,
+        deletedBy: { type: 'robot', id: CAMILLE } as unknown as ListActor,
+      }),
+    ).toThrow(InvalidSpaceError);
+    expect(() => produit({ deletedAt: DELETED_AT, deletedBy: { type: 'user', id: '' } })).toThrow(
+      InvalidSpaceError,
+    );
+  });
+
+  it('refuses an invalid instant of the deletion or of the restoration', () => {
+    expect(() =>
+      produit({ deletedAt: new Date(Number.NaN), deletedBy: DELETED_BY_CAMILLE }),
+    ).toThrow(InvalidSpaceError);
+    expect(() => produit({ restoredAt: new Date(Number.NaN) })).toThrow(InvalidSpaceError);
+  });
+});
+
+describe('Space: the clean-up of a member who left still hands a deleted space over', () => {
+  it('hands a deleted private space to the owner of the organization, keeping its tombstone', () => {
+    const { space, changed }: SpaceUpdate = Space.restore(
+      designState({ deletedAt: DELETED_AT, deletedBy: { type: 'user', id: HUGO }, version: 3 }),
+    ).handOver(CAMILLE);
+
+    expect(changed).toEqual(['ownerUserId']);
+    expect(space.snapshot).toMatchObject({
+      ownerUserId: CAMILLE,
+      deletedAt: DELETED_AT,
+      version: 4,
+    });
   });
 });

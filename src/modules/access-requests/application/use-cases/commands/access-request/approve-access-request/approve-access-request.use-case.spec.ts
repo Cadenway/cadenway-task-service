@@ -248,6 +248,7 @@ describe('ApproveAccessRequest: a task request concerns the list the task is in 
       refusedWith({ reason: 'access-request-not-found' }),
     );
     expect(targets.calls).toEqual([`find:list:${ROADMAP}`]);
+    expect(targets.locks).toEqual(['none']);
     expect(targets.grants).toEqual([]);
   });
 

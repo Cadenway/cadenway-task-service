@@ -324,3 +324,34 @@ describe('CreateList: a list is created in a space the caller has edit on', () =
     expect(refusal).toEqual({ reason: 'space-not-found' });
   });
 });
+
+describe('CreateList: the space is held for share, so a deletion of it waits or wins', () => {
+  it('reads the membership for share, then holds the space for share', async () => {
+    const spaces = new InMemorySpaces({ spaces: [spaceState()] });
+    const members = atelierNordMembers();
+    members.journal = spaces.journal;
+
+    await new CreateList(spaces, members).execute(createBacklog());
+
+    expect(spaces.journal).toEqual([`membership ${LEA}`, `space ${PRODUIT} share`]);
+  });
+
+  it('answers space-not-found in a deleted space, and stores nothing', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [
+        spaceState({
+          deletedAt: new Date('2026-11-08T16:10:00Z'),
+          deletedBy: { type: 'user', id: CAMILLE },
+        }),
+      ],
+    });
+
+    const refusal = await refusalOf(
+      new CreateList(spaces, atelierNordMembers()).execute(createBacklog()),
+    );
+
+    expect(refusal).toEqual({ reason: 'space-not-found' });
+    expect(spaces.lists.size).toBe(0);
+    expect(spaces.events).toEqual([]);
+  });
+});

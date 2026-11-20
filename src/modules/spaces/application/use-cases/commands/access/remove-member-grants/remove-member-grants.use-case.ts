@@ -1,5 +1,6 @@
 import type { TaskList } from '../../../../../domain/aggregates/list/task-list.aggregate.js';
 import type { Space } from '../../../../../domain/aggregates/space/space.aggregate.js';
+import { announcesChanges } from '../../../../../domain/policies/list/list-state.policy.js';
 import type { GrantsUpdate } from '../../../../../domain/value-objects/access/grants-update.value-object.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
 import type { GrantedResource } from '../../../../models/access/granted-resource.model.js';
@@ -68,7 +69,9 @@ function byId(ids: readonly string[]): string[] {
  *    member again, it writes nothing (`member-again`), so a person who joined again keeps them;
  * 4. otherwise it removes each grant (`ResourceGrants.revoke`, which never refuses), takes the
  *    next version of its space or list and appends `space.access-changed.v1` or
- *    `list.access-changed.v1` with the actor `{ type: 'system', id: 'task-service' }`.
+ *    `list.access-changed.v1` with the actor `{ type: 'system', id: 'task-service' }`; a deleted
+ *    space or list (a tombstone) is changed and announced all the same (`announcesChanges`), so
+ *    that the person leaves the set of who reaches it of every consumer.
  *
  * A removed grant leaves the range of step 1, so the next call goes on with the next ones; a call
  * once none is left changes nothing: the removal is idempotent. A batch rolls back alone.
@@ -204,23 +207,28 @@ export class RemoveMemberGrants {
           const next: Space = space.recordAccessChange();
           await store.spaces.update(next);
           spaces.set(resource.spaceId, next);
-          await store.events.spaceAccessChanged(
-            next,
-            update.grants.snapshot.grants,
-            [input.userId],
-            SYSTEM_ACTOR,
-          );
+          // A tombstone takes its version and announces who lost it all the same.
+          if (announcesChanges('access', next.snapshot)) {
+            await store.events.spaceAccessChanged(
+              next,
+              update.grants.snapshot.grants,
+              [input.userId],
+              SYSTEM_ACTOR,
+            );
+          }
           continue;
         }
         const next: TaskList = list.recordAccessChange();
         await store.lists.update(next);
-        await store.events.listAccessChanged(
-          next,
-          update.grants.snapshot.grants,
-          ['grants'],
-          [input.userId],
-          SYSTEM_ACTOR,
-        );
+        if (announcesChanges('access', space.snapshot, next.snapshot)) {
+          await store.events.listAccessChanged(
+            next,
+            update.grants.snapshot.grants,
+            ['grants'],
+            [input.userId],
+            SYSTEM_ACTOR,
+          );
+        }
       }
       return { outcome: 'removed', removed };
     });

@@ -5,6 +5,7 @@ import { ChecklistLimitReachedError } from '../../errors/task/checklist-limit-re
 import { InvalidTaskError } from '../../errors/task/invalid-task.error.js';
 import { LabelLimitReachedError } from '../../errors/task/label-limit-reached.error.js';
 import { TaskArchivedError } from '../../errors/task/task-archived.error.js';
+import { TaskInTrashError } from '../../errors/task/task-in-trash.error.js';
 import { checkAttachment, checkNewSubtask } from '../../policies/subtask/subtask-tree.policy.js';
 import { isAssignable, refuseUnassignable } from '../../policies/task/assignability.policy.js';
 import {
@@ -44,6 +45,7 @@ import {
 import type { TaskPatch } from '../../value-objects/task/task-patch.value-object.js';
 import type { TaskPlacement } from '../../value-objects/task/task-placement.value-object.js';
 import type { TaskState } from '../../value-objects/task/task-state.value-object.js';
+import type { TaskTrash } from '../../value-objects/task/task-trash.value-object.js';
 import type { TaskUpdate } from '../../value-objects/task/task-update.value-object.js';
 
 /**
@@ -359,6 +361,7 @@ function checkStoredState(state: TaskState): void {
     throw new InvalidTaskError('a task is not its own parent');
   }
   checkStoredArchive(state.archive);
+  checkStoredTrash(state.trash);
   checkStoredCollections(state);
 }
 
@@ -379,6 +382,23 @@ function checkStoredArchive(archive: TaskArchive | null): void {
   requireInstant(archive.at);
   checkActor(archive.by);
   requireId(archive.rootId);
+}
+
+/**
+ * Function checkStoredTrash
+ *
+ * @description
+ * Refuses a stored trash no deletion can produce (`openapi/public/trash.yaml`): the id of its
+ * entry; `null` for a task that is not in the trash. An archived task in the trash keeps its
+ * archive (it went with its subtree or its list, and comes back archived).
+ *
+ * @param {TaskTrash | null} trash - The stored trash.
+ * @throws {InvalidTaskError} When the entry is empty.
+ */
+function checkStoredTrash(trash: TaskTrash | null): void {
+  if (trash !== null) {
+    requireId(trash.entryId);
+  }
 }
 
 /**
@@ -406,7 +426,10 @@ function checkStoredArchive(archive: TaskArchive | null): void {
  * - an archived task ("Tasks" of `openapi/public/archives.yaml`) refuses every change and every
  *   new or attached subtask with `TaskArchivedError` (`requireChangeable`), until its archive is
  *   restored; only the removal of a former member from its assignees (`unassign`, a system
- *   change) still applies. `archive` and `unarchive` take the next version and `updatedAt` too.
+ *   change) still applies. `archive` and `unarchive` take the next version and `updatedAt` too;
+ * - a task in the trash (`openapi/public/trash.yaml`) refuses every change the same way, with
+ *   `TaskInTrashError`, until its entry is restored, but for the removal of a former member;
+ *   `trash`, `restoreFromTrash` and `purge` take the next version and `updatedAt` too.
  *
  * Who may see or change the task is decided by the application from its space; the instant of a
  * change comes in as an argument, the transaction instant.
@@ -441,15 +464,30 @@ export class Task {
    * Property isLive
    *
    * @description
-   * Whether the task is live, in no archive ("An archived task is left out of every collection
-   * and count", "Tasks" of `openapi/public/archives.yaml`): the application decides on it, not on
-   * the stored archive.
+   * Whether the task is live, in no archive and not in the trash ("An archived task is left out
+   * of every collection and count", "Tasks" of `openapi/public/archives.yaml`; "A task in the trash
+   * is left out of every collection and count", "Entries" of `openapi/public/trash.yaml`): the
+   * application decides on it, not on the stored archive or trash.
    *
    * @type {boolean}
    * @readonly
    */
   public get isLive(): boolean {
-    return this.state.archive === null;
+    return this.state.archive === null && this.state.trash === null;
+  }
+
+  /**
+   * Property isInTrash
+   *
+   * @description
+   * Whether the task belongs to a trash entry: its key answers `404 task.trashed` or
+   * `404 task.not-found` (`TaskNotFound` of `openapi/public/tasks.yaml`).
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  public get isInTrash(): boolean {
+    return this.state.trash !== null;
   }
   // #endregion
 
@@ -981,12 +1019,17 @@ export class Task {
    * Refuses a change of an archived task ("An archived task ... refuses every change with
    * `409 task.archived`", "Tasks" of `openapi/public/archives.yaml`): the task itself, a new
    * subtask under it, an attachment to it. The application calls it after the visibility and the
-   * role, before `If-Match`; the methods that change the task call it too.
+   * role, before `If-Match`; the methods that change the task call it too. A task in the trash,
+   * archived or not, refuses them first; the application answers it `404` before it gets here.
    *
+   * @throws {TaskInTrashError} With the key of the task, when it is in the trash.
    * @throws {TaskArchivedError} With the key of the task, when it is archived.
    */
   public requireChangeable(): void {
-    if (!this.isLive) {
+    if (this.state.trash !== null) {
+      throw new TaskInTrashError(this.state.key.format());
+    }
+    if (this.state.archive !== null) {
       throw new TaskArchivedError(this.state.key.format());
     }
   }
@@ -1005,8 +1048,8 @@ export class Task {
    * @param {TaskActor} by - Who archives it.
    * @param {Date} at - The transaction instant.
    * @returns {Task} The task, archived, at the next version.
-   * @throws {InvalidTaskError} When the task is archived already, the instant or the actor is
-   * invalid, the root is empty, or a task archived from another root has no parent.
+   * @throws {InvalidTaskError} When the task is archived already or in the trash, the instant or
+   * the actor is invalid, the root is empty, or a task archived from another root has no parent.
    */
   public archive(rootId: string, by: TaskActor, at: Date): Task {
     requireInstant(at);
@@ -1015,6 +1058,9 @@ export class Task {
     const { state } = this;
     if (state.archive !== null) {
       throw new InvalidTaskError('an archived task is not archived again');
+    }
+    if (state.trash !== null) {
+      throw new InvalidTaskError('a task in the trash is not archived');
     }
     if (rootId !== state.id && state.parentId === null) {
       throw new InvalidTaskError('a task archived with another root is one of its subtasks');
@@ -1040,14 +1086,17 @@ export class Task {
    * @param {Date} at - The transaction instant.
    * @param {boolean} detach - `true` to detach the root from its parent.
    * @returns {Task} The task, live, at the next version.
-   * @throws {InvalidTaskError} When the task is live, the instant invalid, or `detach` names a
-   * task that is not the root of its archive or has no parent.
+   * @throws {InvalidTaskError} When the task is live or in the trash, the instant invalid, or
+   * `detach` names a task that is not the root of its archive or has no parent.
    */
   public unarchive(at: Date, detach: boolean): Task {
     requireInstant(at);
     const { state } = this;
     if (state.archive === null) {
       throw new InvalidTaskError('a live task is not restored');
+    }
+    if (state.trash !== null) {
+      throw new InvalidTaskError('an archive in the trash is not restored from the archives');
     }
     if (detach && (state.archive.rootId !== state.id || state.parentId === null)) {
       throw new InvalidTaskError('only the root of an archive leaves its parent');
@@ -1060,6 +1109,143 @@ export class Task {
       updatedAt: at,
       version: state.version + 1,
     });
+  }
+
+  /**
+   * Method trash
+   *
+   * @description
+   * Puts the task in a trash entry ("deleting a task moves it and its subtasks at every level to
+   * the trash as one entry", "Entries" of `openapi/public/trash.yaml`): the root and each task taken
+   * with it get the entry, the next version and `updatedAt` = `at` (`task.trashed.v1`: "Version of
+   * the task after the move"). The entry holds the root and every descendant of it in its list
+   * that is not in the trash already, live and archived ("an archived task that goes with its list
+   * leaves the archives", `task.trashed.v1`): an archived task keeps its archive while in the
+   * trash, which leaves it out of the archives, and comes back in it. Nothing else changes: the
+   * status, the list, the parent, the archive and the collections stay, so the restoration gives
+   * the task back as it was, and the archived subtasks never count among the 25 of a parent. The
+   * trash is not recorded in the activity log.
+   *
+   * @param {string} entryId - The id of the trash entry.
+   * @param {Date} at - The transaction instant, the `trashedAt` of the entry.
+   * @returns {Task} The task, in the trash, at the next version.
+   * @throws {InvalidTaskError} When the task is in the trash already, the entry is empty or the
+   * instant invalid.
+   */
+  public trash(entryId: string, at: Date): Task {
+    requireInstant(at);
+    requireId(entryId);
+    const { state } = this;
+    if (state.trash !== null) {
+      throw new InvalidTaskError('a task in the trash is not trashed again');
+    }
+    return new Task({
+      ...state,
+      trash: Object.freeze({ entryId }),
+      updatedAt: at,
+      version: state.version + 1,
+    });
+  }
+
+  /**
+   * Method restoreFromTrash
+   *
+   * @description
+   * Brings the task back from its trash entry ("An entry comes back to its list", "Restoring" of
+   * `openapi/public/trash.yaml`): the entry cleared, the next version and `updatedAt` = `at`
+   * (`task.restored.v1`). The root leaves its parent when the parent can no longer take it
+   * (`detach`: for a live root, a parent no longer live or that `takesRestoredRoot` refuses,
+   * "détachée de son parent supprimé"; for an archived root, a parent in the trash or in another
+   * list, which it could not show) and becomes a top-level task of its list; every other task of
+   * the entry keeps its parent, a task of the same entry. An archived task comes back in its
+   * archive, detached or not.
+   *
+   * @param {Date} at - The transaction instant.
+   * @param {boolean} detach - `true` to detach the root from its parent; the application passes it
+   * for the root of the entry only.
+   * @returns {Task} The task, out of the trash, at the next version, with its archive as it was.
+   * @throws {InvalidTaskError} When the task is not in the trash, the instant is invalid, or
+   * `detach` names a task without parent.
+   */
+  public restoreFromTrash(at: Date, detach: boolean): Task {
+    requireInstant(at);
+    const { state } = this;
+    if (state.trash === null) {
+      throw new InvalidTaskError('a task that is not in the trash is not restored from it');
+    }
+    if (detach && state.parentId === null) {
+      throw new InvalidTaskError('only a task with a parent leaves it');
+    }
+
+    return new Task({
+      ...state,
+      trash: null,
+      parentId: detach ? null : state.parentId,
+      parentKey: detach ? null : state.parentKey,
+      updatedAt: at,
+      version: state.version + 1,
+    });
+  }
+
+  /**
+   * Method rearchive
+   *
+   * @description
+   * Archives again, as of its restoration from the trash, a task that came back archived ("an
+   * archived task restored from the trash comes back archived as of the restoration, by the person
+   * who restored it"): the same root of its archive (an archive lies wholly inside an entry, so
+   * every member of it changes together), the instant and the actor of the restoration, the next
+   * version and `updatedAt` = `at` (`task.archived.v1`, whose `occurredAt` is its new
+   * `archivedAt`). Nothing else changes.
+   *
+   * @param {TaskActor} by - Who restored it.
+   * @param {Date} at - The transaction instant of the restoration.
+   * @returns {Task} The task, archived as of the restoration, at the next version.
+   * @throws {InvalidTaskError} When the task is not archived or still in the trash, or the instant
+   * or the actor is invalid.
+   */
+  public rearchive(by: TaskActor, at: Date): Task {
+    requireInstant(at);
+    checkActor(by);
+    const { state } = this;
+    if (state.archive === null) {
+      throw new InvalidTaskError('only an archived task is archived again');
+    }
+    if (state.trash !== null) {
+      throw new InvalidTaskError('a task in the trash is not archived');
+    }
+    return new Task({
+      ...state,
+      archive: Object.freeze({
+        at,
+        by: Object.freeze({ type: by.type, id: by.id }),
+        rootId: state.archive.rootId,
+      }),
+      updatedAt: at,
+      version: state.version + 1,
+    });
+  }
+
+  /**
+   * Method purge
+   *
+   * @description
+   * The task as it is erased for good ("Erasing" of `openapi/public/trash.yaml`): only a task in
+   * the trash is erased, and its erasure is one more version (`task.purged.v1`: "Version of the
+   * task with its erasure"), with `updatedAt` = `at`. The application deletes the row and emits
+   * this state; nothing of it is stored.
+   *
+   * @param {Date} at - The transaction instant.
+   * @returns {Task} The task at the version of its erasure.
+   * @throws {InvalidTaskError} When the task is not in the trash or the instant is invalid.
+   */
+  public purge(at: Date): Task {
+    requireInstant(at);
+    const { state } = this;
+    if (state.trash === null) {
+      throw new InvalidTaskError('only a task in the trash is erased');
+    }
+    return new Task({ ...state, updatedAt: at, version: state.version + 1 });
   }
 
   /**

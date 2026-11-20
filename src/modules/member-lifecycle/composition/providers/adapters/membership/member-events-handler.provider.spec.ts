@@ -1,5 +1,6 @@
 import { eventSchemas } from '@cadenway/contracts/events/organization-service';
-import { TenantTransactionRunner } from '@cadenway/nest-common/database';
+import { CONFIG } from '@cadenway/nest-common';
+import { SystemTransactionRunner, TenantTransactionRunner } from '@cadenway/nest-common/database';
 import { JobProducer, JobWorkerRegistry } from '@cadenway/nest-jobs/runtime';
 import { EventConsumers } from '@cadenway/nest-messaging';
 import type { EventRedelivery } from '@cadenway/nest-messaging';
@@ -44,24 +45,29 @@ const subscribe: Mock<(registration: unknown) => Promise<void>> =
 
 /**
  * Stands for the global providers of the kit that `MemberLifecycleModule` and the modules it
- * imports inject: the durable consumers, which record the registrations instead of reaching a
- * broker, the tenant runner, the outbox writer and the relay, which no registration uses, and the
- * job producer and workers of `@cadenway/nest-jobs`, whose registration of the unassignment worker
- * does nothing here.
+ * imports inject: the validated configuration (the switch of the writes of the trash off), the
+ * durable consumers, which record the registrations instead of reaching a broker, the tenant
+ * runner, the system runner (the trash of `TasksModule`), the outbox writer and the relay, which no
+ * registration uses, and the job producer and workers of `@cadenway/nest-jobs`, whose registration
+ * of the unassignment worker does nothing here.
  */
 @Global()
 @Module({
   providers: [
+    { provide: CONFIG, useValue: { TRASH_WRITES_ENABLED: false } },
     { provide: EventConsumers, useValue: { subscribe } },
     { provide: TenantTransactionRunner, useValue: {} },
+    { provide: SystemTransactionRunner, useValue: {} },
     { provide: OutboxWriter, useValue: {} },
     { provide: OutboxRelay, useValue: {} },
     { provide: JobProducer, useValue: {} },
     { provide: JobWorkerRegistry, useValue: { work: () => Promise.resolve() } },
   ],
   exports: [
+    CONFIG,
     EventConsumers,
     TenantTransactionRunner,
+    SystemTransactionRunner,
     OutboxWriter,
     OutboxRelay,
     JobProducer,

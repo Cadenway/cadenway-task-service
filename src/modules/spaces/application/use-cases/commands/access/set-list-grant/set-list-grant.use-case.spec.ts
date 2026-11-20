@@ -206,3 +206,20 @@ describe('SetListGrant: the refusals come in the order of the contract', () => {
     expect(refusal).toEqual({ reason: 'owner-unchangeable' });
   });
 });
+
+describe('SetListGrant: the actor is checked on the list read without lock, before any lock', () => {
+  it('refuses a list the actor does not see without locking its space or the list', async () => {
+    const spaces = atelierNord();
+    const members = atelierNordMembers();
+    members.journal = spaces.journal;
+
+    const refusal = await refusalOf(
+      new SetListGrant(spaces, members).execute(
+        invite({ actorUserId: CAMILLE, listId: MAQUETTES }),
+      ),
+    );
+
+    expect(refusal).toEqual({ reason: 'list-not-found' });
+    expect(spaces.journal.filter((entry) => !entry.startsWith('membership'))).toEqual([]);
+  });
+});

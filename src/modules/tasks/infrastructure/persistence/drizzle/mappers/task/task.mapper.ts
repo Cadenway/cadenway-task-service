@@ -4,6 +4,7 @@ import type { TaskArchive } from '../../../../../domain/value-objects/task/task-
 import type { TaskDraft } from '../../../../../domain/value-objects/task/task-draft.value-object.js';
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import type { TaskState } from '../../../../../domain/value-objects/task/task-state.value-object.js';
+import type { TaskTrash } from '../../../../../domain/value-objects/task/task-trash.value-object.js';
 import type { tasks } from '../../schemas/task/task.schema.js';
 import { toActorType, toCancelReason, toPriorityKey, toStatusKey } from './task-values.mapper.js';
 
@@ -16,6 +17,19 @@ import { toActorType, toCancelReason, toPriorityKey, toStatusKey } from './task-
  * @type {typeof tasks.$inferSelect}
  */
 export type TaskRow = typeof tasks.$inferSelect;
+
+/**
+ * Function toTaskTrash
+ *
+ * @description
+ * Reads the trash entry of a row: `null` for a task that is not in the trash.
+ *
+ * @param {TaskRow} row - The row.
+ * @returns {TaskTrash | null} The trash.
+ */
+function toTaskTrash(row: TaskRow): TaskTrash | null {
+  return row.trashEntryId === null ? null : { entryId: row.trashEntryId };
+}
 
 /**
  * Function toTaskArchive
@@ -61,7 +75,8 @@ function toTaskArchive(row: TaskRow, subject: string): TaskArchive | null {
  * Maps a row, with the collections loaded for it, to the task it stores. The status, the priority,
  * the cancel reason and the type of the creator are narrowed before the domain restores the
  * aggregate, and the domain refuses a state no change can produce (a parent without its key, a
- * cancelled task without reason). The archive columns give the archive of the task, `null` when live.
+ * cancelled task without reason). The archive columns give the archive of the task, `null` when
+ * live, and `trash_entry_id` its trash entry, `null` when it is not in the trash.
  *
  * @param {TaskRow} row - The row.
  * @param {TaskKey | null} parentKey - The key of the parent, `null` for a top-level task.
@@ -106,6 +121,7 @@ export function toTask(
     updatedAt: row.updatedAt,
     version: row.version,
     archive: toTaskArchive(row, subject),
+    trash: toTaskTrash(row),
   };
   return Task.restore(state);
 }
@@ -149,7 +165,9 @@ export function toTaskInsert(draft: TaskDraft, key: TaskKey): typeof tasks.$infe
  *
  * @description
  * The columns a change can write: every member of the row except the key, the organization, the
- * id, the creation and the archive, which only `writeArchives` writes. `updated_at` and `version`
+ * id, the creation, the archive and the trash, which only `writeArchives` and `writeTrash` write.
+ * `updated_at` and `version`
+
  * come from the task after the change, so the stored instant is the instant of the transaction
  * the events carry.
  *

@@ -21,4 +21,9 @@ paths:
   unassignment twice. Keep any effect outside the database idempotent too.
 - Handlers write only this service's data.
 - A shape change is a new version; the old one keeps being emitted until every consumer moved.
+- A subtree emits one event per task, the root first. A restoration from the trash emits the
+  `space.restored.v1` / `list.restored.v1` of what comes back with it, each followed by the full
+  `space.access-changed.v1` / `list.access-changed.v1` of its grants, then `task.restored.v1` per task,
+  each task that comes back archived followed by its `task.archived.v1`; a tombstone and a task in the
+  trash emit nothing until they come back.
 - Events emitted by this service: `space.*`, `list.*`, `task.created`, `task.updated`, `task.status-changed`, `task.assigned`, `task.access-requested`, `task.access-request-decided`, `task.archived`, `task.unarchived`, `task.trashed`, `task.restored`, `task.purged`, `comment.created`, `approval.requested`, `approval.decided`, `milestone.reached`.

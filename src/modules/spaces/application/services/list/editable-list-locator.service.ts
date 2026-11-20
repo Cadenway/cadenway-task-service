@@ -2,11 +2,13 @@ import { canEdit } from '../../../domain/policies/access/access-role.policy.js';
 import type { TaskList } from '../../../domain/aggregates/list/task-list.aggregate.js';
 import type { Space } from '../../../domain/aggregates/space/space.aggregate.js';
 import type { Viewer } from '../../../domain/value-objects/member/viewer.value-object.js';
+import type { CheckedLock } from '../../models/access/checked-lock.model.js';
 import type { ViewerAccess } from '../../models/access/viewer-access.model.js';
 import type { EditableListLookup } from '../../models/list/editable-list-lookup.model.js';
 import { SpaceRefusal } from '../../models/space/space-refusal.model.js';
 import type { SpacesStore } from '../../models/transactions/spaces-store.model.js';
 import { AccessResolver } from '../access/access-resolver.service.js';
+import { CheckedLocker } from '../access/checked-locker.service.js';
 
 /**
  * Class EditableListLocator
@@ -17,10 +19,13 @@ import { AccessResolver } from '../access/access-resolver.service.js';
  * `openapi/public/spaces.yaml`, "Who" of `openapi/public/archives.yaml`): a list that does not
  * exist, or that the actor has no role on (`listRoleOf`), answers `list-not-found`; one they have a
  * role on without `edit` `role-insufficient` with that role; an `If-Match` that does not name the
- * stored version `version-mismatch` with it. The list is locked `FOR NO KEY UPDATE` before it is
- * read, so two changes of one list apply one after the other, then its space is read without
- * lock, then the role is computed. `find` answers the refusals of the access, for a caller that
- * maps them to outcomes of its own; `lock` throws them and checks `If-Match` last.
+ * stored version `version-mismatch` with it. The list and its space are read without lock and the
+ * role is computed first, so a list the actor does not see, or may not change, answers at once
+ * whatever another transaction holds; then the list is locked `FOR NO KEY UPDATE`, so two changes
+ * of one list apply one after the other, and the role is computed again on the locked row when it
+ * changed meanwhile (`CheckedLocker`). A deleted list, or a list of a deleted space, answers
+ * `list-not-found`. `find` answers the refusals of the access, for a caller that maps them to
+ * outcomes of its own; `lock` throws them and checks `If-Match` last.
  */
 export class EditableListLocator {
   // #region Properties
@@ -34,6 +39,17 @@ export class EditableListLocator {
    * @readonly
    */
   private readonly access: AccessResolver = new AccessResolver();
+
+  /**
+   * Property locker
+   *
+   * @description
+   * Checks the actor before the lock, and again on a row that changed.
+   *
+   * @type {CheckedLocker}
+   * @readonly
+   */
+  private readonly locker: CheckedLocker = new CheckedLocker();
   // #endregion
 
   // #region Methods
@@ -41,8 +57,8 @@ export class EditableListLocator {
    * Method find
    *
    * @description
-   * Locks the list and checks that the actor has `edit` on it, without throwing: the list, or the
-   * refusal of the access. It does not read `If-Match`.
+   * Checks that the actor has `edit` on the list, then locks it and checks again when it changed,
+   * without throwing: the list, or the refusal of the access. It does not read `If-Match`.
    *
    * @param {SpacesStore} store - The store of the transaction.
    * @param {Viewer} viewer - The actor and their role in the organization.
@@ -57,27 +73,39 @@ export class EditableListLocator {
     organizationId: string,
     listId: string,
   ): Promise<EditableListLookup> {
-    const stored: TaskList | null = await store.lists.lock(organizationId, listId);
-    if (stored === null) {
-      return { outcome: 'list-not-found' };
-    }
-    const space: Space | null = await store.spaces.find(organizationId, stored.snapshot.spaceId);
-    if (space === null) {
-      return { outcome: 'list-not-found' };
-    }
-    const access: ViewerAccess = await this.access.resolve(
-      store.grants,
-      viewer,
-      space.snapshot,
-      stored.snapshot,
+    const checked: CheckedLock<
+      { readonly space: Space; readonly list: TaskList },
+      Exclude<EditableListLookup, { readonly outcome: 'locked' }>
+    > = await this.locker.list(
+      store,
+      organizationId,
+      listId,
+      'none',
+      async (
+        space: Space,
+        list: TaskList,
+      ): Promise<Exclude<EditableListLookup, { readonly outcome: 'locked' }> | null> => {
+        const access: ViewerAccess = await this.access.resolve(
+          store.grants,
+          viewer,
+          space.snapshot,
+          list.snapshot,
+        );
+        if (access.listRole === null) {
+          return { outcome: 'list-not-found' };
+        }
+        return canEdit(access.listRole)
+          ? null
+          : { outcome: 'role-insufficient', role: access.listRole };
+      },
     );
-    if (access.listRole === null) {
+    if (checked.outcome === 'unknown') {
       return { outcome: 'list-not-found' };
     }
-    if (!canEdit(access.listRole)) {
-      return { outcome: 'role-insufficient', role: access.listRole };
+    if (checked.outcome === 'refused') {
+      return checked.refusal;
     }
-    return { outcome: 'locked', list: stored };
+    return { outcome: 'locked', list: checked.locked.list };
   }
 
   /**

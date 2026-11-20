@@ -11,6 +11,11 @@ import type { SpaceDraft } from '../../../../../domain/value-objects/space/space
 import { toSpace } from '../../mappers/space/space.mapper.js';
 import type { SpaceRow } from '../../mappers/space/space.mapper.js';
 import { keysetAfter } from '../../mappers/page/keyset-after.mapper.js';
+import { spacePositionInSidebar } from '../../mappers/space/space-position.mapper.js';
+import {
+  deletedSpaceCondition,
+  undeletedSpaceCondition,
+} from '../../mappers/space/space-tombstone.mapper.js';
 import {
   toSpaceWithGrants,
   visibleSpaceColumns,
@@ -29,10 +34,15 @@ import { spaces } from '../../schemas/space/space.schema.js';
  * @description
  * `SpaceRepository` on the `spaces` table, in the transaction of its unit of work. Every query
  * names `organization_id`, the first column of the primary key and of both indexes; row-level
- * security is the second barrier. `listVisible` reads a page through
- * `(organization_id, created_at, id)`, bounded by the `limit` of the caller, with the one
- * visibility condition of `visibleSpaceCondition` and the grants of the member on each row; the
- * handover reads the private spaces of one owner through `(organization_id, owner_user_id)`.
+ * security is the second barrier. The readings by id and the locks before a change apply
+ * `undeletedSpaceCondition`, the collections `visibleSpaceCondition`, which holds it: a tombstone
+ * answers as an unknown space. The clean-up of a member who left and the `IncludingDeleted`
+ * methods of the trash read the tombstones on purpose. `listVisible` reads a page in sidebar order
+ * (`spacePositionInSidebar`, `coalesce(restored_at, created_at)`, id as tie-breaker), bounded by
+ * the `limit` of the caller, with the one visibility condition of `visibleSpaceCondition` and the
+ * grants of the member on each row: no index orders that expression, so the spaces the member sees
+ * are sorted (an organization holds few spaces). The handover reads the private spaces of one
+ * owner through `(organization_id, owner_user_id)`.
  */
 export class DrizzleSpaceRepository implements SpaceRepository {
   // #region Properties
@@ -102,7 +112,7 @@ export class DrizzleSpaceRepository implements SpaceRepository {
    * Method find
    *
    * @description
-   * Loads a space by its organization and its id.
+   * Loads a space by its organization and its id, unless it is deleted.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} id - The id of the space.
@@ -112,7 +122,13 @@ export class DrizzleSpaceRepository implements SpaceRepository {
     const rows: SpaceRow[] = await this.db
       .select()
       .from(spaces)
-      .where(and(eq(spaces.organizationId, organizationId), eq(spaces.id, id)))
+      .where(
+        and(
+          eq(spaces.organizationId, organizationId),
+          eq(spaces.id, id),
+          undeletedSpaceCondition(),
+        ),
+      )
       .limit(1);
     const row: SpaceRow | undefined = rows[0];
     return row === undefined ? null : toSpace(row);
@@ -122,29 +138,24 @@ export class DrizzleSpaceRepository implements SpaceRepository {
    * Method lock
    *
    * @description
-   * Loads a space by its organization and its id, and locks its row until the end of the
-   * transaction.
+   * Loads a space by its organization and its id, and locks its row `FOR NO KEY UPDATE` until the
+   * end of the transaction, unless it is deleted. A deletion committed while the statement waited
+   * for the row leaves it out, as PostgreSQL checks the condition again on the row it locks.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} id - The id of the space.
    * @returns {Promise<Space | null>} The space, or `null`.
    */
   public async lock(organizationId: string, id: string): Promise<Space | null> {
-    const rows: SpaceRow[] = await this.db
-      .select()
-      .from(spaces)
-      .where(and(eq(spaces.organizationId, organizationId), eq(spaces.id, id)))
-      .limit(1)
-      .for('no key update');
-    const row: SpaceRow | undefined = rows[0];
-    return row === undefined ? null : toSpace(row);
+    return this.lockRow(organizationId, id, 'no key update', undeletedSpaceCondition());
   }
 
   /**
    * Method update
    *
    * @description
-   * Writes every member of a locked space, with its version and `updated_at`.
+   * Writes every member of a locked space, its tombstone and its last restoration from the trash
+   * included, with its version and `updated_at`.
    *
    * @param {Space} space - The space after the change.
    * @returns {Promise<void>} Resolves once written.
@@ -153,7 +164,8 @@ export class DrizzleSpaceRepository implements SpaceRepository {
   public async update(space: Space): Promise<void> {
     const { id, organizationId, name, prefix, description, icon, color, visibility } =
       space.snapshot;
-    const { ownerUserId, awaitingOwner, statuses, version } = space.snapshot;
+    const { ownerUserId, awaitingOwner, statuses, deletedAt, deletedBy, restoredAt, version } =
+      space.snapshot;
     const updated: { id: string }[] = await this.db
       .update(spaces)
       .set({
@@ -166,6 +178,10 @@ export class DrizzleSpaceRepository implements SpaceRepository {
         ownerUserId,
         awaitingOwner,
         statuses,
+        deletedAt,
+        deletedByType: deletedBy?.type ?? null,
+        deletedById: deletedBy?.id ?? null,
+        restoredAt,
         version,
         updatedAt: sql`now()`,
       })
@@ -182,21 +198,14 @@ export class DrizzleSpaceRepository implements SpaceRepository {
    * @description
    * Loads a space by its organization and its id, and locks its row `FOR SHARE` until the end of
    * the transaction: a change of the grants of one of its lists keeps its owner, and a change of
-   * the space waits for it.
+   * the space waits for it. A deleted space is left out.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} id - The id of the space.
    * @returns {Promise<Space | null>} The space, or `null`.
    */
   public async lockShared(organizationId: string, id: string): Promise<Space | null> {
-    const rows: SpaceRow[] = await this.db
-      .select()
-      .from(spaces)
-      .where(and(eq(spaces.organizationId, organizationId), eq(spaces.id, id)))
-      .limit(1)
-      .for('share');
-    const row: SpaceRow | undefined = rows[0];
-    return row === undefined ? null : toSpace(row);
+    return this.lockRow(organizationId, id, 'share', undeletedSpaceCondition());
   }
 
   /**
@@ -205,7 +214,8 @@ export class DrizzleSpaceRepository implements SpaceRepository {
    * @description
    * Reads the `(created_at, id)` of some spaces without lock, then locks each in that order, the
    * order of `lockPrivateOwnedBy`, `FOR NO KEY UPDATE` or `FOR SHARE` as asked: one statement per
-   * space, since a statement takes one lock mode. No space reads nothing.
+   * space, since a statement takes one lock mode. Deleted spaces are locked like any other, for the
+   * clean-up of a member who left. No space reads nothing.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly { readonly id: string; readonly mode: 'update' | 'share' }[]} locks - The
@@ -229,10 +239,12 @@ export class DrizzleSpaceRepository implements SpaceRepository {
       .orderBy(asc(spaces.createdAt), asc(spaces.id));
     const locked: Space[] = [];
     for (const { id } of ordered) {
-      const space: Space | null =
-        modes.get(id) === 'share'
-          ? await this.lockShared(organizationId, id)
-          : await this.lock(organizationId, id);
+      const space: Space | null = await this.lockRow(
+        organizationId,
+        id,
+        modes.get(id) === 'share' ? 'share' : 'no key update',
+        undefined,
+      );
       if (space !== null) {
         locked.push(space);
       }
@@ -245,9 +257,9 @@ export class DrizzleSpaceRepository implements SpaceRepository {
    *
    * @description
    * Loads a page of the spaces a member sees, with the one condition of `visibleSpaceCondition`
-   * and the grants of the member on each, in the order `(created_at, id)`, after `after`, through
-   * `(organization_id, created_at, id)`. The grant of each space is one left join on the primary
-   * key of `space_grants`; the spaces of the lists shared with the member, one range of
+   * and the grants of the member on each, in the order `(coalesce(restored_at, created_at), id)`,
+   * after `after`. The grant of each space is one left join on the primary key of
+   * `space_grants`; the spaces of the lists shared with the member, one range of
    * `list_grants_user_index` read once and left joined.
    *
    * @param {string} organizationId - The organization of the transaction.
@@ -265,9 +277,9 @@ export class DrizzleSpaceRepository implements SpaceRepository {
     const rows: VisibleSpaceRow[] = await this.visibleTo(
       organizationId,
       viewer,
-      keysetAfter(spaces.createdAt, spaces.id, after),
+      keysetAfter(spacePositionInSidebar(), spaces.id, after),
     )
-      .orderBy(asc(spaces.createdAt), asc(spaces.id))
+      .orderBy(asc(spacePositionInSidebar()), asc(spaces.id))
       .limit(limit);
     return rows.map(toSpaceWithGrants);
   }
@@ -285,7 +297,7 @@ export class DrizzleSpaceRepository implements SpaceRepository {
    */
   public async listAllVisible(organizationId: string, viewer: Viewer): Promise<SpaceWithGrants[]> {
     const rows: VisibleSpaceRow[] = await this.visibleTo(organizationId, viewer, undefined).orderBy(
-      asc(spaces.createdAt),
+      asc(spacePositionInSidebar()),
       asc(spaces.id),
     );
     return rows.map(toSpaceWithGrants);
@@ -323,8 +335,9 @@ export class DrizzleSpaceRepository implements SpaceRepository {
    * Loads and locks the first `limit` private spaces an account owns and that do not await an
    * owner, in the order `(created_at, id)`, so that two batches cannot wait on each other. The
    * candidates come from `spaces_organization_owner_index` (`organization_id, owner_user_id`):
-   * the rows of one owner in one organization, sorted in memory and cut at `limit`. A handed-over
-   * space leaves that range, and a space marked awaiting stays in it but is filtered out, so each
+   * the rows of one owner in one organization, deleted ones included (the clean-up treats a
+   * tombstone like any space), sorted in memory and cut at `limit`. A handed-over space leaves
+   * that range, and a space marked awaiting stays in it but is filtered out, so each
    * batch reads at most the private spaces the account still has plus those awaiting an owner.
    *
    * @param {string} organizationId - The organization of the transaction.
@@ -374,6 +387,105 @@ export class DrizzleSpaceRepository implements SpaceRepository {
       .orderBy(asc(spaces.createdAt), asc(spaces.id))
       .for('no key update');
     return rows.map(toSpace);
+  }
+
+  /**
+   * Method findIncludingDeleted
+   *
+   * @description
+   * Loads a space by its organization and its id, live or deleted, without lock.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} id - The id of the space.
+   * @returns {Promise<Space | null>} The space, or `null`.
+   */
+  public async findIncludingDeleted(organizationId: string, id: string): Promise<Space | null> {
+    const rows: SpaceRow[] = await this.db
+      .select()
+      .from(spaces)
+      .where(and(eq(spaces.organizationId, organizationId), eq(spaces.id, id)))
+      .limit(1);
+    const row: SpaceRow | undefined = rows[0];
+    return row === undefined ? null : toSpace(row);
+  }
+
+  /**
+   * Method lockIncludingDeleted
+   *
+   * @description
+   * Loads a space by its organization and its id, live or deleted, and locks its row until the end
+   * of the transaction: `FOR SHARE` while the deletion job reads its lists, `FOR NO KEY UPDATE`
+   * before a restoration from the trash, `FOR UPDATE` before an erasure.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} id - The id of the space.
+   * @param {'share' | 'update' | 'delete'} mode - How the caller holds or writes it next.
+   * @returns {Promise<Space | null>} The space, or `null`.
+   */
+  public async lockIncludingDeleted(
+    organizationId: string,
+    id: string,
+    mode: 'share' | 'update' | 'delete',
+  ): Promise<Space | null> {
+    const strength: 'share' | 'no key update' | 'update' =
+      mode === 'share' ? 'share' : mode === 'update' ? 'no key update' : 'update';
+    return this.lockRow(organizationId, id, strength, undefined);
+  }
+
+  /**
+   * Method erase
+   *
+   * @description
+   * Deletes the row of a deleted space by its primary key, its tombstone checked again in the
+   * statement; the foreign keys of `lists`, `space_grants` and `list_grants` refuse it while a row
+   * of them still names the space. `space_prefixes` has no foreign key to it, so its prefix rows
+   * stay.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} id - The id of the space.
+   * @returns {Promise<void>} Resolves once erased.
+   * @throws {Error} When no deleted space was erased.
+   */
+  public async erase(organizationId: string, id: string): Promise<void> {
+    const erased: { id: string }[] = await this.db
+      .delete(spaces)
+      .where(
+        and(eq(spaces.organizationId, organizationId), eq(spaces.id, id), deletedSpaceCondition()),
+      )
+      .returning({ id: spaces.id });
+    if (erased.length !== 1) {
+      throw new Error('The deleted space to erase is not a tombstone.');
+    }
+  }
+
+  /**
+   * Method lockRow
+   *
+   * @description
+   * Loads one space by its primary key and locks its row in a lock mode until the end of the
+   * transaction, with one more condition (the tombstone condition of a reading before a change),
+   * or none for the clean-up and the trash.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} id - The id of the space.
+   * @param {'update' | 'no key update' | 'share'} strength - The row lock.
+   * @param {SQL | undefined} condition - The condition the row must meet, or `undefined`.
+   * @returns {Promise<Space | null>} The space, or `null`.
+   */
+  private async lockRow(
+    organizationId: string,
+    id: string,
+    strength: 'update' | 'no key update' | 'share',
+    condition: SQL | undefined,
+  ): Promise<Space | null> {
+    const rows: SpaceRow[] = await this.db
+      .select()
+      .from(spaces)
+      .where(and(eq(spaces.organizationId, organizationId), eq(spaces.id, id), condition))
+      .limit(1)
+      .for(strength);
+    const row: SpaceRow | undefined = rows[0];
+    return row === undefined ? null : toSpace(row);
   }
   // #endregion
 }

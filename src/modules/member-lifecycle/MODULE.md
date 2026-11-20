@@ -47,9 +47,12 @@ None of its own. The clean-up job appends, through the outboxes of the other mod
 transaction of each of its batches, one `space.updated.v1` per private space it hands over
 (`changed: ['ownerUserId']`), one `space.access-changed.v1` or `list.access-changed.v1` per grant it
 removes, and one `task.updated.v1` per task it changes (`changed: ['assigneeIds']`), all by the
-actor `{ type: 'system', id: 'task-service' }`; a dropped access request emits nothing. The
-handover of the awaiting spaces to an arriving owner appends `space.updated.v1` in the transaction
-of the event.
+actor `{ type: 'system', id: 'task-service' }`; a dropped access request emits nothing. A deleted
+space or list (a tombstone) and a task in the trash still change (owner, grants, assignees, each
+with its next version) but emit nothing: a consumer dropped them at `space.deleted.v1`,
+`list.deleted.v1` or `task.trashed.v1`, and their restoration event carries the state after it.
+The handover of the awaiting spaces to an arriving owner appends `space.updated.v1` in the
+transaction of the event, a deleted space excepted.
 
 ## Events consumed
 
@@ -232,7 +235,10 @@ pool: 7 connections per replica.
 will be retried, an error on the last attempt, naming the dead-letter queue), with the job id, the
 queue, the attempt and the error, never the payload; the message of the error says which step
 failed and what the attempt had committed ("grants batch failed after 2 committed batches:
-canceling statement due to lock timeout"), and the handler logs nothing more. The span
+canceling statement due to lock timeout (SQLSTATE 55P03)"); a database error is described by its
+PostgreSQL message and SQLSTATE only, never with the SQL text or its parameters (a data exception,
+class 22, by its SQLSTATE alone); the kit's own log redaction may print "Database operation failed."
+for it instead. The handler logs nothing more. The span
 `process task.clean-up-removed-member` of the attempt records the exception and, for a failed
 batch, the attributes `cleanup.step` and `cleanup.batches`. A crashed attempt is retried silently
 after its expiration. The dead-letter watch logs an error with the count of retained dead letters every

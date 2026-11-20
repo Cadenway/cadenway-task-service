@@ -9,7 +9,12 @@ import type { SpaceWithGrants } from '../../../../models/access/space-with-grant
  *
  * @description
  * The spaces of the organization of the tenant transaction of a unit of work: row-level security
- * limits it to that organization, and every method names it again.
+ * limits it to that organization, and every method names it again. A deleted space is a tombstone
+ * ("Deletion" of `openapi/public/spaces.yaml`): the readings by id, the locks before a change and
+ * the collections leave it out, as an unknown one; the clean-up of a member who left
+ * (`lockInOrder`, `lockPrivateOwnedBy`, `lockAwaitingOwner`) treats it like any space; only the
+ * methods named `IncludingDeleted` and `erase` read or erase it on purpose, for the trash and the
+ * deletion machinery.
  */
 export interface SpaceRepository {
   // #region Methods
@@ -28,11 +33,12 @@ export interface SpaceRepository {
    * Method find
    *
    * @description
-   * Loads a space by its id.
+   * Loads a space by its id, unless it is deleted.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} id - The id of the space.
-   * @returns {Promise<Space | null>} The space, or `null` when the organization has none with it.
+   * @returns {Promise<Space | null>} The space, or `null` when the organization has none with it
+   * or it is deleted.
    */
   find(organizationId: string, id: string): Promise<Space | null>;
 
@@ -40,11 +46,12 @@ export interface SpaceRepository {
    * Method lock
    *
    * @description
-   * Loads a space by its id and locks it until the end of the transaction, before a change.
+   * Loads a space by its id and locks it until the end of the transaction, before a change,
+   * unless it is deleted.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} id - The id of the space.
-   * @returns {Promise<Space | null>} The space, or `null`.
+   * @returns {Promise<Space | null>} The space, or `null` when unknown or deleted.
    */
   lock(organizationId: string, id: string): Promise<Space | null>;
 
@@ -54,11 +61,11 @@ export interface SpaceRepository {
    * @description
    * Loads a space by its id and locks it `FOR SHARE` until the end of the transaction, before a
    * change of the grants of one of its lists: the owner of the space cannot change meanwhile, and
-   * a change of the space waits for it.
+   * a change of the space waits for it. A deleted space is left out.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} id - The id of the space.
-   * @returns {Promise<Space | null>} The space, or `null`.
+   * @returns {Promise<Space | null>} The space, or `null` when unknown or deleted.
    */
   lockShared(organizationId: string, id: string): Promise<Space | null>;
 
@@ -69,7 +76,8 @@ export interface SpaceRepository {
    * Loads and locks some spaces until the end of the transaction, one after the other in the order
    * `(created_at, id)`, the order of `lockPrivateOwnedBy`, each `FOR NO KEY UPDATE` (`update`) or
    * `FOR SHARE` (`share`) as asked: two batches that lock spaces, a handover among them, take
-   * their common spaces in the same order and never wait on each other in a cycle.
+   * their common spaces in the same order and never wait on each other in a cycle. A deleted
+   * space is locked like any other: the clean-up of a member who left treats tombstones alike.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly { readonly id: string; readonly mode: 'update' | 'share' }[]} locks - The
@@ -85,7 +93,9 @@ export interface SpaceRepository {
    * Method update
    *
    * @description
-   * Writes a space locked by `lock` or `lockPrivateOwnedBy` after a change, with its new version.
+   * Writes a space locked by `lock`, `lockInOrder`, `lockPrivateOwnedBy`, `lockAwaitingOwner` or
+   * `lockIncludingDeleted` after a change, with its new version: its settings, its owner, its
+   * tombstone (`deletedAt`, `deletedBy`) and its last restoration from the trash (`restoredAt`).
    *
    * @param {Space} space - The space after the change.
    * @returns {Promise<void>} Resolves once written.
@@ -96,11 +106,12 @@ export interface SpaceRepository {
    * Method listVisible
    *
    * @description
-   * The spaces a member sees ("Who sees a space" of `openapi/public/spaces.yaml`), in the order of
-   * their creation (id as tie-breaker), after `after`, each with the grants of the member there:
+   * The spaces a member sees ("Who sees a space" of `openapi/public/spaces.yaml`), in sidebar order
+   * (`positionInSidebarOf`: their last restoration from the trash, or else their creation; id as
+   * tie-breaker), after `after`, each with the grants of the member there:
    * for a member who is not a guest those of the whole organization, the ones it owns and the
-   * ones shared with it; for anyone the spaces of the lists shared with it. A space awaiting an
-   * owner is never among them.
+   * ones shared with it; for anyone the spaces of the lists shared with it that are not deleted. A
+   * deleted space and a space awaiting an owner are never among them.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The member and its role.
@@ -133,9 +144,9 @@ export interface SpaceRepository {
    *
    * @description
    * Loads and locks the first private spaces an account owns and that do not await an owner
-   * already, in the order of their creation (id as tie-breaker), at most `limit`. A space handed
-   * over or marked awaiting leaves this filter, so asking again after the commit returns the next
-   * ones.
+   * already, in the order of their creation (id as tie-breaker), at most `limit`, deleted ones
+   * included. A space handed over or marked awaiting leaves this filter, so asking again after the
+   * commit returns the next ones.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} ownerUserId - The account.
@@ -149,11 +160,60 @@ export interface SpaceRepository {
    *
    * @description
    * Loads and locks the spaces of the organization that await an owner (`awaitingOwner`), in the
-   * order of their creation.
+   * order of their creation, deleted ones included.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @returns {Promise<Space[]>} The spaces awaiting an owner.
    */
   lockAwaitingOwner(organizationId: string): Promise<Space[]>;
+
+  /**
+   * Method findIncludingDeleted
+   *
+   * @description
+   * Loads a space by its id, live or deleted, without lock: the trash reads the tombstones it
+   * restores or erases.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} id - The id of the space.
+   * @returns {Promise<Space | null>} The space, or `null` when the organization has none with it
+   * (unknown or erased).
+   */
+  findIncludingDeleted(organizationId: string, id: string): Promise<Space | null>;
+
+  /**
+   * Method lockIncludingDeleted
+   *
+   * @description
+   * Loads a space by its id, live or deleted, and locks it until the end of the transaction:
+   * `FOR SHARE` to hold it while the deletion job reads its lists (`share`), `FOR NO KEY UPDATE`
+   * before a restoration from the trash (`update`), `FOR UPDATE` before an erasure (`delete`).
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} id - The id of the space.
+   * @param {'share' | 'update' | 'delete'} mode - How the caller holds or writes it next.
+   * @returns {Promise<Space | null>} The space, or `null` when unknown or erased.
+   */
+  lockIncludingDeleted(
+    organizationId: string,
+    id: string,
+    mode: 'share' | 'update' | 'delete',
+  ): Promise<Space | null>;
+
+  /**
+   * Method erase
+   *
+   * @description
+   * Erases a deleted space locked by `lockIncludingDeleted` (`delete`) once no list row of it is
+   * left and its grants are erased; its prefix rows stay, so its prefixes stay reserved and their
+   * numbers never go back ("The prefixes of a deleted space stay reserved, and its keys are never
+   * given again" of `openapi/public/spaces.yaml`).
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} id - The id of the space.
+   * @returns {Promise<void>} Resolves once erased.
+   * @throws {Error} When the space is not a tombstone, or still holds rows that reference it.
+   */
+  erase(organizationId: string, id: string): Promise<void>;
   // #endregion
 }

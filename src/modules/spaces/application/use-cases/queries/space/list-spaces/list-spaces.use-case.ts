@@ -1,7 +1,9 @@
+import { positionInSidebarOf } from '../../../../../domain/policies/space/space-position.policy.js';
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
 import type { SpaceState } from '../../../../../domain/value-objects/space/space-state.value-object.js';
 import type { SpaceWithGrants } from '../../../../models/access/space-with-grants.model.js';
 import type { ViewerAccess } from '../../../../models/access/viewer-access.model.js';
+import type { PagePosition } from '../../../../models/page/page-position.model.js';
 import type { Slice } from '../../../../models/page/slice.model.js';
 import type { SpacesStore } from '../../../../models/transactions/spaces-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
@@ -18,11 +20,12 @@ import type { ListSpacesOutput } from './list-spaces.output.js';
  * Class ListSpaces
  *
  * @description
- * Lists the spaces the actor sees (`GET /internal/v1/spaces`), in the order of their creation,
- * each with the role of the actor on it and whether they manage it: for a member who is not a
- * guest the spaces open to the whole organization, the ones they own and the ones shared with
- * them; for anyone, a guest included, the spaces of the lists shared with them
- * (`callerRole: null`). One query keeps these spaces with the grants of the actor there, and the
+ * Lists the spaces the actor sees (`GET /internal/v1/spaces`), in sidebar order
+ * (`positionInSidebarOf`: a space restored from the trash goes last, then by id), each with the
+ * role of the actor on it and whether they manage it: for a member who is not a guest the spaces
+ * open to the whole organization, the ones they own and the ones shared with them; for anyone, a
+ * guest included, the spaces of the lists shared with them (`callerRole: null`); never a deleted
+ * one. One query keeps these spaces with the grants of the actor there, and the
  * role of each row comes from the policies of the domain ("Who sees a space" of
  * `openapi/public/spaces.yaml`). It reads one row more than the page to know whether a next page
  * exists, and the next keys of the page with one reading of the counters. It runs in one tenant
@@ -126,10 +129,16 @@ export class ListSpaces {
         input.after,
         input.limit + 1,
       );
-      const page: Slice<SpaceState> = this.pages.slice(
-        rows.map((row: SpaceWithGrants): SpaceState => row.space.snapshot),
+      const page: Slice<PagePosition> = this.pages.slice(
+        rows.map((row: SpaceWithGrants): PagePosition => ({
+          createdAt: positionInSidebarOf(row.space.snapshot),
+          id: row.space.snapshot.id,
+        })),
         input.limit,
       );
+      const kept: SpaceState[] = rows
+        .slice(0, input.limit)
+        .map((row: SpaceWithGrants): SpaceState => row.space.snapshot);
       const accesses = new Map<string, ViewerAccess>(
         rows.map((row: SpaceWithGrants): [string, ViewerAccess] => [
           row.space.snapshot.id,
@@ -138,7 +147,7 @@ export class ListSpaces {
       );
       // The query keeps the spaces the policies let the actor see; one they refuse all the same is
       // left out (fail closed), without changing where the next page starts.
-      const seen: SpaceState[] = page.items.filter(
+      const seen: SpaceState[] = kept.filter(
         (space: SpaceState): boolean => accesses.get(space.id)?.seesSpace === true,
       );
       const items: SpaceView[] = await this.views.build(

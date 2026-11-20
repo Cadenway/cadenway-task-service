@@ -21,7 +21,8 @@ export interface TaskReader {
    * Counts the direct subtasks of tasks and the closed ones (`done`, `cancelled`). The subtasks of
    * a task are those of its archive (the one rule of the subtask reads, "Tasks" of
    * `openapi/public/archives.yaml`): the live ones for a live task, the ones archived with it for
-   * an archived task; a subtask archived before keeps its own archive and is never counted.
+   * an archived task; a subtask archived before keeps its own archive and is never counted, nor is
+   * a subtask in the trash ("those archived or in the trash left out").
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} taskIds - The tasks.
@@ -69,8 +70,9 @@ export interface TaskReader {
    * Method references
    *
    * @description
-   * Reads the key, the name, the status and the list, as they are now, of tasks: the list tells
-   * whether a task shows one of them as its parent (`showsParent`).
+   * Reads the key, the name, the status, the list and whether it is in the trash, as they are now,
+   * of tasks: the list and the trash tell whether a task shows one of them as its parent
+   * (`showsParent`).
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} taskIds - The tasks.
@@ -86,11 +88,14 @@ export interface TaskReader {
    *
    * @description
    * Reads the id, the key, the name, the status, the list and the space of a task by its key, as
-   * they are now, without its collections.
+   * they are now, without its collections. A task in the trash is left out: the readers of a
+   * location (the access check, the access requests) never learn of it ("A task they do not see, a
+   * task in the trash included, answers `404 task.not-found`").
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {TaskKey} key - The key.
-   * @returns {Promise<TaskLocation | null>} The task, or `null` when the organization has none.
+   * @returns {Promise<TaskLocation | null>} The task, or `null` when the organization has none
+   * or it is in the trash.
    */
   locationByKey(organizationId: string, key: TaskKey): Promise<TaskLocation | null>;
 
@@ -99,12 +104,14 @@ export interface TaskReader {
    *
    * @description
    * Reads the id, the key, the name, the status, the list and the space of tasks by their ids, as
-   * they are now, without their collections, in one statement.
+   * they are now, without their collections, in one statement; the tasks in the trash are left
+   * out, as by `locationByKey`.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} taskIds - The ids of the tasks.
    * @returns {Promise<readonly TaskLocation[]>} The tasks found, in no particular order; unknown
-   * ids are left out.
+   * ids and tasks in the trash are left out.
+
    */
   locationsByIds(
     organizationId: string,

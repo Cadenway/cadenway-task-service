@@ -19,7 +19,9 @@ import {
   atelierNordMembers,
   cad490State,
   taskState,
+  trashIn,
 } from '../../../tasks.fixture.js';
+
 import type { UnassignRemovedMemberOutput } from './unassign-removed-member.output.js';
 import { UnassignRemovedMember } from './unassign-removed-member.use-case.js';
 
@@ -150,6 +152,26 @@ describe('UnassignRemovedMember: one batch removes a member who left from the ta
     expect(tasks.events).toEqual([
       { kind: 'updated', key: 'CAD-1001', version: 4, changed: ['assigneeIds'], actor: system },
       { kind: 'updated', key: 'CAD-1002', version: 4, changed: ['assigneeIds'], actor: system },
+    ]);
+  });
+
+  it('unassigns a task in the trash too, at its next version, but emits no task.updated.v1 for it', async () => {
+    const trashed: TaskState = assignedToHugo(2, { trash: trashIn() });
+    const tasks = new InMemoryTasks({ tasks: [assignedToHugo(1), trashed] });
+
+    await new UnassignRemovedMember(tasks, atelierNordMembers([HUGO])).execute(first);
+
+    expect(tasks.stored(trashed.id)).toMatchObject({
+      assigneeIds: [],
+      version: 4,
+      trash: trashIn(),
+    });
+    expect(tasks.events).toEqual([
+      { kind: 'updated', key: 'CAD-1001', version: 4, changed: ['assigneeIds'], actor: system },
+    ]);
+    expect([...tasks.activity.values()].map((entry) => entry.taskId)).toEqual([
+      assignedToHugo(1).id,
+      trashed.id,
     ]);
   });
 

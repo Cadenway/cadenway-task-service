@@ -6,8 +6,11 @@ import type { SpaceWithGrants } from '../../../../../application/models/access/s
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
 import { listGrants } from '../../schemas/access/list-grant.schema.js';
 import { spaceGrants } from '../../schemas/access/space-grant.schema.js';
+import { taskLists } from '../../schemas/list/task-list.schema.js';
 import { spaces } from '../../schemas/space/space.schema.js';
 import { toAccessRole } from '../access/stored-grant.mapper.js';
+import { undeletedListCondition } from '../list/list-tombstone.mapper.js';
+import { undeletedSpaceCondition } from './space-tombstone.mapper.js';
 import { toSpace } from './space.mapper.js';
 import type { SpaceRow } from './space.mapper.js';
 
@@ -55,17 +58,20 @@ export function viewerSpaceGrantJoin(organizationId: string, viewerUserId: strin
  *
  * @description
  * The spaces of the lists shared with a viewer, as the subquery `viewer_list_spaces`
- * (`select distinct space_id from list_grants where organization_id = $org and user_id =
- * $viewer`), to left join with `viewerListSpacesJoin`: one range of `list_grants_user_index`
- * `(organization_id, user_id, space_id, list_id)`, which `list_grants.space_id`, a copy of the
- * space of the list, makes possible, read once for the whole collection.
+ * (`select distinct space_id from list_grants join lists where organization_id = $org and
+ * user_id = $viewer and the list is not deleted`), to left join with `viewerListSpacesJoin`: one
+ * range of `list_grants_user_index` `(organization_id, user_id, space_id, list_id)`, which
+ * `list_grants.space_id`, a copy of the space of the list, makes possible, read once for the whole
+ * collection, and one probe of the primary key of `lists` per grant, so that a grant of a deleted
+ * list, which the tombstone keeps, shows no space (O(grants of the viewer)). The `lists` of the
+ * subquery is its own: the collections of spaces that join it read no other `lists`.
  *
  * @param {string} organizationId - The organization of the transaction.
  * @param {string} viewerUserId - The account of the member.
  * @returns {SQL} The aliased subquery.
  */
 export function viewerListSpaces(organizationId: string, viewerUserId: string): SQL {
-  return sql`(select distinct ${listGrants.spaceId} from ${listGrants} where ${listGrants.organizationId} = ${organizationId} and ${listGrants.userId} = ${viewerUserId}) as ${sql.identifier('viewer_list_spaces')}`;
+  return sql`(select distinct ${listGrants.spaceId} from ${listGrants} inner join ${taskLists} on ${taskLists.organizationId} = ${listGrants.organizationId} and ${taskLists.id} = ${listGrants.listId} where ${listGrants.organizationId} = ${organizationId} and ${listGrants.userId} = ${viewerUserId} and ${undeletedListCondition()}) as ${sql.identifier('viewer_list_spaces')}`;
 }
 
 /**
@@ -85,11 +91,12 @@ export function viewerListSpacesJoin(): SQL {
  *
  * @description
  * The ONE condition that keeps the spaces a member sees ("Access" and "Who sees a space" of
- * `openapi/public/spaces.yaml`, `canSeeSpace` of the domain), never one awaiting an owner: for a
- * member who is not a guest, the spaces of the whole organization, the ones they own and the ones
- * shared with them (`viewer_space_grant`); for anyone, the spaces of the lists shared with them
- * (`viewer_list_spaces`). Every query that lists spaces applies it over `spaces` left joined to
- * `viewerSpaceGrant` and to `viewerListSpaces`, and selects the same grants with
+ * `openapi/public/spaces.yaml`, `canSeeSpace` of the domain), never a deleted one
+ * (`undeletedSpaceCondition`) nor one awaiting an owner: for a member who is not a guest, the
+ * spaces of the whole organization, the ones they own and the ones shared with them
+ * (`viewer_space_grant`); for anyone, the spaces of the lists shared with them that are not
+ * deleted (`viewer_list_spaces`). Every query that lists spaces applies it over `spaces` left
+ * joined to `viewerSpaceGrant` and to `viewerListSpaces`, and selects the same grants with
  * `visibleSpaceColumns`, from which the application computes the role of each row with the
  * policies of the domain. It is parenthesized as a whole, so it stays one term under `not` or
  * `or`. The caller names `organization_id` of `spaces`.
@@ -100,9 +107,9 @@ export function viewerListSpacesJoin(): SQL {
 export function visibleSpaceCondition(viewer: Viewer): SQL {
   const throughLists: SQL = sql`${LIST_SPACES_SPACE_ID} is not null`;
   if (viewer.role === 'guest') {
-    return sql`(not ${spaces.awaitingOwner} and ${throughLists})`;
+    return sql`(${undeletedSpaceCondition()} and not ${spaces.awaitingOwner} and ${throughLists})`;
   }
-  return sql`(not ${spaces.awaitingOwner} and (${spaces.visibility} = 'organization' or ${spaces.ownerUserId} = ${viewer.userId} or ${viewerSpaceGrant.role} is not null or ${throughLists}))`;
+  return sql`(${undeletedSpaceCondition()} and not ${spaces.awaitingOwner} and (${spaces.visibility} = 'organization' or ${spaces.ownerUserId} = ${viewer.userId} or ${viewerSpaceGrant.role} is not null or ${throughLists}))`;
 }
 
 /**

@@ -55,9 +55,88 @@ describe('DrizzleSpaceRepository: the spaces a member sees, with their grants re
       'left join "space_grants" "viewer_space_grant" on "viewer_space_grant"."organization_id" = $1 and "viewer_space_grant"."space_id" = "spaces"."id" and "viewer_space_grant"."user_id" = $2',
     );
     expect(text).toContain(
-      'left join (select distinct "list_grants"."space_id" from "list_grants" where "list_grants"."organization_id" = $3 and "list_grants"."user_id" = $4) as "viewer_list_spaces" on "viewer_list_spaces"."space_id" = "spaces"."id"',
+      'left join (select distinct "list_grants"."space_id" from "list_grants" inner join "lists" on "lists"."organization_id" = "list_grants"."organization_id" and "lists"."id" = "list_grants"."list_id" where "list_grants"."organization_id" = $3 and "list_grants"."user_id" = $4 and "lists"."deleted_at" is null) as "viewer_list_spaces" on "viewer_list_spaces"."space_id" = "spaces"."id"',
     );
     expect(text).not.toContain('exists');
+  });
+});
+
+describe('DrizzleSpaceRepository: a tombstone answers as an unknown space, but to the trash and the clean-up', () => {
+  /** The condition that leaves the tombstones out. */
+  const UNDELETED = '"spaces"."deleted_at" is null';
+
+  it('leaves the tombstones out of a reading by id and of the locks before a change', async () => {
+    const { spaces, statements } = capturing();
+
+    await spaces.find(ORGANIZATION, PRODUIT);
+    await spaces.lock(ORGANIZATION, PRODUIT);
+    await spaces.lockShared(ORGANIZATION, PRODUIT);
+
+    for (const { text } of statements) {
+      expect(text).toContain(UNDELETED);
+    }
+    expect(statements[1]?.text.endsWith('for no key update')).toBe(true);
+    expect(statements[2]?.text.endsWith('for share')).toBe(true);
+  });
+
+  it('orders the spaces a member sees by their position in the sidebar, after a position', async () => {
+    const { spaces, statements } = capturing();
+
+    await spaces.listVisible(
+      ORGANIZATION,
+      { userId: LEA, role: 'member' },
+      { createdAt: new Date('2026-11-09T09:05:00.000Z'), id: PRODUIT },
+      51,
+    );
+
+    const text: string = statements[0]?.text ?? '';
+    expect(text).toContain(`(${UNDELETED} and not "spaces"."awaiting_owner"`);
+    expect(text).toMatch(
+      /\(coalesce\("spaces"\."restored_at", "spaces"\."created_at"\), "spaces"\."id"\) > \(\$\d+::timestamptz, \$\d+::uuid\)/u,
+    );
+    expect(text).toContain(
+      'order by coalesce("spaces"."restored_at", "spaces"."created_at") asc, "spaces"."id" asc',
+    );
+  });
+
+  it('reads and locks a space in any state for the trash, in the lock mode asked', async () => {
+    const { spaces, statements } = capturing();
+
+    await spaces.findIncludingDeleted(ORGANIZATION, PRODUIT);
+    await spaces.lockIncludingDeleted(ORGANIZATION, PRODUIT, 'update');
+    await spaces.lockIncludingDeleted(ORGANIZATION, PRODUIT, 'delete');
+    await spaces.lockIncludingDeleted(ORGANIZATION, PRODUIT, 'share');
+
+    for (const { text } of statements) {
+      expect(text).not.toContain('deleted_at" is');
+    }
+    expect(statements[0]?.text).not.toContain(' for ');
+    expect(statements[1]?.text.endsWith('for no key update')).toBe(true);
+    expect(statements[2]?.text.endsWith('for update')).toBe(true);
+    expect(statements[3]?.text.endsWith('for share')).toBe(true);
+  });
+
+  it('locks the spaces of the clean-up of a member, deleted ones included', async () => {
+    const { spaces, statements } = capturing([[PRODUIT]]);
+
+    await spaces.lockInOrder(ORGANIZATION, [{ id: PRODUIT, mode: 'update' }]);
+    await spaces.lockPrivateOwnedBy(ORGANIZATION, LEA, 100);
+    await spaces.lockAwaitingOwner(ORGANIZATION);
+
+    for (const { text } of statements) {
+      expect(text).not.toContain('deleted_at" is');
+    }
+  });
+
+  it('erases a tombstone only, by its primary key', async () => {
+    const { spaces, statements } = capturing();
+
+    await expect(spaces.erase(ORGANIZATION, PRODUIT)).rejects.toThrow(
+      'The deleted space to erase is not a tombstone.',
+    );
+
+    expect(statements[0]?.text.startsWith('delete from "spaces"')).toBe(true);
+    expect(statements[0]?.text).toContain('"spaces"."deleted_at" is not null');
   });
 });
 

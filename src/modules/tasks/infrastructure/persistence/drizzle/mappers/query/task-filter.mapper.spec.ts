@@ -23,14 +23,14 @@ const LABELS: string =
 describe('taskFilterCondition: the where of the tasks of one list', () => {
   it('names the organization and the list when no filter is set', () => {
     expect(renderSql(taskFilterCondition('org', 'list', NONE))).toEqual({
-      sql: '("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and "tasks"."archived_at" is null)',
+      sql: '("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and ("tasks"."archived_at" is null and "tasks"."trash_entry_id" is null))',
       params: ['org', 'list'],
     });
   });
 
   it('keeps the top-level tasks only for the level roots', () => {
     expect(renderSql(taskFilterCondition('org', 'list', { ...NONE, rootsOnly: true })).sql).toBe(
-      '("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and "tasks"."archived_at" is null and "tasks"."parent_id" is null)',
+      '("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and ("tasks"."archived_at" is null and "tasks"."trash_entry_id" is null) and "tasks"."parent_id" is null)',
     );
   });
 
@@ -44,7 +44,7 @@ describe('taskFilterCondition: the where of the tasks of one list', () => {
     );
 
     expect(rendered).toEqual({
-      sql: '("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and "tasks"."archived_at" is null and "tasks"."status" = any($3::text[]) and "tasks"."priority" = any($4::text[]))',
+      sql: '("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and ("tasks"."archived_at" is null and "tasks"."trash_entry_id" is null) and "tasks"."status" = any($3::text[]) and "tasks"."priority" = any($4::text[]))',
       params: ['org', 'list', ['todo', 'progress'], ['haute']],
     });
   });
@@ -58,7 +58,7 @@ describe('taskFilterCondition: the where of the tasks of one list', () => {
     );
 
     expect(rendered).toEqual({
-      sql: `("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and "tasks"."archived_at" is null and (exists (${ASSIGNEES} and "task_assignees"."user_id" = any($3::uuid[])) or not exists (${ASSIGNEES})))`,
+      sql: `("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and ("tasks"."archived_at" is null and "tasks"."trash_entry_id" is null) and (exists (${ASSIGNEES} and "task_assignees"."user_id" = any($3::uuid[])) or not exists (${ASSIGNEES})))`,
       params: ['org', 'list', ['u1', 'u2']],
     });
   });
@@ -91,7 +91,7 @@ describe('taskFilterCondition: the where of the tasks of one list', () => {
         }),
       ).sql,
     ).toBe(
-      '("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and "tasks"."archived_at" is null and false)',
+      '("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and ("tasks"."archived_at" is null and "tasks"."trash_entry_id" is null) and false)',
     );
   });
 
@@ -99,7 +99,7 @@ describe('taskFilterCondition: the where of the tasks of one list', () => {
     expect(
       renderSql(taskFilterCondition('org', 'list', { ...NONE, labelKeys: ['auth', 'api'] })),
     ).toEqual({
-      sql: `("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and "tasks"."archived_at" is null and exists (${LABELS} and "task_labels"."label_key" = any($3::text[])))`,
+      sql: `("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and ("tasks"."archived_at" is null and "tasks"."trash_entry_id" is null) and exists (${LABELS} and "task_labels"."label_key" = any($3::text[])))`,
       params: ['org', 'list', ['auth', 'api']],
     });
   });
@@ -108,7 +108,7 @@ describe('taskFilterCondition: the where of the tasks of one list', () => {
     const rendered = renderSql(taskFilterCondition('org', 'list', { ...NONE, search: '50%_' }));
 
     expect(rendered.sql).toBe(
-      '("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and "tasks"."archived_at" is null and (' +
+      '("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and ("tasks"."archived_at" is null and "tasks"."trash_entry_id" is null) and (' +
         `${foldedSql('$3')} <> '' and (` +
         `strpos(${foldedSql('"tasks"."name"')}, ${foldedSql('$4')}) > 0 or ` +
         `strpos(lower("tasks"."key_prefix" || '-' || "tasks"."key_number"::text), ${foldedSql('$5')}) > 0 or ` +
@@ -130,7 +130,7 @@ describe('taskFilterCondition: the where of the tasks of one list', () => {
         taskFilterCondition('org', 'list', { ...NONE, dueFrom: '2026-11-01', dueTo: '2026-11-30' }),
       ),
     ).toEqual({
-      sql: '("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and "tasks"."archived_at" is null and "tasks"."due_date" >= $3::date and "tasks"."due_date" <= $4::date)',
+      sql: '("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and ("tasks"."archived_at" is null and "tasks"."trash_entry_id" is null) and "tasks"."due_date" >= $3::date and "tasks"."due_date" <= $4::date)',
       params: ['org', 'list', '2026-11-01', '2026-11-30'],
     });
   });

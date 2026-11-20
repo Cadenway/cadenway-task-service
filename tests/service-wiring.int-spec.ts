@@ -63,7 +63,8 @@ const platformTables = [
 
 /**
  * Every table the migrations create, by name: the kit tables, the memberships, the spaces and the
- * tasks with what hangs from them, the grants of the spaces and lists and the access requests.
+ * tasks with what hangs from them, the grants of the spaces and lists, the access requests and the
+ * trash entries.
  */
 const publicTables = [
   'access_request_attempts',
@@ -83,14 +84,16 @@ const publicTables = [
   'task_assignees',
   'task_labels',
   'tasks',
+  'trash_entries',
 ] as const;
 
 /**
  * Migrations of the journal: the platform tables, the copy of the memberships, the spaces and their
  * lists, then the tasks, then the two indexes of the task queries, then the grants, the switch of
- * the lists and the access requests, then the archives of lists and tasks.
+ * the lists and the access requests, then the archives of lists and tasks, then the trash and the
+ * deletion of lists and spaces.
  */
-const appliedMigrations = 7;
+const appliedMigrations = 8;
 
 /**
  * Runs `docker compose` on the throwaway project.
@@ -353,7 +356,7 @@ describe('task-service wiring', () => {
     expect(journal.rows).toEqual([{ applied: appliedMigrations }]);
   });
 
-  it('provisions the pg-boss schema as the migrator role, with the clean-up queue and its dead-letter queue', async () => {
+  it('provisions the pg-boss schema as the migrator role, with the queues of the service and their dead-letter queues', async () => {
     const schema = await migrator.query<{ owner: string }>(
       `select pg_get_userbyid(nspowner) as owner from pg_namespace where nspname = 'pgboss'`,
     );
@@ -363,13 +366,22 @@ describe('task-service wiring', () => {
     );
 
     expect(schema.rows).toEqual([{ owner: 'task_migrator' }]);
-    expect(queues.rows).toEqual([
-      {
-        name: 'task.clean-up-removed-member',
-        dead_letter: 'task.clean-up-removed-member.dead-letter',
-      },
-      { name: 'task.clean-up-removed-member.dead-letter', dead_letter: null },
-    ]);
+    // The clean-up of a removed member and the four queues of the trash and the deletions.
+    const names = [
+      'task.clean-up-removed-member',
+      'task.drop-trashed-task-requests',
+      'task.purge-trash',
+      'task.schedule-trash-purge',
+      'task.trash-deleted-tasks',
+    ];
+    expect(queues.rows).toEqual(
+      names
+        .flatMap((name) => [
+          { name, dead_letter: `${name}.dead-letter` },
+          { name: `${name}.dead-letter`, dead_letter: null },
+        ])
+        .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0)),
+    );
   });
 
   it('lets the application role use the jobs but change no structure of the pg-boss schema', async () => {
@@ -488,6 +500,7 @@ describe('task-service wiring', () => {
       { relname: 'task_assignees', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_labels', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'tasks', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'trash_entries', relrowsecurity: true, relforcerowsecurity: true },
     ]);
     expect(policies.rows).toEqual([
       {
@@ -512,6 +525,7 @@ describe('task-service wiring', () => {
       { tablename: 'task_assignees', policyname: 'task_assignees_organization_isolation' },
       { tablename: 'task_labels', policyname: 'task_labels_organization_isolation' },
       { tablename: 'tasks', policyname: 'tasks_organization_isolation' },
+      { tablename: 'trash_entries', policyname: 'trash_entries_organization_isolation' },
     ]);
   });
 

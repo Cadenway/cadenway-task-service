@@ -25,7 +25,7 @@ export function toListRoles(
   for (const row of rows) {
     const callerRole: AccessRole | null = listRoleOf(
       row.space,
-      { organizationAccess: row.organizationAccess },
+      { organizationAccess: row.organizationAccess, deletedAt: row.deletedAt },
       viewer,
       row.grants,
     );

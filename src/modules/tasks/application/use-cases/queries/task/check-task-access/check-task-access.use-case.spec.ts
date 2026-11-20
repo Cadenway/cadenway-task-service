@@ -22,6 +22,8 @@ import {
   taskState,
   archiveFrom,
   CAD_482,
+  storedEntry,
+  trashIn,
 } from '../../../tasks.fixture.js';
 import type { CheckTaskAccessInput } from './check-task-access.input.js';
 import { CheckTaskAccess } from './check-task-access.use-case.js';
@@ -167,5 +169,17 @@ describe('CheckTaskAccess: an archived task answers the role of the actor', () =
         taskKey: 'CAD-482',
       }),
     ).toMatchObject({ role: 'edit', taskKey: 'CAD-482' });
+  });
+});
+
+describe('CheckTaskAccess: a task in the trash answers task-not-found, never task-trashed', () => {
+  it('answers task-not-found to an actor who could restore its entry', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [taskState({ trash: trashIn(), version: 13 })],
+      trashEntries: [storedEntry({ taskCount: 1 })],
+    });
+    const useCase = new CheckTaskAccess(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
+
+    expect(await refusalOf(useCase.execute(check()))).toEqual({ reason: 'task-not-found' });
   });
 });

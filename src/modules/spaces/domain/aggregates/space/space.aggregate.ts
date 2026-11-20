@@ -2,6 +2,8 @@ import { InvalidSpaceError } from '../../errors/space/invalid-space.error.js';
 import { SpaceStatusRequiredError } from '../../errors/space/space-status-required.error.js';
 import { SpaceVisibilityForbiddenError } from '../../errors/space/space-visibility-forbidden.error.js';
 import { canManageSpace } from '../../policies/access/access-role.policy.js';
+import { LIST_ACTOR_TYPES } from '../../value-objects/list/list-actor.value-object.js';
+import type { ListActor } from '../../value-objects/list/list-actor.value-object.js';
 import { LOOK_COLORS } from '../../value-objects/look/look-color.value-object.js';
 import type { LookColor } from '../../value-objects/look/look-color.value-object.js';
 import { LOOK_ICONS } from '../../value-objects/look/look-icon.value-object.js';
@@ -306,6 +308,68 @@ function checkStoredStatuses(statuses: SpaceStatuses): void {
 }
 
 /**
+ * Function checkInstant
+ *
+ * @description
+ * Refuses an instant that is not a valid `Date`: a deletion or a restoration from the trash takes
+ * the instant of its transaction, which the application reads from the database.
+ *
+ * @param {Date} instant - The instant.
+ * @returns {Date} The same instant.
+ * @throws {InvalidSpaceError} When it is not a valid date.
+ */
+function checkInstant(instant: Date): Date {
+  if (Number.isNaN(instant.getTime())) {
+    throw new InvalidSpaceError('the instants of the deletion of a space are valid dates');
+  }
+  return instant;
+}
+
+/**
+ * Function checkActor
+ *
+ * @description
+ * `Actor` of `openapi/internal/task-service.yaml`, as the tombstone of a space stores it: a known
+ * type and a non-empty id.
+ *
+ * @param {ListActor} actor - Who deletes the space.
+ * @returns {ListActor} The same actor.
+ * @throws {InvalidSpaceError} When the type is unknown or the id empty.
+ */
+function checkActor(actor: ListActor): ListActor {
+  if (!LIST_ACTOR_TYPES.includes(actor.type) || actor.id === '') {
+    throw new InvalidSpaceError('the actor of a deletion has a known type and an id');
+  }
+  return actor;
+}
+
+/**
+ * Function checkStoredTombstone
+ *
+ * @description
+ * Refuses a stored tombstone no deletion or restoration can produce: `deletedAt` and `deletedBy`
+ * both set or both null (the check `spaces_deleted_check` of the table), a valid instant and a
+ * valid actor, and a valid `restoredAt` when set.
+ *
+ * @param {SpaceState} state - The stored state.
+ * @throws {InvalidSpaceError} When the tombstone breaks an invariant.
+ */
+function checkStoredTombstone(state: SpaceState): void {
+  if ((state.deletedAt === null) !== (state.deletedBy === null)) {
+    throw new InvalidSpaceError('the instant and the actor of a deletion are set together');
+  }
+  if (state.deletedAt !== null) {
+    checkInstant(state.deletedAt);
+  }
+  if (state.deletedBy !== null) {
+    checkActor(state.deletedBy);
+  }
+  if (state.restoredAt !== null) {
+    checkInstant(state.restoredAt);
+  }
+}
+
+/**
  * Class Space
  *
  * @description
@@ -323,7 +387,12 @@ function checkStoredStatuses(statuses: SpaceStatuses): void {
  *   changes the rest, which the application checks first;
  * - a change of its grants takes the next version too (`recordAccessChange`);
  * - each change that changes something takes the next version; one that changes nothing keeps the
- *   same instance, so no `space.updated.v1` is emitted.
+ *   same instance, so no `space.updated.v1` is emitted;
+ * - who manages it deletes it ("Deletion" and `DELETE /v1/spaces/{spaceId}` of
+ *   `openapi/public/spaces.yaml`): it becomes a tombstone that nobody sees (`deletedAt`,
+ *   `deletedBy`), with its settings and its grants, at the next version; a task restored from the
+ *   trash brings it back at the end of the sidebar (`restoredAt`, `space.restored.v1`), at the next
+ *   version again.
  */
 export class Space {
   // #region Properties
@@ -349,6 +418,19 @@ export class Space {
    */
   public get snapshot(): SpaceState {
     return this.state;
+  }
+
+  /**
+   * Property isDeleted
+   *
+   * @description
+   * Whether the space is a tombstone ("Deletion" of `openapi/public/spaces.yaml`).
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  public get isDeleted(): boolean {
+    return this.state.deletedAt !== null;
   }
   // #endregion
 
@@ -405,7 +487,7 @@ export class Space {
    * @param {SpaceState} state - The stored state.
    * @returns {Space} The space.
    * @throws {InvalidSpaceError} When the version is not a positive integer, or a member breaks an
-   * invariant (`todo` or `done` hidden included).
+   * invariant (`todo` or `done` hidden and a tombstone stored by halves included).
    */
   public static restore(state: SpaceState): Space {
     if (!Number.isInteger(state.version) || state.version < 1) {
@@ -428,6 +510,7 @@ export class Space {
     if (state.awaitingOwner && state.visibility !== 'private') {
       throw new InvalidSpaceError('only a private space awaits an owner');
     }
+    checkStoredTombstone(state);
     return new Space(state);
   }
 
@@ -580,6 +663,64 @@ export class Space {
    */
   public recordAccessChange(): Space {
     return new Space({ ...this.state, version: this.state.version + 1 });
+  }
+
+  /**
+   * Method delete
+   *
+   * @description
+   * Deletes the space ("Supprimer l’espace", "Deletion" of `openapi/public/spaces.yaml`): it
+   * records when and by whom, at the next version (`space.deleted.v1` carries a version of 2 at
+   * least); its settings, its prefixes and its grants stay with the tombstone, and its lists are
+   * deleted with it (`TaskList.deleteWithSpace`). Whether the actor manages it is checked by the
+   * application first (`canManageSpace`).
+   *
+   * @param {ListActor} by - Who deletes it.
+   * @param {Date} at - The instant of the transaction.
+   * @returns {Space} The tombstone at the next version.
+   * @throws {InvalidSpaceError} When the space is deleted already, or the actor or the instant is
+   * invalid.
+   */
+  public delete(by: ListActor, at: Date): Space {
+    const deletedBy: ListActor = checkActor(by);
+    const deletedAt: Date = checkInstant(at);
+    if (this.isDeleted) {
+      throw new InvalidSpaceError('a deleted space is not deleted again');
+    }
+    return new Space({
+      ...this.state,
+      deletedAt,
+      deletedBy: { type: deletedBy.type, id: deletedBy.id },
+      version: this.state.version + 1,
+    });
+  }
+
+  /**
+   * Method restoreFromTrash
+   *
+   * @description
+   * Brings a deleted space back with a task restored from the trash ("a deleted space at the end
+   * of the sidebar, without their other lists and tasks" of "Restoring" of
+   * `openapi/public/trash.yaml`, `space.restored.v1`): it clears the tombstone and records when it
+   * came back, which puts it at the end of the sidebar (`positionInSidebarOf`), at the next version
+   * (`space.restored.v1` carries a version of 3 at least). Its settings and its grants were kept.
+   *
+   * @param {Date} at - The instant of the transaction.
+   * @returns {Space} The space, live, at the next version.
+   * @throws {InvalidSpaceError} When the space is not deleted, or the instant is invalid.
+   */
+  public restoreFromTrash(at: Date): Space {
+    const restoredAt: Date = checkInstant(at);
+    if (!this.isDeleted) {
+      throw new InvalidSpaceError('only a deleted space comes back from the trash');
+    }
+    return new Space({
+      ...this.state,
+      deletedAt: null,
+      deletedBy: null,
+      restoredAt,
+      version: this.state.version + 1,
+    });
   }
   // #endregion
 }

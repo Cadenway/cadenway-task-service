@@ -36,7 +36,10 @@ import {
   subtaskState,
   taskState,
   archiveFrom,
+  storedEntry,
+  trashIn,
 } from '../../../tasks.fixture.js';
+
 import type { UpdateTaskInput } from './update-task.input.js';
 import { UpdateTask } from './update-task.use-case.js';
 
@@ -1016,6 +1019,174 @@ describe('UpdateTask: an archived task refuses every patch with task-archived', 
     expect(
       await refusalOf(useCase.execute(patchOf({ name: 'Autre' }, { actorUserId: HUGO }))),
     ).toEqual({ reason: 'role-insufficient', role: 'view' });
+  });
+});
+
+describe('UpdateTask: the trash and the deleted lists in a move or an attachment', () => {
+  it('refuses a parent in the trash as parent-invalid, an unseen parent, whoever may restore it', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [taskState({ trash: trashIn(), version: 13 }), cad490State()],
+      trashEntries: [storedEntry({ taskCount: 1 })],
+    });
+
+    expect(
+      await refusalOf(
+        new UpdateTask(tasks, atelierNordMembers(), new InMemorySpaceDirectory()).execute(
+          patchOf({ parentKey: 'CAD-482' }, { taskKey: 'CAD-490' }),
+        ),
+      ),
+    ).toEqual({ reason: 'parent-invalid', parentKey: 'CAD-482' });
+    expect(tasks.stored(CAD_490).parentId).toBeNull();
+  });
+
+  it('refuses a deleted target list as list-invalid, as an unseen one', async () => {
+    const tasks = new InMemoryTasks({ tasks: tree() });
+    const spaces = new InMemorySpaceDirectory({
+      deletedLists: { [BUGS]: { type: 'user', id: CAMILLE } },
+    });
+
+    expect(
+      await refusalOf(
+        new UpdateTask(tasks, atelierNordMembers(), spaces).execute(patchOf({ listId: BUGS })),
+      ),
+    ).toEqual({ reason: 'list-invalid' });
+  });
+
+  /**
+   * A directory that sees the lists live, then one of them deleted under the hold of the change.
+   */
+  class DeletedUnderHold extends InMemorySpaceDirectory {
+    // #region Properties
+    /** The list the hold answers deleted. */
+    private readonly deletedOnHold: string;
+    // #endregion
+
+    // #region Constructor
+    /**
+     * Builds the directory.
+     *
+     * @param deletedOnHold - The list the hold answers deleted.
+     */
+    public constructor(deletedOnHold: string) {
+      super();
+      this.deletedOnHold = deletedOnHold;
+    }
+    // #endregion
+
+    // #region Methods
+    /**
+     * Records the hold and answers the list deleted when it is the one named.
+     *
+     * @param organizationId - The organization.
+     * @param listId - The list.
+     * @returns The list, deleted by Camille Martin, or as the usual directory holds it.
+     */
+    public override holdList(
+      organizationId: string,
+      listId: string,
+    ): ReturnType<InMemorySpaceDirectory['holdList']> {
+      if (listId !== this.deletedOnHold) {
+        return super.holdList(organizationId, listId);
+      }
+      this.holdCalls.push(listId);
+      return Promise.resolve({ outcome: 'deleted', deletedBy: { type: 'user', id: CAMILLE } });
+    }
+    // #endregion
+  }
+
+  it('holds the target list once the tree is locked, and refuses it deleted meanwhile', async () => {
+    const tasks = new InMemoryTasks({ tasks: tree() });
+    const spaces = new DeletedUnderHold(BUGS);
+
+    expect(
+      await refusalOf(
+        new UpdateTask(tasks, atelierNordMembers(), spaces).execute(patchOf({ listId: BUGS })),
+      ),
+    ).toEqual({ reason: 'list-invalid' });
+    expect(spaces.holdCalls).toEqual([SPRINT_14, BUGS]);
+    expect(tasks.stored(CAD_482).listId).toBe(SPRINT_14);
+  });
+
+  it('holds the list a move leaves, and answers task-not-found when it was deleted meanwhile', async () => {
+    const tasks = new InMemoryTasks({ tasks: tree() });
+    const spaces = new DeletedUnderHold(SPRINT_14);
+
+    expect(
+      await refusalOf(
+        new UpdateTask(tasks, atelierNordMembers(), spaces).execute(patchOf({ listId: BUGS })),
+      ),
+    ).toEqual({ reason: 'task-not-found' });
+    expect(spaces.holdCalls).toEqual([SPRINT_14]);
+    expect(tasks.stored(CAD_482).listId).toBe(SPRINT_14);
+  });
+
+  it('holds the list an attachment to a parent of another list leaves', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [taskState({ listId: BUGS }), cad490State()],
+    });
+    const spaces = new DeletedUnderHold(SPRINT_14);
+
+    expect(
+      await refusalOf(
+        new UpdateTask(tasks, atelierNordMembers(), spaces).execute(
+          patchOf({ parentKey: 'CAD-482' }, { taskKey: 'CAD-490' }),
+        ),
+      ),
+    ).toEqual({ reason: 'task-not-found' });
+    expect(spaces.holdCalls).toEqual([SPRINT_14]);
+    expect(tasks.stored(CAD_490).parentId).toBeNull();
+  });
+
+  it('holds the list it leaves, then the target of a move, after the locks of the task and its subtree', async () => {
+    const trace: string[] = [];
+    const tasks = new InMemoryTasks({ tasks: tree(), trace });
+    const spaces = new InMemorySpaceDirectory({ trace });
+
+    await new UpdateTask(tasks, atelierNordMembers([], trace), spaces).execute(
+      patchOf({ listId: BUGS }),
+    );
+
+    expect(trace.indexOf('spaces.holdList')).toBeGreaterThan(trace.lastIndexOf('tasks.lockByIds'));
+    expect(spaces.holdCalls).toEqual([SPRINT_14, BUGS]);
+  });
+
+  it('holds the two lists of a move in ascending list id, whichever it leaves', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState({ listId: BUGS })] });
+    const spaces = new DeletedUnderHold(BUGS);
+
+    expect(
+      await refusalOf(
+        new UpdateTask(tasks, atelierNordMembers(), spaces).execute(patchOf({ listId: SPRINT_14 })),
+      ),
+    ).toEqual({ reason: 'task-not-found' });
+    // Sprint 14 sorts before Bugs: the target is held first, then the list the task leaves.
+    expect(spaces.holdCalls).toEqual([SPRINT_14, BUGS]);
+    expect(tasks.stored(CAD_482).listId).toBe(BUGS);
+  });
+
+  it('holds no list for a change within the list', async () => {
+    const tasks = new InMemoryTasks({ tasks: tree() });
+    const spaces = new InMemorySpaceDirectory();
+
+    await new UpdateTask(tasks, atelierNordMembers(), spaces).execute(
+      patchOf({ name: 'Écran SSO' }),
+    );
+
+    expect(spaces.holdCalls).toEqual([]);
+  });
+
+  it('leaves the trash out of the subtree a move takes', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [taskState(), subtaskState({ trash: trashIn(), version: 2 })],
+      trashEntries: [storedEntry({ rootTaskId: CAD_483, taskCount: 1, parentKey: 'CAD-482' })],
+    });
+
+    await new UpdateTask(tasks, atelierNordMembers(), new InMemorySpaceDirectory()).execute(
+      patchOf({ listId: BUGS }),
+    );
+
+    expect(tasks.stored(CAD_482).listId).toBe(BUGS);
+    expect(tasks.stored(CAD_483)).toMatchObject({ listId: SPRINT_14, version: 2 });
   });
 });
 

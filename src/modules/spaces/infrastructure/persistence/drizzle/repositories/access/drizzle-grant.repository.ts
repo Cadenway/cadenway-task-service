@@ -8,8 +8,10 @@ import type { ViewerGrants } from '../../../../../application/models/access/view
 import type { GrantRepository } from '../../../../../application/ports/outbound/persistence/access/grant-repository.port.js';
 import type { AccessRole } from '../../../../../domain/value-objects/access/access-role.value-object.js';
 import { toAccessRole, toStoredGrant } from '../../mappers/access/stored-grant.mapper.js';
+import { undeletedListCondition } from '../../mappers/list/list-tombstone.mapper.js';
 import { listGrants } from '../../schemas/access/list-grant.schema.js';
 import { spaceGrants } from '../../schemas/access/space-grant.schema.js';
+import { taskLists } from '../../schemas/list/task-list.schema.js';
 
 /**
  * Class DrizzleGrantRepository
@@ -57,8 +59,9 @@ export class DrizzleGrantRepository implements GrantRepository {
    * @description
    * Reads the three grants of a member around a space in ONE statement of three scalar
    * subqueries: the grant of the space and the grant of the list by their primary keys, and
-   * whether a grant of any list of the space exists, by the range
-   * `(organization_id, user_id, space_id)` of `list_grants_user_index`.
+   * whether a grant of any list of the space that is not deleted exists, by the range
+   * `(organization_id, user_id, space_id)` of `list_grants_user_index` and one probe of the
+   * primary key of `lists` per grant there (a grant of a tombstone shows no space).
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} viewerUserId - The account of the member.
@@ -83,7 +86,7 @@ export class DrizzleGrantRepository implements GrantRepository {
     }>(sql`select
       (select ${spaceGrants.role} from ${spaceGrants} where ${spaceGrants.organizationId} = ${organizationId} and ${spaceGrants.spaceId} = ${spaceId} and ${spaceGrants.userId} = ${viewerUserId}) as "spaceRole",
       ${listRole} as "listRole",
-      exists (select 1 from ${listGrants} where ${listGrants.organizationId} = ${organizationId} and ${listGrants.userId} = ${viewerUserId} and ${listGrants.spaceId} = ${spaceId}) as "anyList"`);
+      exists (select 1 from ${listGrants} inner join ${taskLists} on ${taskLists.organizationId} = ${listGrants.organizationId} and ${taskLists.id} = ${listGrants.listId} where ${listGrants.organizationId} = ${organizationId} and ${listGrants.userId} = ${viewerUserId} and ${listGrants.spaceId} = ${spaceId} and ${undeletedListCondition()}) as "anyList"`);
     const row: { spaceRole: string | null; listRole: string | null; anyList: boolean } | undefined =
       result.rows[0];
     if (row === undefined) {
@@ -339,6 +342,42 @@ export class DrizzleGrantRepository implements GrantRepository {
         listId: row.listId,
       })),
     ];
+  }
+
+  /**
+   * Method eraseOfList
+   *
+   * @description
+   * Deletes every grant of a list, one range of the primary key of `list_grants`.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} listId - The deleted list, locked by the caller.
+   * @returns {Promise<number>} How many grants were deleted.
+   */
+  public async eraseOfList(organizationId: string, listId: string): Promise<number> {
+    const erased: { userId: string }[] = await this.db
+      .delete(listGrants)
+      .where(and(eq(listGrants.organizationId, organizationId), eq(listGrants.listId, listId)))
+      .returning({ userId: listGrants.userId });
+    return erased.length;
+  }
+
+  /**
+   * Method eraseOfSpace
+   *
+   * @description
+   * Deletes every grant of a space, one range of the primary key of `space_grants`.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} spaceId - The deleted space, locked by the caller.
+   * @returns {Promise<number>} How many grants were deleted.
+   */
+  public async eraseOfSpace(organizationId: string, spaceId: string): Promise<number> {
+    const erased: { userId: string }[] = await this.db
+      .delete(spaceGrants)
+      .where(and(eq(spaceGrants.organizationId, organizationId), eq(spaceGrants.spaceId, spaceId)))
+      .returning({ userId: spaceGrants.userId });
+    return erased.length;
   }
   // #endregion
 }

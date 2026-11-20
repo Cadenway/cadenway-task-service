@@ -17,7 +17,9 @@ import {
   RECRUTEMENT,
   ROADMAP,
 } from '../../domain/access-requests.fixture.js';
+import type { DroppedRequestTarget } from '../models/access-request/dropped-request-target.model.js';
 import type { PendingScope } from '../models/access-request/pending-scope.model.js';
+import type { ReadLock } from '../models/lock/read-lock.model.js';
 import type { RequestedTarget } from '../models/access-request/requested-target.model.js';
 import type { GrantOutcome } from '../models/grant/grant-outcome.model.js';
 import type { GrantRequest } from '../models/grant/grant-request.model.js';
@@ -121,6 +123,28 @@ function inScope(state: AccessRequestState, scope: PendingScope): boolean {
     (scope.spaceId === null || state.spaceId === scope.spaceId) &&
     (scope.listId === null || state.listId === scope.listId)
   );
+}
+
+/**
+ * Whether a request is one of a deleted target, as the SQL of the repository decides it: by its
+ * target and its `target_id`, and for a space also the list requests that stored that space.
+ *
+ * @param state - The request.
+ * @param target - The deleted target.
+ * @returns `true` when the target holds it.
+ */
+function ofTarget(state: AccessRequestState, target: DroppedRequestTarget): boolean {
+  switch (target.kind) {
+    case 'tasks':
+      return state.target === 'task' && target.taskIds.includes(state.targetId);
+    case 'list':
+      return state.target === 'list' && state.targetId === target.listId;
+    case 'space':
+      return (
+        (state.target === 'space' && state.targetId === target.spaceId) ||
+        (state.target === 'list' && state.spaceId === target.spaceId)
+      );
+  }
 }
 
 /**
@@ -388,6 +412,21 @@ export class InMemoryAccessRequests implements AccessRequestsUnitOfWork {
           }
           return Promise.resolve(deleted);
         },
+        deletePendingOf: (organizationId: string, target: DroppedRequestTarget) => {
+          write(`requests.deletePendingOf:${target.kind}`);
+          let deleted: number = 0;
+          for (const state of [...this.requests.values()]) {
+            if (
+              state.organizationId === organizationId &&
+              state.status === 'pending' &&
+              ofTarget(state, target)
+            ) {
+              this.requests.delete(state.id);
+              deleted += 1;
+            }
+          }
+          return Promise.resolve(deleted);
+        },
       },
       attempts: {
         serialize: () => {
@@ -580,6 +619,9 @@ export class FakeAccessTargets implements AccessTargets {
   /** The calls, in order. */
   public readonly calls: string[] = [];
 
+  /** The lock of each read of a target, in order. */
+  public readonly locks: ReadLock[] = [];
+
   /** The grants asked for. */
   public readonly grants: GrantRequest[] = [];
 
@@ -631,6 +673,7 @@ export class FakeAccessTargets implements AccessTargets {
    * @param viewerUserId - The member.
    * @param _viewerRole - Its role in the organization.
    * @param target - The space or the list.
+   * @param lock - The lock of the read, recorded in `locks`.
    * @returns The target, or `null`.
    */
   public find(
@@ -638,9 +681,11 @@ export class FakeAccessTargets implements AccessTargets {
     viewerUserId: string,
     _viewerRole: MemberRole,
     target: TargetRef,
+    lock: ReadLock,
   ): Promise<TargetAccess | null> {
     const id: string = target.kind === 'space' ? target.spaceId : target.listId;
     this.calls.push(`find:${target.kind}:${id}`);
+    this.locks.push(lock);
     if (organizationId !== ATELIER_NORD) {
       return Promise.resolve(null);
     }
@@ -724,6 +769,9 @@ export class FakeTaskReferences implements TaskReferences {
   /** The calls, in order. */
   public readonly calls: string[] = [];
 
+  /** The lock of each read of a target, in order. */
+  public readonly locks: ReadLock[] = [];
+
   /** The tasks it knows. */
   public tasks: TaskReference[] = [DIR_12_TASK];
   // #endregion
@@ -734,10 +782,16 @@ export class FakeTaskReferences implements TaskReferences {
    *
    * @param organizationId - The organization.
    * @param taskKey - The key.
+   * @param lock - The lock of the read, recorded in `locks`.
    * @returns The task, or `null`.
    */
-  public findByKey(organizationId: string, taskKey: string): Promise<TaskReference | null> {
+  public findByKey(
+    organizationId: string,
+    taskKey: string,
+    lock: ReadLock,
+  ): Promise<TaskReference | null> {
     this.calls.push(`findByKey:${taskKey}`);
+    this.locks.push(lock);
     return Promise.resolve(
       organizationId === ATELIER_NORD
         ? (this.tasks.find((task) => task.key === taskKey) ?? null)

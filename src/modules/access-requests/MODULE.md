@@ -11,7 +11,9 @@ P3b-1, "Access requests" of `openapi/public/access.yaml`):
 - the pending requests the people who manage a target read, their approval with a role (which gives
   the grant through the spaces module) and their refusal;
 - the dropping of the requests of a member who left the organization, one batch per call, which the
-  clean-up job of member-lifecycle runs after the removal.
+  clean-up job of member-lifecycle runs after the removal;
+- the dropping of the pending requests of a deleted target (a space, a list, the tasks in the
+  trash), which the jobs of deletion-lifecycle run.
 
 It owns neither the spaces, the lists, the grants and the access rules (spaces), nor the tasks
 (tasks), the memberships (organization-members), nor the notice to the owner and the answer to the
@@ -19,10 +21,11 @@ requester (cadenway-notification-service, from the events, in P4).
 
 ## Public entry points
 
-| Entry point                                         | Consumers        |
-| --------------------------------------------------- | ---------------- |
-| `access-requests.module`                            | member-lifecycle |
-| `public/access-request/drop-member-access-requests` | member-lifecycle |
+| Entry point                                         | Consumers                            |
+| --------------------------------------------------- | ------------------------------------ |
+| `access-requests.module`                            | member-lifecycle, deletion-lifecycle |
+| `public/access-request/drop-member-access-requests` | member-lifecycle                     |
+| `public/access-request/drop-target-access-requests` | deletion-lifecycle                   |
 
 `AccessRequestsModule` exports the `DropMemberAccessRequests` provider (`{ organizationId, userId }`
 to `{ outcome: 'none-left' }`, `{ outcome: 'member-again' }` or `{ outcome: 'dropped', dropped }`):
@@ -30,6 +33,17 @@ one batch of at most 500 requests of a former member, pending or answered, delet
 attempts of the account, in a tenant transaction of its own of the organization of the context.
 The clean-up job of member-lifecycle calls it after the grants were removed, until `none-left` or
 `member-again`. No event: the contract defines none for a dropped request.
+
+It also exports the `DropTargetAccessRequests` provider (`{ organizationId, target }` to
+`{ dropped }`, `target` a `DroppedRequestTarget`: `{ kind: 'tasks', taskIds }` with 2,000 ids at
+most, more throws before any statement, `{ kind: 'list', listId }` or `{ kind: 'space', spaceId }`):
+the pending requests of a deleted target, in the tenant transaction of its caller, which it joins.
+The jobs of deletion-lifecycle call it in transactions that read the target still deleted under its
+lock: for a deleted or erased space (its space requests and the list requests of its lists) when
+they read its lists, for each deleted list in its first batch, for the tasks of each batch they
+move to the trash, and for the tasks of an entry of "Supprimer la tâche" that are not out of the
+trash. The caller decides that the target is
+deleted; this operation only deletes. No event.
 
 ## Owned tables
 
@@ -122,7 +136,8 @@ Through the outbox, in the transaction of the change, validated with `eventSchem
 ## Events consumed
 
 None directly. The clean-up job of member-lifecycle runs `DropMemberAccessRequests` batch after
-batch after a `member.removed.v1`.
+batch after a `member.removed.v1`; the jobs of deletion-lifecycle run `DropTargetAccessRequests`
+after a deletion of a list or a space and after "Supprimer la tâche".
 
 ## Invariants
 
@@ -148,6 +163,16 @@ batch after a `member.removed.v1`.
   higher one is kept, the request records the role the approval gave.
 - The requests of a member who left, pending or answered, are dropped with their attempts by the
   clean-up job, unless the copy holds them as a member again when a batch runs.
+- The pending requests of a deleted target are dropped by the jobs of deletion-lifecycle ("The
+  pending requests of a target that is deleted ... are dropped"): the space requests of a deleted
+  or erased space and the list requests of its lists, the list requests of a deleted or erased
+  list, the task requests of the tasks in the trash or erased, each while the target is still
+  deleted. A deleted space has all its lists deleted (restoring a list restores its space) and an
+  erased one has no list left, so every list request of such a space belongs to a deleted or erased
+  list; this also covers the lists of the space erased before its job ran. Until then
+  they are hidden: their target is no longer found, so nobody reads or answers them; a target
+  restored first keeps them. Answered requests stay, and a request for an archived target stays
+  pending (a request is stored for an archived target); the attempts are untouched.
 
 ## Transactions
 
@@ -163,9 +188,22 @@ relay once a run that appended events resolved.
   so its clean-up job sees it), then `pg_advisory_xact_lock` on the organization and the account,
   which serializes the requests of one requester (the count, the insert and the uniqueness see each
   other), then the clock, the attempts of the hour (at most 10 rows), and, when allowed, the pruning
-  and the new attempt, then the target (one or two readings of other modules, without lock), then
-  one insert, always (`INSERT ... SELECT ... WHERE $stored ON CONFLICT ... DO NOTHING`), and, for a
-  stored request, one outbox append.
+  and the new attempt, then the target under a `FOR SHARE` lock held until the commit (a space
+  through `FindAccessTarget`, which locks the space; a list through `FindAccessTarget`, which locks
+  the list and reads its space without a lock; a task through `FindTaskReference`, which locks the
+  task, then its list through `FindAccessTarget`, which locks the list), in the same statements and
+  locks for every outcome (an unknown target is read as the nil UUID), then one
+  insert, always (`INSERT ... SELECT ... WHERE $stored ON CONFLICT ... DO NOTHING`), and, for a
+  stored request, one outbox append. A deletion or a trash of the target running meanwhile either
+  commits first, and the request reads its target deleted or in the trash and stores nothing, or
+  waits for the request, whose pending row its job then drops. The lock of the list suffices for a
+  list or a task: a deletion of its space writes the list rows too (it marks them deleted), so it
+  conflicts with that lock as a deletion of the list does. Lock order: the membership, the advisory
+  lock, the attempts, the task, then the space (a space target) or the list, then the insert. It
+  cannot deadlock with a batch of a deletion job (tasks `FOR NO KEY UPDATE`, the list `FOR SHARE`,
+  then the access requests), a trash (tasks, then the list), a deletion of a list or a space (the
+  space, then its lists) or a restoration (tasks, the space, the list): the request holds one row
+  of the space or the list only, after its task, and takes the access requests last.
 - The listing runs in `runReadOnly`: the role, `ListManagedAccessTargets`, then, when the actor has
   `edit` on some list, the distinct tasks of the pending task requests of the organization (one
   statement) located with `FindTaskReferences` in chunks of 100, then the page (one statement,
@@ -184,6 +222,17 @@ relay once a run that appended events resolved.
   size, under the 10 s statement timeout and the 5 s lock timeout of the application role. An
   answer that holds one of these requests makes the batch wait at most 5 s. A failed batch rolls
   back alone; the loop, the retries and the dead letters belong to member-lifecycle (its MODULE.md).
+- `DropTargetAccessRequests` joins the transaction of the job step that calls it: one delete of the
+  pending requests (`state = 'pending'`) of the target, `target_id = ANY($tasks)` for task
+  requests, `target_id = $list` for list requests, `target_id = $space` or `space_id = $space` for
+  a space (`target_id` is the task, the list or the space of the target, which the shape check
+  keeps), with no read before it. No index serves `target_id` alone: the statement reads the pending requests of
+  the organization through `access_requests_pending_index`, O(pending requests of the
+  organization), like the listing, bounded by the hourly limit of each requester; its plans are for
+  the integration suite to measure. A request an answer holds `FOR UPDATE` makes the statement wait
+  5 s at most, then it is answered and stays. In a deletion batch it runs after the tasks module locked the tasks and held
+  the deleted list `FOR SHARE`: an approval locks its request, then the list, only once it read the
+  list live, which a deleted list is not, so the two never wait in opposite orders.
 - Lock order of an approval: the membership of the actor `FOR SHARE`, the request `FOR UPDATE`,
   then inside `GrantRequestedAccess` the membership of the requester `FOR SHARE` and the space or
   the list `FOR NO KEY UPDATE`. It cannot deadlock with a removal, which locks one membership
@@ -234,9 +283,12 @@ false` keeps from any row when nothing is stored. The one difference left is the
   organization, and the ids of spaces and lists are UUIDv7.
 - The clean-up of a former member deletes their answered requests too, in the same batches: each
   holds the free text the person wrote, which nothing needs once they left (privacy).
-- What PR 3 owes: drop the pending requests of a deleted space or list and of a trashed task (the
-  contract: "The pending requests of a target that is deleted ... are dropped"), and decide what an
-  archived target keeps (the contract stores requests for archived targets).
+- P3b-1 PR 3: the pending requests of a deleted list or space and of a task moved to the trash are
+  dropped by the jobs of deletion-lifecycle, not in the transaction of the deletion, so that a
+  deletion does not grow with the requests; they are hidden at once, since the target is no longer
+  found. An archived target keeps its requests, pending or answered: the contract stores a request
+  for an archived target. Only pending requests go; an answered one stays as the history the
+  requester was answered with, until the requester leaves the organization.
 - `tests/access.int-spec.ts` proves on real PostgreSQL and NATS the routes, the existence oracle
   (same status, headers and body, and the timing medians of a stored request, a request not stored
   and an unknown target), the hourly limit, the approval and the refusal, row-level security on

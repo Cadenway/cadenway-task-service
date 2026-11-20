@@ -10,9 +10,9 @@ describe('sameArchiveAsParent: the subtasks of a task are those of its archive',
     );
   });
 
-  it('compares the archive roots with is not distinct from, so two live tasks match', () => {
+  it('compares the archive roots with is not distinct from, so two live tasks match, and leaves the subtasks in the trash out', () => {
     expect(renderSql(sameArchiveAsParent()).sql).toBe(
-      '"tasks"."archive_root_id" is not distinct from "parent_tasks"."archive_root_id"',
+      '("tasks"."archive_root_id" is not distinct from "parent_tasks"."archive_root_id" and "tasks"."trash_entry_id" is null)',
     );
   });
 });

@@ -22,7 +22,10 @@ import { spaces } from '../space/space.schema.js';
  * `created_at` is when the person was first given access, the order of the listing and of the
  * access events; `granted_at` and `granted_by_*` are when and by whom the current role was given.
  * The primary key `(organization_id, list_id, user_id)` serves the grants of one list and the
- * lookup of the grant of one person on one list. A tenant table: `organization_id` carries the
+ * lookup of the grant of one person on one list. `list_grants_space_index (organization_id,
+ * space_id)` (P3b-1 PR 3) serves the check of `list_grants_space_fkey` when the tombstone of a
+ * deleted space is erased, a Seq Scan of the table without it (`tests/trash-queries.int-spec.ts`:
+ * 899 buffers against 116 at 40,116 grants). A tenant table: `organization_id` carries the
  * policy of the kit, which the migration forces by hand
  * (`ALTER TABLE "list_grants" FORCE ROW LEVEL SECURITY;`).
  */
@@ -60,6 +63,7 @@ export const listGrants = pgTable(
       table.spaceId,
       table.listId,
     ),
+    index('list_grants_space_index').on(table.organizationId, table.spaceId),
     check('list_grants_role_check', sql`${table.role} in ('edit', 'comment', 'view')`),
     check(
       'list_grants_granted_by_type_check',

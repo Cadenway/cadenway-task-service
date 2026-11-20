@@ -2,9 +2,10 @@
  * Interface ListActor
  *
  * @description
- * Who archived a list (`archivedBy` of `TaskList`, `Actor` of
- * `openapi/internal/task-service.yaml`): a person (`user`, `id` is the account), an automation
- * rule (`automation`), the Git integration (`git`) or a service (`system`, `id` is its name).
+ * Who archived or deleted a list, or deleted a space (`archivedBy` of `TaskList`, the
+ * `deleted_by_*` columns of a tombstone, `Actor` of `openapi/internal/task-service.yaml`): a person
+ * (`user`, `id` is the account), an automation rule (`automation`), the Git integration (`git`) or
+ * a service (`system`, `id` is its name).
  */
 export interface ListActor {
   // #region Properties
@@ -37,7 +38,8 @@ export interface ListActor {
  *
  * @description
  * The actor types of `Actor` today (`x-extensible-enum` of `openapi/internal/task-service.yaml`),
- * the values the check `lists_archived_by_type_check` of the table allows, to refuse any other in
+ * the values the checks `lists_archived_by_type_check`, `lists_deleted_by_type_check` and
+ * `spaces_deleted_by_type_check` of the tables allow, to refuse any other in
  * a stored state.
  *
  * @type {readonly ListActor['type'][]}
