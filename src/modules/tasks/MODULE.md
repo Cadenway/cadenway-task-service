@@ -355,6 +355,13 @@ where archived_at is null` is not used by "Mes tâches". To revisit by replacing
 The P3c-2 reporting contract uses a verified API gateway user and organization. The list reads
 serve sprint reports, workload, timesheets and CSV rows. The team dashboard spans the caller's
 visible live lists. CSV rows carry encoded cells and assignee IDs for the gateway to resolve.
+The export checks list visibility, the active sort and the 10,000-row cap before sending headers.
+It orders task IDs once and reads at most 250 selected tasks at a time in the same tenant snapshot.
+The HTTP response writes legacy JSON incrementally, or UTF-8 NDJSON when the gateway explicitly
+selects `application/x-ndjson`. The JSON closing bytes or NDJSON completion record follow the
+read-only commit. A streaming transaction uses one attempt. A connection closed by
+the consumer or its export deadline stops work before the next page, and a failure after headers
+closes the partial response.
 
 Normal task creation accepts an optional initial checklist. Its items are created in request
 order with fresh IDs and are unchecked. The items share the new task's version 1 and its

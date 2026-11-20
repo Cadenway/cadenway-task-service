@@ -1,5 +1,7 @@
 import type { PriorityKey } from '../../../../../domain/value-objects/task/priority-key.value-object.js';
 import type { StatusKey } from '../../../../../domain/value-objects/task/status-key.value-object.js';
+import type { ExportListTasksSink } from '../../../../models/reporting/export-list-tasks-sink.model.js';
+import { MAX_LIST_EXPORT_ROWS } from '../../../../models/reporting/reporting-export-rows.model.js';
 import { ReportingRefusal } from '../../../../models/reporting/reporting-refusal.model.js';
 import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
@@ -57,56 +59,81 @@ export class ExportListTasks {
   // #endregion
 
   // #region Methods
-  /** Executes the report operation. */
-  public async execute(input: ExportListTasksInput): Promise<ExportListTasksOutput> {
-    const data = await this.work.runReadOnly(async (reader) => {
-      const viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
-      const placement = await this.spaces.findVisibleList(
-        input.organizationId,
-        viewer,
-        input.listId,
-      );
-      if (placement === null) throw new TaskRefusal({ reason: 'list-not-found' });
-      const result = await reader.exportRows(
-        input.organizationId,
-        input.listId,
-        placement.space.id,
-        this.filters.build(input.filter, viewer.userId),
-        input.order,
-        input.sheetSort?.column === 'people' ? null : input.sheetSort,
-      );
-      if (result.invalidSort) throw new ReportingRefusal('sheet-column-invalid');
-      if (result.rows.length > 10000) throw new ReportingRefusal('export-row-limit-reached');
-      return result;
-    });
-    const headers = [
-      'Identifiant',
-      'Nom',
-      'Statut',
-      'Priorité',
-      'Assignés',
-      'Échéance',
-      'Étiquettes',
-      ...data.fields.map((field) => field.name),
-    ];
-    return {
-      filename: `list-${input.listId}.csv`,
-      header: headers.map(cell).join(';'),
-      rows: data.rows.map((row) => ({
-        beforeAssignees: [
-          row.taskKey,
-          row.name,
-          statusLabels[row.status],
-          priorityLabels[row.priority],
-        ].map(cell),
-        assigneeIds: row.assignees,
-        afterAssignees: [
-          row.dueDate ?? '',
-          row.labels.join(', '),
-          ...data.fields.map((field) => row.customValues[field.id] ?? ''),
-        ].map(cell),
-      })),
-    };
+  /** Validates before writing and delivers rows from one snapshot without replaying any writes. */
+  public execute(
+    input: ExportListTasksInput,
+    sink: ExportListTasksSink,
+  ): Promise<ExportListTasksOutput> {
+    return this.work.runReadOnly(
+      async (reader) => {
+        input.signal?.throwIfAborted();
+        const viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
+        const placement = await this.spaces.findVisibleList(
+          input.organizationId,
+          viewer,
+          input.listId,
+        );
+        if (placement === null) throw new TaskRefusal({ reason: 'list-not-found' });
+        input.signal?.throwIfAborted();
+        const data = await reader.prepareExport(
+          input.organizationId,
+          input.listId,
+          placement.space.id,
+          this.filters.build(input.filter, viewer.userId),
+          input.order,
+          input.sheetSort?.column === 'people' ? null : input.sheetSort,
+          MAX_LIST_EXPORT_ROWS + 1,
+        );
+        if (data.invalidSort) throw new ReportingRefusal('sheet-column-invalid');
+        if (data.rowCount > MAX_LIST_EXPORT_ROWS)
+          throw new ReportingRefusal('export-row-limit-reached');
+        input.signal?.throwIfAborted();
+        const headers = [
+          'Identifiant',
+          'Nom',
+          'Statut',
+          'Priorité',
+          'Assignés',
+          'Échéance',
+          'Étiquettes',
+          ...data.fields.map((field) => field.name),
+        ];
+        const deliverRows = await sink.start({
+          filename: `list-${input.listId}.csv`,
+          header: headers.map(cell).join(';'),
+        });
+        if (!deliverRows) return { rowCount: data.rowCount };
+
+        for (let offset = 0; offset < data.rowCount;) {
+          input.signal?.throwIfAborted();
+          const page = await data.readPage(offset);
+          if (page.length === 0 || page.length > data.rowCount - offset) {
+            throw new Error('The export page does not match its selected row count.');
+          }
+          for (const row of page) {
+            input.signal?.throwIfAborted();
+            await sink.row({
+              beforeAssignees: [
+                row.taskKey,
+                row.name,
+                statusLabels[row.status],
+                priorityLabels[row.priority],
+              ].map(cell),
+              assigneeIds: row.assignees,
+              afterAssignees: [
+                row.dueDate ?? '',
+                row.labels.join(', '),
+                ...data.fields.map((field) => row.customValues[field.id] ?? ''),
+              ].map(cell),
+            });
+          }
+          offset += page.length;
+        }
+        input.signal?.throwIfAborted();
+        return { rowCount: data.rowCount };
+      },
+      { maxAttempts: 1 },
+    );
   }
   // #endregion
 }

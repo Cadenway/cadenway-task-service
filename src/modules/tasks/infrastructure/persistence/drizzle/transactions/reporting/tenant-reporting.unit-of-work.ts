@@ -15,10 +15,12 @@ export class TenantReportingUnitOfWork implements ReportingUnitOfWork {
   /** Runs all reads and visibility checks in one read-only snapshot. */
   public runReadOnly<TResult>(
     work: (reader: ReportingReader) => Promise<TResult>,
+    options?: { readonly maxAttempts: 1 },
   ): Promise<TResult> {
     return this.runner.run((transaction) => work(new DrizzleReportingReader(transaction.db)), {
       readOnly: true,
       isolationLevel: 'repeatable read',
+      ...options,
     });
   }
   // #endregion

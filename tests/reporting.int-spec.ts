@@ -14,7 +14,13 @@ import {
   GetSprintReportInternalResponse,
   GetTeamDashboardInternalResponse,
 } from '@cadenway/contracts/validators/internal/task-service';
-import { createApplication, InternalTokenSigner, loadConfig } from '@cadenway/nest-common';
+import {
+  createApplication,
+  InternalTokenSigner,
+  loadConfig,
+  remainingBudgetMs,
+  REQUEST_TIMEOUT_HEADER,
+} from '@cadenway/nest-common';
 import type { Ed25519PublicJwk } from '@cadenway/nest-common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import pg from 'pg';
@@ -23,6 +29,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
+import { ExportListTasks } from '../src/modules/tasks/application/use-cases/queries/reporting/export-list-tasks/export-list-tasks.use-case.js';
 
 const project = `task-reporting-test-${String(process.pid)}`;
 const organizationId = '01938f6e-6d1a-7c3e-9a51-2f0c4b8d7e10';
@@ -63,9 +70,16 @@ describe('reports with PostgreSQL and NATS', () => {
   end.setUTCDate(end.getUTCDate() + 1);
 
   async function send(
-    method: 'get' | 'post' | 'patch' | 'put' | 'delete',
+    method: 'get' | 'head' | 'post' | 'patch' | 'put' | 'delete',
     path: string,
-    options: { body?: object; actor?: string; org?: string } = {},
+    options: {
+      body?: object;
+      actor?: string;
+      org?: string;
+      accept?: string;
+      text?: boolean;
+      timeoutMs?: number;
+    } = {},
   ): Promise<request.Response> {
     if (app === undefined) throw new Error('Application did not start');
     const token = await signer.sign('task-service', {
@@ -74,6 +88,25 @@ describe('reports with PostgreSQL and NATS', () => {
     });
     let call = request(app.getHttpServer())[method](path).set('Authorization', `Bearer ${token}`);
     if (options.body !== undefined) call = call.send(options.body);
+    if (options.accept !== undefined) call = call.set('Accept', options.accept);
+    if (options.timeoutMs !== undefined) {
+      call = call.set(REQUEST_TIMEOUT_HEADER, String(options.timeoutMs));
+    }
+    if (options.text === true) {
+      call = call.buffer(true).parse((incoming, done) => {
+        let body = '';
+        incoming.setEncoding('utf8');
+        incoming.on('data', (chunk: string) => {
+          body += chunk;
+        });
+        incoming.on('end', () => {
+          done(null, body);
+        });
+        incoming.on('error', (error: Error) => {
+          done(error, undefined);
+        });
+      });
+    }
     return call;
   }
 
@@ -304,9 +337,87 @@ describe('reports with PostgreSQL and NATS', () => {
       expect(formula.status, formula.text).toBe(201);
       const response = await send('get', `/internal/v1/lists/${listId}/tasks/export?search=SUM`);
       expect(response.status, response.text).toBe(200);
+      expect(response.headers).toMatchObject({
+        'content-type': 'application/json; charset=utf-8',
+        'transfer-encoding': 'chunked',
+      });
       const exported = ExportListTasksInternalResponse.parse(response.body as unknown);
       expect(exported.rows).toHaveLength(1);
       expect(exported.rows[0]?.beforeAssignees[1]).toContain("'=SUM(1,2)");
+    });
+
+    it('answers HEAD for an accessible export and preserves the invisible list refusal', async () => {
+      const path = `/internal/v1/lists/${listId}/tasks/export`;
+      const visible = await send('head', path);
+      expect(visible.status).toBe(200);
+      expect(visible.headers).toMatchObject({ 'content-type': 'application/json; charset=utf-8' });
+      expect(visible.text).toBeFalsy();
+      expect((await send('head', path, { actor: hugo })).status).toBe(404);
+    });
+
+    it('requires an explicit eligible Accept type and streams the same authorized snapshot as NDJSON', async () => {
+      const path = `/internal/v1/lists/${sprintId}/tasks/export?search=Refondre`;
+      const json = await send('get', path, { accept: '*/*' });
+      expect(json.status, json.text).toBe(200);
+      expect(json.headers).toMatchObject({
+        'content-type': 'application/json; charset=utf-8',
+        vary: 'Accept',
+      });
+      for (const accept of [
+        'application/x-ndjson;q=0, */*',
+        'application/json;q=1, application/x-ndjson;q=0.5',
+      ]) {
+        const fallback = await send('get', path, { accept });
+        expect(fallback.headers).toMatchObject({
+          'content-type': 'application/json; charset=utf-8',
+        });
+      }
+      const denied = await send('get', path, { accept: 'application/x-ndjson', actor: hugo });
+      expect(denied.status).toBe(404);
+      expect(denied.headers['content-type']).toMatch(/^application\/problem\+json/);
+      const output = await send('get', path, { accept: 'application/x-ndjson', text: true });
+      expect(output.status, output.text).toBe(200);
+      expect(output.headers).toMatchObject({
+        'content-type': 'application/x-ndjson; charset=utf-8',
+        'transfer-encoding': 'chunked',
+        vary: 'Accept',
+      });
+      const exported = ExportListTasksInternalResponse.parse(json.body as unknown);
+      expect(exported.rows).toHaveLength(1);
+      const text: unknown = output.body;
+      if (typeof text !== 'string') throw new Error('The NDJSON stream was not captured as text.');
+      expect(text.endsWith('\n')).toBe(true);
+      expect(
+        text
+          .trimEnd()
+          .split('\n')
+          .map((line): unknown => JSON.parse(line)),
+      ).toEqual([
+        { kind: 'metadata', filename: exported.filename, header: exported.header },
+        ...exported.rows.map((row) => ({ kind: 'row', row })),
+        { kind: 'complete', rowCount: exported.rows.length },
+      ]);
+    });
+
+    it('applies the export budget and the lower bound from the verified internal request', async () => {
+      if (app === undefined) throw new Error('Application did not start');
+      const operation = app.get(ExportListTasks);
+      const execute = operation.execute.bind(operation);
+      const budgets: (number | undefined)[] = [];
+      const capture = vi.spyOn(operation, 'execute').mockImplementation((input, sink) => {
+        budgets.push(remainingBudgetMs());
+        return execute(input, sink);
+      });
+      try {
+        const path = `/internal/v1/lists/${listId}/tasks/export?search=SUM`;
+        const response = await send('get', path, { timeoutMs: 30_000 });
+        expect(response.status, response.text).toBe(200);
+        expect(budgets).toHaveLength(1);
+        expect(budgets[0]).toBeGreaterThan(10_000);
+        expect(budgets[0]).toBeLessThanOrEqual(30_000);
+      } finally {
+        capture.mockRestore();
+      }
     });
 
     it('returns the team dashboard in the requested time zone and blocks private data', async () => {

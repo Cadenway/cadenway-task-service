@@ -1,5 +1,6 @@
 import { ProblemException } from '@cadenway/nest-common';
 
+import { MAX_LIST_EXPORT_ROWS } from '../../../../application/models/reporting/reporting-export-rows.model.js';
 import { ReportingRefusal } from '../../../../application/models/reporting/reporting-refusal.model.js';
 import { answerRefusals } from '../task/task-refusal.problem.js';
 
@@ -13,7 +14,7 @@ export async function answerReportingRefusals<T>(work: () => Promise<T>): Promis
       throw new ProblemException({
         status: 422,
         code: 'list.export-row-limit-reached',
-        details: { maxRows: 10000 },
+        details: { maxRows: MAX_LIST_EXPORT_ROWS },
       });
     }
     throw new ProblemException({
