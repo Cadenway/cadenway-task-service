@@ -37,12 +37,14 @@ function toSqlList(values: readonly string[]): string {
  * `trashed_at` keeps millisecond precision so that the position of a page round-trips exactly
  * through a JavaScript `Date`; `trashed_by_*` is who deleted the task. `purge_requested_at` and
  * `purge_requested_by_*` are set by "Vider la corbeille": the entry then left the trash and waits
- * for the purge job, which erases it with that actor; all three set or all three null. `id` comes
- * from PostgreSQL. A tenant table: `organization_id` carries the policy of the kit, which the
+ * for the purge job, which erases it with that actor; all three set or all three null. For a
+ * partial purge, `purge_root_key`, `purge_root_name` and `purge_root_status` retain the original
+ * root once its task row is erased; they stay null for entries not yet purged. `id` comes from
+ * PostgreSQL. A tenant table: `organization_id` carries the policy of the kit, which the
  * migration forces by hand (`ALTER TABLE "trash_entries" FORCE ROW LEVEL SECURITY;`).
  *
  * No foreign key leaves this table, on purpose. `root_task_id` has none: an entry and its tasks are
- * erased together, and `tasks.trash_entry_id` already references the entry, so a foreign key in both
+ * erased in the same transaction for whole entries, and `tasks.trash_entry_id` already references the entry, so a foreign key in both
  * directions would make every erasure order fail. `list_id` has none, like `tasks.list_id`: the
  * lists table belongs to the spaces module, whose schema this module cannot import.
  *
@@ -72,6 +74,9 @@ export const trashEntries = pgTable(
     purgeRequestedAt: timestamp('purge_requested_at', { withTimezone: true, precision: 3 }),
     purgeRequestedByType: text('purge_requested_by_type'),
     purgeRequestedById: text('purge_requested_by_id'),
+    purgeRootKey: text('purge_root_key'),
+    purgeRootName: text('purge_root_name'),
+    purgeRootStatus: text('purge_root_status'),
   },
   (table) => [
     primaryKey({ name: 'trash_entries_pkey', columns: [table.organizationId, table.id] }),

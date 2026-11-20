@@ -245,6 +245,24 @@ describe('DrizzleTaskListRepository: the archives and the lists read by id', () 
     expect(texts[0]).toContain('"lists"."id" in ($');
     expect(texts[0]).not.toContain('"archived_at" is');
   });
+
+  it('binds large list collections as one array for the read and lock', async () => {
+    const { lists, texts, values } = capturing();
+    const ids: string[] = Array.from(
+      { length: 65_536 },
+      (_, index: number): string =>
+        `00000000-0000-0000-0000-${index.toString(16).padStart(12, '0')}`,
+    );
+
+    await lists.findManyIncludingDeleted(ORGANIZATION, ids);
+    await lists.lockMany(ORGANIZATION, ids, 'share');
+
+    expect(texts).toHaveLength(2);
+    for (const [index, statement] of texts.entries()) {
+      expect(statement).toContain('"lists"."id" = any($2::uuid[])');
+      expect(values[index]).toEqual([ORGANIZATION, ids]);
+    }
+  });
 });
 
 describe('DrizzleTaskListRepository: a tombstone answers as an unknown list, but to the trash', () => {
@@ -306,7 +324,7 @@ describe('DrizzleTaskListRepository: a tombstone answers as an unknown list, but
     await lists.findManyIncludingDeleted(ORGANIZATION, ['019a7100-0000-7000-8000-000000000002']);
 
     expect(texts).toHaveLength(1);
-    expect(texts[0]).toContain('"lists"."id" in ($');
+    expect(texts[0]).toContain('"lists"."id" = any($2::uuid[])');
     expect(texts[0]).not.toContain('deleted_at" is');
     expect(texts[0]).not.toContain(' for ');
   });

@@ -33,6 +33,7 @@ function rowOf(overrides: Partial<RawTrashEntryRow> = {}): RawTrashEntryRow {
     purgeRequestedAt: null,
     purgeRequestedByType: null,
     purgeRequestedById: null,
+    rootErased: false,
     rootKeyPrefix: 'CAD',
     rootKeyNumber: 482,
     rootName: 'Refondre l’écran de connexion SSO',
@@ -50,6 +51,7 @@ describe('toTrashEntryRecord: a row of the trash becomes the entry it stores', (
       listId: SPRINT_14,
       parentKey: null,
       taskCount: 3,
+      rootErased: false,
       trashedAt: TRASHED_AT,
       trashedBy: { type: 'user', id: CAMILLE },
       root: { key: 'CAD-482', name: 'Refondre l’écran de connexion SSO', status: 'progress' },
@@ -67,6 +69,30 @@ describe('toTrashEntryRecord: a row of the trash becomes the entry it stores', (
         }),
       ).purgeRequest,
     ).toEqual({ at: NOW, by: { type: 'user', id: CAMILLE } });
+  });
+
+  it('keeps the root snapshot of a partially purged entry', () => {
+    const entry = toTrashEntryRecord(
+      rowOf({
+        rootErased: true,
+        taskCount: 200,
+        purgeRequestedAt: NOW.toISOString(),
+        purgeRequestedByType: 'system',
+        purgeRequestedById: 'task-service',
+      }),
+    );
+
+    expect(entry.rootErased).toBe(true);
+    expect(entry.taskCount).toBe(200);
+    expect(entry.root).toEqual({
+      key: 'CAD-482',
+      name: 'Refondre l’écran de connexion SSO',
+      status: 'progress',
+    });
+    expect(entry.purgeRequest).toEqual({
+      at: NOW,
+      by: { type: 'system', id: 'task-service' },
+    });
   });
 
   it('refuses a hand-over set in part only, an actor type or a status outside their sets', () => {

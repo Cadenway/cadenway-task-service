@@ -19,12 +19,12 @@ const MAX_DESCENDANTS: number = 650;
  * Class TaskSubtreeLocker
  *
  * @description
- * Locks the live descendants of a task the caller holds locked, for the writes that carry a
+ * Locks the live descendants of a task, for the writes that carry a
  * subtree: a move, an attachment ("a task that moves takes its subtasks with it",
  * `openapi/public/tasks.yaml`) and an archive ("Archiving a task archives its subtree", "Tasks" of
  * `openapi/public/archives.yaml`). The subtree is the live one (`TaskRepository.subtreeOf`): an
  * archived subtask keeps its own archive, never moves and is not taken. The descendants, and the
- * other tasks asked for, are locked `FOR NO KEY UPDATE` in statements in ascending id order, until
+ * other tasks asked for, and optionally their root, are locked `FOR NO KEY UPDATE` in statements in ascending id order, until
  * the subtree read after the locks holds nothing that is not locked; at most 651 tasks (the task,
  * 25 subtasks, 625 sub-subtasks) and 5 passes. A move needs the checklists of the tasks it
  * carries; an archive does not (it never writes or emits them), so it locks them without.
@@ -45,11 +45,13 @@ export class TaskSubtreeLocker {
    * descendants, which bounds the passes and the locks.
    *
    * @param {TasksStore} store - The store of the transaction.
-   * @param {Task} task - The task, locked by the caller.
+   * @param {Task} task - The root, locked by the caller unless `lockRoot` is set.
    * @param {readonly string[]} otherIds - The other tasks to lock with them.
    * @param {boolean} [withChecklists] - `false` to lock the tasks without loading their checklists
    * (they carry an empty one), for a write that never reads, writes or emits them; `true` by
    * default.
+   * @param {boolean} [lockRoot] - Include the root in the first ordered lock when it has not
+   * already been locked by the caller.
    * @returns {Promise<LockedSubtree>} The locked descendants and other tasks, and the subtree they
    * were checked against.
    * @throws {Error} When the stored subtree is larger than a valid one, or keeps growing while it
@@ -60,6 +62,7 @@ export class TaskSubtreeLocker {
     task: Task,
     otherIds: readonly string[],
     withChecklists: boolean = true,
+    lockRoot: boolean = false,
   ): Promise<LockedSubtree> {
     const { organizationId, id } = task.snapshot;
     const asked = new Set<string>();
@@ -71,7 +74,11 @@ export class TaskSubtreeLocker {
           `The task ${id} has ${String(shape.descendantIds.length)} descendants, more than ${String(MAX_DESCENDANTS)}.`,
         );
       }
-      const wanted: ReadonlySet<string> = new Set<string>([...otherIds, ...shape.descendantIds]);
+      const wanted: ReadonlySet<string> = new Set<string>([
+        ...(lockRoot ? [id] : []),
+        ...otherIds,
+        ...shape.descendantIds,
+      ]);
       const unlocked: readonly string[] = [...wanted].filter(
         (wantedId: string): boolean => !asked.has(wantedId),
       );

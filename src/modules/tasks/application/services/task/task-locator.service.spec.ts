@@ -409,12 +409,12 @@ describe('TaskLocator.confirm: the checks of the unlocked read are made again on
     const unlocked: LocateRequest = request({ lock: false, ...overrides });
     return tasks.run(async (store: TasksStore): Promise<LocatedTask> => {
       const locator = new TaskLocator(spaces);
-      const located: LocatedTask = await locator.locate(store, unlocked);
-      return locator.confirm(store, unlocked, located, locked);
+      await locator.locate(store, unlocked);
+      return locator.confirm(store, unlocked, locked);
     });
   }
 
-  it('answers the locked task with the placement of the unlocked read when nothing changed, reading no list again', async () => {
+  it('reads the placement again for the locked task even when its list is unchanged', async () => {
     const trace: string[] = [];
     const spaces = new InMemorySpaceDirectory({ trace });
 
@@ -428,7 +428,7 @@ describe('TaskLocator.confirm: the checks of the unlocked read are made again on
     expect(task.snapshot.version).toBe(12);
     expect(placement.list.id).toBe(SPRINT_14);
     expect(trace.filter((call: string): boolean => call === 'spaces.findVisibleList')).toHaveLength(
-      1,
+      2,
     );
   });
 

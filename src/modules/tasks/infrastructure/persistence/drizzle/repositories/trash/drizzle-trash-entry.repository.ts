@@ -1,4 +1,5 @@
 import type { TransactionDatabase } from '@cadenway/nest-common/database';
+import { sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 
 import type { TrashEntryDraft } from '../../../../../application/models/trash/trash-entry-draft.model.js';
@@ -8,6 +9,12 @@ import type { TrashEntryRepository } from '../../../../../application/ports/outb
 import type { TaskActor } from '../../../../../domain/value-objects/task/task-actor.value-object.js';
 import type { RawTrashEntryRow } from '../../mappers/trash/raw-trash-entry-row.mapper.js';
 import { toTrashEntryRecord } from '../../mappers/trash/trash-entry.mapper.js';
+import { trashEntries } from '../../schemas/trash/trash-entry.schema.js';
+import { tasks } from '../../schemas/task/task.schema.js';
+import { activityEntries } from '../../schemas/activity/activity-entry.schema.js';
+import { checklistItems } from '../../schemas/checklist/checklist-item.schema.js';
+import { taskAssignees } from '../../schemas/task/task-assignee.schema.js';
+import { taskLabels } from '../../schemas/task/task-label.schema.js';
 import {
   dueEntriesStatement,
   eraseEntriesStatements,
@@ -28,10 +35,12 @@ import {
  * `TrashEntryRepository` on `trash_entries` (and, for an erasure, on the task tables), in the
  * transaction of its unit of work. Every statement names `organization_id`, the first column of
  * every key and index it reads; row-level security is the second barrier. An entry is read with
- * its root by the primary key of `tasks`. The page and its total read `trash_entries_trashed_index`
+ * its root by the primary key of `tasks`, or with its stored snapshot when a previous purge batch
+ * erased the root. The page and its total read `trash_entries_trashed_index`
  * (the entries still in the trash), the hand-over to the purge `trash_entries_purge_requested_index`;
  * the locks are `FOR UPDATE` of the entry row only, `SKIP LOCKED` for the batches of the purge. An
- * erasure is seven set-based statements whatever the number of entries and tasks.
+ * whole-entry erasure is seven set-based statements; a partial erasure writes its remaining count
+ * and root snapshot in the same transaction as the task deletions.
  */
 export class DrizzleTrashEntryRepository implements TrashEntryRepository {
   // #region Properties
@@ -259,6 +268,80 @@ export class DrizzleTrashEntryRepository implements TrashEntryRepository {
     limit: number,
   ): Promise<readonly TrashEntryRecord[]> {
     return this.many(dueEntriesStatement(organizationId, dueBefore, limit));
+  }
+
+  /**
+   * Locks the first tasks of the remaining forest and the rows whose references they detach.
+   * All rows are locked by ascending id in one statement. The limit bounds the selected tasks,
+   * while the number of surviving references is determined by the data. Returns only the
+   * selected tasks in breadth-first order.
+   */
+  public async lockPart(
+    organizationId: string,
+    entryId: string,
+    limit: number,
+  ): Promise<readonly string[]> {
+    const result = await this.db.execute<{
+      id: string;
+      depth: number | null;
+    }>(sql`with recursive tree (id, depth) as (
+      select t.id, 0 from ${tasks} as t where t.organization_id = ${organizationId}::uuid and t.trash_entry_id = ${entryId}::uuid
+      and not exists (select 1 from ${tasks} as p where p.organization_id = t.organization_id and p.id = t.parent_id and p.trash_entry_id = t.trash_entry_id)
+      union all select child.id, tree.depth + 1 from ${tasks} as child join tree on child.parent_id = tree.id
+      where child.organization_id = ${organizationId}::uuid and child.trash_entry_id = ${entryId}::uuid
+    ) cycle id set is_cycle using path,
+    picked as materialized (select id, depth from tree where not is_cycle order by depth, id limit ${limit}),
+    targets as (
+      select id from picked
+      union
+      select child.id from ${tasks} as child join picked on child.parent_id = picked.id
+        where child.organization_id = ${organizationId}::uuid
+      union
+      select member.id from ${tasks} as member join picked on member.archive_root_id = picked.id
+        where member.organization_id = ${organizationId}::uuid and member.trash_entry_id = ${entryId}::uuid
+    )
+    select ${tasks.id} as id, picked.depth as depth from ${tasks}
+    left join picked on picked.id = ${tasks.id}
+    where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.id} in (select id from targets)
+    order by ${tasks.id} for update of ${tasks}`);
+    return result.rows
+      .filter((row): row is { id: string; depth: number } => row.depth !== null)
+      .sort((a, b) => a.depth - b.depth || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .map((row) => row.id);
+  }
+
+  /** Deletes locked tasks, detaches remaining references and stores the original root. */
+  public async erasePart(
+    organizationId: string,
+    entry: TrashEntryRecord,
+    ids: readonly string[],
+    at: Date,
+    by: TaskActor,
+  ): Promise<void> {
+    const array: SQL = sql`${sql.param([...ids])}::uuid[]`;
+    for (const table of [activityEntries, checklistItems, taskAssignees, taskLabels]) {
+      await this.db.execute(
+        sql`delete from ${table} where ${table.organizationId} = ${organizationId}::uuid and ${table.taskId} = any(${array})`,
+      );
+    }
+    await this.db.execute(
+      sql`update ${tasks} set parent_id = null where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.parentId} = any(${array}) and ${tasks.id} <> all(${array})`,
+    );
+    await this.db
+      .execute(sql`update ${tasks} set archived_at = null, archived_by_type = null, archived_by_id = null, archive_root_id = null, archive_root = false
+      where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.trashEntryId} = ${entry.id}::uuid and ${tasks.archiveRootId} = any(${array}) and ${tasks.id} <> all(${array})`);
+    const deleted = await this.db.execute(
+      sql`delete from ${tasks} where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.trashEntryId} = ${entry.id}::uuid and ${tasks.id} = any(${array})`,
+    );
+    if (deleted.rowCount !== ids.length)
+      throw new Error(`A task of ${entry.id} left the purge batch.`);
+    const updated = await this.db.execute(
+      sql`update ${trashEntries} set task_count = task_count - ${ids.length},
+        purge_root_key = coalesce(purge_root_key, ${entry.root.key}), purge_root_name = coalesce(purge_root_name, ${entry.root.name}), purge_root_status = coalesce(purge_root_status, ${entry.root.status}),
+        purge_requested_at = coalesce(purge_requested_at, ${at.toISOString()}::timestamptz), purge_requested_by_type = coalesce(purge_requested_by_type, ${by.type}), purge_requested_by_id = coalesce(purge_requested_by_id, ${by.id})
+        where organization_id = ${organizationId}::uuid and id = ${entry.id}::uuid and task_count > ${ids.length}`,
+    );
+    if (updated.rowCount !== 1) throw new Error(`The purge count of ${entry.id} changed.`);
   }
 
   /**
