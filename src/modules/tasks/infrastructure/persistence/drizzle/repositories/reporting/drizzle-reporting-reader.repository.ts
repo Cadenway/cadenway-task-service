@@ -220,8 +220,10 @@ export class DrizzleReportingReader implements ReportingReader {
     sheetSort: { readonly column: string; readonly direction: 'asc' | 'desc' } | null,
     limit: number,
   ): Promise<ReportingExportRows> {
-    const customFields = new DrizzleCustomFieldRepository(this.db);
-    const definitions = await customFields.activeDefinitions(organizationId, spaceId);
+    const definitions = await new DrizzleCustomFieldRepository(this.db).activeDefinitions(
+      organizationId,
+      spaceId,
+    );
     const builtins = [
       'name',
       'status',
@@ -300,7 +302,6 @@ export class DrizzleReportingReader implements ReportingReader {
           listId,
           spaceId,
           ids.slice(offset, offset + EXPORT_PAGE_SIZE),
-          customFields,
         ),
     };
   }
@@ -311,7 +312,6 @@ export class DrizzleReportingReader implements ReportingReader {
     listId: string,
     spaceId: string,
     ids: readonly string[],
-    customFields: DrizzleCustomFieldRepository,
   ): Promise<readonly ReportingExportRow[]> {
     if (ids.length === 0) return [];
     const page = await this.pages.load(
@@ -323,19 +323,6 @@ export class DrizzleReportingReader implements ReportingReader {
           and ${anyOf(tasks.id, ids, 'uuid')}
         order by array_position(${sql.param(ids)}::uuid[], ${tasks.id})`,
     );
-    const values = await customFields.valuesForTaskPage(
-      organizationId,
-      page.map(({ task }) => ({ taskId: task.id, spaceId: task.spaceId, listId: task.listId })),
-    );
-    const valuesByTask = new Map<string, Record<string, string | number>>();
-    for (const value of values) {
-      let fields = valuesByTask.get(value.taskId);
-      if (fields === undefined) {
-        fields = {};
-        valuesByTask.set(value.taskId, fields);
-      }
-      fields[value.fieldId] = value.value;
-    }
     return page.map(({ task }) => ({
       taskKey: task.key,
       name: task.name,
@@ -344,7 +331,7 @@ export class DrizzleReportingReader implements ReportingReader {
       assignees: task.assigneeIds,
       dueDate: task.dueDate,
       labels: task.labels,
-      customValues: valuesByTask.get(task.id) ?? {},
+      customValues: task.customFieldValues ?? {},
     }));
   }
   // #endregion

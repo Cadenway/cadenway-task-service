@@ -384,6 +384,7 @@ describe('reports with PostgreSQL and NATS', () => {
       });
       const exported = ExportListTasksInternalResponse.parse(json.body as unknown);
       expect(exported.rows).toHaveLength(1);
+      expect(exported.rows[0]?.afterAssignees[2]).toBe('"0"');
       const text: unknown = output.body;
       if (typeof text !== 'string') throw new Error('The NDJSON stream was not captured as text.');
       expect(text.endsWith('\n')).toBe(true);
