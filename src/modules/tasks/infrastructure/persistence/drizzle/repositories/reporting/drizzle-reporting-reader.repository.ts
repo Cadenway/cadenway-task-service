@@ -1,5 +1,5 @@
 import type { TransactionDatabase } from '@cadenway/nest-common/database';
-import { sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 
 import type { TaskFilter } from '../../../../../application/models/query/task-filter.model.js';
@@ -18,7 +18,7 @@ import { taskFilterCondition } from '../../mappers/query/task-filter.mapper.js';
 import { orderTerms } from '../../mappers/query/task-order.mapper.js';
 import { taskPageColumns } from '../../mappers/query/task-page-row.mapper.js';
 import { liveTask } from '../../mappers/task/live-task.mapper.js';
-import { toStatusKey } from '../../mappers/task/task-values.mapper.js';
+import { toPriorityKey, toStatusKey } from '../../mappers/task/task-values.mapper.js';
 import { activityEntries } from '../../schemas/activity/activity-entry.schema.js';
 import { taskCustomFieldValues } from '../../schemas/custom-field/task-custom-field-value.schema.js';
 import { taskAssignees } from '../../schemas/task/task-assignee.schema.js';
@@ -26,6 +26,7 @@ import { taskLabels } from '../../schemas/task/task-label.schema.js';
 import { tasks } from '../../schemas/task/task.schema.js';
 import { taskTimeEntries } from '../../schemas/time/task-time-entry.schema.js';
 import { DrizzleTaskPageLoader } from '../task/task-page-loader.repository.js';
+import { DrizzleTaskCollections } from '../task/task-collections.repository.js';
 import { DrizzleCustomFieldRepository } from '../custom-field/drizzle-custom-field.repository.js';
 
 type WorkloadTask = Parameters<typeof buildWorkload>[1][number];
@@ -314,24 +315,53 @@ export class DrizzleReportingReader implements ReportingReader {
     ids: readonly string[],
   ): Promise<readonly ReportingExportRow[]> {
     if (ids.length === 0) return [];
-    const page = await this.pages.load(
+    const page = await this.db
+      .select({
+        id: tasks.id,
+        keyPrefix: tasks.keyPrefix,
+        keyNumber: tasks.keyNumber,
+        name: tasks.name,
+        status: tasks.status,
+        priority: tasks.priority,
+        dueDate: tasks.dueDate,
+      })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.organizationId, organizationId),
+          eq(tasks.listId, listId),
+          eq(tasks.spaceId, spaceId),
+          anyOf(tasks.id, ids, 'uuid'),
+        ),
+      )
+      .orderBy(sql`array_position(${sql.param(ids)}::uuid[], ${tasks.id})`);
+
+    // These IDs belong to the authorized list and space in this same repeatable-read snapshot.
+    const taskIds = page.map(({ id }) => id);
+    const collections = new DrizzleTaskCollections(this.db);
+    const assignees = await collections.assigneesOf(organizationId, taskIds);
+    const labels = await collections.labelsOf(organizationId, taskIds);
+    const values = await new DrizzleCustomFieldRepository(this.db).valuesForTasks(
       organizationId,
-      sql`
-        select ${taskPageColumns()}, null as "sortValue" from ${tasks}
-        where ${tasks.organizationId} = ${organizationId}::uuid
-          and ${tasks.listId} = ${listId}::uuid and ${tasks.spaceId} = ${spaceId}::uuid
-          and ${anyOf(tasks.id, ids, 'uuid')}
-        order by array_position(${sql.param(ids)}::uuid[], ${tasks.id})`,
+      spaceId,
+      taskIds,
     );
-    return page.map(({ task }) => ({
-      taskKey: task.key,
+    const valuesByTask = new Map<string, Record<string, string | number>>();
+    for (const { taskId, fieldId, value } of values) {
+      const fields = valuesByTask.get(taskId) ?? {};
+      fields[fieldId] = value;
+      valuesByTask.set(taskId, fields);
+    }
+
+    return page.map((task) => ({
+      taskKey: TaskKey.of(task.keyPrefix, task.keyNumber).format(),
       name: task.name,
-      status: task.status,
-      priority: task.priority,
-      assignees: task.assigneeIds,
+      status: toStatusKey(task.status, `task ${task.id}`),
+      priority: toPriorityKey(task.priority, `task ${task.id}`),
+      assignees: assignees.get(task.id) ?? [],
       dueDate: task.dueDate,
-      labels: task.labels,
-      customValues: task.customFieldValues ?? {},
+      labels: labels.get(task.id) ?? [],
+      customValues: valuesByTask.get(task.id) ?? {},
     }));
   }
   // #endregion

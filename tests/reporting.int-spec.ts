@@ -1,6 +1,10 @@
+import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
+import { get } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import {
   CreateListInternalResponse,
@@ -500,5 +504,105 @@ describe('reports with PostgreSQL and NATS', () => {
       const report = GetSprintReportInternalResponse.parse(response.body as unknown);
       expect(report.remaining).toMatchObject({ points: 2, taskCount: 1 });
     });
+
+    it('completes a wide NDJSON export through native HTTP backpressure', async () => {
+      if (app === undefined || db === undefined)
+        throw new Error('The test application is not ready.');
+      const rowCount = 250;
+      const list = await send('post', `/internal/v1/spaces/${spaceId}/lists`, {
+        body: { name: 'Wide CSV fixture' },
+      });
+      expect(list.status, list.text).toBe(201);
+      const wideList = CreateListInternalResponse.parse(list.body as unknown).id;
+      const connection = await db.connect();
+      try {
+        await connection.query('begin');
+        await connection.query("select set_config('app.system_access', 'on', true)");
+        await connection.query(
+          `insert into space_custom_fields (organization_id, space_id, name, type, position)
+           select $1,$2,'Text ' || slot,'text',slot from generate_series(1,29) slot`,
+          [organizationId, spaceId],
+        );
+        await connection.query(
+          `insert into tasks (organization_id, key_prefix, key_number, space_id, list_id, name,
+                              status, priority, created_by_type, created_by_id)
+           select $1,'CAD',10000+series,$2,$3,'Wide export ' || series,'todo','haute','user',$4
+           from generate_series(1,$5::integer) series`,
+          [organizationId, spaceId, wideList, camille, rowCount],
+        );
+        await connection.query(
+          `insert into task_custom_field_values (organization_id, task_id, field_id, text_value)
+           select task.organization_id,task.id,field.id,repeat('界',500)
+           from tasks task
+           join space_custom_fields field
+             on field.organization_id = task.organization_id and field.space_id = task.space_id
+           where task.organization_id = $1 and task.list_id = $2
+             and field.type = 'text' and field.retired_at is null`,
+          [organizationId, wideList],
+        );
+        await connection.query('commit');
+      } catch (error) {
+        await connection.query('rollback');
+        throw error;
+      } finally {
+        connection.release();
+      }
+
+      await app.listen(0, '127.0.0.1');
+      const server = app.getHttpServer();
+      const path = `/internal/v1/lists/${wideList}/tasks/export`;
+      const token = await signer.sign('task-service', {
+        actor: { type: 'user', id: camille },
+        organizationId,
+      });
+      let drains = 0;
+      const observe = (incoming: IncomingMessage, outgoing: ServerResponse): void => {
+        if (incoming.url === path) {
+          outgoing.on('drain', () => {
+            drains += 1;
+          });
+        }
+      };
+      server.prependListener('request', observe);
+      try {
+        const url = new URL(path, await app.getUrl());
+        const incoming = await new Promise<IncomingMessage>((accept, reject) => {
+          get(
+            url,
+            {
+              headers: { Accept: 'application/x-ndjson', Authorization: `Bearer ${token}` },
+              signal: AbortSignal.timeout(20_000),
+            },
+            accept,
+          ).once('error', reject);
+        });
+        expect(incoming.statusCode).toBe(200);
+        expect(incoming.headers['content-type']).toBe('application/x-ndjson; charset=utf-8');
+
+        incoming.pause();
+        await delay(75);
+        incoming.setEncoding('utf8');
+        let bytes = 0;
+        let records = 0;
+        let buffered = '';
+        let trailer = '';
+        for await (const chunk of incoming as AsyncIterable<unknown>) {
+          if (typeof chunk !== 'string') throw new Error('Expected text from the HTTP socket.');
+          bytes += Buffer.byteLength(chunk, 'utf8');
+          const lines = (buffered + chunk).split('\n');
+          buffered = lines.pop() ?? '';
+          records += lines.length;
+          trailer = lines.at(-1) ?? trailer;
+          await delay(1);
+        }
+        expect(drains).toBeGreaterThan(0);
+        expect(bytes).toBeGreaterThan(10_000_000);
+        expect(records).toBe(rowCount + 2);
+        expect(buffered).toBe('');
+        expect(JSON.parse(trailer)).toEqual({ kind: 'complete', rowCount });
+      } finally {
+        server.off('request', observe);
+      }
+    }, 30_000);
   });
 });

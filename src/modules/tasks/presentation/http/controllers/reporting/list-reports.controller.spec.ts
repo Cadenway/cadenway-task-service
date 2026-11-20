@@ -1,5 +1,6 @@
 import { runWithOrganizationContext } from '@cadenway/nest-common';
 import type { Response } from 'express';
+import { Buffer } from 'node:buffer';
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -40,7 +41,7 @@ function responseFixture(method = 'GET', accept?: string) {
     vary: vi.fn().mockReturnThis(),
     end: vi.fn(),
     destroy: vi.fn(),
-    write: vi.fn<(chunk: string) => boolean>(),
+    write: vi.fn<(chunk: Buffer) => boolean>(),
   });
   response.status.mockReturnValue(response);
   response.write.mockImplementation(() => {
@@ -118,7 +119,9 @@ describe('list reporting routes', () => {
     expect(response.vary).toHaveBeenCalledExactlyOnceWith('Accept');
     expect(response.write).toHaveBeenCalledTimes(3);
     expect(response.end).toHaveBeenCalledExactlyOnceWith(']}');
-    const chunks = [...response.write.mock.calls.flat(), ']}'].join('');
+    const chunks = Buffer.concat([...response.write.mock.calls.flat(), Buffer.from(']}')]).toString(
+      'utf8',
+    );
     expect(JSON.parse(chunks)).toEqual({ ...metadata, rows: [row, row] });
     const [actualInput] = execute.mock.calls[0] ?? [];
     expect(actualInput).toMatchObject({ organizationId, actorUserId, listId, sheetSort: null });
@@ -139,7 +142,9 @@ describe('list reporting routes', () => {
     );
     expect(response.type).toHaveBeenCalledExactlyOnceWith('application/x-ndjson; charset=utf-8');
     expect(response.vary).toHaveBeenCalledExactlyOnceWith('Accept');
-    const chunks = response.write.mock.calls.flat();
+    const buffers = response.write.mock.calls.flat();
+    expect(buffers.every((chunk) => Buffer.isBuffer(chunk))).toBe(true);
+    const chunks = buffers.map((chunk) => chunk.toString('utf8'));
     expect(chunks.every((chunk) => chunk.endsWith('\n'))).toBe(true);
     expect(chunks.map((chunk): unknown => JSON.parse(chunk))).toEqual([
       { kind: 'metadata', ...metadata },
