@@ -22,6 +22,9 @@ import { TimeEntryReplayAccessGuard } from './presentation/http/guards/time/time
 import { tasksUnitOfWorkProvider } from './composition/providers/adapters/task/tasks-unit-of-work.provider.js';
 import { trashSystemUnitOfWorkProvider } from './composition/providers/adapters/trash/trash-system-unit-of-work.provider.js';
 import { listListActivityProvider } from './composition/providers/use-cases/activity/list-list-activity.provider.js';
+import { taskApprovalProviders } from './composition/providers/use-cases/approval/task-approval.provider.js';
+import { ChangeTaskApproval } from './public/approval/change-task-approval.js';
+import { ReadTaskApproval } from './public/approval/read-task-approval.js';
 import { listTaskActivityProvider } from './composition/providers/use-cases/activity/list-task-activity.provider.js';
 import { taskTimeProviders } from './composition/providers/use-cases/time/task-time.provider.js';
 import { archiveTaskProvider } from './composition/providers/use-cases/archive/archive-task.provider.js';
@@ -203,6 +206,7 @@ markIdempotent(TaskTimeController.prototype, 'create');
     CustomFieldReplayAccessGuard,
     ...customFieldProviders,
     TimeEntryReplayAccessGuard,
+    ...taskApprovalProviders,
     RequiredDuplicateBodyGuard,
     tasksUnitOfWorkProvider,
     memberDirectoryProvider,
@@ -263,6 +267,8 @@ markIdempotent(TaskTimeController.prototype, 'create');
     listUntrashedTaskIdsProvider,
   ],
   exports: [
+    ChangeTaskApproval,
+    ReadTaskApproval,
     ReadTaskTemplateSource,
     UnassignRemovedMember,
     RemoveMemberWatcherOverrides,
