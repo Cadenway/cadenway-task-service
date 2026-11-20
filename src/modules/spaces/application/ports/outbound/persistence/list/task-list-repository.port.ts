@@ -247,15 +247,20 @@ export interface TaskListRepository {
    *
    * @description
    * What the role of a member reads of every list of the organization they have a role on,
-   * archived ones included, and nothing else of the lists, in the sidebar order of
+   * with archived lists included by default, in the sidebar order of
    * `listFirstVisibleTo`, unpaged: the lists of an organization are few, and the caller filters
    * other collections by them.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The member and its role.
+   * @param {boolean} [liveOnly] - Restricts the result to live lists.
    * @returns {Promise<ListAccess[]>} The lean rows.
    */
-  listAccessesVisibleTo(organizationId: string, viewer: Viewer): Promise<ListAccess[]>;
+  listAccessesVisibleTo(
+    organizationId: string,
+    viewer: Viewer,
+    liveOnly?: boolean,
+  ): Promise<ListAccess[]>;
 
   /**
    * Method listArchivedVisibleTo

@@ -85,6 +85,8 @@ describe('ListVisibleListIds: every list a member has a role on, in sidebar orde
     const output = await new ListVisibleListIds(spaces).execute(visible());
 
     expect(output.listIds).toEqual([BACKLOG, SPRINT_14]);
+    const live = await new ListVisibleListIds(spaces).execute(visible({ liveOnly: true }));
+    expect(live.listIds).toEqual([SPRINT_14]);
   });
 
   it('puts a restored list at the end of its space, before the next space', async () => {
