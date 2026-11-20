@@ -3501,6 +3501,11 @@ describe('the access model: grants, the switch, the effective role and access re
         [hugo, entretiensTask, 'edit'],
         [nadia, calendarTask, 'edit'],
       ] as const) {
+        const stored = await asSystem<{ readonly id: string }>(
+          "select id::text as id from tasks where organization_id = $1 and key_prefix || '-' || key_number = $2",
+          [atelierNordId, task.key],
+        );
+        expect(stored).toHaveLength(1);
         const response = await send(
           'get',
           `/internal/v1/tasks/${task.key}/access`,
@@ -3512,6 +3517,7 @@ describe('the access model: grants, the switch, the effective role and access re
           role,
           spaceId: task.spaceId,
           listId: task.listId,
+          taskId: stored[0]?.id,
           taskKey: task.key,
         });
       }

@@ -446,7 +446,7 @@ required; issuer `api-gateway` for every route but the access check, which accep
 | `GET /internal/v1/tasks/{taskKey}/access` (`realtime-gateway`)         | `checkTaskAccessInternal`        | `200`                     |
 
 - The access check answers `AccessCheck`: the role of the actor on the list of the task, the
-  space, the list and the key. A task the actor has no role on and an unknown key answer
+  space, the list, the stable task UUID and the key. A task the actor has no role on and an unknown key answer
   `404 task.not-found` (never `task.trashed`), a malformed key `400 request.invalid` like every
   route of a task, an actor the copy does not hold `404 organization.not-found`. It runs in
   `runReadOnly`: the copy of the memberships, the task by `tasks_key_unique` without its

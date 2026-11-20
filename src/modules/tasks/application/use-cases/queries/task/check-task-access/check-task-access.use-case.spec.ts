@@ -70,6 +70,7 @@ describe('CheckTaskAccess: the role of the actor on the list of the task', () =>
       role: 'edit',
       spaceId: PRODUIT,
       listId: SPRINT_14,
+      taskId: taskState().id,
       taskKey: 'CAD-482',
     });
   });
@@ -90,6 +91,7 @@ describe('CheckTaskAccess: the role of the actor on the list of the task', () =>
       role: 'edit',
       spaceId: DESIGN,
       listId: MAQUETTES,
+      taskId: '019a7200-0000-7000-8000-000000000601',
       taskKey: 'DES-1',
     });
   });
@@ -150,7 +152,7 @@ describe('CheckTaskAccess: one read-only run that writes nothing', () => {
 
     expect(tasks.runs).toBe(1);
     expect(tasks.readOnlyRuns).toBe(1);
-    expect(tasks.snapshotRuns).toBe(0);
+    expect(tasks.snapshotRuns).toBe(1);
     expect(tasks.trace).toContain('reader.locationByKey');
     expect(tasks.trace.filter((call) => call.startsWith('tasks.'))).toEqual([]);
     expect(tasks.events).toEqual([]);
