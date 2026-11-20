@@ -10,6 +10,7 @@ import type {
   MemberRemovedV1,
   MemberRoleChangedV1,
 } from '@cadenway/contracts/events/organization-service';
+import type { SearchAccessLookup } from '@cadenway/contracts/types/internal/task-service';
 import {
   AddChecklistItemInternalResponse,
   ApproveAccessRequestInternalResponse,
@@ -38,6 +39,7 @@ import {
   ListTasksInternalResponse,
   RefuseAccessRequestInternalResponse,
   ResolveDocumentSpaceAccessInternalResponse,
+  ResolveTaskSearchAccessInternalResponse,
   SetListGrantInternalResponse,
   SetSpaceGrantInternalResponse,
   UpdateListInternalResponse,
@@ -69,6 +71,7 @@ import type { z } from 'zod';
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
 import { configureDocumentSpaceAccessCache } from '../src/infrastructure/http/document-space-access-cache.js';
+import { configureTaskSearchCache } from '../src/infrastructure/http/task-search-cache.js';
 import { DrizzleAccessRequestRepository } from '../src/modules/access-requests/infrastructure/persistence/drizzle/repositories/access-request/drizzle-access-request.repository.js';
 import { DrizzleRequestAttemptRepository } from '../src/modules/access-requests/infrastructure/persistence/drizzle/repositories/attempt/drizzle-request-attempt.repository.js';
 import type { CleanUpRemovedMemberInput } from '../src/modules/member-lifecycle/application/use-cases/commands/membership/clean-up-removed-member/clean-up-removed-member.input.js';
@@ -218,7 +221,7 @@ interface OutboxRow {
 }
 
 /** The issuers the service trusts. */
-type Issuer = 'api-gateway' | 'realtime-gateway' | 'document-service';
+type Issuer = 'api-gateway' | 'realtime-gateway' | 'document-service' | 'search-service';
 
 /** A space, as the routes answer it. */
 type SpaceBody = z.output<typeof GetSpaceInternalResponse>;
@@ -656,6 +659,7 @@ describe('the access model: grants, the switch, the effective role and access re
   const apiGateway = keyPair('test-api-gateway');
   const realtimeGateway = keyPair('test-realtime-gateway');
   const documentService = keyPair('test-document-service');
+  const searchService = keyPair('test-search-service');
   let app: NestExpressApplication | undefined;
   const signers = new Map<Issuer, InternalTokenSigner>();
   let migrator: pg.Pool;
@@ -1260,6 +1264,10 @@ describe('the access model: grants, the switch, the effective role and access re
     vi.stubEnv('NATS_PASSWORD', 'task');
     vi.stubEnv('INTERNAL_TOKEN_AUDIENCE', 'task-service');
     vi.stubEnv(
+      'SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS',
+      JSON.stringify(searchService.publicJwk),
+    );
+    vi.stubEnv(
       'INTERNAL_TOKEN_TRUSTED_ISSUERS',
       JSON.stringify({
         'api-gateway': [apiGateway.publicJwk],
@@ -1283,6 +1291,7 @@ describe('the access model: grants, the switch, the effective role and access re
       logDestination: { write: (): void => undefined },
     });
     configureDocumentSpaceAccessCache(app);
+    configureTaskSearchCache(app);
     await app.init();
     signers.set(
       'api-gateway',
@@ -1303,6 +1312,13 @@ describe('the access model: grants, the switch, the effective role and access re
       await InternalTokenSigner.create({
         issuer: 'document-service',
         privateJwk: documentService.privateJwk,
+      }),
+    );
+    signers.set(
+      'search-service',
+      await InternalTokenSigner.create({
+        issuer: 'search-service',
+        privateJwk: searchService.privateJwk,
       }),
     );
 
@@ -4655,5 +4671,158 @@ describe('the access model: grants, the switch, the effective role and access re
         `access plans: sequential scans of the task tables: ${seqScansOf(plans, taskTables).join('; ') || 'none'}`,
       );
     }, 300_000);
+  });
+
+  it('proves signed Search access against the current membership, grants, placement and lifecycle', async () => {
+    const organizationId = '019a7000-1a2b-7c3d-8e4f-5a6b7c8d9e01';
+    const owner: Person = {
+      userId: '019a7000-1a2b-7c3d-8e4f-5a6b7c8d9e02',
+      memberId: '019a7000-1a2b-7c3d-8e4f-5a6b7c8d9e03',
+    };
+    const viewer: Person = {
+      userId: '019a7000-1a2b-7c3d-8e4f-5a6b7c8d9e04',
+      memberId: '019a7000-1a2b-7c3d-8e4f-5a6b7c8d9e05',
+    };
+    await deliver(toPublishedEvent('joined', organizationId, owner, 'owner', 1));
+    await deliver(toPublishedEvent('joined', organizationId, viewer, 'member', 1));
+
+    const source = await createSpace(
+      owner,
+      { name: 'Source', prefix: 'SRC', visibility: 'private' },
+      organizationId,
+    );
+    const destination = await createSpace(
+      owner,
+      { name: 'Destination', prefix: 'DST', visibility: 'private' },
+      organizationId,
+    );
+    const sourceList = source.firstList;
+    const destinationList = destination.firstList;
+    const destinationGrant = `/internal/v1/spaces/${destination.space.id}/grants/${viewer.userId}`;
+    const grantedList = await send(
+      'put',
+      `/internal/v1/lists/${sourceList.id}/grants/${viewer.userId}`,
+      owner,
+      { organizationId, body: { role: 'view' } },
+    );
+    expect(grantedList.status, grantedList.text).toBe(200);
+    expect(grantedList.headers.etag).toBe(etagOf(sourceList.version + 1));
+    const grantedSpace = await send('put', destinationGrant, owner, {
+      organizationId,
+      body: { role: 'view' },
+    });
+    expect(grantedSpace.status, grantedSpace.text).toBe(200);
+    expect(grantedSpace.headers.etag).toBe(etagOf(destination.space.version + 1));
+
+    const listTasks = `/internal/v1/lists/${sourceList.id}/tasks`;
+    const task = await send('post', listTasks, owner, {
+      organizationId,
+      body: { name: 'Task to move' },
+    });
+    expect(task.status, task.text).toBe(201);
+    const movable = conforms(CreateTaskInternalResponse, bodyOf(task));
+    const child = await send('post', listTasks, owner, {
+      organizationId,
+      body: { name: 'Inactive through its list' },
+    });
+    expect(child.status, child.text).toBe(201);
+    const retained = conforms(CreateTaskInternalResponse, bodyOf(child));
+
+    const path = '/internal/v1/task-search-access/resolve';
+    const membership = { memberId: viewer.memberId, version: 1, role: 'member' } as const;
+    const sourceSelector = { kind: 'space', id: source.space.id.toUpperCase() } as const;
+    const destinationSelector = { kind: 'space', id: destination.space.id } as const;
+    const movedSelector = { kind: 'task', id: movable.key } as const;
+    const retainedSelector = { kind: 'task', id: retained.key } as const;
+    const listSelector = { kind: 'list', id: sourceList.id } as const;
+    const resolve = (body: SearchAccessLookup): Promise<request.Response> =>
+      send('post', path, viewer, { issuer: 'search-service', organizationId, body });
+    const candidates = [sourceSelector, movedSelector, destinationSelector, listSelector];
+    const proved = await resolve({ membership, candidates });
+    expect(proved.status, proved.text).toBe(200);
+    expect(proved.headers['cache-control']).toBe('private, no-store');
+    expect(bodyOf(proved)).toEqual({
+      results: [
+        {
+          ...sourceSelector,
+          id: source.space.id,
+          version: source.space.version,
+          directSpace: false,
+        },
+        {
+          ...movedSelector,
+          version: movable.version,
+          listId: sourceList.id,
+          spaceId: source.space.id,
+        },
+        { ...destinationSelector, version: destination.space.version + 1, directSpace: true },
+        { ...listSelector, version: sourceList.version + 1, spaceId: source.space.id },
+      ],
+    });
+
+    for (const stale of [
+      { ...membership, memberId: owner.memberId },
+      { ...membership, version: 2 },
+      { ...membership, role: 'admin' },
+    ] as const) {
+      const mismatch = await resolve({ membership: stale, candidates });
+      expectProblem(mismatch, 503, 'task.search-access-unavailable');
+      expect(mismatch.headers['cache-control']).toBe('private, no-store');
+      expect(bodyOf(mismatch)).not.toHaveProperty('results');
+      expect(mismatch.text).not.toContain(movable.key);
+    }
+
+    const moved = await send('patch', `/internal/v1/tasks/${movable.key}`, owner, {
+      organizationId,
+      body: { listId: destinationList.id },
+    });
+    expect(moved.status, moved.text).toBe(200);
+    const current = conforms(UpdateTaskInternalResponse, bodyOf(moved));
+    expect(current).toMatchObject({
+      key: movable.key,
+      version: movable.version + 1,
+      listId: destinationList.id,
+      spaceId: destination.space.id,
+    });
+    const archived = await send('post', `/internal/v1/lists/${sourceList.id}/archive`, owner, {
+      organizationId,
+      body: {},
+    });
+    expect(archived.status, archived.text).toBe(200);
+    const afterMove = await resolve({
+      membership,
+      candidates: [retainedSelector, movedSelector, listSelector],
+    });
+    expect(afterMove.status, afterMove.text).toBe(200);
+    expect(conforms(ResolveTaskSearchAccessInternalResponse, bodyOf(afterMove))).toEqual({
+      results: [
+        {
+          ...movedSelector,
+          version: current.version,
+          listId: current.listId,
+          spaceId: current.spaceId,
+        },
+      ],
+    });
+
+    const duplicate = await resolve({
+      membership,
+      candidates: [sourceSelector, { ...sourceSelector, id: source.space.id }],
+    });
+    expectProblem(duplicate, 400, 'request.invalid');
+    expect(duplicate.headers['cache-control']).toBe('private, no-store');
+    const wrongIssuer = await send('post', path, viewer, {
+      organizationId,
+      body: { membership, candidates },
+    });
+    expectProblem(wrongIssuer, 403, 'auth.issuer-not-allowed');
+    expect(wrongIssuer.headers['cache-control']).toBe('private, no-store');
+
+    await deliver(toPublishedEvent('removed', organizationId, viewer, 'member', 2));
+    const revoked = await resolve({ membership, candidates });
+    expectProblem(revoked, 503, 'task.search-access-unavailable');
+    expect(revoked.headers['cache-control']).toBe('private, no-store');
+    expect(bodyOf(revoked)).not.toHaveProperty('results');
+    expect(revoked.text).not.toContain(movable.key);
   });
 });

@@ -357,6 +357,21 @@ where archived_at is null` is not used by "Mes tâches". To revisit by replacing
 
 ## API
 
+For Search, `GET /internal/v1/task-search-projections` exports current task, list and space
+metadata and `POST /internal/v1/task-search-projections/resolve` resolves an ordered batch.
+Both require the Search system identity and the signed organization. The export holds the
+first page's UUID upper bound and binds its authenticated cursor to the tenant, kind and parent
+filters. The read-only projection joins Task-owned rows with list and space lifecycle in the
+same service database. Each join includes the organization. Spaces retains ownership of list
+and space writes. A space awaiting an owner and its descendants remain in system projections.
+The user proof applies the canonical access rules and excludes those resources until the space
+has an owner.
+
+`POST /internal/v1/task-search-access/resolve` checks a Search-delegated user. It compares the
+current local membership stamp against Organization's evidence, then resolves active versions,
+placements and access in the same read-only snapshot. The space proof distinguishes direct
+access from visibility through a shared list.
+
 The P3c-2 reporting contract uses a verified API gateway user and organization. The list reads
 serve sprint reports, workload, timesheets and CSV rows. The team dashboard spans the caller's
 visible live lists. CSV rows carry encoded cells and assignee IDs for the gateway to resolve.

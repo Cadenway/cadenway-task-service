@@ -61,6 +61,14 @@ export class FindOrganizationMember {
   public async execute(
     input: FindOrganizationMemberInput,
   ): Promise<FindOrganizationMemberOutput | null> {
+    const stamp = await this.stamp(input);
+    return stamp === null ? null : { memberId: stamp.memberId, role: stamp.role };
+  }
+
+  /** Returns the identity, role and version from the same least-privileged active membership. */
+  public async stamp(
+    input: FindOrganizationMemberInput,
+  ): Promise<(FindOrganizationMemberOutput & { readonly version: number }) | null> {
     const active: Membership[] = await this.unitOfWork.run(
       (memberships: MembershipRepository): Promise<Membership[]> =>
         memberships.listActiveByUser(input.organizationId, input.userId, input.lock === true),
@@ -69,8 +77,8 @@ export class FindOrganizationMember {
     if (membership === null) {
       return null;
     }
-    const { id, role } = membership.snapshot;
-    return { memberId: id, role };
+    const { id, role, version } = membership.snapshot;
+    return { memberId: id, role, version };
   }
   // #endregion
 }

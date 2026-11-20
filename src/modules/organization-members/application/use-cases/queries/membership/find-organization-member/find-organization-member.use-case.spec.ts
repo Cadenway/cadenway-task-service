@@ -92,6 +92,21 @@ describe('FindOrganizationMember: an account is a member from the copy, with its
     expect(member).toEqual({ memberId: LEA_MEMBERSHIP, role: 'guest' });
   });
 
+  it('returns the version of the selected active membership alongside its ID and role', async () => {
+    const store = new InMemoryMemberships([
+      membershipState({ id: HUGO_MEMBERSHIP, role: 'admin', version: 9 }),
+      membershipState({ id: LEA_MEMBERSHIP, role: 'guest', version: 3 }),
+    ]);
+
+    const stamp = await new FindOrganizationMember(store).stamp({
+      organizationId: ATELIER_NORD,
+      userId: HUGO,
+    });
+
+    expect(stamp).toEqual({ memberId: LEA_MEMBERSHIP, role: 'guest', version: 3 });
+    expect(store.activeByUserLocks).toEqual([false]);
+  });
+
   it('passes the organization and the account of the input to the repository', async () => {
     const store = new InMemoryMemberships();
 
