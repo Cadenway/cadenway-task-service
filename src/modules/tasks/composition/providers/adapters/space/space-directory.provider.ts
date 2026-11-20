@@ -6,7 +6,7 @@ import { FindVisibleLists } from '../../../../../spaces/public/list/find-visible
 import { FindVisibleSpaceLists } from '../../../../../spaces/public/list/find-visible-space-lists.js';
 import { HoldList } from '../../../../../spaces/public/list/hold-list.js';
 import { LockDeletedList } from '../../../../../spaces/public/list/lock-deleted-list.js';
-import { LockDeletedLists } from '../../../../../spaces/public/list/lock-deleted-lists.js';
+import { LockTrashLists } from '../../../../../spaces/public/list/lock-trash-lists.js';
 import { ListArchivedLists } from '../../../../../spaces/public/list/list-archived-lists.js';
 import { ListCurrentSprints } from '../../../../../spaces/public/list/list-current-sprints.js';
 import { ListSidebarLists } from '../../../../../spaces/public/list/list-sidebar-lists.js';
@@ -28,7 +28,7 @@ import { SPACE_DIRECTORY } from '../../../tokens/space/space-directory.token.js'
  * `ListVisibleListIds`, `FindVisibleSpaceLists`, `ListCurrentSprints`, `ListSidebarLists`,
  * `AllocateTaskKeys`, `RestoreArchivedList`, `ListArchivedLists`, `FindVisibleLists`, and the seven
  * of the trash: `ListTrashLists`, `FindTrashList`, `RestoreDeletedList`, `PurgeDeletedList`,
- * `HoldList`, `LockDeletedList` and `LockDeletedLists`), which join the tenant transaction of the
+ * `HoldList`, `LockDeletedList` and `LockTrashLists`), which join the tenant transaction of the
  * calling use case.
  *
  * @type {FactoryProvider<SpaceDirectory>}
@@ -51,7 +51,7 @@ export const spaceDirectoryProvider: FactoryProvider<SpaceDirectory> = {
     PurgeDeletedList,
     HoldList,
     LockDeletedList,
-    LockDeletedLists,
+    LockTrashLists,
   ],
   useFactory: (
     findVisibleList: FindVisibleList,
@@ -69,7 +69,7 @@ export const spaceDirectoryProvider: FactoryProvider<SpaceDirectory> = {
     purgeDeletedList: PurgeDeletedList,
     holdList: HoldList,
     lockDeletedList: LockDeletedList,
-    lockDeletedLists: LockDeletedLists,
+    lockTrashLists: LockTrashLists,
   ): SpaceDirectory =>
     new SpacesSpaceDirectory(
       findVisibleList,
@@ -87,6 +87,6 @@ export const spaceDirectoryProvider: FactoryProvider<SpaceDirectory> = {
       purgeDeletedList,
       holdList,
       lockDeletedList,
-      lockDeletedLists,
+      lockTrashLists,
     ),
 };

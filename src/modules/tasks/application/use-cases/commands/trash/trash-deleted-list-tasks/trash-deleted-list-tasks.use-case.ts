@@ -2,6 +2,7 @@ import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.
 import { showsParent } from '../../../../../domain/policies/subtask/subtask-tree.policy.js';
 import type { DeletedListPurge } from '../../../../models/placement/deleted-list-purge.model.js';
 import type { HeldList } from '../../../../models/placement/held-list.model.js';
+import type { LockedDeletedList } from '../../../../models/placement/locked-deleted-list.model.js';
 import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
 import type { LockedTrashTrees } from '../../../../models/trash/locked-trash-trees.model.js';
 import type { TrashCandidateRoot } from '../../../../models/trash/trash-candidate-root.model.js';
@@ -61,8 +62,9 @@ const MAX_TASKS: number = 500;
  * the transaction instant, the actor who deleted the list), an archived task keeping its archive (out
  * of the archives while in the trash), in one bulk update, with one `task.trashed.v1` per task,
  * entry after entry. So an archived top-level task makes its own entry, and an archived subtask
- * goes with its top-level ancestor. With no candidate left, the list is held first (`HoldList`,
- * no task locked on that path: `list-live` or `list-gone` unless it is still deleted); a list that
+ * goes with its top-level ancestor. With no candidate left, the list is locked first, its space
+ * before it, in the modes the erasure of its tombstone needs (`LockDeletedList`, no task locked on
+ * that path: `list-live` or `list-gone` unless it is still deleted); a list that
  * still holds a task out of the trash answers `rescan` (a safety net: the job starts the list
  * again); otherwise a list no task row references any more is handed to the spaces module
  * (`PurgeDeletedList`), which erases a deleted list and then its deleted space once no list of it
@@ -212,14 +214,18 @@ export class TrashDeletedListTasks {
    * Method purgeEmptyList
    *
    * @description
-   * With no candidate left after the position, holds the list `FOR SHARE` first (`HoldList`; no
-   * task is locked on this path), so the checks of the remaining tasks and the erasure of the
-   * tombstone run under that lock: a list no longer deleted (a restoration brought it back)
-   * answers `list-live`, an unknown or erased one `list-gone`. A deleted list that still holds a
-   * task out of the trash (behind the position: a safety net, as no task enters or leaves a
-   * deleted list) answers `rescan`, writing nothing, and the job starts it again from the start.
-   * Otherwise a deleted list is handed to the spaces module when no task row references it any
-   * more (a task in the trash still does, until its entry is erased).
+   * With no candidate left after the position, locks the list first, in the modes an erasure of
+   * its tombstone needs and in the global lock order (`LockDeletedList`: a deleted list has its
+   * space locked `FOR NO KEY UPDATE`, then the list `FOR UPDATE`; no task is locked on this path),
+   * so the checks of the remaining tasks and the erasure of the tombstone run under those locks
+   * and `PurgeDeletedList` takes no stronger list lock (no upgrade from a shared lock, which would
+   * wait in a cycle with the clean-up of a member who left, which locks the space, then the list).
+   * A list no longer deleted (a restoration brought it back) answers `list-live`, an unknown or
+   * erased one `list-gone`. A deleted list that still holds a task out of the trash (behind the
+   * position: a safety net, as no task enters or leaves a deleted list) answers `rescan`, writing
+   * nothing, and the job starts it again from the start. Otherwise a deleted list is handed to the
+   * spaces module when no task row references it any more (a task in the trash still does, until
+   * its entry is erased; an erasure of it serializes with this batch on the list).
    *
    * @param {TasksStore} store - The store of the transaction.
    * @param {string} organizationId - The organization of the job.
@@ -232,9 +238,12 @@ export class TrashDeletedListTasks {
     organizationId: string,
     listId: string,
   ): Promise<TrashDeletedListTasksOutput> {
-    const list: HeldList = await this.spaces.holdList(organizationId, listId);
-    if (list.outcome !== 'deleted') {
-      return this.notDeleted(list);
+    const list: LockedDeletedList = await this.spaces.lockDeletedList(organizationId, listId);
+    if (list.outcome === 'live') {
+      return { outcome: 'list-live' };
+    }
+    if (list.outcome === 'not-found') {
+      return { outcome: 'list-gone' };
     }
     const pending: ReadonlySet<string> = await store.tasks.listsWithUntrashedTasks(organizationId, [
       listId,

@@ -230,35 +230,6 @@ export class TaskAnnouncer {
   }
 
   /**
-   * Method purgedPart
-   *
-   * @description
-   * Announces the erasure of a part of an entry too large for one batch of the purge: one
-   * `task.purged.v1` per task of the part, in the order they are erased (the deepest first, then
-   * by id), each at the version of its erasure with the entry and the key of its root, which a
-   * later part erases.
-   *
-   * @param {TaskEvents} events - The outbox of the transaction.
-   * @param {string} entryId - The entry.
-   * @param {TaskKey} rootKey - The key of the root of the entry.
-   * @param {readonly Task[]} tasks - The tasks of the part, at the version of their erasure, in
-   * their order.
-   * @param {EventActor} actor - Who erases them.
-   * @returns {Promise<void>} Resolves once appended.
-   */
-  public async purgedPart(
-    events: TaskEvents,
-    entryId: string,
-    rootKey: TaskKey,
-    tasks: readonly Task[],
-    actor: EventActor,
-  ): Promise<void> {
-    for (const task of tasks) {
-      await events.taskPurged(task, entryId, rootKey, actor);
-    }
-  }
-
-  /**
    * Method entryOf
    *
    * @description

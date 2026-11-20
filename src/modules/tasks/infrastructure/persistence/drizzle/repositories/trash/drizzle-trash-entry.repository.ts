@@ -6,16 +6,15 @@ import type { TrashEntryRecord } from '../../../../../application/models/trash/t
 import type { TrashPosition } from '../../../../../application/models/trash/trash-position.model.js';
 import type { TrashEntryRepository } from '../../../../../application/ports/outbound/persistence/trash/trash-entry-repository.port.js';
 import type { TaskActor } from '../../../../../domain/value-objects/task/task-actor.value-object.js';
-import type { TrashHandOver } from '../../../../../domain/value-objects/trash/trash-hand-over.value-object.js';
 import type { RawTrashEntryRow } from '../../mappers/trash/raw-trash-entry-row.mapper.js';
 import { toTrashEntryRecord } from '../../mappers/trash/trash-entry.mapper.js';
 import {
   dueEntriesStatement,
   eraseEntriesStatements,
-  erasePartStatements,
   handedOverEntriesStatement,
   insertEntriesStatement,
   removeEntryStatement,
+  lockInTrashOfListsStatement,
   requestPurgeStatement,
   trashEntryStatement,
   trashPageStatement,
@@ -173,27 +172,56 @@ export class DrizzleTrashEntryRepository implements TrashEntryRepository {
   }
 
   /**
-   * Method requestPurge
+   * Method lockInTrashOfLists
    *
    * @description
-   * Hands the entries of the lists to the purge in one statement (`requestPurgeStatement`).
+   * Locks the entries of the lists still in the trash `FOR UPDATE` in one statement ordered by id
+   * (`lockInTrashOfListsStatement`). No list locks nothing.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} listIds - The lists.
+   * @returns {Promise<readonly { readonly id: string; readonly listId: string }[]>} The entries
+   * locked, by id.
+   */
+  public async lockInTrashOfLists(
+    organizationId: string,
+    listIds: readonly string[],
+  ): Promise<readonly { readonly id: string; readonly listId: string }[]> {
+    if (listIds.length === 0) {
+      return [];
+    }
+    const result = await this.db.execute<{ id: string; listId: string }>(
+      lockInTrashOfListsStatement(organizationId, listIds),
+    );
+    return result.rows.map((row: { id: string; listId: string }) => ({
+      id: row.id,
+      listId: row.listId,
+    }));
+  }
+
+  /**
+   * Method requestPurge
+   *
+   * @description
+   * Hands some locked entries to the purge in one statement (`requestPurgeStatement`). No entry
+   * writes nothing.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {readonly string[]} entryIds - The entries.
    * @param {Date} at - The transaction instant.
    * @param {TaskActor} by - Who asked.
    * @returns {Promise<number>} How many entries left the trash.
    */
   public async requestPurge(
     organizationId: string,
-    listIds: readonly string[],
+    entryIds: readonly string[],
     at: Date,
     by: TaskActor,
   ): Promise<number> {
-    if (listIds.length === 0) {
+    if (entryIds.length === 0) {
       return 0;
     }
-    const result = await this.db.execute(requestPurgeStatement(organizationId, listIds, at, by));
+    const result = await this.db.execute(requestPurgeStatement(organizationId, entryIds, at, by));
     return result.rowCount ?? 0;
   }
 
@@ -250,47 +278,6 @@ export class DrizzleTrashEntryRepository implements TrashEntryRepository {
     }
     for (const statement of eraseEntriesStatements(organizationId, entryIds)) {
       await this.db.execute(statement);
-    }
-  }
-
-  /**
-   * Method erasePart
-   *
-   * @description
-   * Erases some tasks of one entry in the seven statements of `erasePartStatements`, in their
-   * order, and checks that every task and the entry row were written.
-   *
-   * @param {string} organizationId - The organization of the transaction.
-   * @param {string} entryId - The entry.
-   * @param {readonly string[]} taskIds - The tasks to erase.
-   * @param {TrashHandOver} handOver - The hand-over set on an entry still in the trash.
-   * @returns {Promise<void>} Resolves once erased.
-   * @throws {Error} When a task or the entry vanished, which their locks prevent.
-   */
-  public async erasePart(
-    organizationId: string,
-    entryId: string,
-    taskIds: readonly string[],
-    handOver: TrashHandOver,
-  ): Promise<void> {
-    if (taskIds.length === 0) {
-      return;
-    }
-    const statements: readonly SQL[] = erasePartStatements(
-      organizationId,
-      entryId,
-      taskIds,
-      handOver,
-    );
-    const counts: (number | null)[] = [];
-    for (const statement of statements) {
-      counts.push((await this.db.execute(statement)).rowCount);
-    }
-    const [erased, entries] = counts.slice(-2);
-    if (erased !== taskIds.length || entries !== 1) {
-      throw new Error(
-        `The part of the trash entry ${entryId} lost ${String(taskIds.length - (erased ?? 0))} of its ${String(taskIds.length)} tasks or its row while they were locked.`,
-      );
     }
   }
 

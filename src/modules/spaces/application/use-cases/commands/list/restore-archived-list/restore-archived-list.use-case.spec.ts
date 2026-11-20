@@ -93,12 +93,12 @@ describe('RestoreArchivedList: the archived list of a restored task comes back w
     ]);
   });
 
-  it('locks the list, and reads no membership: the caller passes the role', async () => {
+  it('holds the space for share, then locks the list, and reads no membership: the caller passes the role', async () => {
     const spaces = atelierNord();
 
     await new RestoreArchivedList(spaces).execute(restore());
 
-    expect(spaces.journal).toEqual([`list ${SPRINT_14}`]);
+    expect(spaces.journal).toEqual([`space ${PRODUIT} share`, `list ${SPRINT_14}`]);
   });
 
   it('lets the owner of a private space restore its list', async () => {

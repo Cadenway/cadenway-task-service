@@ -209,6 +209,22 @@ export class DrizzleSpaceRepository implements SpaceRepository {
   }
 
   /**
+   * Method lockSharedUnlessLocked
+   *
+   * @description
+   * Loads a space by its organization and its id, and locks its row `FOR SHARE SKIP LOCKED`
+   * until the end of the transaction, unless it is deleted: a row a writer holds is left out at
+   * once.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} id - The id of the space.
+   * @returns {Promise<Space | null>} The space, or `null`.
+   */
+  public async lockSharedUnlessLocked(organizationId: string, id: string): Promise<Space | null> {
+    return this.lockRow(organizationId, id, 'share', undeletedSpaceCondition(), true);
+  }
+
+  /**
    * Method lockInOrder
    *
    * @description
@@ -470,6 +486,8 @@ export class DrizzleSpaceRepository implements SpaceRepository {
    * @param {string} id - The id of the space.
    * @param {'update' | 'no key update' | 'share'} strength - The row lock.
    * @param {SQL | undefined} condition - The condition the row must meet, or `undefined`.
+   * @param {boolean} [skipLocked] - `true` to leave out a row another transaction holds in a
+   * conflicting mode instead of waiting for it (`SKIP LOCKED`); `false` by default.
    * @returns {Promise<Space | null>} The space, or `null`.
    */
   private async lockRow(
@@ -477,13 +495,14 @@ export class DrizzleSpaceRepository implements SpaceRepository {
     id: string,
     strength: 'update' | 'no key update' | 'share',
     condition: SQL | undefined,
+    skipLocked: boolean = false,
   ): Promise<Space | null> {
     const rows: SpaceRow[] = await this.db
       .select()
       .from(spaces)
       .where(and(eq(spaces.organizationId, organizationId), eq(spaces.id, id), condition))
       .limit(1)
-      .for(strength);
+      .for(strength, skipLocked ? { skipLocked: true } : {});
     const row: SpaceRow | undefined = rows[0];
     return row === undefined ? null : toSpace(row);
   }

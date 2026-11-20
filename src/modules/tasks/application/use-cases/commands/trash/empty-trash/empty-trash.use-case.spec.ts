@@ -146,3 +146,93 @@ describe('EmptyTrash: while the switch of the writes of the trash is off', () =>
     expect(tasks.trashEntries.get(CAD_482_ENTRY)?.purgeRequest).toBeNull();
   });
 });
+
+describe('EmptyTrash: the entries are locked before their lists, and the role read again under the locks of the lists', () => {
+  it('locks the entries still in the trash, then their lists for share with the actor, then hands them over by id', async () => {
+    const trace: string[] = [];
+    const tasks = new InMemoryTasks({
+      tasks: [
+        taskState({ trash: trashIn(), version: 13 }),
+        cad490State({ listId: BUGS, trash: trashIn(BUGS_ENTRY), version: 2 }),
+      ],
+      trashEntries: [
+        storedEntry({ taskCount: 1 }),
+        storedEntry({ id: BUGS_ENTRY, rootTaskId: cad490State().id, listId: BUGS, taskCount: 1 }),
+      ],
+      trace,
+    });
+    const directory = new InMemorySpaceDirectory({ trace });
+    const useCase = new EmptyTrash(
+      TRASH_WRITES_ON,
+      tasks,
+      atelierNordMembers([], trace),
+      directory,
+    );
+
+    await useCase.execute({ organizationId: ATELIER_NORD, actorUserId: CAMILLE });
+
+    expect(
+      trace.filter((call: string): boolean =>
+        [
+          `members.roleOf:${CAMILLE}:lock`,
+          'spaces.trashLists',
+          'trash.lockInTrashOfLists',
+          'spaces.lockTrashLists',
+          'trash.requestPurge',
+        ].includes(call),
+      ),
+    ).toEqual([
+      `members.roleOf:${CAMILLE}:lock`,
+      'spaces.trashLists',
+      'trash.lockInTrashOfLists',
+      'spaces.lockTrashLists',
+      'trash.requestPurge',
+    ]);
+    expect(
+      directory.lockTrashCalls.map(({ listIds, mode, viewer }) => ({
+        listIds,
+        mode,
+        viewer: viewer?.userId ?? null,
+      })),
+    ).toEqual([{ listIds: [BUGS, SPRINT_14].sort(), mode: 'hold', viewer: CAMILLE }]);
+  });
+
+  it('keeps in the trash the entries of a list whose role the actor lost while the locks waited, and counts without them', async () => {
+    const directory = new InMemorySpaceDirectory();
+    directory.revokedUnderLock.add(SPRINT_14);
+    const { tasks, useCase } = atelierNord(directory);
+
+    expect(await useCase.execute({ organizationId: ATELIER_NORD, actorUserId: CAMILLE })).toEqual({
+      entryCount: 1,
+    });
+    expect(tasks.trashEntries.get(CAD_482_ENTRY)?.purgeRequest).toBeNull();
+    expect(tasks.trashEntries.get(BUGS_ENTRY)?.purgeRequest).toEqual({ at: NOW, by: camille });
+    expect(tasks.jobs).toEqual([{ queue: 'task.purge-trash' }]);
+  });
+
+  it('enqueues no job and hands nothing over when every list is lost under the locks', async () => {
+    const directory = new InMemorySpaceDirectory();
+    directory.revokedUnderLock.add(SPRINT_14);
+    directory.revokedUnderLock.add(BUGS);
+    const { tasks, useCase } = atelierNord(directory);
+
+    expect(await useCase.execute({ organizationId: ATELIER_NORD, actorUserId: CAMILLE })).toEqual({
+      entryCount: 0,
+    });
+    expect(tasks.trashEntries.get(CAD_482_ENTRY)?.purgeRequest).toBeNull();
+    expect(tasks.trashEntries.get(BUGS_ENTRY)?.purgeRequest).toBeNull();
+    expect(tasks.jobs).toEqual([]);
+  });
+
+  it('locks no list when the lists the actor may restore hold no entry', async () => {
+    const directory = new InMemorySpaceDirectory();
+    const tasks = new InMemoryTasks({});
+    const useCase = new EmptyTrash(TRASH_WRITES_ON, tasks, atelierNordMembers(), directory);
+
+    expect(await useCase.execute({ organizationId: ATELIER_NORD, actorUserId: CAMILLE })).toEqual({
+      entryCount: 0,
+    });
+    expect(directory.lockTrashCalls).toEqual([]);
+    expect(tasks.jobs).toEqual([]);
+  });
+});

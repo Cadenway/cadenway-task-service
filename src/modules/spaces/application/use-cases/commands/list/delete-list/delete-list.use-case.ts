@@ -18,8 +18,11 @@ import type { DeleteListInput } from './delete-list.input.js';
  * (`DELETE /internal/v1/lists/{listId}`, "Supprimer la liste", "Deletion" of
  * `openapi/public/lists.yaml`): it becomes a tombstone that every route answers `404` and every
  * collection leaves out, with its tasks, which the job `task.trash-deleted-tasks` then moves to the
- * trash. The membership of the actor is read `FOR SHARE`, then the list is locked until the end of
- * the transaction (`EditableListLocator`, the guard of every write of a list, as `ArchiveList`).
+ * trash. The membership of the actor is read `FOR SHARE`, then its space is held `FOR SHARE` and the
+ * list locked `FOR NO KEY UPDATE` until the end of the transaction (`EditableListLocator`, the guard
+ * of every write of a list, as `ArchiveList`), and the role of the actor is checked again on the
+ * locked rows when one of them changed meanwhile: a space made private, or a grant revoked, while
+ * the deletion waited for a lock refuses it.
  * Refusals, in this order: `list-not-found` (unknown, deleted, or no role on it),
  * `role-insufficient` (a role without `edit`), `version-mismatch` (`If-Match`). Otherwise the list
  * takes `deletedAt` = the instant of the transaction, `deletedBy` = the actor, the next version;

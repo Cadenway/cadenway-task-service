@@ -103,18 +103,18 @@ describe('FindTaskReference: one read in the transaction of the caller', () => {
   });
 });
 
-describe('FindTaskReference: a read under FOR SHARE for a change that must not race a deletion', () => {
-  it('locks the task of the key for share in one statement and answers it as without a lock', async () => {
+describe('FindTaskReference: share-unless-locked reads under FOR SHARE SKIP LOCKED for a change that must not race a deletion', () => {
+  it('locks the task of the key for share with the skip-locked read in one statement and answers it as without a lock', async () => {
     const tasks = atelierNord();
 
     const reference = await new FindTaskReference(tasks).execute({
       organizationId: ATELIER_NORD,
       taskKey: 'CAD-482',
-      lock: 'share',
+      lock: 'share-unless-locked',
     });
 
     expect(reference).toMatchObject({ id: CAD_482, key: 'CAD-482', listId: SPRINT_14 });
-    expect(tasks.trace).toEqual(['tasks.shareLocationByKey:share']);
+    expect(tasks.trace).toEqual(['tasks.shareLocationUnlessLocked:share']);
     expect(tasks.readOnlyRuns).toBe(0);
   });
 
@@ -128,10 +128,29 @@ describe('FindTaskReference: a read under FOR SHARE for a change that must not r
       await new FindTaskReference(tasks).execute({
         organizationId: ATELIER_NORD,
         taskKey,
-        lock: 'share',
+        lock: 'share-unless-locked',
       }),
     ).toBeNull();
-    expect(tasks.trace).toEqual(['tasks.shareLocationByKey:share']);
+    expect(tasks.trace).toEqual(['tasks.shareLocationUnlessLocked:share']);
+  });
+
+  it('answers null at once for a task a writer holds, which a read without lock finds', async () => {
+    const tasks = atelierNord();
+    tasks.heldByWriter.add(CAD_482);
+
+    const locked = await new FindTaskReference(tasks).execute({
+      organizationId: ATELIER_NORD,
+      taskKey: 'CAD-482',
+      lock: 'share-unless-locked',
+    });
+    const unlocked = await new FindTaskReference(tasks).execute({
+      organizationId: ATELIER_NORD,
+      taskKey: 'CAD-482',
+    });
+
+    expect(locked).toBeNull();
+    expect(unlocked).toMatchObject({ id: CAD_482, key: 'CAD-482' });
+    expect(tasks.trace).toEqual(['tasks.shareLocationUnlessLocked:share', 'reader.locationByKey']);
   });
 
   it('reads without a lock when none is asked for', async () => {

@@ -1,7 +1,7 @@
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
 import type { ArchivePosition } from '../../../../models/archive/archive-position.model.js';
 import type { ArchivedLists } from '../../../../models/placement/archived-lists.model.js';
-import type { DeletedListLock } from '../../../../models/placement/deleted-list-lock.model.js';
+import type { TrashListLock } from '../../../../models/placement/trash-list-lock.model.js';
 import type { DeletedListPurge } from '../../../../models/placement/deleted-list-purge.model.js';
 import type { DeletedListRestoration } from '../../../../models/placement/deleted-list-restoration.model.js';
 import type { HeldList } from '../../../../models/placement/held-list.model.js';
@@ -22,7 +22,7 @@ import type { TrashListAccess } from '../../../../models/placement/trash-list-ac
  * `openapi/public/spaces.yaml`: a guest has a role on the lists shared with them only). The tasks
  * module keeps no copy of a space, a list or a grant. A deleted list or space (a tombstone) is
  * invisible to every method but the seven of the trash (`trashLists`, `findTrashList`,
- * `restoreDeletedList`, `purgeDeletedList`, `holdList`, `lockDeletedList`, `lockDeletedLists`).
+ * `restoreDeletedList`, `purgeDeletedList`, `holdList`, `lockDeletedList`, `lockTrashLists`).
  */
 export interface SpaceDirectory {
   // #region Methods
@@ -298,22 +298,29 @@ export interface SpaceDirectory {
   lockDeletedList(organizationId: string, listId: string): Promise<LockedDeletedList>;
 
   /**
-   * Method lockDeletedLists
+   * Method lockTrashLists
    *
    * @description
-   * Locks several deleted lists in one global order (`LockDeletedLists` of the spaces module, 100
-   * lists at most): reads them without a lock; the live and unknown ones take no lock; the spaces of
-   * the deleted ones are locked `FOR NO KEY UPDATE` in `(created_at, id)` order, then those lists
-   * `FOR UPDATE` in ascending list id, and read again under the locks. An erasure decides under
-   * them whether each tombstone goes.
+   * Locks the lists of trash entries, live or deleted, in the global lock order, after the entries
+   * and the tasks the caller locked (`LockTrashLists` of the spaces module): their spaces in
+   * `(created_at, id)` order, then the lists in ascending list id, read again under the locks,
+   * with the role of the viewer on each read under them. `hold` takes `FOR SHARE` on both (a
+   * revocation, a change of visibility or a deletion either committed before and is seen, or waits
+   * for the commit), for "Vider la corbeille"; `erase` takes the spaces `FOR NO KEY UPDATE` and
+   * the lists `FOR UPDATE`, for an erasure, which then decides under them whether each tombstone
+   * goes, a deletion committed meanwhile included.
    *
    * @param {string} organizationId - The organization of the transaction.
-   * @param {readonly string[]} listIds - The lists, 100 at most.
-   * @returns {Promise<readonly DeletedListLock[]>} What the lock found for each list.
+   * @param {readonly string[]} listIds - The lists.
+   * @param {'hold' | 'erase'} mode - How the caller holds them.
+   * @param {Viewer | null} viewer - The member whose role is read again, `null` for the service.
+   * @returns {Promise<readonly TrashListLock[]>} What the lock found for each list.
    */
-  lockDeletedLists(
+  lockTrashLists(
     organizationId: string,
     listIds: readonly string[],
-  ): Promise<readonly DeletedListLock[]>;
+    mode: 'hold' | 'erase',
+    viewer: Viewer | null,
+  ): Promise<readonly TrashListLock[]>;
   // #endregion
 }

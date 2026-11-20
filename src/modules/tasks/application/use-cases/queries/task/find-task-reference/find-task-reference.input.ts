@@ -32,14 +32,15 @@ export interface FindTaskReferenceInput {
    * Property lock
    *
    * @description
-   * `share` to lock the task of the key `FOR SHARE` until the commit of the caller, in the same
-   * statement whatever the outcome, so a concurrent deletion of the task either committed before
-   * (the task reads as not found) or waits for the caller; `none` (the default) for a read without
-   * a lock.
+   * `share-unless-locked` to lock the task of the key `FOR SHARE SKIP LOCKED` until the commit of
+   * the caller, in the same statement whatever the outcome, so a concurrent deletion of the task
+   * either committed before (the task reads as not found) or waits for the caller, and a task a
+   * writer holds reads as not found at once, without waiting; `none` (the default) for a read
+   * without a lock.
    *
-   * @type {'none' | 'share' | undefined}
+   * @type {'none' | 'share-unless-locked' | undefined}
    * @readonly
    */
-  readonly lock?: 'none' | 'share';
+  readonly lock?: 'none' | 'share-unless-locked';
   // #endregion
 }

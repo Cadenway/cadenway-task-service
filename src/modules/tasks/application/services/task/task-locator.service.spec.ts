@@ -389,3 +389,97 @@ describe('TaskLocator: a task in the trash answers task-trashed to whoever could
     expect(refusal).toEqual(trashed);
   });
 });
+
+describe('TaskLocator.confirm: the checks of the unlocked read are made again on the task as locked', () => {
+  /**
+   * Locates CAD-482 without a lock, then confirms it on a locked copy.
+   *
+   * @param spaces - The fake spaces.
+   * @param locked - The task as the lock read it.
+   * @param overrides - Fields of the request to replace.
+   * @param tasks - The fake store.
+   * @returns What `confirm` answered.
+   */
+  async function confirm(
+    spaces: InMemorySpaceDirectory,
+    locked: Task,
+    overrides: Partial<LocateRequest> = {},
+    tasks: InMemoryTasks = InMemoryTasks.withCad482(),
+  ): Promise<LocatedTask> {
+    const unlocked: LocateRequest = request({ lock: false, ...overrides });
+    return tasks.run(async (store: TasksStore): Promise<LocatedTask> => {
+      const locator = new TaskLocator(spaces);
+      const located: LocatedTask = await locator.locate(store, unlocked);
+      return locator.confirm(store, unlocked, located, locked);
+    });
+  }
+
+  it('answers the locked task with the placement of the unlocked read when nothing changed, reading no list again', async () => {
+    const trace: string[] = [];
+    const spaces = new InMemorySpaceDirectory({ trace });
+
+    const { task, placement } = await confirm(
+      spaces,
+      Task.restore(taskState()),
+      {},
+      InMemoryTasks.withCad482({ trace }),
+    );
+
+    expect(task.snapshot.version).toBe(12);
+    expect(placement.list.id).toBe(SPRINT_14);
+    expect(trace.filter((call: string): boolean => call === 'spaces.findVisibleList')).toHaveLength(
+      1,
+    );
+  });
+
+  it('decides on the list of the locked task when it moved meanwhile: a list seen only refuses', async () => {
+    const tasks = InMemoryTasks.withCad482({ tasks: [taskState({ listId: BUGS })] });
+
+    expect(
+      await refusalOf(
+        confirm(
+          sprint14SharedWith({ [HUGO]: 'view' }),
+          Task.restore(taskState({ version: 13 })),
+          {},
+          tasks,
+        ),
+      ),
+    ).toEqual({ reason: 'role-insufficient', role: 'view' });
+  });
+
+  it('refuses a task archived meanwhile as task-archived, unless the caller lets archived tasks through', async () => {
+    const archived: Task = Task.restore(taskState({ archive: archiveFrom(CAD_482), version: 13 }));
+    const spaces = new InMemorySpaceDirectory();
+
+    expect(await refusalOf(confirm(spaces, archived))).toEqual({
+      reason: 'task-archived',
+      key: 'CAD-482',
+    });
+    expect((await confirm(spaces, archived, { archived: 'allow' })).task.snapshot.version).toBe(13);
+  });
+
+  it('checks If-Match on the locked version, which a change committed meanwhile moved on', async () => {
+    expect(
+      await refusalOf(
+        confirm(new InMemorySpaceDirectory(), Task.restore(taskState({ version: 13 })), {
+          expectedVersions: [12],
+        }),
+      ),
+    ).toEqual({ reason: 'version-mismatch', version: 13 });
+  });
+
+  it('answers task-trashed for a task the lock reads in the trash', async () => {
+    const tasks = InMemoryTasks.withCad482({ trashEntries: [storedEntry({ taskCount: 1 })] });
+
+    expect(
+      await refusalOf(
+        confirm(
+          new InMemorySpaceDirectory(),
+          Task.restore(taskState({ trash: trashIn(), version: 13 })),
+          {},
+          tasks,
+        ),
+      ),
+    ).toMatchObject({ reason: 'task-trashed', key: 'CAD-482', entryId: CAD_482_ENTRY });
+  });
+});

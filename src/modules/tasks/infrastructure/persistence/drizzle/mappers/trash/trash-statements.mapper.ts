@@ -7,7 +7,6 @@ import type { TrashEntryDraft } from '../../../../../application/models/trash/tr
 import type { TrashPosition } from '../../../../../application/models/trash/trash-position.model.js';
 import type { TaskActor } from '../../../../../domain/value-objects/task/task-actor.value-object.js';
 import type { TaskState } from '../../../../../domain/value-objects/task/task-state.value-object.js';
-import type { TrashHandOver } from '../../../../../domain/value-objects/trash/trash-hand-over.value-object.js';
 import { activityEntries } from '../../schemas/activity/activity-entry.schema.js';
 import { checklistItems } from '../../schemas/checklist/checklist-item.schema.js';
 import { taskAssignees } from '../../schemas/task/task-assignee.schema.js';
@@ -146,25 +145,45 @@ export function trashTotalStatement(organizationId: string, listIds: readonly st
 }
 
 /**
- * Function requestPurgeStatement
+ * Function lockInTrashOfListsStatement
  *
  * @description
- * "Vider la corbeille" in one statement: the entries of some lists still in the trash get the
- * instant and the actor of their hand-over to the purge job, and leave the trash.
+ * Locks `FOR UPDATE` the entries of some lists still in the trash, in one statement ordered by
+ * id (the entries of the organization still in the trash, `trash_entries_trashed_index`, filtered
+ * by list, as the hand-over reads them), before "Vider la corbeille" locks their lists: entries
+ * before spaces and lists, the global lock order.
  *
  * @param {string} organizationId - The organization of the transaction.
  * @param {readonly string[]} listIds - The lists the actor may restore the entries of.
+ * @returns {SQL} The statement; each row is `{ id, listId }`, by id.
+ */
+export function lockInTrashOfListsStatement(
+  organizationId: string,
+  listIds: readonly string[],
+): SQL {
+  return sql`select ${trashEntries.id} as "id", ${trashEntries.listId} as "listId" from ${trashEntries} where ${trashEntries.organizationId} = ${organizationId}::uuid and ${trashEntries.purgeRequestedAt} is null and ${trashEntries.listId} = any(${sql.param([...listIds])}::uuid[]) order by ${trashEntries.id} for update`;
+}
+
+/**
+ * Function requestPurgeStatement
+ *
+ * @description
+ * "Vider la corbeille" in one statement: some entries still in the trash, which the caller locked,
+ * get the instant and the actor of their hand-over to the purge job, and leave the trash.
+ *
+ * @param {string} organizationId - The organization of the transaction.
+ * @param {readonly string[]} entryIds - The entries.
  * @param {Date} at - The transaction instant.
  * @param {TaskActor} by - Who asked.
  * @returns {SQL} The statement; its row count is the number of entries handed over.
  */
 export function requestPurgeStatement(
   organizationId: string,
-  listIds: readonly string[],
+  entryIds: readonly string[],
   at: Date,
   by: TaskActor,
 ): SQL {
-  return sql`update ${trashEntries} set purge_requested_at = ${at.toISOString()}::timestamptz, purge_requested_by_type = ${by.type}, purge_requested_by_id = ${by.id} where ${trashEntries.organizationId} = ${organizationId}::uuid and ${trashEntries.purgeRequestedAt} is null and ${trashEntries.listId} = any(${sql.param([...listIds])}::uuid[])`;
+  return sql`update ${trashEntries} set purge_requested_at = ${at.toISOString()}::timestamptz, purge_requested_by_type = ${by.type}, purge_requested_by_id = ${by.id} where ${trashEntries.organizationId} = ${organizationId}::uuid and ${trashEntries.purgeRequestedAt} is null and ${trashEntries.id} = any(${sql.param([...entryIds])}::uuid[])`;
 }
 
 /**
@@ -392,71 +411,6 @@ export function listsWithTasksStatement(
 ): SQL {
   const untrashed: SQL = untrashedOnly ? sql` and ${untrashedTask()}` : sql``;
   return sql`select candidate.list_id as "listId" from unnest(${sql.param([...listIds])}::uuid[]) as candidate (list_id) where exists (select 1 from ${tasks} where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.listId} = candidate.list_id${untrashed})`;
-}
-
-/**
- * Function entryTreeStatement
- *
- * @description
- * The tasks of one trash entry from its stored parent links, in one recursive statement: its root,
- * then every task of the entry under it (`tasks_parent_created_index`, the children kept when in
- * the same entry), at any depth; PostgreSQL detects a cycle of parent links
- * (`CYCLE id SET is_cycle USING path`), which the caller treats as a defect. Built without a
- * connection, so a test can `EXPLAIN` it.
- *
- * @param {string} organizationId - The organization of the transaction.
- * @param {string} entryId - The entry.
- * @param {string} rootTaskId - Its root.
- * @returns {SQL} The statement; each row is `{ id, rootId, depth, isCycle }`, by depth and id.
- */
-export function entryTreeStatement(
-  organizationId: string,
-  entryId: string,
-  rootTaskId: string,
-): SQL {
-  return sql`with recursive tree (id, root_id, depth) as (select ${tasks.id}, ${tasks.id}, 0 from ${tasks} where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.id} = ${rootTaskId}::uuid and ${tasks.trashEntryId} = ${entryId}::uuid union all select ${childTasks.id}, tree.root_id, tree.depth + 1 from tree join ${tasks} as ${childTasks} on ${childTasks.organizationId} = ${organizationId}::uuid and ${childTasks.parentId} = tree.id where ${childTasks.trashEntryId} = ${entryId}::uuid) cycle id set is_cycle using path select id, root_id as "rootId", depth::int as "depth", is_cycle as "isCycle" from tree order by depth, id`;
-}
-
-/**
- * Function erasePartStatements
- *
- * @description
- * The erasure of some tasks of one entry, in the statements of `eraseEntriesStatements` scoped to
- * those tasks by primary key: their activity entries, checklist items, assignees and labels; the
- * tasks outside them whose parent is one of them detached (`parent_id` null, no version: the
- * tasks of the entry under them are erased before, deepest first, so only tasks of other entries
- * and archived tasks left in another list can be there); the tasks, guarded by the entry; then
- * the entry row, its `task_count` less the tasks erased, handed to the purge when it was still in
- * the trash (the three `purge_requested_*` columns set together, a hand-over kept as it was).
- *
- * @param {string} organizationId - The organization of the transaction.
- * @param {string} entryId - The entry.
- * @param {readonly string[]} taskIds - The tasks to erase.
- * @param {TrashHandOver} handOver - The hand-over set on an entry still in the trash.
- * @returns {readonly SQL[]} The statements, to run in this order; the row counts of the last two
- * are the tasks erased and 1.
- */
-export function erasePartStatements(
-  organizationId: string,
-  entryId: string,
-  taskIds: readonly string[],
-  handOver: TrashHandOver,
-): readonly SQL[] {
-  const ids: SQL = sql`${sql.param([...taskIds])}::uuid[]`;
-  const collection = (
-    table:
-      typeof activityEntries | typeof checklistItems | typeof taskAssignees | typeof taskLabels,
-  ): SQL =>
-    sql`delete from ${table} where ${table.organizationId} = ${organizationId}::uuid and ${table.taskId} = any(${ids})`;
-  return [
-    collection(activityEntries),
-    collection(checklistItems),
-    collection(taskAssignees),
-    collection(taskLabels),
-    sql`update ${tasks} set parent_id = null where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.parentId} = any(${ids}) and ${tasks.id} <> all(${ids})`,
-    sql`delete from ${tasks} where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.id} = any(${ids}) and ${tasks.trashEntryId} = ${entryId}::uuid`,
-    sql`update ${trashEntries} set task_count = ${trashEntries.taskCount} - ${String(taskIds.length)}::int, purge_requested_at = coalesce(${trashEntries.purgeRequestedAt}, ${handOver.at.toISOString()}::timestamptz), purge_requested_by_type = coalesce(${trashEntries.purgeRequestedByType}, ${handOver.by.type}), purge_requested_by_id = coalesce(${trashEntries.purgeRequestedById}, ${handOver.by.id}) where ${trashEntries.organizationId} = ${organizationId}::uuid and ${trashEntries.id} = ${entryId}::uuid`,
-  ];
 }
 
 /**

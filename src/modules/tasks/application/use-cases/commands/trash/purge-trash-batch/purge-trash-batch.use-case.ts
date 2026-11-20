@@ -7,7 +7,6 @@ import type { TasksStore } from '../../../../models/transactions/tasks-store.mod
 import type { TrashEntryErasure } from '../../../../models/trash/trash-entry-erasure.model.js';
 import type { TrashEntryRecord } from '../../../../models/trash/trash-entry-record.model.js';
 import type { TrashErasureCounts } from '../../../../models/trash/trash-erasure-counts.model.js';
-import type { TrashTreeNode } from '../../../../models/trash/trash-tree-node.model.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
 import { TrashEraser } from '../../../../services/trash/trash-eraser.service.js';
@@ -30,7 +29,7 @@ const MAX_ENTRIES: number = 20;
  * @description
  * The budget of a batch, in tasks: it takes whole entries of 500 tasks or fewer while the entries
  * taken hold fewer than 500 tasks, so a batch erases 999 tasks at most (499, then one entry of
- * 500), and erases an entry larger than this in parts of exactly this many tasks.
+ * 500); an entry larger than this, when it comes first, is erased alone and whole.
  *
  * @type {number}
  */
@@ -51,26 +50,22 @@ const MAX_TASKS: number = 500;
  * so two jobs of one organization share them.
  *
  * - When the first entry holds more than 500 tasks (`task_count`; its archived subtasks are not
- *   limited), the batch erases a part of it alone: its tasks are read from their stored parent
- *   links in one recursive statement (`entryTree`, cycles detected), the 500 deepest (then by id)
- *   are locked `FOR UPDATE` in one statement by id (`lockEntryTasks`) and erased in the statements
- *   of an erasure scoped to them (`TrashEraser.erasePart`: one `task.purged.v1` each, its parent
- *   key as stored, the tasks of other entries under them detached), and the entry row stays, its
- *   count lowered, handed to the purge as task-service when it was due (a hand-over keeps its
- *   requester): out of the trash from that first part on. A later batch goes on with it (an entry
- *   handed over comes before the entries due), and erases it whole once 500 tasks or fewer are
- *   left.
+ *   limited), the batch erases it alone and whole, as "Supprimer définitivement" does and as one
+ *   transaction moved it to the trash (a deletion and a batch of the deletion job trash an entry
+ *   whole): every `task.purged.v1` of an entry commits with its erasure, the root first as
+ *   `asyncapi/task-service.yaml` requires, and a failure leaves the whole entry, no event of it.
  * - Otherwise it takes the entries in their order while the entries taken hold fewer than 500
  *   tasks, each of 500 tasks or fewer (it stops at an entry larger than that, which a later batch
- *   erases in parts when it comes first), so it erases 999 tasks at most; the entries locked and
- *   not taken wait for the next batch. It locks the tasks of all the entries taken `FOR UPDATE` in
- *   one statement ordered by id (`trash_entry_id = any($entries)`, `lockTrashEntries`), and the
- *   eraser emits one `task.purged.v1` per task, erases them, and erases the deleted lists and
- *   spaces they leave without a task.
+ *   erases alone when it comes first), so it erases 999 tasks at most; the entries locked and
+ *   not taken wait for the next batch.
  *
- * The actor is the requester of "Vider la corbeille" for an entry handed over, and
- * `{ type: 'system', id: 'task-service' }` for an entry due (`erasureActorOf`). A failed batch
- * rolls back alone.
+ * It locks the tasks of all the entries taken `FOR UPDATE` in one statement ordered by id
+ * (`trash_entry_id = any($entries)`, `lockTrashEntries`), and the eraser emits one
+ * `task.purged.v1` per task, the root of each entry first, erases them, locks the lists of the
+ * entries (`LockTrashLists` in `erase`, no role checked) and erases the deleted lists and spaces
+ * they leave without a task. The actor is the requester of "Vider la corbeille" for an entry
+ * handed over, and `{ type: 'system', id: 'task-service' }` for an entry due (`erasureActorOf`).
+ * A failed batch rolls back alone.
  */
 export class PurgeTrashBatch {
   // #region Properties
@@ -118,10 +113,6 @@ export class PurgeTrashBatch {
       if (first === undefined) {
         return { outcome: 'none-left' };
       }
-      if (first.taskCount > MAX_TASKS) {
-        const tasks: number = await this.erasePart(store, organizationId, first);
-        return { outcome: 'purged', entries: 0, tasks, listsPurged: 0, spacesPurged: 0 };
-      }
       const taken: readonly TrashEntryRecord[] = this.take(entries);
       const tasks: readonly Task[] = await store.tasks.lockTrashEntries(
         organizationId,
@@ -135,7 +126,12 @@ export class PurgeTrashBatch {
           actor: this.actorOf(entry),
         }),
       );
-      const counts: TrashErasureCounts = await this.eraser.erase(store, organizationId, erasures);
+      const counts: TrashErasureCounts = await this.eraser.erase(
+        store,
+        organizationId,
+        erasures,
+        null,
+      );
       return {
         outcome: 'purged',
         entries: erasures.length,
@@ -143,58 +139,6 @@ export class PurgeTrashBatch {
         listsPurged: counts.listsPurged,
         spacesPurged: counts.spacesPurged,
       };
-    });
-  }
-
-  /**
-   * Method erasePart
-   *
-   * @description
-   * Erases the 500 deepest tasks of an entry too large for one batch (then by id), read from their
-   * stored parent links and locked `FOR UPDATE` by id.
-   *
-   * @param {TasksStore} store - The store of the transaction.
-   * @param {string} organizationId - The organization of the job.
-   * @param {TrashEntryRecord} entry - The entry, locked, of more than 500 tasks.
-   * @returns {Promise<number>} The tasks erased.
-   * @throws {Error} When the tree holds a cycle, or a task chosen left the entry under its lock:
-   * defects.
-   */
-  private async erasePart(
-    store: TasksStore,
-    organizationId: string,
-    entry: TrashEntryRecord,
-  ): Promise<number> {
-    const nodes: readonly TrashTreeNode[] = await store.tasks.entryTree(
-      organizationId,
-      entry.id,
-      entry.rootTaskId,
-    );
-    const deepest: readonly TrashTreeNode[] = [...nodes]
-      .sort(
-        (left: TrashTreeNode, right: TrashTreeNode): number =>
-          right.depth - left.depth || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
-      )
-      .slice(0, MAX_TASKS);
-    const locked: readonly Task[] = await store.tasks.lockEntryTasks(
-      organizationId,
-      entry.id,
-      deepest.map((node: TrashTreeNode): string => node.id),
-    );
-    const byId = new Map<string, Task>(
-      locked.map((task: Task): [string, Task] => [task.snapshot.id, task]),
-    );
-    const tasks: readonly Task[] = deepest.map((node: TrashTreeNode): Task => {
-      const task: Task | undefined = byId.get(node.id);
-      if (task === undefined) {
-        throw new Error(`The task ${node.id} left the trash entry ${entry.id} under its lock.`);
-      }
-      return task;
-    });
-    return this.eraser.erasePart(store, organizationId, {
-      entry,
-      tasks,
-      actor: this.actorOf(entry),
     });
   }
 
@@ -227,15 +171,18 @@ export class PurgeTrashBatch {
    * Method take
    *
    * @description
-   * The entries the batch erases whole: in their order, each of 500 tasks or fewer, while the
-   * entries taken hold fewer than 500 tasks (their stored `task_count`); the first entry larger
-   * than that stops the batch.
+   * The entries the batch erases whole: the first alone when it holds more than 500 tasks (their
+   * stored `task_count`), else in their order, each of 500 tasks or fewer, while the entries taken
+   * hold fewer than 500 tasks; the first entry larger than that stops the batch.
    *
-   * @param {readonly TrashEntryRecord[]} entries - The entries locked, the first of 500 tasks or
-   * fewer.
+   * @param {readonly TrashEntryRecord[]} entries - The entries locked, at least one.
    * @returns {readonly TrashEntryRecord[]} The entries taken.
    */
   private take(entries: readonly TrashEntryRecord[]): readonly TrashEntryRecord[] {
+    const [first] = entries;
+    if (first !== undefined && first.taskCount > MAX_TASKS) {
+      return [first];
+    }
     const taken: TrashEntryRecord[] = [];
     let held: number = 0;
     for (const entry of entries) {

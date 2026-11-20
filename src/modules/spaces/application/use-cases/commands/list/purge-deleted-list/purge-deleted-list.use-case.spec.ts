@@ -17,6 +17,8 @@ import {
   spaceState,
   sprintState,
 } from '../../../spaces.fixture.js';
+import { TaskList } from '../../../../../domain/aggregates/list/task-list.aggregate.js';
+import type { SpacesUnitOfWork } from '../../../../ports/outbound/transactions/space/spaces-unit-of-work.port.js';
 import type { PurgeDeletedListInput } from './purge-deleted-list.input.js';
 import { PurgeDeletedList } from './purge-deleted-list.use-case.js';
 
@@ -87,7 +89,7 @@ describe('PurgeDeletedList: a deleted list is erased with the last of its entrie
     expect(spaces.spaces.has(PRODUIT)).toBe(true);
   });
 
-  it('locks the list for an erasure, then the deleted space', async () => {
+  it('locks the space for no key update before the list for an erasure, then the deleted space for its erasure', async () => {
     const spaces = new InMemorySpaces({
       spaces: [spaceState({ deletedAt: DELETED_AT, deletedBy: BY_CAMILLE })],
       lists: [sprintState({ deletedAt: DELETED_AT, deletedBy: BY_CAMILLE })],
@@ -95,10 +97,14 @@ describe('PurgeDeletedList: a deleted list is erased with the last of its entrie
 
     await new PurgeDeletedList(spaces).execute(purgeSprint());
 
-    expect(spaces.journal).toEqual([`list ${SPRINT_14} delete`, `space ${PRODUIT} delete`]);
+    expect(spaces.journal).toEqual([
+      `space ${PRODUIT}`,
+      `list ${SPRINT_14} delete`,
+      `space ${PRODUIT} delete`,
+    ]);
   });
 
-  it('never locks a live space for an erasure', async () => {
+  it('never locks a live space for an erasure, only for no key update before the list', async () => {
     const spaces = new InMemorySpaces({
       spaces: [spaceState()],
       lists: [sprintState({ deletedAt: DELETED_AT, deletedBy: BY_CAMILLE })],
@@ -106,7 +112,7 @@ describe('PurgeDeletedList: a deleted list is erased with the last of its entrie
 
     await new PurgeDeletedList(spaces).execute(purgeSprint());
 
-    expect(spaces.journal).toEqual([`list ${SPRINT_14} delete`]);
+    expect(spaces.journal).toEqual([`space ${PRODUIT}`, `list ${SPRINT_14} delete`]);
   });
 });
 
@@ -149,7 +155,7 @@ describe('PurgeDeletedList: a list is read without lock first, and only a delete
     expect(spaces.journal).toEqual([]);
   });
 
-  it('reads the deleted list, locks it, then reads its space before locking it', async () => {
+  it('reads the deleted list, then locks its space before it, and reads the space under its lock only', async () => {
     const spaces = new InMemorySpaces({
       spaces: [spaceState({ deletedAt: DELETED_AT, deletedBy: BY_CAMILLE })],
       lists: [sprintState({ deletedAt: DELETED_AT, deletedBy: BY_CAMILLE })],
@@ -157,7 +163,59 @@ describe('PurgeDeletedList: a list is read without lock first, and only a delete
 
     await new PurgeDeletedList(spaces).execute(purgeSprint());
 
-    expect(spaces.reads).toEqual(['list', 'space']);
-    expect(spaces.journal).toEqual([`list ${SPRINT_14} delete`, `space ${PRODUIT} delete`]);
+    expect(spaces.reads).toEqual(['list']);
+    expect(spaces.journal).toEqual([
+      `space ${PRODUIT}`,
+      `list ${SPRINT_14} delete`,
+      `space ${PRODUIT} delete`,
+    ]);
+  });
+
+  it('answers not-deleted and erases nothing when the list was restored while its lock waited', async () => {
+    const seeded = new InMemorySpaces({
+      spaces: [spaceState()],
+      lists: [sprintState({ deletedAt: DELETED_AT, deletedBy: BY_CAMILLE })],
+    });
+    /** A unit of work whose lock of the list finds Sprint 14 restored. */
+    const unitOfWork: SpacesUnitOfWork = {
+      run: (work) =>
+        seeded.run((store) =>
+          work({
+            ...store,
+            lists: {
+              ...store.lists,
+              lockIncludingDeleted: () =>
+                Promise.resolve(TaskList.restore(sprintState({ restoredAt: DELETED_AT }))),
+            },
+          }),
+        ),
+    };
+
+    expect(await new PurgeDeletedList(unitOfWork).execute(purgeSprint())).toEqual({
+      outcome: 'not-deleted',
+    });
+    expect(seeded.lists.has(SPRINT_14)).toBe(true);
+  });
+
+  it('answers not-found and erases nothing when the space was erased while its lock waited', async () => {
+    const seeded = new InMemorySpaces({
+      spaces: [spaceState({ deletedAt: DELETED_AT, deletedBy: BY_CAMILLE })],
+      lists: [sprintState({ deletedAt: DELETED_AT, deletedBy: BY_CAMILLE })],
+    });
+    /** A unit of work whose lock of the space finds it erased. */
+    const unitOfWork: SpacesUnitOfWork = {
+      run: (work) =>
+        seeded.run((store) =>
+          work({
+            ...store,
+            spaces: { ...store.spaces, lockIncludingDeleted: () => Promise.resolve(null) },
+          }),
+        ),
+    };
+
+    expect(await new PurgeDeletedList(unitOfWork).execute(purgeSprint())).toEqual({
+      outcome: 'not-found',
+    });
+    expect(seeded.lists.has(SPRINT_14)).toBe(true);
   });
 });

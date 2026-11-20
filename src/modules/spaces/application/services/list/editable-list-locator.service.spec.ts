@@ -49,7 +49,7 @@ function sharedForComment(): InMemorySpaces {
 describe('EditableListLocator.find: the guard of a write of a list, without throwing', () => {
   const locator = new EditableListLocator();
 
-  it('answers the locked list to an actor with edit on it, read then locked', async () => {
+  it('answers the locked list to an actor with edit on it, read then locked after its space held for share', async () => {
     const spaces = atelierNord();
 
     const found: EditableListLookup = await spaces.run((store: SpacesStore) =>
@@ -60,7 +60,7 @@ describe('EditableListLocator.find: the guard of a write of a list, without thro
     expect(found.outcome === 'locked' ? found.list.snapshot : null).toEqual(
       sprintState({ version: 3 }),
     );
-    expect(spaces.journal).toEqual([`list ${SPRINT_14}`]);
+    expect(spaces.journal).toEqual([`space ${PRODUIT} share`, `list ${SPRINT_14}`]);
   });
 
   it.each([

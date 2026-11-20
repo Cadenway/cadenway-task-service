@@ -47,7 +47,7 @@ access-requests module.
 | `public/list/purge-deleted-list`            | tasks                                                        |
 | `public/list/hold-list`                     | tasks                                                        |
 | `public/list/lock-deleted-list`             | tasks                                                        |
-| `public/list/lock-deleted-lists`            | tasks                                                        |
+| `public/list/lock-trash-lists`              | tasks                                                        |
 | `public/list/list-deleted-space-lists`      | deletion-lifecycle                                           |
 | `public/space/purge-deleted-space`          | deletion-lifecycle                                           |
 | `public/access/find-access-target`          | access-requests                                              |
@@ -115,8 +115,8 @@ copy of the memberships.
   emitted), by the actor; a live list in a live space writes nothing. A refusal writes nothing.
 - `PurgeDeletedList` (`{ organizationId, listId }` to `{ outcome: 'purged', spacePurged }`,
   `not-deleted` or `not-found`): erases a deleted list and its grants, then its deleted space and
-  its grants once no list row of it is left; the caller guarantees that no task references the
-  list. `PurgeDeletedSpace` (`{ organizationId, spaceId }` to `purged`, `not-deleted`,
+  its grants once no list row of it is left, under the locks its callers already hold (its space,
+  then the list); the caller guarantees that no task references the list. `PurgeDeletedSpace` (`{ organizationId, spaceId }` to `purged`, `not-deleted`,
   `not-empty` or `not-found`): erases a deleted space without any list row. No event.
 - `HoldList` (`{ organizationId, listId }` to `live`, `{ outcome: 'deleted', deletedBy }` or
   `not-found`): holds the list `FOR SHARE` until the commit, deleted or not, no role checked;
@@ -126,11 +126,17 @@ copy of the memberships.
   locked, its space `FOR NO KEY UPDATE`, then the list `FOR UPDATE` (which waits for the
   `FOR SHARE` of `HoldList`, of a batch of the deletion job and of a creation of a task), then read
   again under the lock (`live` once restored meanwhile, `not-found` once erased). The tasks module
-  calls it before it restores an entry of the list. No role, no write.
-- `LockDeletedLists` (`{ organizationId, listIds }`, 100 ids at most, more throws, to `{ lists }`,
-  each `{ listId, outcome }` as for `LockDeletedList`, one per distinct id in the order first
-  given): the same for several lists at once, in the one lock order of the module (Transactions).
-  The tasks module calls it once for the lists of the entries it erases. No role, no write.
+  calls it before it restores an entry of the list, and a batch of the deletion job before it
+  erases the tombstone of a list it finds empty. No role, no write.
+- `LockTrashLists` (`{ organizationId, listIds, mode: 'hold' | 'erase', viewer }` to
+  `{ lists }`, each `{ listId, outcome, role }`, `outcome` `deleted`, `live` or `not-found` as
+  read under the lock, one per distinct id in the order first given): locks the lists of trash
+  entries, live or deleted, and their spaces, in the one lock order (Transactions): `hold` takes
+  both `FOR SHARE` ("Vider la corbeille"), `erase` the spaces `FOR NO KEY UPDATE` and the lists
+  `FOR UPDATE` (an erasure, which may then erase a tombstone with `PurgeDeletedList`); `role` is
+  the role of `viewer` (`{ userId, role }`, or `null` for the service) as if not deleted, read
+  under those locks, `null` without a viewer or a role. O(lists given) for the locks; the role
+  of several lists reads the lean rows of the organization, as `ListTrashLists`. No write.
 - `ListDeletedSpaceLists` (`{ organizationId, spaceId }` to `{ space, listIds }`): holds the
   space `FOR SHARE` until the commit and reads where it stands (`deleted`, `live` for a space
   restored meanwhile, `gone` for an erased or unknown one), then the deleted lists of the space
@@ -140,12 +146,13 @@ copy of the memberships.
   target with `spaceName`, `spaceOwnerUserId`, `listName`, `viewerRole` (on the space for a space,
   on the list for a list) and `viewerManages` (`canManageSpace` for a space,
   `canManageListAccess` for a list), seen or not; `null` only when the organization has no such
-  space or list, live or archived (a tombstone answers `null`). With `lock: 'share'` (the default
-  `none` takes no lock) the reading of the row of the target, the space for a space, the list for a
-  list, takes `FOR SHARE`, so that a deletion of it committed first or waits for the caller. The
-  same statements and locks run whatever the outcome (an unknown target is read with the nil UUID
-  in its place, and the grants are always read), so that they tell nothing of the existence of the
-  target.
+  space or list, live or archived (a tombstone answers `null`). With `lock: 'share-unless-locked'`
+  (the default `none` takes no lock) the reading of the row of the target, the space for a space,
+  the list for a list, takes `FOR SHARE SKIP LOCKED`, so that a deletion of it committed first or
+  waits for the caller, and a row a writer holds at that instant reads `null` at once instead of
+  being waited for. The same statements and locks run whatever the outcome (an unknown target is
+  read with the nil UUID in its place, and the grants are always read), and none waits on the
+  target, so that neither they nor their time tell anything of the existence of the target.
 - `ListManagedAccessTargets` (`{ organizationId, viewerUserId, viewerRole }` to
   `{ spaceIds, listIds }`): the spaces the viewer manages and the lists they have `edit` on.
 - `GrantRequestedAccess` (`{ organizationId, actorUserId, actorRole, target, granteeUserId, role }`
@@ -432,23 +439,32 @@ Every use case runs in one tenant transaction of the organization of the context
 deduplicator or of the calling module; what it writes and its outbox rows commit together, and a
 refusal rolls it back. The readings of the copy join the same transaction.
 
-Locks are always taken in this order: memberships `FOR SHARE`, then (for a caller of the tasks
-module) its trash entries and tasks, then spaces, then lists; `PurgeDeletedList` is the one
-exception (below). Several spaces are locked in `(created_at, id)` order
-(`SpaceRepository.lockInOrder` and the batches of the handover), several lists in ascending id in
-one statement (`lockMany`, `lockUndeletedOfSpace`), so that no two lockers wait on each other in a
-cycle.
+Locks are always taken in the global lock order of the service ("Global lock order" in the
+Transactions of `src/modules/tasks/MODULE.md`): memberships `FOR SHARE`, then (for a caller of the tasks module)
+its trash entries and tasks, then spaces, then lists, with no exception. Several spaces are
+locked in `(created_at, id)` order (`SpaceRepository.lockInOrder` and the batches of the
+handover), several lists in ascending id in one statement (`lockMany`, `lockUndeletedOfSpace`),
+so that no two lockers wait on each other in a cycle. A lock is taken in its final mode before
+the next row: the one strengthening left, `FOR NO KEY UPDATE` of a deleted space to the
+`FOR UPDATE` of its erasure (`DeletedSpaceEraser`), waits for no other writer (that mode
+conflicts with every other writer, and a deleted space takes no new row, so no foreign-key check
+holds it either).
 
 - A write reads the membership of the actor `FOR SHARE`, so that a concurrent removal waits for it.
-- A change of a space (`PATCH`, its grants) locks it `FOR NO KEY UPDATE`; a change of a list locks
-  the list (`PATCH`, `archive`, `unarchive`); each after the check of the actor on the rows read
-  without lock, and again on the locked rows when they changed (`CheckedLocker`). A creation of a
+- A change of a space (`PATCH`, its grants) locks it `FOR NO KEY UPDATE`; a change of a list
+  (`PATCH`, `archive`, `unarchive`, its deletion, its grants) holds its space `FOR SHARE`, then
+  locks the list `FOR NO KEY UPDATE`; each after the check of the actor on the rows read without
+  lock, and again on the locked rows when one of them changed (`CheckedLocker`). Every input of the
+  role on a list is then held until the commit (the space, its grants and the list, whose writers
+  lock them and take their next version), so a space made private or a grant revoked while the
+  change waited for a lock refuses it. A creation of a
   list holds its space `FOR SHARE`, so that a deletion of the space either commits first (`404`)
   or waits and deletes the new list. A `PUT` of a grant locks the membership of the person given
   access `FOR SHARE` after the actor's, so that the clean-up of a removal sees the grant.
-  `RestoreArchivedList` reads no membership and locks the list `FOR NO KEY UPDATE` after the tasks
-  its caller locked.
-- `DeleteList` locks the list `FOR NO KEY UPDATE` (`EditableListLocator`, as `ArchiveList`);
+  `RestoreArchivedList` reads no membership and holds the space `FOR SHARE`, then locks the list
+  `FOR NO KEY UPDATE`, after the tasks its caller locked.
+- `DeleteList` holds the space `FOR SHARE` and locks the list `FOR NO KEY UPDATE`
+  (`EditableListLocator`, as `ArchiveList`);
   `DeleteSpace` locks the space `FOR NO KEY UPDATE`, then its lists not deleted yet
   `FOR NO KEY UPDATE` in ascending id in one `select … order by id for no key update`, then writes
   them in ONE `UPDATE` (O(lists of the space)), which would otherwise take them in the order of its
@@ -460,16 +476,19 @@ cycle.
 - `HoldList` locks the list `FOR SHARE` after the tasks its caller locked; a deletion of it or of
   its space writes the row, so the two serialize. `LockDeletedList` locks a deleted list's space
   `FOR NO KEY UPDATE`, then the list `FOR UPDATE`, and nothing for a live or unknown list.
-  `LockDeletedLists` reads its lists in one statement without lock, then locks the spaces of the
-  deleted ones `FOR NO KEY UPDATE` in `(created_at, id)` order, then those lists `FOR UPDATE` in
-  ascending id in one statement, which reads them again; nothing for the live and unknown ones.
+  `LockTrashLists` reads its lists in one statement without lock, then locks their spaces, live
+  or deleted, in `(created_at, id)` order, then the lists in ascending id in one statement, which
+  reads them again, then reads the role of the viewer: `FOR SHARE` on both in `hold`, the spaces
+  `FOR NO KEY UPDATE` and the lists `FOR UPDATE` in `erase`, after the entries and the tasks its
+  caller locked.
   `RestoreDeletedList` reads the list and its space, checks the role, locks the space
   `FOR NO KEY UPDATE`, then the list `FOR NO KEY UPDATE`, after the entry and the tasks its caller
   locked (and `LockDeletedList`, whose locks it then holds already). `FindAccessTarget` with
-  `lock: 'share'` holds the space of a space target, or the list of a list target, `FOR SHARE`.
-  `PurgeDeletedList` reads the list without lock and locks `FOR UPDATE` only a deleted one, then,
-  for a deleted space, the space `FOR UPDATE`: list before space is safe there,
-  a restoration needs an entry of the list, and its caller found none. `PurgeDeletedSpace` locks
+  `lock: 'share-unless-locked'` holds the space of a space target, or the list of a list target,
+  `FOR SHARE SKIP LOCKED`: it never waits for a writer of the target, whose row then reads unknown.
+  `PurgeDeletedList` reads the list without lock and locks only a deleted one, its space
+  `FOR NO KEY UPDATE`, then the list `FOR UPDATE` (its callers hold both already), then erases a
+  deleted space through `DeletedSpaceEraser` (`FOR UPDATE`). `PurgeDeletedSpace` locks
   the space `FOR UPDATE`; both erase a space through the one `DeletedSpaceEraser`.
   `ListDeletedSpaceLists` holds the space `FOR SHARE`, which waits for a restoration or an erasure
   of it, or makes them wait.
@@ -496,9 +515,11 @@ cycle.
   next version of its space or list and appends its event (about 500 short statements for a full
   batch, under the 10 s statement timeout and the 5 s lock timeout of the application role). Two
   batches, a handover among them, take their common spaces in the same order, and every one locks
-  its spaces before its lists, so they do not wait on each other in a cycle. A grant naming a space
-  or a list the batch did not lock is a defect the foreign keys rule out: the batch throws and
-  rolls back. A failed batch rolls back alone.
+  its spaces before its lists, so they do not wait on each other in a cycle. A grant whose space or
+  list an erasure of a tombstone removed while the batch waited for its lock went with it (the
+  grants read after the locks are gone), so the batch skips it; a grant naming a space or a list
+  the batch did not lock while grants of it remain is a defect the foreign keys rule out: the
+  batch throws and rolls back. A failed batch rolls back alone.
 - A request that writes a space or a list a batch of the clean-up holds (`PATCH`, a grant, a change
   of the switch) waits for it at most the 5 s `lock_timeout` of the application role, then answers
   `500` (`55P03`, `lock_not_available`); the batches are short, so this needs a batch stuck on a

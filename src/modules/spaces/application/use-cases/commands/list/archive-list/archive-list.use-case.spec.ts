@@ -258,13 +258,17 @@ describe('ArchiveList: the refusals come in the order 404, 403, 412', () => {
 });
 
 describe('ArchiveList: the membership is read for share, then the list is locked', () => {
-  it('locks the membership of the actor, then the list', async () => {
+  it('locks the membership of the actor, then holds the space for share before the list', async () => {
     const spaces = atelierNord();
     const members = atelierNordMembers();
     members.journal = spaces.journal;
 
     await new ArchiveList(spaces, members).execute(archiveSprint());
 
-    expect(spaces.journal).toEqual([`membership ${LEA}`, `list ${SPRINT_14}`]);
+    expect(spaces.journal).toEqual([
+      `membership ${LEA}`,
+      `space ${PRODUIT} share`,
+      `list ${SPRINT_14}`,
+    ]);
   });
 });

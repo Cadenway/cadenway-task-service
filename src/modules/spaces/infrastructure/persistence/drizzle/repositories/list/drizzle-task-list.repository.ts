@@ -185,23 +185,43 @@ export class DrizzleTaskListRepository implements TaskListRepository {
   }
 
   /**
+   * Method lockSharedUnlessLocked
+   *
+   * @description
+   * Loads a list by its organization and its id, and locks its row `FOR SHARE SKIP LOCKED`
+   * until the end of the transaction, unless it is deleted: a row a writer holds is left out at
+   * once.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} id - The id of the list.
+   * @returns {Promise<TaskList | null>} The list, or `null`.
+   */
+  public async lockSharedUnlessLocked(
+    organizationId: string,
+    id: string,
+  ): Promise<TaskList | null> {
+    return this.lockRow(organizationId, id, 'share', undeletedListCondition(), true);
+  }
+
+  /**
    * Method lockMany
    *
    * @description
    * Loads some lists by their primary keys and locks them in one statement in ascending id, so
    * that two lockers never wait on each other: `FOR NO KEY UPDATE` (`update`) or `FOR UPDATE`
-   * (`delete`); deleted ones are locked like any other, for the clean-up of a member who left and
-   * the erasure of the trash. No id reads nothing.
+   * (`delete`) or `FOR SHARE` (`share`); deleted ones are locked like any other, for the clean-up
+   * of a member who left and the trash. No id reads nothing.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} ids - The ids of the lists.
-   * @param {'update' | 'delete'} [mode] - How the caller writes them next, `update` by default.
+   * @param {'update' | 'delete' | 'share'} [mode] - How the caller writes or holds them next,
+   * `update` by default.
    * @returns {Promise<TaskList[]>} The lists that exist, by id.
    */
   public async lockMany(
     organizationId: string,
     ids: readonly string[],
-    mode: 'update' | 'delete' = 'update',
+    mode: 'update' | 'delete' | 'share' = 'update',
   ): Promise<TaskList[]> {
     if (ids.length === 0) {
       return [];
@@ -211,7 +231,7 @@ export class DrizzleTaskListRepository implements TaskListRepository {
       .from(taskLists)
       .where(and(eq(taskLists.organizationId, organizationId), inArray(taskLists.id, [...ids])))
       .orderBy(asc(taskLists.id))
-      .for(mode === 'update' ? 'no key update' : 'update');
+      .for(mode === 'update' ? 'no key update' : mode === 'delete' ? 'update' : 'share');
     return rows.map(toTaskList);
   }
 
@@ -849,6 +869,8 @@ export class DrizzleTaskListRepository implements TaskListRepository {
    * @param {string} id - The id of the list.
    * @param {'update' | 'no key update' | 'share'} strength - The row lock.
    * @param {SQL | undefined} condition - The condition the row must meet, or `undefined`.
+   * @param {boolean} [skipLocked] - `true` to leave out a row another transaction holds in a
+   * conflicting mode instead of waiting for it (`SKIP LOCKED`); `false` by default.
    * @returns {Promise<TaskList | null>} The list, or `null`.
    */
   private async lockRow(
@@ -856,13 +878,14 @@ export class DrizzleTaskListRepository implements TaskListRepository {
     id: string,
     strength: 'update' | 'no key update' | 'share',
     condition: SQL | undefined,
+    skipLocked: boolean = false,
   ): Promise<TaskList | null> {
     const rows: TaskListRow[] = await this.db
       .select()
       .from(taskLists)
       .where(and(eq(taskLists.organizationId, organizationId), eq(taskLists.id, id), condition))
       .limit(1)
-      .for(strength);
+      .for(strength, skipLocked ? { skipLocked: true } : {});
     const row: TaskListRow | undefined = rows[0];
     return row === undefined ? null : toTaskList(row);
   }
