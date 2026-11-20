@@ -18,6 +18,7 @@ import { z } from 'zod';
  *   `PORT` is required, the others default to `production`, `info` and `false`.
  * - `DATABASE_URL`: the application role of this service's own database (`task_app`), subject to
  *   row-level security and holding no DDL right.
+ * - `DATABASE_TRANSACTION_MAX_ATTEMPTS` sets the limit for retryable database transactions.
  * - `NATS_URL`, `NATS_USER`, `NATS_PASSWORD`: `messagingConfigShape` of `@cadenway/nest-messaging`.
  *   `NATS_URL` is required; the user (`task`) and its password are optional for the kit, which
  *   accepts an anonymous local broker, but every broker of Cadenway refuses a connection without
