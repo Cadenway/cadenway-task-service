@@ -188,14 +188,14 @@ describe('PurgeTrashEntry: "Supprimer définitivement" erases an entry for good'
       trace.filter((call: string): boolean =>
         [
           'trash.erase',
-          'spaces.lockDeletedLists',
+          'spaces.lockTrashLists',
           'tasks.listsWithTasks',
           'spaces.purgeDeletedList',
         ].includes(call),
       ),
     ).toEqual([
       'trash.erase',
-      'spaces.lockDeletedLists',
+      'spaces.lockTrashLists',
       'tasks.listsWithTasks',
       'spaces.purgeDeletedList',
     ]);
@@ -213,7 +213,7 @@ describe('PurgeTrashEntry: "Supprimer définitivement" erases an entry for good'
 
     await useCase.execute(purge());
 
-    expect(trace).toContain('spaces.lockDeletedLists');
+    expect(trace).toContain('spaces.lockTrashLists');
     expect(trace).not.toContain('tasks.listsWithTasks');
     expect(directory.purgeCalls).toEqual([]);
   });
@@ -262,5 +262,58 @@ describe('PurgeTrashEntry: an entry the actor may not restore is not found', () 
       reason: 'trash-entry-not-found',
     });
     expect(viewer.tasks.stored(CAD_482).trash).toEqual(trashIn());
+  });
+});
+
+describe('PurgeTrashEntry: the role of the actor is read again under the locks of the list, after the writes of the tasks', () => {
+  it('locks the space and the list of the entry for an erasure with the actor, once the tasks are erased', async () => {
+    const trace: string[] = [];
+    const tasks = new InMemoryTasks({
+      tasks: trashedTree(),
+      trashEntries: [storedEntry({ taskCount: 2 })],
+      trace,
+    });
+    const directory = new InMemorySpaceDirectory({ trace });
+    const useCase = new PurgeTrashEntry(tasks, atelierNordMembers([], trace), directory);
+
+    await useCase.execute(purge());
+
+    expect(
+      directory.lockTrashCalls.map(({ listIds, mode, viewer }) => ({
+        listIds,
+        mode,
+        viewer: viewer?.userId ?? null,
+      })),
+    ).toEqual([{ listIds: [SPRINT_14], mode: 'erase', viewer: CAMILLE }]);
+    expect(trace.indexOf('trash.erase')).toBeLessThan(trace.indexOf('spaces.lockTrashLists'));
+  });
+
+  it('refuses as trash-entry-not-found when the role of the actor is revoked while the erasure waited for the locks, erasing nothing', async () => {
+    const trace: string[] = [];
+    const tasks = new InMemoryTasks({
+      tasks: trashedTree(),
+      activity: [priorityEntry()],
+      trashEntries: [storedEntry({ taskCount: 2 })],
+      trace,
+    });
+    const directory = new InMemorySpaceDirectory({
+      trace,
+      deletedLists: { [SPRINT_14]: camille },
+    });
+    directory.revokedUnderLock.add(SPRINT_14);
+    const useCase = new PurgeTrashEntry(tasks, atelierNordMembers([], trace), directory);
+
+    expect(await refusalOf(useCase.execute(purge()))).toEqual({
+      reason: 'trash-entry-not-found',
+    });
+    expect(trace.indexOf('trash.erase')).toBeLessThan(trace.indexOf('spaces.lockTrashLists'));
+    expect(trace).not.toContain('tasks.listsWithTasks');
+    expect(directory.purgeCalls).toEqual([]);
+    expect(directory.isStored(SPRINT_14)).toBe(true);
+    expect(tasks.stored(CAD_482).trash).toEqual(trashIn());
+    expect(tasks.stored(CAD_483).trash).toEqual(trashIn());
+    expect(tasks.activity.size).toBe(1);
+    expect(tasks.trashEntries.has(CAD_482_ENTRY)).toBe(true);
+    expect(tasks.events).toEqual([]);
   });
 });

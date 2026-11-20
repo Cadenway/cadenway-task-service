@@ -336,7 +336,7 @@ describe('CreateAccessRequest: the target is read under FOR SHARE locks, the sam
 
     await useCase.execute(askDirection());
 
-    expect(targets.locks).toEqual(['share']);
+    expect(targets.locks).toEqual(['share-unless-locked']);
     expect(tasks.locks).toEqual([]);
   });
 
@@ -345,10 +345,10 @@ describe('CreateAccessRequest: the target is read under FOR SHARE locks, the sam
 
     await useCase.execute(askDirection({ target: { kind: 'list', listId: BUDGET } }));
 
-    expect(targets.locks).toEqual(['share']);
+    expect(targets.locks).toEqual(['share-unless-locked']);
   });
 
-  it('reads the task under a FOR SHARE lock, then its list under another, in that order', async () => {
+  it('reads the task under a FOR SHARE SKIP LOCKED lock, then its list under another, in that order', async () => {
     const { targets, tasks, useCase } = wire();
     const order: string[] = [];
     const findByKey = tasks.findByKey.bind(tasks);
@@ -364,7 +364,7 @@ describe('CreateAccessRequest: the target is read under FOR SHARE locks, the sam
 
     await useCase.execute(askDirection({ target: { kind: 'task', taskKey: 'DIR-12' } }));
 
-    expect(order).toEqual(['task:share', 'list:share']);
+    expect(order).toEqual(['task:share-unless-locked', 'list:share-unless-locked']);
   });
 
   it('takes the same locks for an unknown key, a task in the trash or a deleted list, as for a known one', async () => {

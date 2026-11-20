@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
+import { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import type { TaskState } from '../../../../../domain/value-objects/task/task-state.value-object.js';
+import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
+import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
 import {
   ATELIER_NORD,
   BUGS,
@@ -15,6 +18,7 @@ import {
   InMemorySpaceDirectory,
   InMemoryTasks,
   LEA,
+  MAQUETTES,
   NOW,
   SPRINT_14,
   TRASHED_AT,
@@ -120,6 +124,80 @@ function atelierNord(
   return {
     tasks,
     useCase: new TrashTask(TRASH_WRITES_ON, tasks, atelierNordMembers([], trace), spaces(trace)),
+  };
+}
+
+/**
+ * A unit of work over the fake in which another transaction commits a change of CAD-482 after the
+ * read without lock and before the lock of its tree: the change lands when the tree is first read.
+ * It also records the ids each `lockByIds` call locks.
+ *
+ * @param tasks - The fake store.
+ * @param change - The change of CAD-482, or `null` for none.
+ * @param locks - Receives the ids of each `lockByIds` call.
+ * @returns The unit of work.
+ */
+function changedBeforeLock(
+  tasks: InMemoryTasks,
+  change: ((state: TaskState) => TaskState) | null,
+  locks: (readonly string[])[] = [],
+): TasksUnitOfWork {
+  return {
+    run: <TResult>(work: (store: TasksStore) => Promise<TResult>): Promise<TResult> =>
+      tasks.run((store: TasksStore): Promise<TResult> => {
+        let changed: boolean = change === null;
+        return work({
+          ...store,
+          tasks: {
+            ...store.tasks,
+            trashTrees: async (organizationId: string, rootIds: readonly string[]) => {
+              if (!changed && change !== null) {
+                changed = true;
+                const before: Task = Task.restore(tasks.stored(CAD_482));
+                await store.tasks.save(before, Task.restore(change(before.snapshot)));
+              }
+              return store.tasks.trashTrees(organizationId, rootIds);
+            },
+            lockByIds: (
+              organizationId: string,
+              ids: readonly string[],
+              withChecklists?: boolean,
+            ) => {
+              locks.push([...ids]);
+              return store.tasks.lockByIds(organizationId, ids, withChecklists);
+            },
+          },
+        });
+      }),
+    runReadOnly: <TResult>(work: (store: TasksStore) => Promise<TResult>): Promise<TResult> =>
+      tasks.runReadOnly(work),
+  };
+}
+
+/**
+ * Builds a use case on Atelier Nord whose CAD-482 another transaction changes between the read
+ * without lock and the lock of its tree.
+ *
+ * @param change - The change of CAD-482.
+ * @param entries - The trash entries.
+ * @returns The fake store and the use case.
+ */
+function racedBy(
+  change: (state: TaskState) => TaskState,
+  entries: Parameters<typeof storedEntry>[0][] = [],
+): { readonly tasks: InMemoryTasks; readonly useCase: TrashTask } {
+  const tasks = new InMemoryTasks({
+    tasks: liveTree(),
+    trashEntries: entries.map((entry) => storedEntry(entry)),
+  });
+  return {
+    tasks,
+    useCase: new TrashTask(
+      TRASH_WRITES_ON,
+      changedBeforeLock(tasks, change),
+      atelierNordMembers([]),
+      new InMemorySpaceDirectory(),
+    ),
   };
 }
 
@@ -282,20 +360,113 @@ describe('TrashTask: a deletion moves the task and its subtasks at every level t
     expect([...tasks.activity.values()]).toEqual([priorityEntry()]);
   });
 
-  it('locks the actor, the task by key, then its tree in one statement, read again under the locks', async () => {
+  it('locks the actor, then the task with its tree in one statement by id, nothing locked by key before, read again under the locks', async () => {
     const { tasks, useCase } = atelierNord([...liveTree(), archivedChild()]);
 
     await useCase.execute(trash());
 
-    expect(tasks.trace.slice(0, 7)).toEqual([
+    expect(tasks.trace.slice(0, 6)).toEqual([
       `members.roleOf:${CAMILLE}:lock`,
       'tasks.findByKey:read',
       'spaces.findVisibleList',
-      'tasks.findByKey:lock',
       'tasks.trashTrees',
       'tasks.lockByIds',
       'tasks.trashTrees',
     ]);
+    expect(tasks.trace).not.toContain('tasks.findByKey:lock');
+  });
+
+  it('locks the root with its subtasks in one call, none of them held before', async () => {
+    const tasks = new InMemoryTasks({ tasks: [...liveTree(), archivedChild()] });
+    const locks: (readonly string[])[] = [];
+    const useCase = new TrashTask(
+      TRASH_WRITES_ON,
+      changedBeforeLock(tasks, null, locks),
+      atelierNordMembers([]),
+      new InMemorySpaceDirectory(),
+    );
+
+    await useCase.execute(trash());
+
+    expect(locks.map((ids: readonly string[]): string[] => [...ids].sort())).toEqual([
+      [CAD_482, CAD_483, CAD_484, CAD_490].sort(),
+    ]);
+    expect(tasks.stored(CAD_482).trash).not.toBeNull();
+  });
+});
+
+describe('TrashTask: the refusals are checked again on the task as locked, the same as before the lock', () => {
+  it('refuses a task moved meanwhile to a list the actor does not see as task-not-found', async () => {
+    const tasks = new InMemoryTasks({ tasks: liveTree() });
+    const useCase = new TrashTask(
+      TRASH_WRITES_ON,
+      changedBeforeLock(tasks, (state: TaskState) => ({
+        ...state,
+        listId: MAQUETTES,
+        version: state.version + 1,
+      })),
+      atelierNordMembers([]),
+      new InMemorySpaceDirectory(),
+    );
+
+    expect(await refusalOf(useCase.execute(trash({ actorUserId: LEA })))).toEqual({
+      reason: 'task-not-found',
+    });
+    expect(tasks.trashEntries.size).toBe(0);
+    expect(tasks.events).toEqual([]);
+  });
+
+  it('refuses a task archived meanwhile as task-archived', async () => {
+    const { tasks, useCase } = racedBy((state: TaskState) => ({
+      ...state,
+      archive: archiveFrom(CAD_482),
+      version: state.version + 1,
+    }));
+
+    expect(await refusalOf(useCase.execute(trash()))).toEqual({
+      reason: 'task-archived',
+      key: 'CAD-482',
+    });
+    expect(tasks.trashEntries.size).toBe(0);
+  });
+
+  it('refuses an If-Match the task matched before a change committed meanwhile as version-mismatch, with the locked version', async () => {
+    const { tasks, useCase } = racedBy((state: TaskState) => ({
+      ...state,
+      name: 'Connexion SSO (v2)',
+      version: state.version + 1,
+    }));
+
+    expect(await refusalOf(useCase.execute(trash({ expectedVersions: [12] })))).toEqual({
+      reason: 'version-mismatch',
+      version: 13,
+    });
+    expect(tasks.stored(CAD_482).trash).toBeNull();
+  });
+
+  it('answers a task trashed meanwhile task-trashed with its entry, as a read of it now answers', async () => {
+    const { tasks, useCase } = racedBy(
+      (state: TaskState) => ({ ...state, trash: trashIn(), version: state.version + 1 }),
+      [{}],
+    );
+
+    expect(await refusalOf(useCase.execute(trash()))).toMatchObject({
+      reason: 'task-trashed',
+      key: 'CAD-482',
+      entryId: CAD_482_ENTRY,
+    });
+    expect(tasks.trashEntries.size).toBe(1);
+    expect(tasks.events).toEqual([]);
+  });
+
+  it('answers a task trashed meanwhile into an entry the actor may not restore task-not-found', async () => {
+    const { useCase } = racedBy((state: TaskState) => ({
+      ...state,
+      trash: trashIn(),
+      version: state.version + 1,
+    }));
+
+    expect(await refusalOf(useCase.execute(trash()))).toEqual({ reason: 'task-not-found' });
   });
 });
 

@@ -2641,7 +2641,8 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
 
     /**
      * The spaces module as the batches use it, over the repositories of spaces: the list held
-     * `FOR SHARE`, and a deleted list erased with its grants, then its space when it holds no list.
+     * `FOR SHARE`, the lists of the trash locked with their spaces, and a deleted list erased with
+     * its grants, then its space when it holds no list.
      *
      * @param db - The Drizzle database of the transaction.
      * @returns The directory.
@@ -2650,94 +2651,81 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
       const lists = new DrizzleTaskListRepository(db);
       const spaces = new DrizzleSpaceRepository(db);
       const grants = new DrizzleGrantRepository(db);
-      // `LockDeletedList(s)` of spaces: the lists are read without a lock; a live or unknown one takes
-      // none; the deleted ones have their spaces locked FOR NO KEY UPDATE in ascending id, then
-      // themselves FOR UPDATE in ascending id, then are read again.
-      const lockDeleted = async (
-        organizationId: string,
-        listIds: readonly string[],
-      ): Promise<{ listId: string; outcome: 'deleted' | 'live' | 'not-found' }[]> => {
-        const sorted = [...new Set(listIds)].sort();
-        const read = new Map<string, { deleted: boolean; spaceId: string } | null>();
-        for (const listId of sorted) {
-          const state = (await lists.findIncludingDeleted(organizationId, listId))?.snapshot;
-          read.set(
-            listId,
-            state === undefined
-              ? null
-              : { deleted: state.deletedAt !== null, spaceId: state.spaceId },
-          );
-        }
-        const deleted = sorted.filter((listId) => read.get(listId)?.deleted === true);
-        for (const spaceId of [
-          ...new Set(deleted.map((listId) => read.get(listId)?.spaceId ?? '')),
-        ].sort()) {
-          await spaces.lockIncludingDeleted(organizationId, spaceId, 'update');
-        }
-        const outcomes: { listId: string; outcome: 'deleted' | 'live' | 'not-found' }[] = [];
-        for (const listId of sorted) {
-          const before = read.get(listId);
-          if (before === null || before === undefined) {
-            outcomes.push({ listId, outcome: 'not-found' });
-          } else if (!before.deleted) {
-            outcomes.push({ listId, outcome: 'live' });
-          } else {
-            const locked = (await lists.lockIncludingDeleted(organizationId, listId, 'delete'))
-              ?.snapshot;
-            outcomes.push({
-              listId,
-              outcome:
-                locked === undefined ? 'not-found' : locked.deletedAt === null ? 'live' : 'deleted',
-            });
-          }
-        }
-        return outcomes;
-      };
       return {
+        // As the use case LockDeletedList does it: the list read without a lock; a live or unknown
+        // one takes none; a deleted one has its space locked FOR NO KEY UPDATE, then itself
+        // FOR UPDATE, and is read again.
         lockDeletedList: async (organizationId: string, listId: string) => {
-          const [outcome] = await lockDeleted(organizationId, [listId]);
-          return { outcome: outcome?.outcome ?? 'not-found' };
+          const seen = await lists.findIncludingDeleted(organizationId, listId);
+          if (seen === null) {
+            return { outcome: 'not-found' };
+          }
+          if (!seen.isDeleted) {
+            return { outcome: 'live' };
+          }
+          await spaces.lockIncludingDeleted(organizationId, seen.snapshot.spaceId, 'update');
+          const locked = await lists.lockIncludingDeleted(organizationId, listId, 'delete');
+          if (locked === null) {
+            return { outcome: 'not-found' };
+          }
+          return { outcome: locked.isDeleted ? 'deleted' : 'live' };
         },
-        // As the use case LockDeletedLists does it, over the same repository calls.
-        lockDeletedLists: async (organizationId: string, listIds: readonly string[]) => {
+        // As the use case LockTrashLists does it, over the same repository calls: every list found,
+        // live or deleted, locked after its space (FOR SHARE to hold, FOR NO KEY UPDATE then
+        // FOR UPDATE to erase), then the role of the viewer read again.
+        lockTrashLists: async (
+          organizationId: string,
+          listIds: readonly string[],
+          mode: 'hold' | 'erase',
+          viewer: Viewer | null,
+        ) => {
           const unique = [...new Set(listIds)];
-          const seen = new Map(
-            (await lists.findManyIncludingDeleted(organizationId, unique)).map((list) => [
-              list.snapshot.id,
-              list,
-            ]),
+          if (unique.length === 0) {
+            return [];
+          }
+          const seen = await lists.findManyIncludingDeleted(organizationId, unique);
+          await spaces.lockInOrder(
+            organizationId,
+            [...new Set(seen.map((list) => list.snapshot.spaceId))].map((id) => ({
+              id,
+              mode: mode === 'hold' ? ('share' as const) : ('update' as const),
+            })),
           );
-          const deleted = [...seen.values()].filter((list) => list.isDeleted);
-          const locked = new Map<string, boolean>();
-          if (deleted.length > 0) {
-            await spaces.lockInOrder(
-              organizationId,
-              [...new Set(deleted.map((list) => list.snapshot.spaceId))].map((id) => ({
-                id,
-                mode: 'update' as const,
-              })),
-            );
-            for (const list of await lists.lockMany(
-              organizationId,
-              deleted.map((list) => list.snapshot.id),
-              'delete',
-            )) {
-              locked.set(list.snapshot.id, list.isDeleted);
+          const locked = new Map(
+            (
+              await lists.lockMany(
+                organizationId,
+                seen.map((list) => list.snapshot.id),
+                mode === 'hold' ? 'share' : 'delete',
+              )
+            ).map((list) => [list.snapshot.id, list]),
+          );
+          const roles = new Map<string, string>();
+          if (viewer !== null && locked.size > 0) {
+            for (const row of await lists.listTrashAccessesVisibleTo(organizationId, viewer)) {
+              const role = locked.has(row.listId)
+                ? listRoleAsIfNotDeletedOf(
+                    row.space,
+                    { organizationAccess: row.organizationAccess },
+                    viewer,
+                    row.grants,
+                  )
+                : null;
+              if (role !== null) {
+                roles.set(row.listId, role);
+              }
             }
           }
           return unique.map((listId) => {
-            const before = seen.get(listId);
-            const outcome =
-              before === undefined
-                ? 'not-found'
-                : !before.isDeleted
-                  ? 'live'
-                  : !locked.has(listId)
-                    ? 'not-found'
-                    : locked.get(listId) === true
-                      ? 'deleted'
-                      : 'live';
-            return { listId, outcome };
+            const list = locked.get(listId);
+            if (list === undefined) {
+              return { listId, outcome: 'not-found', role: null };
+            }
+            return {
+              listId,
+              outcome: list.isDeleted ? 'deleted' : 'live',
+              role: roles.get(listId) ?? null,
+            };
           });
         },
         holdList: async (organizationId: string, listId: string) => {
@@ -2750,10 +2738,25 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
             ? { outcome: 'live' }
             : { outcome: 'deleted', deletedBy: state.deletedBy };
         },
+        // As the use case PurgeDeletedList does it: the list read without a lock, then its space
+        // locked FOR NO KEY UPDATE before the list FOR UPDATE, then the space erased with its last
+        // list.
         purgeDeletedList: async (organizationId: string, listId: string) => {
-          const list = await lists.lockIncludingDeleted(organizationId, listId, 'delete');
-          const state = list?.snapshot;
-          if (state === undefined) {
+          const seen = await lists.findIncludingDeleted(organizationId, listId);
+          if (seen === null) {
+            return { outcome: 'not-found' };
+          }
+          if (!seen.isDeleted) {
+            return { outcome: 'not-deleted' };
+          }
+          const space = await spaces.lockIncludingDeleted(
+            organizationId,
+            seen.snapshot.spaceId,
+            'update',
+          );
+          const state = (await lists.lockIncludingDeleted(organizationId, listId, 'delete'))
+            ?.snapshot;
+          if (space === null || state === undefined) {
             return { outcome: 'not-found' };
           }
           if (state.deletedAt === null) {
@@ -2869,13 +2872,13 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
           new PurgeTrashBatch(unitOfWork, spaces).execute({ organizationId: atelierNordId }),
       );
       const due = await batch(
-        'purge batch | Atelier Delta, the entry of 651 tasks first (a chunk of 500 tasks)',
+        'purge batch | Atelier Delta, the entry of 651 tasks first (erased whole, alone)',
         atelierDeltaId,
         (unitOfWork, spaces) =>
           new PurgeTrashBatch(unitOfWork, spaces).execute({ organizationId: atelierDeltaId }),
       );
       const chunks = await batch(
-        'purge batch | Atelier Delta, the entry of 651 tasks in two batches of one transaction',
+        'purge batch | Atelier Delta, the entry of 651 tasks, then the next batch, in one transaction',
         atelierDeltaId,
         async (unitOfWork, spaces) => {
           const purge = new PurgeTrashBatch(unitOfWork, spaces);
@@ -2892,12 +2895,12 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
       expect(keyset.result).toMatchObject({ outcome: 'trashed' });
       expect(large.result).toMatchObject({ outcome: 'trashed' });
       expect(handedOver.result).toMatchObject({ outcome: 'purged' });
-      // An entry larger than the budget of 500 tasks leaves in chunks: the first erases 500 of its
-      // tasks (deepest first) and keeps the entry row, the second the 151 left and the row.
-      expect(due.result).toMatchObject({ outcome: 'purged', entries: 0, tasks: 500 });
+      // An entry larger than the budget of 500 tasks that comes first is taken alone and erased
+      // whole by one batch, its 651 tasks with it; the next batch takes the entries after it.
+      expect(due.result).toMatchObject({ outcome: 'purged', entries: 1, tasks: 651 });
       expect(chunks.result).toMatchObject([
-        { outcome: 'purged', entries: 0, tasks: 500 },
-        { outcome: 'purged', entries: 1 },
+        { outcome: 'purged', entries: 1, tasks: 651 },
+        { outcome: 'purged' },
       ]);
       for (const entry of [first, keyset, large, handedOver, due, chunks]) {
         expect(entry.milliseconds, entry.line).toBeLessThan(5_000);
@@ -2905,27 +2908,20 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
       }
     }, 300_000);
 
-    it('locks the deleted lists of an erasure in one global order: the spaces then the lists, by id, reading the lists first without a lock', async () => {
+    it('locks the lists of an erasure, live or deleted, in one global order: the spaces then the lists, by id, reading the lists first without a lock', async () => {
       const lockers: readonly (readonly [string, readonly string[]])[] = [
         ['one deleted list', oldListIds.slice(0, 1)],
         ['30 deleted lists of 3 deleted spaces', oldListIds],
         [
-          '100 lists: 30 deleted, 70 live (no lock for the live ones)',
+          '100 lists: 30 deleted, 70 live (the live ones locked too)',
           [...oldListIds, ...allLists.slice(0, 70)],
         ],
       ];
       const plans: PlanLine[] = [];
       for (const [label, listIds] of lockers) {
         plans.push(
-          ...(await measure(`lock deleted lists | ${label}`, (db) =>
-            (
-              spacesOver(db) as unknown as {
-                lockDeletedLists: (
-                  organizationId: string,
-                  listIds: readonly string[],
-                ) => Promise<unknown>;
-              }
-            ).lockDeletedLists(atelierNordId, listIds),
+          ...(await measure(`lock trash lists | ${label}`, (db) =>
+            spacesOver(db).lockTrashLists(atelierNordId, listIds, 'erase', null),
           )),
         );
       }
@@ -2940,7 +2936,7 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
     }, 300_000);
   });
 
-  it('(extra 2) probes a deleted list of 20,000 tasks all in the trash for a task out of it, and reads a task by key under FOR SHARE and an oversized entry by its tree', async () => {
+  it('(extra 2) probes a deleted list of 20,000 tasks all in the trash for a task out of it, reads a task by key under FOR SHARE SKIP LOCKED, and erases an oversized entry whole as one purge batch does', async () => {
     const lists: readonly (readonly [string, string, string])[] = [
       ['all 20,000 tasks in the trash', atelierDeltaId, fullTrashListId],
       ['15,000 of 20,000 tasks in the trash', atelierNordId, largeListId],
@@ -2970,24 +2966,20 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
       ),
     );
     const reference = await measure(
-      'task reference | read by key FOR SHARE (shareLocationByKey)',
+      'task reference | read by key FOR SHARE SKIP LOCKED (shareLocationUnlessLocked)',
       (db) =>
-        new DrizzleTaskRepository(db).shareLocationByKey(atelierNordId, TaskKey.parse('VOL-12')),
+        new DrizzleTaskRepository(db).shareLocationUnlessLocked(
+          atelierNordId,
+          TaskKey.parse('VOL-12'),
+        ),
     );
-    const handOver = { at: new Date(), by: { type: 'system', id: 'task-service' } } as const;
+    // A purge batch takes an entry of more than 500 tasks alone and erases it whole: its 651 tasks
+    // locked FOR UPDATE in one statement, then the erasure of the entry and of everything of them.
     const oversized = await measure(
-      'oversized entry | tree, lock and erasure of 500 of its 651 tasks, the deepest first',
+      'oversized entry | lock and erasure of the whole entry of 651 tasks, alone in its batch',
       async (db) => {
-        const tasks = new DrizzleTaskRepository(db);
-        const trash = new DrizzleTrashEntryRepository(db);
-        const entry = await trash.find(atelierNordId, bigEntryId);
-        const tree = await tasks.entryTree(atelierNordId, bigEntryId, entry?.rootTaskId ?? '');
-        const deepest = [...tree]
-          .sort((left, right) => right.depth - left.depth || (left.id < right.id ? -1 : 1))
-          .slice(0, 500)
-          .map((node) => node.id);
-        await tasks.lockEntryTasks(atelierNordId, bigEntryId, deepest);
-        await trash.erasePart(atelierNordId, bigEntryId, deepest, handOver);
+        await new DrizzleTaskRepository(db).lockTrashEntries(atelierNordId, [bigEntryId], true);
+        await new DrizzleTrashEntryRepository(db).erase(atelierNordId, [bigEntryId]);
       },
       { write: true },
     );

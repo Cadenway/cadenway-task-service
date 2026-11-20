@@ -16,12 +16,11 @@ import {
 import { renderSql } from '../query/query-sql.fixture.js';
 import {
   dueEntriesStatement,
-  entryTreeStatement,
   eraseEntriesStatements,
-  erasePartStatements,
   handedOverEntriesStatement,
   insertEntriesStatement,
   listsWithTasksStatement,
+  lockInTrashOfListsStatement,
   organizationsWithTrashStatement,
   removeEntryStatement,
   requestPurgeStatement,
@@ -97,15 +96,25 @@ describe('trashPageStatement and trashTotalStatement: the page of the trash and 
   });
 });
 
-describe('requestPurgeStatement: "Vider la corbeille" in one statement', () => {
-  it('hands the entries of the lists still in the trash over with the instant and the actor', () => {
+describe('lockInTrashOfListsStatement and requestPurgeStatement: "Vider la corbeille" locks the entries, then hands them over by id', () => {
+  it('locks the entries of the lists still in the trash for update in one statement ordered by id', () => {
+    expect(renderSql(lockInTrashOfListsStatement('org', [SPRINT_14]))).toEqual({
+      sql:
+        'select "trash_entries"."id" as "id", "trash_entries"."list_id" as "listId" from "trash_entries" ' +
+        'where "trash_entries"."organization_id" = $1::uuid and "trash_entries"."purge_requested_at" is null and "trash_entries"."list_id" = any($2::uuid[]) ' +
+        'order by "trash_entries"."id" for update',
+      params: ['org', [SPRINT_14]],
+    });
+  });
+
+  it('hands the entries given over by id, those still in the trash only, with the instant and the actor', () => {
     expect(
-      renderSql(requestPurgeStatement('org', [SPRINT_14], NOW, { type: 'user', id: CAMILLE })),
+      renderSql(requestPurgeStatement('org', [CAD_482_ENTRY], NOW, { type: 'user', id: CAMILLE })),
     ).toEqual({
       sql:
         'update "trash_entries" set purge_requested_at = $1::timestamptz, purge_requested_by_type = $2, purge_requested_by_id = $3 ' +
-        'where "trash_entries"."organization_id" = $4::uuid and "trash_entries"."purge_requested_at" is null and "trash_entries"."list_id" = any($5::uuid[])',
-      params: [NOW.toISOString(), 'user', CAMILLE, 'org', [SPRINT_14]],
+        'where "trash_entries"."organization_id" = $4::uuid and "trash_entries"."purge_requested_at" is null and "trash_entries"."id" = any($5::uuid[])',
+      params: [NOW.toISOString(), 'user', CAMILLE, 'org', [CAD_482_ENTRY]],
     });
   });
 });
@@ -308,52 +317,6 @@ describe('listsWithTasksStatement: whether a list still holds a task', () => {
       sql: 'select candidate.list_id as "listId" from unnest($1::uuid[]) as candidate (list_id) where exists (select 1 from "tasks" where "tasks"."organization_id" = $2::uuid and "tasks"."list_id" = candidate.list_id and "tasks"."trash_entry_id" is null)',
       params: [[SPRINT_14], 'org'],
     });
-  });
-});
-
-describe('entryTreeStatement: the tasks of one entry from their stored parent links', () => {
-  it('walks the entry from its root at any depth, detecting a cycle, by depth and id', () => {
-    expect(renderSql(entryTreeStatement('org', CAD_482_ENTRY, CAD_482))).toEqual({
-      sql:
-        'with recursive tree (id, root_id, depth) as (select "tasks"."id", "tasks"."id", 0 from "tasks" ' +
-        'where "tasks"."organization_id" = $1::uuid and "tasks"."id" = $2::uuid and "tasks"."trash_entry_id" = $3::uuid ' +
-        'union all select "child"."id", tree.root_id, tree.depth + 1 from tree ' +
-        'join "tasks" as "child" on "child"."organization_id" = $4::uuid and "child"."parent_id" = tree.id ' +
-        'where "child"."trash_entry_id" = $5::uuid) cycle id set is_cycle using path ' +
-        'select id, root_id as "rootId", depth::int as "depth", is_cycle as "isCycle" from tree order by depth, id',
-      params: ['org', CAD_482, CAD_482_ENTRY, 'org', CAD_482_ENTRY],
-    });
-  });
-});
-
-describe('erasePartStatements: a part of an entry erased, the entry kept and handed over', () => {
-  it('erases the collections and the tasks of the part, detaches the children outside it, and lowers the count', () => {
-    const rendered = erasePartStatements('org', CAD_482_ENTRY, [CAD_483, CAD_482], {
-      at: NOW,
-      by: { type: 'system', id: 'task-service' },
-    }).map(renderSql);
-
-    expect(rendered.map((statement) => statement.sql)).toEqual([
-      'delete from "activity_entries" where "activity_entries"."organization_id" = $1::uuid and "activity_entries"."task_id" = any($2::uuid[])',
-      'delete from "checklist_items" where "checklist_items"."organization_id" = $1::uuid and "checklist_items"."task_id" = any($2::uuid[])',
-      'delete from "task_assignees" where "task_assignees"."organization_id" = $1::uuid and "task_assignees"."task_id" = any($2::uuid[])',
-      'delete from "task_labels" where "task_labels"."organization_id" = $1::uuid and "task_labels"."task_id" = any($2::uuid[])',
-      'update "tasks" set parent_id = null where "tasks"."organization_id" = $1::uuid and "tasks"."parent_id" = any($2::uuid[]) and "tasks"."id" <> all($3::uuid[])',
-      'delete from "tasks" where "tasks"."organization_id" = $1::uuid and "tasks"."id" = any($2::uuid[]) and "tasks"."trash_entry_id" = $3::uuid',
-      'update "trash_entries" set task_count = "trash_entries"."task_count" - $1::int, ' +
-        'purge_requested_at = coalesce("trash_entries"."purge_requested_at", $2::timestamptz), ' +
-        'purge_requested_by_type = coalesce("trash_entries"."purge_requested_by_type", $3), ' +
-        'purge_requested_by_id = coalesce("trash_entries"."purge_requested_by_id", $4) ' +
-        'where "trash_entries"."organization_id" = $5::uuid and "trash_entries"."id" = $6::uuid',
-    ]);
-    expect(rendered[6]?.params).toEqual([
-      '2',
-      NOW.toISOString(),
-      'system',
-      'task-service',
-      'org',
-      CAD_482_ENTRY,
-    ]);
   });
 });
 

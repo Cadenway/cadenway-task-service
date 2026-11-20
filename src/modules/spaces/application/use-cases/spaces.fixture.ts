@@ -580,20 +580,35 @@ export class InMemorySpaces implements SpacesUnitOfWork {
    *
    * @description
    * The locks taken, in order (`space <id>`, `space <id> share`, `space <id> delete`,
-   * `list <id>`, `list <id> share`, `list <id> delete`), committed or not; a spec shares it with
-   * the journal of `InMemoryMembers` to check the lock order.
+   * `space <id> share unless locked`, `list <id>`, `list <id> share`, `list <id> delete`,
+   * `list <id> share unless locked`), committed or not; a spec shares it with the journal of
+   * `InMemoryMembers` to check the lock order.
    *
    * @type {string[]}
    */
   public journal: string[] = [];
 
   /**
+   * Property heldByWriter
+   *
+   * @description
+   * The ids of the spaces and lists another transaction holds `FOR NO KEY UPDATE` or `FOR UPDATE`
+   * (a change or a deletion under way): `lockSharedUnlessLocked` leaves them out, as
+   * `FOR SHARE SKIP LOCKED` does; every other lock ignores them.
+   *
+   * @type {Set<string>}
+   * @readonly
+   */
+  public readonly heldByWriter: Set<string> = new Set<string>();
+
+  /**
    * Property reads
    *
    * @description
    * The readings by id, in order (`space` and `list` for `find`, `lists` for
-   * `findManyIncludingDeleted`, `grants` for `viewerGrants`), whatever they found: what a spec
-   * compares to tell whether a path reads more than another.
+   * `findManyIncludingDeleted`, `grants` for `viewerGrants`, `trash access` for
+   * `findTrashAccessVisibleTo`, `trash accesses` for `listTrashAccessesVisibleTo`), whatever they
+   * found: what a spec compares to tell whether a path reads more than another.
    *
    * @type {string[]}
    * @readonly
@@ -1345,6 +1360,10 @@ export class InMemorySpaces implements SpacesUnitOfWork {
           this.journal.push(`space ${id} share`);
           return Promise.resolve(findSpace(organizationId, id));
         },
+        lockSharedUnlessLocked: (organizationId: string, id: string): Promise<Space | null> => {
+          this.journal.push(`space ${id} share unless locked`);
+          return Promise.resolve(this.heldByWriter.has(id) ? null : findSpace(organizationId, id));
+        },
         lockInOrder: (
           organizationId: string,
           locks: readonly { readonly id: string; readonly mode: 'update' | 'share' }[],
@@ -1519,17 +1538,21 @@ export class InMemorySpaces implements SpacesUnitOfWork {
           this.journal.push(`list ${id} share`);
           return Promise.resolve(findList(organizationId, id));
         },
+        lockSharedUnlessLocked: (organizationId: string, id: string): Promise<TaskList | null> => {
+          this.journal.push(`list ${id} share unless locked`);
+          return Promise.resolve(this.heldByWriter.has(id) ? null : findList(organizationId, id));
+        },
         lockMany: (
           organizationId: string,
           ids: readonly string[],
-          mode: 'update' | 'delete' = 'update',
+          mode: 'update' | 'delete' | 'share' = 'update',
         ): Promise<TaskList[]> => {
           const found: TaskList[] = [...new Set(ids)]
             .sort()
             .map((id: string): TaskList | null => findAnyList(organizationId, id))
             .filter((list: TaskList | null): list is TaskList => list !== null);
           for (const list of found) {
-            this.journal.push(`list ${list.snapshot.id}${mode === 'delete' ? ' delete' : ''}`);
+            this.journal.push(`list ${list.snapshot.id}${mode === 'update' ? '' : ` ${mode}`}`);
           }
           return Promise.resolve(found);
         },
@@ -1794,20 +1817,23 @@ export class InMemorySpaces implements SpacesUnitOfWork {
         listTrashAccessesVisibleTo: (
           organizationId: string,
           viewer: Viewer,
-        ): Promise<TrashListAccess[]> =>
-          Promise.resolve(
+        ): Promise<TrashListAccess[]> => {
+          this.reads.push('trash accesses');
+          return Promise.resolve(
             [...lists.values()]
               .map((list: TaskListState) =>
                 InMemorySpaces.trashRow(list, spaces, grants, organizationId, viewer),
               )
               .filter((row: ListWithGrants | null): row is ListWithGrants => row !== null)
               .map(toTrashAccess),
-          ),
+          );
+        },
         findTrashAccessVisibleTo: (
           organizationId: string,
           viewer: Viewer,
           id: string,
         ): Promise<TrashListAccess | null> => {
+          this.reads.push('trash access');
           const list: TaskListState | undefined = lists.get(id);
           const row: ListWithGrants | null =
             list === undefined

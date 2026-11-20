@@ -217,13 +217,17 @@ describe('UnarchiveList: the refusals come in the order 404, 403, 412', () => {
     expect(refusal).toEqual({ reason: 'organization-not-found' });
   });
 
-  it('locks the membership of the actor for share before the list', async () => {
+  it('locks the membership of the actor for share, then holds the space for share before the list', async () => {
     const spaces = atelierNord();
     const members = atelierNordMembers();
     members.journal = spaces.journal;
 
     await new UnarchiveList(spaces, members).execute(unarchiveSprint());
 
-    expect(spaces.journal).toEqual([`membership ${LEA}`, `list ${SPRINT_14}`]);
+    expect(spaces.journal).toEqual([
+      `membership ${LEA}`,
+      `space ${PRODUIT} share`,
+      `list ${SPRINT_14}`,
+    ]);
   });
 });

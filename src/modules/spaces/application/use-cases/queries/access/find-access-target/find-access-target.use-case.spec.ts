@@ -173,7 +173,7 @@ describe('FindAccessTarget: the statements tell nothing of the existence of the 
   });
 });
 
-describe('FindAccessTarget: lock share holds the row of the target against a deletion', () => {
+describe('FindAccessTarget: share-unless-locked holds the row of the target against a deletion, never waiting on a writer', () => {
   it('reads without lock by default', async () => {
     const spaces = atelierNord();
 
@@ -185,15 +185,18 @@ describe('FindAccessTarget: lock share holds the row of the target against a del
     expect(spaces.journal).toEqual([]);
   });
 
-  it('holds the space of a space target, and the list of a list target, for share', async () => {
+  it('holds the space of a space target, and the list of a list target, for share with the skip-locked reads', async () => {
     const spaces = atelierNord();
 
-    await new FindAccessTarget(spaces).execute(find({ lock: 'share' }));
+    await new FindAccessTarget(spaces).execute(find({ lock: 'share-unless-locked' }));
     await new FindAccessTarget(spaces).execute(
-      find({ lock: 'share', target: { kind: 'list', listId: SPRINT_14 } }),
+      find({ lock: 'share-unless-locked', target: { kind: 'list', listId: SPRINT_14 } }),
     );
 
-    expect(spaces.journal).toEqual([`space ${DESIGN} share`, `list ${SPRINT_14} share`]);
+    expect(spaces.journal).toEqual([
+      `space ${DESIGN} share unless locked`,
+      `list ${SPRINT_14} share unless locked`,
+    ]);
   });
 
   it.each([
@@ -205,8 +208,12 @@ describe('FindAccessTarget: lock share holds the row of the target against a del
       const seen = atelierNord();
       const unseen = atelierNord();
 
-      await new FindAccessTarget(seen).execute(find({ lock: 'share', target: existing }));
-      await new FindAccessTarget(unseen).execute(find({ lock: 'share', target: unknown }));
+      await new FindAccessTarget(seen).execute(
+        find({ lock: 'share-unless-locked', target: existing }),
+      );
+      await new FindAccessTarget(unseen).execute(
+        find({ lock: 'share-unless-locked', target: unknown }),
+      );
 
       expect(unseen.reads).toEqual(seen.reads);
       expect(unseen.journal.map((entry) => entry.replace(/ [0-9a-f-]{36}/u, ''))).toEqual(
@@ -225,11 +232,28 @@ describe('FindAccessTarget: lock share holds the row of the target against a del
       lists: [sprintState(tombstone)],
     });
 
-    expect(await new FindAccessTarget(spaces).execute(find({ lock: 'share' }))).toBeNull();
+    expect(
+      await new FindAccessTarget(spaces).execute(find({ lock: 'share-unless-locked' })),
+    ).toBeNull();
     expect(
       await new FindAccessTarget(spaces).execute(
-        find({ lock: 'share', target: { kind: 'list', listId: SPRINT_14 } }),
+        find({ lock: 'share-unless-locked', target: { kind: 'list', listId: SPRINT_14 } }),
       ),
     ).toBeNull();
+  });
+
+  it('reads a target a writer holds as unknown at once, and the same target as found without lock', async () => {
+    const spaces = atelierNord();
+    spaces.heldByWriter.add(DESIGN);
+    spaces.heldByWriter.add(SPRINT_14);
+
+    const space = await new FindAccessTarget(spaces).execute(find({ lock: 'share-unless-locked' }));
+    const list = await new FindAccessTarget(spaces).execute(
+      find({ lock: 'share-unless-locked', target: { kind: 'list', listId: SPRINT_14 } }),
+    );
+    const unlocked = await new FindAccessTarget(spaces).execute(find());
+
+    expect([space, list]).toEqual([null, null]);
+    expect(unlocked).toMatchObject({ kind: 'space', spaceId: DESIGN });
   });
 });

@@ -318,20 +318,59 @@ describe('TrashDeletedListTasks: with no root left, the tombstone goes once no t
     expect(directory.purgeCalls).toEqual([]);
   });
 
-  it('holds the list before it checks the tasks left and erases the tombstone, under that lock', async () => {
+  it('locks the deleted list, its space first, before it checks the tasks left and erases the tombstone, under those locks', async () => {
     const trace: string[] = [];
     const spaces = new InMemorySpaceDirectory({ trace, deletedLists: { [SPRINT_14]: hugo } });
     const tasks = new InMemoryTasks({ tasks: [], trace });
     const useCase = new TrashDeletedListTasks(tasks, spaces);
 
-    await useCase.execute({ organizationId: ATELIER_NORD, listId: SPRINT_14, after: null });
-
+    expect(
+      await useCase.execute({ organizationId: ATELIER_NORD, listId: SPRINT_14, after: null }),
+    ).toEqual({ outcome: 'none-left', listPurged: true, spacePurged: false });
     expect(
       trace.filter((call: string): boolean =>
-        ['spaces.holdList', 'tasks.listsWithTasks', 'spaces.purgeDeletedList'].includes(call),
+        [
+          'spaces.lockDeletedList',
+          'tasks.listsWithUntrashedTasks',
+          'tasks.listsWithTasks',
+          'spaces.purgeDeletedList',
+        ].includes(call),
       ),
-    ).toEqual(['spaces.holdList', 'tasks.listsWithTasks', 'spaces.purgeDeletedList']);
+    ).toEqual([
+      'spaces.lockDeletedList',
+      'tasks.listsWithUntrashedTasks',
+      'tasks.listsWithTasks',
+      'spaces.purgeDeletedList',
+    ]);
+    expect(spaces.lockDeletedCalls).toEqual([SPRINT_14]);
+    expect(spaces.holdCalls).toEqual([]);
   });
+
+  it.each([
+    [
+      'list-live for a list a restoration brought back',
+      new InMemorySpaceDirectory(),
+      SPRINT_14,
+      'list-live',
+    ],
+    ['list-gone for an erased list', new InMemorySpaceDirectory(), UNKNOWN_LIST, 'list-gone'],
+  ] as const)(
+    'answers %s from the lock of the deleted list, never holding it for share',
+    async (_case, spaces, listId, outcome) => {
+      const tasks = new InMemoryTasks({ tasks: [] });
+
+      expect(
+        await new TrashDeletedListTasks(tasks, spaces).execute({
+          organizationId: ATELIER_NORD,
+          listId,
+          after: null,
+        }),
+      ).toEqual({ outcome });
+      expect(spaces.lockDeletedCalls).toEqual([listId]);
+      expect(spaces.holdCalls).toEqual([]);
+      expect(spaces.purgeCalls).toEqual([]);
+    },
+  );
 
   it('ignores an entry already stored for another list', async () => {
     const tasks = new InMemoryTasks({
