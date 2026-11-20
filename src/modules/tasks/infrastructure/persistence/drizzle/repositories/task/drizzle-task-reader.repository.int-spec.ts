@@ -15,6 +15,8 @@ const LIST = '019a7001-0000-7000-8000-000000000001';
 const ACTIVE = '019a7002-0000-7000-8000-000000000001';
 const ARCHIVED = '019a7002-0000-7000-8000-000000000002';
 const TRASHED = '019a7002-0000-7000-8000-000000000003';
+const OTHER_PREFIX = '019a7002-0000-7000-8000-000000000004';
+const OTHER_TENANT = '019a7002-0000-7000-8000-000000000005';
 
 describe('task location persistence', () => {
   let container = '';
@@ -62,8 +64,10 @@ describe('task location persistence', () => {
       `insert into tasks (organization_id,id,key_prefix,key_number,name,status,list_id,space_id,archived_at,trash_entry_id)
        values ($1,$2,'CAD',1,'Active','todo',$5,$6,null,null),
               ($1,$3,'CAD',2,'Archived','todo',$5,$6,now(),null),
-              ($1,$4,'CAD',3,'Trashed','todo',$5,$6,null,$4)`,
-      [ORG, ACTIVE, ARCHIVED, TRASHED, LIST, SPACE],
+              ($1,$4,'CAD',3,'Trashed','todo',$5,$6,null,$4),
+              ($1,$7,'DEV',1,'Other prefix','todo',$5,$6,null,null),
+              ($8,$9,'CAD',1,'Other tenant','todo',$5,$6,null,null)`,
+      [ORG, ACTIVE, ARCHIVED, TRASHED, LIST, SPACE, OTHER_PREFIX, OTHER_ORG, OTHER_TENANT],
     );
   });
 
@@ -95,5 +99,22 @@ describe('task location persistence', () => {
     expect(await reader.attachmentLocationByKey(OTHER_ORG, TaskKey.parse('CAD-2'))).toBeNull();
     expect(await reader.locationsByIds(OTHER_ORG, [ACTIVE, ARCHIVED])).toEqual([]);
     expect(await locked.shareLocationUnlessLocked(OTHER_ORG, TaskKey.parse('CAD-2'))).toBeNull();
+  });
+  it('reads exact key pairs in one tenant, including archives and excluding trash', async () => {
+    const reader = new DrizzleTaskReader(drizzle(pool));
+    const keys = ['CAD-1', 'CAD-2', 'CAD-3', 'DEV-2', 'CAD-99', 'CAD-1'].map((key) =>
+      TaskKey.parse(key),
+    );
+
+    expect((await reader.locationsByKeys(ORG, keys)).map((location) => location.id).sort()).toEqual(
+      [ACTIVE, ARCHIVED].sort(),
+    );
+    expect((await reader.locationsByKeys(OTHER_ORG, keys)).map((location) => location.id)).toEqual([
+      OTHER_TENANT,
+    ]);
+    expect(await reader.locationsByKeys(ORG, [])).toEqual([]);
+    await expect(
+      reader.locationsByKeys(ORG, Array(101).fill(TaskKey.parse('CAD-1'))),
+    ).rejects.toThrow('at most 100 keys');
   });
 });

@@ -68,6 +68,7 @@ import { FIRST_ONBOARDING_TASK } from './composition/tokens/onboarding/first-onb
 import type { FirstOnboardingTask } from './application/ports/outbound/onboarding/checklist/first-onboarding-task.port.js';
 import { findTaskReferenceProvider } from './composition/providers/use-cases/task/find-task-reference.provider.js';
 import { findTaskReferencesProvider } from './composition/providers/use-cases/task/find-task-references.provider.js';
+import { findVisibleTaskLocationsProvider } from './composition/providers/use-cases/task/find-visible-task-locations.provider.js';
 import { getTaskDetailProvider } from './composition/providers/use-cases/task/get-task-detail.provider.js';
 import { readTaskTemplateSourceProvider } from './composition/providers/use-cases/task/read-task-template-source.provider.js';
 import { measureGoalTargetsProvider } from './composition/providers/use-cases/goal/measure-goal-targets.provider.js';
@@ -122,6 +123,7 @@ import { UnassignRemovedMember } from './public/assignee/unassign-removed-member
 import { RemoveMemberWatcherOverrides } from './public/watcher/remove-member-watcher-overrides.js';
 import { FindTaskReference } from './public/task/find-task-reference.js';
 import { FindTaskReferences } from './public/task/find-task-references.js';
+import { FindVisibleTaskLocations } from './public/task/find-visible-task-locations.js';
 import { ListOrganizationsWithTrashToPurge } from './public/trash/list-organizations-with-trash-to-purge.js';
 import { ListUntrashedTaskIds } from './public/trash/list-untrashed-task-ids.js';
 import { PurgeTrashBatch } from './public/trash/purge-trash-batch.js';
@@ -288,6 +290,7 @@ markIdempotent(TaskTimeController.prototype, 'create');
     recordCommentActivityProvider,
     findTaskReferenceProvider,
     findTaskReferencesProvider,
+    findVisibleTaskLocationsProvider,
     archiveTaskProvider,
     unarchiveTaskProvider,
     listArchivedTasksProvider,
@@ -318,6 +321,7 @@ markIdempotent(TaskTimeController.prototype, 'create');
     BeginComment,
     RecordCommentActivity,
     FindTaskReferences,
+    FindVisibleTaskLocations,
     TrashDeletedListTasks,
     PurgeTrashBatch,
     ListOrganizationsWithTrashToPurge,
