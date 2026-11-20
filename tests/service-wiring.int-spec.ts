@@ -92,6 +92,7 @@ const publicTables = [
   'intake_submissions',
   'list_grants',
   'lists',
+  'notification_delivery_authorization_decisions',
   'onboarding_states',
   'organization_members',
   'outbox_events',
@@ -125,9 +126,9 @@ const publicTables = [
  * lists, then the tasks, then the two indexes of the task queries, then the grants, the switch of
  * the lists and the access requests, then the archives of lists and tasks, then the trash and the
  * deletion of lists and spaces, then the trash root snapshot, collaboration, planning and the
- * task library, P3c-1 capabilities, goals, sprint reporting history and intake.
+ * task library, P3c-1 capabilities, goals, sprint reporting history, intake and delivery decisions.
  */
-const appliedMigrations = 19;
+const appliedMigrations = 20;
 
 /**
  * Runs `docker compose` on the throwaway project.
@@ -481,7 +482,8 @@ describe('task-service wiring', () => {
         `select relname, relrowsecurity, relforcerowsecurity from pg_class
           where relnamespace = 'public'::regnamespace
             and relname in ('favorites', 'goals', 'intake_contacts', 'intake_forms',
-                            'intake_publications', 'intake_submissions', 'onboarding_states',
+                            'intake_publications', 'intake_submissions',
+                            'notification_delivery_authorization_decisions', 'onboarding_states',
                             'saved_views', 'space_custom_fields',
                             'sprint_field_history', 'sprint_history_coverage', 'sprint_list_history',
                             'sprint_task_history', 'sprint_value_history',
@@ -498,6 +500,11 @@ describe('task-service wiring', () => {
         { relname: 'intake_forms', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'intake_publications', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'intake_submissions', relrowsecurity: true, relforcerowsecurity: true },
+        {
+          relname: 'notification_delivery_authorization_decisions',
+          relrowsecurity: true,
+          relforcerowsecurity: true,
+        },
         { relname: 'onboarding_states', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'saved_views', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'space_custom_fields', relrowsecurity: true, relforcerowsecurity: true },
@@ -749,6 +756,11 @@ describe('task-service wiring', () => {
       { relname: 'intake_submissions', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'list_grants', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'lists', relrowsecurity: true, relforcerowsecurity: true },
+      {
+        relname: 'notification_delivery_authorization_decisions',
+        relrowsecurity: true,
+        relforcerowsecurity: true,
+      },
       { relname: 'onboarding_states', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'organization_members', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'outbox_events', relrowsecurity: true, relforcerowsecurity: true },
@@ -797,6 +809,10 @@ describe('task-service wiring', () => {
       { tablename: 'intake_submissions', policyname: 'intake_submissions_organization_isolation' },
       { tablename: 'list_grants', policyname: 'list_grants_organization_isolation' },
       { tablename: 'lists', policyname: 'lists_organization_isolation' },
+      {
+        tablename: 'notification_delivery_authorization_decisions',
+        policyname: 'notification_delivery_decisions_organization_isolation',
+      },
       { tablename: 'onboarding_states', policyname: 'onboarding_states_organization_isolation' },
       {
         tablename: 'organization_members',

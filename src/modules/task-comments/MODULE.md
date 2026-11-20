@@ -7,15 +7,20 @@ modules.
 
 ## Public entry points
 
-| Entry point                                   | Consumers      |
-| --------------------------------------------- | -------------- |
-| `task-comments.module`                        | task-approvals |
-| `public/comment/allocate-approval-comment-id` | task-approvals |
-| `public/comment/create-approval-comment`      | task-approvals |
+| Entry point                                   | Consumers                               |
+| --------------------------------------------- | --------------------------------------- |
+| `task-comments.module`                        | task-approvals, notification-visibility |
+| `public/comment/allocate-approval-comment-id` | task-approvals                          |
+| `public/comment/create-approval-comment`      | task-approvals                          |
+| `public/comment/find-comment-excerpts`        | notification-visibility                 |
 
 An approval can reserve a comment identifier, then persist its comment after the owning task has
 passed its status policy. These operations join the transaction holding the task lock and reuse the
 version assigned by the task module. Creation writes the activity and the text-free outbox fact.
+
+The excerpt query joins the caller's tenant snapshot. It expects exact task and comment pairs
+whose task visibility the caller has already established. It reads live comments in one
+statement and returns at most 200 Unicode code points of display text per pair.
 
 ## Owned tables
 

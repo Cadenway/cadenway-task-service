@@ -152,7 +152,12 @@ configs:
                   "$$JS.API.CONSUMER.CREATE.EVENTS.task-service__project-member-removed.evt.member.removed.v1",
                   "$$JS.API.CONSUMER.INFO.EVENTS.task-service__project-member-removed",
                   "$$JS.API.CONSUMER.MSG.NEXT.EVENTS.task-service__project-member-removed",
-                  "$$JS.ACK.EVENTS.task-service__project-member-removed.>"
+                  "$$JS.ACK.EVENTS.task-service__project-member-removed.>",
+
+                  "$$JS.API.CONSUMER.CREATE.EVENTS.task-service__decide-notification-delivery-authorization.evt.notification.delivery-authorization-requested.v1",
+                  "$$JS.API.CONSUMER.INFO.EVENTS.task-service__decide-notification-delivery-authorization",
+                  "$$JS.API.CONSUMER.MSG.NEXT.EVENTS.task-service__decide-notification-delivery-authorization",
+                  "$$JS.ACK.EVENTS.task-service__decide-notification-delivery-authorization.>"
                 ]
               }
               subscribe: { allow: ["_INBOX.task.>", "rebuild.task.>"] }

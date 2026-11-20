@@ -3468,6 +3468,20 @@ export class InMemoryTasks implements TasksUnitOfWork {
               .map(locationOf),
           );
         },
+        locationsByKeys: (
+          organizationId: string,
+          keys: readonly TaskKey[],
+        ): Promise<readonly TaskLocation[]> => {
+          this.trace.push('reader.locationsByKeys');
+          return Promise.resolve(
+            inOrganization(organizationId)
+              .filter(
+                (row: TaskState): boolean =>
+                  row.trash === null && keys.some((key: TaskKey): boolean => row.key.equals(key)),
+              )
+              .map(locationOf),
+          );
+        },
       },
       watcherOverrides: {
         list: () => Promise.resolve([]),

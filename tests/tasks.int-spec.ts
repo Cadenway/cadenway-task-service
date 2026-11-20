@@ -66,6 +66,7 @@ import type { z } from 'zod';
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
 import { DrizzleCommentRepository } from '../src/modules/task-comments/infrastructure/persistence/drizzle/repositories/comment/drizzle-comment.repository.js';
+import { DrizzleCommentExcerptReader } from '../src/modules/task-comments/infrastructure/persistence/drizzle/repositories/comment/drizzle-comment-excerpt.repository.js';
 import { DrizzleWatcherOverrideRepository } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/watcher/drizzle-watcher-override.repository.js';
 
 // The tasks of the organizations, on a disposable PostgreSQL and NATS: the service as main.ts
@@ -4293,6 +4294,73 @@ describe('tasks', () => {
   });
 
   describe('comment repository', () => {
+    it('reads only live comment bodies for exact task pairs in the tenant snapshot', async () => {
+      const task = await createTask(camille, produitList.id, { name: 'Comment excerpt task' });
+      const otherTask = await createTask(camille, produitList.id, {
+        name: 'Other comment excerpt task',
+      });
+      const rows = await asSystem<{ readonly id: string; readonly key_number: number }>(
+        'select id, key_number from tasks where organization_id = $1 and key_prefix = $2 and key_number = any($3::int[])',
+        [
+          atelierNordId,
+          task.key.split('-')[0],
+          [Number(task.key.split('-')[1]), Number(otherTask.key.split('-')[1])],
+        ],
+      );
+      const taskId = rows.find((row) => row.key_number === Number(task.key.split('-')[1]))?.id;
+      const otherTaskId = rows.find(
+        (row) => row.key_number === Number(otherTask.key.split('-')[1]),
+      )?.id;
+      if (taskId === undefined || otherTaskId === undefined) throw new Error('Tasks not stored.');
+
+      const inserted = await asSystem<{ readonly id: string; readonly body: string }>(
+        `insert into task_comments (organization_id, task_id, actor_type, actor_id, body)
+         values ($1, $2, 'user', $3, 'Visible comment'),
+                ($1, $2, 'user', $3, 'Deleted comment'),
+                ($1, $4, 'user', $3, 'Other task comment')
+         returning id, body`,
+        [atelierNordId, taskId, camille.userId, otherTaskId],
+      );
+      const liveId = inserted.find((row) => row.body === 'Visible comment')?.id;
+      const deletedId = inserted.find((row) => row.body === 'Deleted comment')?.id;
+      const otherId = inserted.find((row) => row.body === 'Other task comment')?.id;
+      if (liveId === undefined || deletedId === undefined || otherId === undefined) {
+        throw new Error('Comments not stored.');
+      }
+      await asSystem(
+        'update task_comments set body = null, deleted_at = now() where organization_id = $1 and id = $2',
+        [atelierNordId, deletedId],
+      );
+      const tenant = service().get(TenantTransactionRunner);
+      const read = (contextOrganizationId: string, organizationId: string) =>
+        runWithOrganizationContext(contextOf(contextOrganizationId), () =>
+          tenant.run((tx) =>
+            new DrizzleCommentExcerptReader(tx.db).findLive(organizationId, [
+              { taskId, commentId: liveId },
+              { taskId, commentId: liveId },
+              { taskId, commentId: deletedId },
+              { taskId, commentId: otherId },
+              { taskId: otherTaskId, commentId: liveId },
+              { taskId, commentId: randomUUID() },
+            ]),
+          ),
+        );
+      expect(await read(atelierNordId, atelierNordId)).toEqual([
+        { taskId, commentId: liveId, body: 'Visible comment' },
+      ]);
+      expect(await read(atelierDeltaId, atelierNordId)).toEqual([]);
+      await expect(
+        runWithOrganizationContext(contextOf(atelierNordId), () =>
+          tenant.run((tx) =>
+            new DrizzleCommentExcerptReader(tx.db).findLive(
+              atelierNordId,
+              Array.from({ length: 101 }, () => ({ taskId, commentId: liveId })),
+            ),
+          ),
+        ),
+      ).rejects.toThrow(RangeError);
+    });
+
     it('persists and pages comments in tenant scope, versions edits and keeps tombstones', async () => {
       const task = await createTask(camille, produitList.id, { name: 'Comment CAD-482' });
       const otherTask = await createTask(camille, produitList.id, { name: 'Other comment task' });

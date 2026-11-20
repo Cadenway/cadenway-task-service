@@ -38,6 +38,7 @@ import {
 } from './modules/task-templates/task-templates.module.js';
 import { TasksModule } from './modules/tasks/tasks.module.js';
 import { TaskCommentsModule } from './modules/task-comments/task-comments.module.js';
+import { NotificationVisibilityModule } from './modules/notification-visibility/notification-visibility.module.js';
 import { OnboardingModule, OnboardingStateModule } from './modules/onboarding/onboarding.module.js';
 import { TaskApprovalsModule } from './modules/task-approvals/task-approvals.module.js';
 
@@ -216,6 +217,7 @@ function runJobInOrganization(
     SpacesModule,
     TasksModule,
     TaskCommentsModule,
+    NotificationVisibilityModule,
     OnboardingModule,
     OnboardingStateModule,
     TaskApprovalsModule,
