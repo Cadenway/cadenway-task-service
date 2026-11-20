@@ -31,6 +31,7 @@ import type { TasksUnitOfWork } from '../src/modules/tasks/application/ports/out
 import { PurgeTrashBatch } from '../src/modules/tasks/application/use-cases/commands/trash/purge-trash-batch/purge-trash-batch.use-case.js';
 import { TrashDeletedListTasks } from '../src/modules/tasks/application/use-cases/commands/trash/trash-deleted-list-tasks/trash-deleted-list-tasks.use-case.js';
 import type { Task } from '../src/modules/tasks/domain/aggregates/task/task.aggregate.js';
+import { TaskKey } from '../src/modules/tasks/domain/value-objects/task/task-key.value-object.js';
 import { PostgresqlTransactionClock } from '../src/modules/tasks/infrastructure/adapters/postgresql/transaction-clock.adapter.js';
 import { OutboxTaskEvents } from '../src/modules/tasks/infrastructure/messaging/outbox/task/outbox-task-events.adapter.js';
 import {
@@ -49,6 +50,7 @@ import {
   handedOverEntriesStatement,
   organizationsWithTrashStatement,
   requestPurgeStatement,
+  listsWithTasksStatement,
   trashCandidateRootsStatement,
   trashPageStatement,
   trashTotalStatement,
@@ -423,6 +425,8 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
   let twoLists: readonly string[] = [];
   /** Every list of Atelier Nord, whatever its state: a caller who may restore them all. */
   let allLists: readonly string[] = [];
+  /** A deleted list of Atelier Delta whose 20,000 tasks are all in the trash, one entry each. */
+  let fullTrashListId = '';
   /** The ids of the entries the erasure and the locks measure. */
   let bigEntryId = '';
   let oneEntryId = '';
@@ -1370,6 +1374,41 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
   }
 
   /**
+   * Gives every task of a range of a list an entry of its own, one statement for the range (a few
+   * thousand rows: the planner has no statistics of the rows just inserted).
+   *
+   * @param organizationId - The organization.
+   * @param listId - The list.
+   * @param from - The first key number.
+   * @param to - The last key number.
+   */
+  async function trashEachTask(
+    organizationId: string,
+    listId: string,
+    from: number,
+    to: number,
+  ): Promise<void> {
+    await asSystem(
+      `with ids as (
+         select t.id as task_id, t.list_id, t.created_by_id, uuidv7() as entry_id, t.key_number as rn
+           from tasks as t
+          where t.organization_id = $1 and t.list_id = $2 and t.key_number between $3 and $4
+       ),
+       created as (
+         insert into trash_entries (organization_id, id, root_task_id, list_id, parent_key, task_count,
+                                    trashed_at, trashed_by_type, trashed_by_id)
+         select $1::uuid, i.entry_id, i.task_id, i.list_id, null, 1,
+                now() - interval '2 minutes' - make_interval(secs => i.rn::int / 100), 'user', i.created_by_id
+           from ids as i
+         returning id
+       )
+       update tasks as t set trash_entry_id = i.entry_id
+         from ids as i where t.organization_id = $1 and t.id = i.task_id`,
+      [organizationId, listId, from, to],
+    );
+  }
+
+  /**
    * Seeds 500 organizations that only hold entries (their tasks are of no interest to the scan):
    * 40 entries each, five of them with an entry 31 days old and three with entries handed over.
    */
@@ -1568,6 +1607,26 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
     await ageEntries(atelierNordId, 20, true, bigListId);
     await ageEntries(atelierDeltaId, 8, false, delta.listIds['Grande liste'] ?? '');
     phase('aged entries');
+    // A deleted list of 20,000 tasks, every one of them in the trash (one entry each).
+    const [fullList] = await asSystem<{ readonly id: string }>(
+      `insert into lists (organization_id, space_id, name, color, deleted_at, deleted_by_type, deleted_by_id)
+       values ($1, $2, 'Liste entièrement dans la corbeille', 'gris', now() - interval '1 hour', 'user', $3)
+       returning id::text as id`,
+      [atelierDeltaId, delta.spaceId, solene.userId],
+    );
+    fullTrashListId = fullList?.id ?? '';
+    await asSystem(
+      `insert into tasks (organization_id, space_id, list_id, key_prefix, key_number, name, status, priority,
+                          created_at, created_by_type, created_by_id)
+       select $1, $2, $3, 'FUL', n, 'Tâche de la corbeille ' || n, 'todo', 'moyenne',
+              timestamptz '2026-06-01 08:00+00' + make_interval(secs => n * 13), 'user', $4
+         from generate_series(1, 20000) as n`,
+      [atelierDeltaId, delta.spaceId, fullTrashListId, solene.userId],
+    );
+    for (let from = 1; from <= 20_000; from += 1_000) {
+      await trashEachTask(atelierDeltaId, fullTrashListId, from, from + 999);
+    }
+    phase('list of 20,000 tasks in the trash');
     await seedAccessRequests();
     phase('access requests');
     await seedCorbeille();
@@ -1651,6 +1710,13 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
     console.info(
       `trash plans volume: ${JSON.stringify({ ...volume, tasksBlocks, ownerLists: ownerLists.length, adminLists: adminLists.length, memberLists: memberLists.length, guestLists: guestLists.length })}`,
     );
+    // The extended statistics of migration 0007 on (organization_id, list_id), which the trash page is
+    // planned from: they exist (the three kinds) and the vacuum (analyze) of the seed builds them.
+    const [statistics] = await asSystem<{ readonly kinds: string }>(
+      `select array_to_string(stxkind, ',') as kinds from pg_statistic_ext
+        where stxname = 'trash_entries_list_statistics'`,
+    );
+    expect(statistics?.kinds.split(',').sort()).toEqual(['d', 'f', 'm']);
     expect(volume?.tasks).toBeGreaterThanOrEqual(75_000);
     expect(volume?.entries).toBeGreaterThanOrEqual(20_000);
     expect(volume?.inTrash).toBeGreaterThanOrEqual(19_000);
@@ -1690,7 +1756,6 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
     const plans: PlanLine[] = [];
     const walks: PlanLine[] = [];
     const withCandidate: PlanLine[] = [];
-    const withStatistics: PlanLine[] = [];
     for (const [caller, organizationId, listIds] of callers) {
       const first = await rowsOf<{ readonly id: string; readonly trashedAt: string }>(
         trashPageStatement(organizationId, listIds, null, 51),
@@ -1709,6 +1774,12 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
         // a sort replace when the planner prefers them, and the same with a candidate index that
         // holds the list, in a transaction that is rolled back.
         walks.push(
+          await planOf(`${label} | serial (parallel workers off)`, statement, {
+            organizationId,
+            settings: ['max_parallel_workers_per_gather = 0'],
+          }),
+        );
+        walks.push(
           await planOf(
             `${label} | walk (bitmap scans, sequential scans and sorts off)`,
             statement,
@@ -1717,21 +1788,6 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
               settings: ['enable_bitmapscan = off', 'enable_seqscan = off', 'enable_sort = off'],
             },
           ),
-        );
-        // The statistics of the table say how many lists it holds in all, not how many entries
-        // one organization holds in the lists of the caller: a candidate that teaches it the
-        // dependency of the list on the organization (analyzed in the rolled-back transaction).
-        withStatistics.push(
-          await planOf(`${label} | candidate statistics (organization_id, list_id)`, statement, {
-            organizationId,
-            migrator: true,
-            prepare: async (client) => {
-              await client.query(
-                'create statistics trash_entries_organization_list_candidate (dependencies, ndistinct, mcv) on organization_id, list_id from trash_entries',
-              );
-              await client.query('analyze trash_entries');
-            },
-          }),
         );
         withCandidate.push(
           await planOf(
@@ -1753,13 +1809,11 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
         `select (select count(*)::int from pg_indexes where indexname like 'trash_entries%candidate') + (select count(*)::int from pg_statistic_ext where stxname like 'trash_entries%candidate') as count`,
       )
     ).rows;
-    for (const plan of [...plans, ...walks, ...withCandidate, ...withStatistics]) {
+    for (const plan of [...plans, ...walks, ...withCandidate]) {
       console.info(lineOf(plan));
     }
     expect(leftover?.count).toBe(0);
-    expect(
-      seqScansOf([...plans, ...walks, ...withCandidate, ...withStatistics], ['tasks']),
-    ).toEqual([]);
+    expect(seqScansOf([...plans, ...walks, ...withCandidate], ['tasks'])).toEqual([]);
     for (const plan of plans) {
       expect(plan.milliseconds, plan.label).toBeLessThan(2_000);
     }
@@ -1773,9 +1827,15 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
       expect
         .soft(plan.indexes, `${plan.label}: ${plan.nodes.join(' > ')}`)
         .toContain('trash_entries_trashed_index');
+      // Neither a sort nor a bitmap scan of the organization's entries ...
+      expect
+        .soft(plan.nodes.join(' > '), plan.label)
+        .not.toMatch(/Sort|Bitmap Heap Scan trash_entries/u);
+      // ... and a bounded read: 259 buffers serially, three times as many when the planner walks with
+      // two workers and the leader (each reads its 51 rows), never O(entries).
       expect
         .soft(plan.blocks, `${plan.label} reads ${String(plan.blocks)} buffers`)
-        .toBeLessThan(400);
+        .toBeLessThan(1_000);
     }
   }, 300_000);
 
@@ -2142,6 +2202,7 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
         writeTrashStatement(
           atelierNordId,
           trashed.map((task) => task.snapshot),
+          locked.map((task) => task.snapshot.version),
         ),
       );
       await client.query('savepoint bulk_write');
@@ -2589,7 +2650,96 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
       const lists = new DrizzleTaskListRepository(db);
       const spaces = new DrizzleSpaceRepository(db);
       const grants = new DrizzleGrantRepository(db);
+      // `LockDeletedList(s)` of spaces: the lists are read without a lock; a live or unknown one takes
+      // none; the deleted ones have their spaces locked FOR NO KEY UPDATE in ascending id, then
+      // themselves FOR UPDATE in ascending id, then are read again.
+      const lockDeleted = async (
+        organizationId: string,
+        listIds: readonly string[],
+      ): Promise<{ listId: string; outcome: 'deleted' | 'live' | 'not-found' }[]> => {
+        const sorted = [...new Set(listIds)].sort();
+        const read = new Map<string, { deleted: boolean; spaceId: string } | null>();
+        for (const listId of sorted) {
+          const state = (await lists.findIncludingDeleted(organizationId, listId))?.snapshot;
+          read.set(
+            listId,
+            state === undefined
+              ? null
+              : { deleted: state.deletedAt !== null, spaceId: state.spaceId },
+          );
+        }
+        const deleted = sorted.filter((listId) => read.get(listId)?.deleted === true);
+        for (const spaceId of [
+          ...new Set(deleted.map((listId) => read.get(listId)?.spaceId ?? '')),
+        ].sort()) {
+          await spaces.lockIncludingDeleted(organizationId, spaceId, 'update');
+        }
+        const outcomes: { listId: string; outcome: 'deleted' | 'live' | 'not-found' }[] = [];
+        for (const listId of sorted) {
+          const before = read.get(listId);
+          if (before === null || before === undefined) {
+            outcomes.push({ listId, outcome: 'not-found' });
+          } else if (!before.deleted) {
+            outcomes.push({ listId, outcome: 'live' });
+          } else {
+            const locked = (await lists.lockIncludingDeleted(organizationId, listId, 'delete'))
+              ?.snapshot;
+            outcomes.push({
+              listId,
+              outcome:
+                locked === undefined ? 'not-found' : locked.deletedAt === null ? 'live' : 'deleted',
+            });
+          }
+        }
+        return outcomes;
+      };
       return {
+        lockDeletedList: async (organizationId: string, listId: string) => {
+          const [outcome] = await lockDeleted(organizationId, [listId]);
+          return { outcome: outcome?.outcome ?? 'not-found' };
+        },
+        // As the use case LockDeletedLists does it, over the same repository calls.
+        lockDeletedLists: async (organizationId: string, listIds: readonly string[]) => {
+          const unique = [...new Set(listIds)];
+          const seen = new Map(
+            (await lists.findManyIncludingDeleted(organizationId, unique)).map((list) => [
+              list.snapshot.id,
+              list,
+            ]),
+          );
+          const deleted = [...seen.values()].filter((list) => list.isDeleted);
+          const locked = new Map<string, boolean>();
+          if (deleted.length > 0) {
+            await spaces.lockInOrder(
+              organizationId,
+              [...new Set(deleted.map((list) => list.snapshot.spaceId))].map((id) => ({
+                id,
+                mode: 'update' as const,
+              })),
+            );
+            for (const list of await lists.lockMany(
+              organizationId,
+              deleted.map((list) => list.snapshot.id),
+              'delete',
+            )) {
+              locked.set(list.snapshot.id, list.isDeleted);
+            }
+          }
+          return unique.map((listId) => {
+            const before = seen.get(listId);
+            const outcome =
+              before === undefined
+                ? 'not-found'
+                : !before.isDeleted
+                  ? 'live'
+                  : !locked.has(listId)
+                    ? 'not-found'
+                    : locked.get(listId) === true
+                      ? 'deleted'
+                      : 'live';
+            return { listId, outcome };
+          });
+        },
         holdList: async (organizationId: string, listId: string) => {
           const list = await lists.lockIncludingDeleted(organizationId, listId, 'share');
           const state = list?.snapshot;
@@ -2719,25 +2869,141 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
           new PurgeTrashBatch(unitOfWork, spaces).execute({ organizationId: atelierNordId }),
       );
       const due = await batch(
-        'purge batch | Atelier Delta, the entry of 651 tasks first',
+        'purge batch | Atelier Delta, the entry of 651 tasks first (a chunk of 500 tasks)',
         atelierDeltaId,
         (unitOfWork, spaces) =>
           new PurgeTrashBatch(unitOfWork, spaces).execute({ organizationId: atelierDeltaId }),
       );
-      for (const entry of [first, keyset, large, handedOver, due]) {
+      const chunks = await batch(
+        'purge batch | Atelier Delta, the entry of 651 tasks in two batches of one transaction',
+        atelierDeltaId,
+        async (unitOfWork, spaces) => {
+          const purge = new PurgeTrashBatch(unitOfWork, spaces);
+          return [
+            await purge.execute({ organizationId: atelierDeltaId }),
+            await purge.execute({ organizationId: atelierDeltaId }),
+          ];
+        },
+      );
+      for (const entry of [first, keyset, large, handedOver, due, chunks]) {
         console.info(entry.line);
       }
       expect(first.result).toMatchObject({ outcome: 'trashed' });
       expect(keyset.result).toMatchObject({ outcome: 'trashed' });
       expect(large.result).toMatchObject({ outcome: 'trashed' });
       expect(handedOver.result).toMatchObject({ outcome: 'purged' });
-      expect(due.result).toMatchObject({ outcome: 'purged', entries: 1, tasks: 651 });
-      for (const entry of [first, keyset, large, handedOver, due]) {
+      // An entry larger than the budget of 500 tasks leaves in chunks: the first erases 500 of its
+      // tasks (deepest first) and keeps the entry row, the second the 151 left and the row.
+      expect(due.result).toMatchObject({ outcome: 'purged', entries: 0, tasks: 500 });
+      expect(chunks.result).toMatchObject([
+        { outcome: 'purged', entries: 0, tasks: 500 },
+        { outcome: 'purged', entries: 1 },
+      ]);
+      for (const entry of [first, keyset, large, handedOver, due, chunks]) {
         expect(entry.milliseconds, entry.line).toBeLessThan(5_000);
         expect(entry.statements, entry.line).toBeLessThan(120);
       }
     }, 300_000);
+
+    it('locks the deleted lists of an erasure in one global order: the spaces then the lists, by id, reading the lists first without a lock', async () => {
+      const lockers: readonly (readonly [string, readonly string[]])[] = [
+        ['one deleted list', oldListIds.slice(0, 1)],
+        ['30 deleted lists of 3 deleted spaces', oldListIds],
+        [
+          '100 lists: 30 deleted, 70 live (no lock for the live ones)',
+          [...oldListIds, ...allLists.slice(0, 70)],
+        ],
+      ];
+      const plans: PlanLine[] = [];
+      for (const [label, listIds] of lockers) {
+        plans.push(
+          ...(await measure(`lock deleted lists | ${label}`, (db) =>
+            (
+              spacesOver(db) as unknown as {
+                lockDeletedLists: (
+                  organizationId: string,
+                  listIds: readonly string[],
+                ) => Promise<unknown>;
+              }
+            ).lockDeletedLists(atelierNordId, listIds),
+          )),
+        );
+      }
+      for (const plan of plans) {
+        console.info(lineOf(plan));
+      }
+      expect(plans.length).toBeGreaterThanOrEqual(lockers.length);
+      expect(seqScansOf(plans, ['tasks'])).toEqual([]);
+      for (const plan of plans) {
+        expect(plan.milliseconds, plan.label).toBeLessThan(2_000);
+      }
+    }, 300_000);
   });
+
+  it('(extra 2) probes a deleted list of 20,000 tasks all in the trash for a task out of it, and reads a task by key under FOR SHARE and an oversized entry by its tree', async () => {
+    const lists: readonly (readonly [string, string, string])[] = [
+      ['all 20,000 tasks in the trash', atelierDeltaId, fullTrashListId],
+      ['15,000 of 20,000 tasks in the trash', atelierNordId, largeListId],
+      ['list of 6,600 tasks none of them in the trash', atelierNordId, deletedListId],
+    ];
+    const probes: PlanLine[] = [];
+    for (const [label, organizationId, listId] of lists) {
+      probes.push(
+        await planOf(
+          `lists with tasks | ${label}, any task (listsWithTasks)`,
+          listsWithTasksStatement(organizationId, [listId]),
+          { organizationId },
+        ),
+        await planOf(
+          `lists with tasks | ${label}, out of the trash only (listsWithUntrashedTasks)`,
+          listsWithTasksStatement(organizationId, [listId], true),
+          { organizationId },
+        ),
+      );
+    }
+    const found = await Promise.all(
+      lists.map(async ([, organizationId, listId]) =>
+        rowsOf<{ readonly listId: string }>(
+          listsWithTasksStatement(organizationId, [listId], true),
+          organizationId,
+        ),
+      ),
+    );
+    const reference = await measure(
+      'task reference | read by key FOR SHARE (shareLocationByKey)',
+      (db) =>
+        new DrizzleTaskRepository(db).shareLocationByKey(atelierNordId, TaskKey.parse('VOL-12')),
+    );
+    const handOver = { at: new Date(), by: { type: 'system', id: 'task-service' } } as const;
+    const oversized = await measure(
+      'oversized entry | tree, lock and erasure of 500 of its 651 tasks, the deepest first',
+      async (db) => {
+        const tasks = new DrizzleTaskRepository(db);
+        const trash = new DrizzleTrashEntryRepository(db);
+        const entry = await trash.find(atelierNordId, bigEntryId);
+        const tree = await tasks.entryTree(atelierNordId, bigEntryId, entry?.rootTaskId ?? '');
+        const deepest = [...tree]
+          .sort((left, right) => right.depth - left.depth || (left.id < right.id ? -1 : 1))
+          .slice(0, 500)
+          .map((node) => node.id);
+        await tasks.lockEntryTasks(atelierNordId, bigEntryId, deepest);
+        await trash.erasePart(atelierNordId, bigEntryId, deepest, handOver);
+      },
+      { write: true },
+    );
+    for (const plan of [...probes, ...reference, ...oversized]) {
+      console.info(lineOf(plan));
+    }
+    console.info(
+      `trash plans: untrashed tasks found in the lists: ${found.map((rows) => String(rows.length)).join(', ')}`,
+    );
+    expect(found.map((rows) => rows.length)).toEqual([0, 1, 1]);
+    expect(seqScansOf([...probes, ...reference, ...oversized], ['tasks'])).toEqual([]);
+    for (const plan of [...probes, ...reference, ...oversized]) {
+      expect(plan.milliseconds, plan.label).toBeLessThan(2_000);
+    }
+    expect(reference[0]?.indexes).toContain('tasks_key_unique');
+  }, 300_000);
 
   it('(extra) reads the untrashed ids of 2,000 tasks by primary key, the deleted lists of a space and the lists of one of 1,000 by their range, and keeps the archives of the organization on their partial indexes with the trash out of them', async () => {
     const ids = (

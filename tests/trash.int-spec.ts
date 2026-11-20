@@ -57,7 +57,7 @@ import type { TelemetryHandle } from '@cadenway/nest-common/telemetry';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import pg from 'pg';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { z } from 'zod';
 
 import { AppModule } from '../src/app.module.js';
@@ -67,6 +67,7 @@ import {
   PURGE_TRASH_QUEUE,
   TRASH_DELETED_TASKS_QUEUE,
 } from '../src/config/job-queues.js';
+import { PurgeTrashBatch } from '../src/modules/tasks/public/trash/purge-trash-batch.js';
 import { ScheduleTrashPurgeHandler } from '../src/modules/deletion-lifecycle/presentation/jobs/handlers/trash/schedule-trash-purge.handler.js';
 
 // The trash of P3b-1 (PR 3) on a disposable PostgreSQL and NATS: the deletion of a task with its
@@ -172,6 +173,30 @@ const solene: Person = {
   memberId: '01938f6e-9000-7000-8000-0000000000c7',
 };
 
+/** Théo Garnier, member of Atelier Nord, who leaves with grants and comes back. */
+const theo: Person = {
+  userId: '01938f6e-8a42-7d5b-b2c9-5e1f3a6d9c33',
+  memberId: '01938f6e-9000-7000-8000-0000000000d4',
+};
+
+/** Hugues Lemaire, member of Atelier Nord, removed while a task moves between two lists. */
+const ugo: Person = {
+  userId: '01938f6e-8a42-7d5b-b2c9-5e1f3a6d9c34',
+  memberId: '01938f6e-9000-7000-8000-0000000000d6',
+};
+
+/** Vera Moreau, member of Atelier Nord, removed in the other order of the same race. */
+const vera: Person = {
+  userId: '01938f6e-8a42-7d5b-b2c9-5e1f3a6d9c35',
+  memberId: '01938f6e-9000-7000-8000-0000000000d7',
+};
+
+/** The new membership Théo Garnier gets when he joins Atelier Nord again. */
+const theoAgain: Person = {
+  userId: theo.userId,
+  memberId: '01938f6e-9000-7000-8000-0000000000d5',
+};
+
 /** A row of `outbox_events`, as the spec reads it. */
 interface OutboxRow {
   readonly id: string;
@@ -201,6 +226,8 @@ interface SendOptions {
   readonly text?: string;
   readonly headers?: Readonly<Record<string, string>>;
   readonly issuer?: Issuer;
+  /** The application to call, the main one by default. */
+  readonly target?: NestExpressApplication;
 }
 
 /** A space and its first list, as the creation answers them. */
@@ -438,6 +465,9 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
   const signers = new Map<Issuer, InternalTokenSigner>();
   let migrator: pg.Pool;
   const errorLines: string[] = [];
+  // The jobs a scenario held, released after it whatever happened: a held job would keep the next
+  // scenarios waiting for the queues to settle.
+  const heldJobs: (() => Promise<void>)[] = [];
 
   // The fixture every scenario shares, created once the members are known.
   let produit: SpaceCreated;
@@ -481,7 +511,7 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       actor: { type: 'user', id: actor.userId },
       organizationId: options.organizationId ?? atelierNordId,
     });
-    let call = request(service().getHttpServer())
+    let call = request((options.target ?? service()).getHttpServer())
       [method](path)
       .set('Authorization', `Bearer ${token}`);
     for (const [name, value] of Object.entries(options.headers ?? {})) {
@@ -1419,6 +1449,248 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
     return new Map(rows.map((row) => [row.id, row]));
   }
 
+  /**
+   * Starts the service as main.ts assembles it, with the configuration of the environment now.
+   *
+   * @returns The initialized application.
+   */
+  async function startApplication(): Promise<NestExpressApplication> {
+    // As main.ts: the configuration is read inside the start-up, never when a module is imported.
+    const config = loadConfig(appConfigSchema);
+    const started = await createApplication(AppModule, {
+      service: 'task-service',
+      config,
+      internalToken: {
+        verifier: {
+          audience: config.INTERNAL_TOKEN_AUDIENCE,
+          trustedIssuers: config.INTERNAL_TOKEN_TRUSTED_ISSUERS,
+        },
+      },
+      logDestination: {
+        write: (line: string): void => {
+          if (/"level":("error"|"fatal"|50|60)/u.test(line)) {
+            errorLines.push(line);
+          }
+        },
+      },
+    });
+    await started.init();
+    return started;
+  }
+
+  /**
+   * Holds rows locked by a transaction of the migrator role while work runs, as a concurrent
+   * writer would hold them; the locks are released after it, whatever happens.
+   *
+   * @param locks - The statements that lock the rows, run with the system access.
+   * @param work - What runs while the rows are held.
+   * @returns What the work returns.
+   */
+  async function whileHeld<TResult>(
+    locks: readonly (readonly [string, readonly unknown[]])[],
+    work: () => Promise<TResult>,
+  ): Promise<TResult> {
+    const blocker = await migrator.connect();
+    let keepAlive: NodeJS.Timeout | undefined;
+    try {
+      await blocker.query('begin');
+      await blocker.query(`select set_config('app.system_access', 'on', true)`);
+      for (const [statement, params] of locks) {
+        await blocker.query(statement, [...params]);
+      }
+      // The migrator role ends a transaction idle for 60 s: a long scenario keeps it busy.
+      keepAlive = setInterval(() => {
+        blocker.query('select 1').catch(() => undefined);
+      }, 10_000);
+      return await work();
+    } finally {
+      clearInterval(keepAlive);
+      await blocker.query('rollback');
+      blocker.release();
+    }
+  }
+
+  /**
+   * The statement that holds a task row `FOR UPDATE`.
+   *
+   * @param taskId - The id of the task.
+   * @returns The statement and its parameters, for `whileHeld`.
+   */
+  function taskLock(taskId: string): readonly [string, readonly unknown[]] {
+    return [
+      'select 1 from tasks where organization_id = $1 and id = $2 for update',
+      [atelierNordId, taskId],
+    ];
+  }
+
+  /**
+   * The statement that holds a list row `FOR UPDATE`.
+   *
+   * @param listId - The list.
+   * @returns The statement and its parameters, for `whileHeld`.
+   */
+  function listLock(listId: string): readonly [string, readonly unknown[]] {
+    return [
+      'select 1 from lists where organization_id = $1 and id = $2 for update',
+      [atelierNordId, listId],
+    ];
+  }
+
+  /**
+   * The statement that holds a space row `FOR SHARE`, which keeps its writers out and lets a
+   * deletion of one of its lists through.
+   *
+   * @param spaceId - The space.
+   * @returns The statement and its parameters, for `whileHeld`.
+   */
+  function spaceShareLock(spaceId: string): readonly [string, readonly unknown[]] {
+    return [
+      'select 1 from spaces where organization_id = $1 and id = $2 for share',
+      [atelierNordId, spaceId],
+    ];
+  }
+
+  /**
+   * The statement that holds a space row `FOR UPDATE`.
+   *
+   * @param spaceId - The space.
+   * @returns The statement and its parameters, for `whileHeld`.
+   */
+  function spaceLock(spaceId: string): readonly [string, readonly unknown[]] {
+    return [
+      'select 1 from spaces where organization_id = $1 and id = $2 for update',
+      [atelierNordId, spaceId],
+    ];
+  }
+
+  /**
+   * Holds the row of a space `FOR UPDATE` while two calls queue behind it in a known order.
+   *
+   * @param spaceId - The space whose row is held.
+   * @param first - The call that queues first.
+   * @param second - The call that queues behind it.
+   * @returns Both results, in the order of the calls.
+   */
+  async function behindSpace<TFirst, TSecond>(
+    spaceId: string,
+    first: () => Promise<TFirst>,
+    second: () => Promise<TSecond>,
+  ): Promise<[TFirst, TSecond]> {
+    const [statement, params] = spaceLock(spaceId);
+    return inOrderBehind(statement, params, first, second);
+  }
+
+  /**
+   * Waits until a statement of the service waits for a lock the migrator holds.
+   *
+   * @param before - How many lock requests waited before the call that must wait.
+   */
+  async function waitForLockWait(before: number): Promise<void> {
+    await vi.waitFor(
+      async () => {
+        expect(await lockWaits()).toBeGreaterThanOrEqual(before + 1);
+      },
+      { timeout: 20_000, interval: 50 },
+    );
+  }
+
+  /**
+   * The greatest outbox id so far, to read what a call appends.
+   *
+   * @returns The id, or the nil UUID when the outbox is empty.
+   */
+  async function lastEventId(): Promise<string> {
+    const [row] = await asSystem<{ readonly id: string | null }>(
+      'select id::text as id from outbox_events order by id desc limit 1',
+    );
+    return row?.id ?? '00000000-0000-0000-0000-000000000000';
+  }
+
+  /**
+   * Reads the outbox rows appended after a known row, oldest first.
+   *
+   * @param after - The id of the last row before.
+   * @returns The rows appended since.
+   */
+  async function eventsAfter(after: string): Promise<OutboxRow[]> {
+    return asSystem<OutboxRow>(
+      `select id::text as id, event_name, payload from outbox_events
+        where id > $1::uuid order by id`,
+      [after],
+    );
+  }
+
+  /**
+   * The problem of a refusal without `instance`, which names the path, to compare two refusals.
+   *
+   * @param response - A supertest response.
+   * @returns The members of the problem.
+   */
+  function problemOf(response: request.Response): Readonly<Record<string, unknown>> {
+    return Object.fromEntries(
+      Object.entries(bodyOf(response) as Record<string, unknown>).filter(
+        ([name]) => name !== 'instance',
+      ),
+    );
+  }
+
+  /**
+   * Deletes a list and keeps its job from starting, by pushing its start an hour away, so that
+   * the scenario runs while the tombstone has not been worked on.
+   *
+   * @param listId - The list.
+   * @returns What lets the job start again.
+   */
+  async function deleteListHoldingJob(listId: string): Promise<() => Promise<void>> {
+    const response = await deleteListRequest(listId);
+    expect(response.status, response.text).toBe(204);
+    return holdJob(TRASH_DELETED_TASKS_QUEUE, 'listId', listId);
+  }
+
+  /**
+   * Deletes a space and keeps its job from starting.
+   *
+   * @param spaceId - The space.
+   * @returns What lets the job start again.
+   */
+  async function deleteSpaceHoldingJob(spaceId: string): Promise<() => Promise<void>> {
+    const response = await deleteSpaceRequest(spaceId);
+    expect(response.status, response.text).toBe(204);
+    return holdJob(TRASH_DELETED_TASKS_QUEUE, 'spaceId', spaceId);
+  }
+
+  /**
+   * Pushes the start of a job that no worker took yet an hour away.
+   *
+   * @param queue - The queue.
+   * @param member - The member of its payload that names its target.
+   * @param value - The target.
+   * @returns What brings the start back to now.
+   */
+  async function holdJob(
+    queue: string,
+    member: 'listId' | 'spaceId',
+    value: string,
+  ): Promise<() => Promise<void>> {
+    const held = await migrator.query(
+      `update pgboss.job set start_after = now() + interval '1 hour'
+        where name = $1 and data -> 'payload' ->> '${member}' = $2 and state = 'created'
+        returning id`,
+      [queue, value],
+    );
+    // A worker that fetched the job in the milliseconds since the commit would void the scenario.
+    expect(held.rows, 'the job was held before a worker took it').toHaveLength(1);
+    const release = async (): Promise<void> => {
+      await migrator.query(
+        `update pgboss.job set start_after = now()
+          where name = $1 and data -> 'payload' ->> '${member}' = $2 and state = 'created'`,
+        [queue, value],
+      );
+    };
+    heldJobs.push(release);
+    return release;
+  }
+
   beforeAll(async () => {
     compose(
       'up',
@@ -1464,27 +1736,10 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       }),
     );
 
+    // The writes of the trash are served: the switch is off by default.
+    vi.stubEnv('TRASH_WRITES_ENABLED', 'true');
     telemetry = startTelemetry({ service: 'task-service', version: '0.0.0-test' });
-    // As main.ts: the configuration is read inside the start-up, never when a module is imported.
-    const config = loadConfig(appConfigSchema);
-    app = await createApplication(AppModule, {
-      service: 'task-service',
-      config,
-      internalToken: {
-        verifier: {
-          audience: config.INTERNAL_TOKEN_AUDIENCE,
-          trustedIssuers: config.INTERNAL_TOKEN_TRUSTED_ISSUERS,
-        },
-      },
-      logDestination: {
-        write: (line: string): void => {
-          if (/"level":(50|60)/u.test(line)) {
-            errorLines.push(line);
-          }
-        },
-      },
-    });
-    await app.init();
+    app = await startApplication();
     signers.set(
       'api-gateway',
       await InternalTokenSigner.create({
@@ -1510,11 +1765,14 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
     publishMember('joined', atelierNordId, nadia, 'guest', 1);
     publishMember('joined', atelierNordId, rose, 'guest', 1);
     publishMember('joined', atelierNordId, chloe, 'guest', 1);
+    publishMember('joined', atelierNordId, theo, 'member', 1);
+    publishMember('joined', atelierNordId, ugo, 'member', 1);
+    publishMember('joined', atelierNordId, vera, 'member', 1);
     publishMember('joined', atelierDeltaId, solene, 'owner', 1);
     await vi.waitFor(
       async () => {
         expect(await activeMembers(atelierNordId)).toEqual(
-          [camille, ines, hugo, lea, mathis, nadia, rose, chloe]
+          [camille, ines, hugo, lea, mathis, nadia, rose, chloe, theo, ugo, vera]
             .map((person) => person.userId)
             .sort(),
         );
@@ -1554,6 +1812,12 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       atelierDeltaId,
     );
   }, 240_000);
+
+  afterEach(async () => {
+    for (const release of heldJobs.splice(0)) {
+      await release();
+    }
+  });
 
   afterAll(async () => {
     try {
@@ -2304,15 +2568,17 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       expect(restored.task.subtaskCounts).toEqual({ total: 2, closed: 0 });
       expect(await readTask(root.key)).toEqual(restored.task);
       const after = await storedTasks([...members, dropped.key]);
-      for (const key of members) {
+      for (const key of members.filter((member) => member !== oldTrack.key)) {
         expect(after.get(key), key).toMatchObject({
           version: (trashed.get(key)?.version ?? 0) + 1,
           trash_entry_id: null,
         });
       }
-      expect(instantOf(after.get(oldTrack.key)?.archived_at)).toBe(
-        instantOf(trashed.get(oldTrack.key)?.archived_at),
-      );
+      // An archived member is restored, then archived again at the restoration: two versions.
+      expect(after.get(oldTrack.key)).toMatchObject({
+        version: (trashed.get(oldTrack.key)?.version ?? 0) + 2,
+        trash_entry_id: null,
+      });
       expect(after.get(dropped.key)).toMatchObject({
         version: trashed.get(dropped.key)?.version,
         trash_entry_id: droppedEntry.id,
@@ -2360,6 +2626,9 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
         });
       }
       expect(events[0]).toMatchObject({ assigneeIds: [lea.userId], labels: ['Sécurité'] });
+      expect(instantOf(after.get(oldTrack.key)?.archived_at)).toBe(
+        instantOf(events[0]?.occurredAt),
+      );
       expect(
         (await outboxOf('listId', list.id)).filter(
           (row) => row.event_name === 'list.restored.v1' || row.event_name === 'space.restored.v1',
@@ -2534,9 +2803,20 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       const since = (await outboxOf('listId', dossiers.id)).slice(eventsBefore);
       expect(since.map((row) => row.event_name)).toEqual([
         'list.restored.v1',
+        'list.access-changed.v1',
         'task.restored.v1',
         'task.restored.v1',
       ]);
+      // The restoration republishes who reaches the list, with the version it took.
+      expect(conforms(taskEventSchemas['list.access-changed.v1'], since[1]?.payload)).toMatchObject(
+        {
+          actor: { type: 'user', id: camille.userId },
+          version: restored.list.version,
+          listId: dossiers.id,
+          spaceId: space.space.id,
+          organizationAccess: true,
+        },
+      );
       const listEvent = conforms(taskEventSchemas['list.restored.v1'], since[0]?.payload);
       expect(listEvent).toMatchObject({
         actor: { type: 'user', id: camille.userId },
@@ -2548,7 +2828,7 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       });
       expect(
         since
-          .slice(1)
+          .slice(2)
           .map((row) => conforms(taskEventSchemas['task.restored.v1'], row.payload).key),
       ).toEqual([first.key, firstChild.key]);
 
@@ -2627,9 +2907,26 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       const since = (await outboxOf('spaceId', space.space.id)).slice(eventsBefore);
       expect(since.map((row) => row.event_name)).toEqual([
         'space.restored.v1',
+        'space.access-changed.v1',
         'list.restored.v1',
+        'list.access-changed.v1',
         'task.restored.v1',
       ]);
+      expect(
+        conforms(taskEventSchemas['space.access-changed.v1'], since[1]?.payload),
+      ).toMatchObject({
+        actor: { type: 'user', id: camille.userId },
+        version: (deleted[0]?.version ?? 0) + 1,
+        spaceId: space.space.id,
+        grants: [{ userId: lea.userId, role: 'comment' }],
+      });
+      expect(conforms(taskEventSchemas['list.access-changed.v1'], since[3]?.payload)).toMatchObject(
+        {
+          listId: newsletters.id,
+          spaceId: space.space.id,
+          organizationAccess: true,
+        },
+      );
       expect(conforms(taskEventSchemas['space.restored.v1'], since[0]?.payload)).toMatchObject({
         actor: { type: 'user', id: camille.userId },
         version: (deleted[0]?.version ?? 0) + 1,
@@ -2637,7 +2934,7 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
         name: 'Pôle communication',
         prefix: 'COM',
       });
-      expect(conforms(taskEventSchemas['list.restored.v1'], since[1]?.payload)).toMatchObject({
+      expect(conforms(taskEventSchemas['list.restored.v1'], since[2]?.payload)).toMatchObject({
         listId: newsletters.id,
         spaceId: space.space.id,
       });
@@ -4058,6 +4355,1190 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       expect(restored.task.version).toBe((trashed?.version ?? 0) + 2);
       const [event] = await restoredSince(doomed.key, 0);
       expect(event).toMatchObject({ assigneeIds: [lea.userId], version: restored.task.version });
+    });
+  });
+
+  describe('the writes of the trash are behind a switch', () => {
+    it('answers the four writes as an unknown route while TRASH_WRITES_ENABLED is false, changes nothing, and still serves the page, the restoration and the erasure', async () => {
+      const list = await createList(camille, produit.space.id, { name: 'Interrupteur' });
+      const space = await createSpace(camille, {
+        name: 'Espace de l’interrupteur',
+        prefix: 'SWI',
+        icon: 'rocket',
+        color: 'violet',
+      });
+      const victim = await createTask(camille, list.id, { name: 'Tâche qui reste vivante' });
+      const toRestore = await createTask(camille, list.id, { name: 'À restaurer' });
+      const toErase = await createTask(camille, list.id, { name: 'À effacer' });
+      const toKeep = await createTask(camille, list.id, { name: 'À garder dans la corbeille' });
+      const restoreEntryId = (await trashTask(toRestore.key)).id;
+      const eraseEntryId = (await trashTask(toErase.key)).id;
+      const keepEntryId = (await trashTask(toKeep.key)).id;
+      await jobsSettled();
+
+      vi.stubEnv('TRASH_WRITES_ENABLED', 'false');
+      const off = await startApplication().finally(() => {
+        vi.stubEnv('TRASH_WRITES_ENABLED', 'true');
+      });
+      try {
+        const total = await outboxTotal();
+        const writes: readonly (readonly [HttpMethod, string, object | undefined])[] = [
+          ['post', `/internal/v1/tasks/${victim.key}/trash`, {}],
+          ['delete', `/internal/v1/lists/${list.id}`, undefined],
+          ['delete', `/internal/v1/spaces/${space.space.id}`, undefined],
+          ['post', '/internal/v1/trash/empty', {}],
+        ];
+        const unknown = await send('get', '/internal/v1/no-such-route', camille, { target: off });
+        expectProblem(unknown, 404, 'http.not-found');
+        for (const [method, path, body] of writes) {
+          const response = await send(method, path, camille, { body, target: off });
+          expectProblem(response, 404, 'http.not-found');
+          expect(bodyOf(response), `${method} ${path}`).toMatchObject({
+            title: 'Not Found',
+            type: problemOf(unknown).type,
+            detail: `Cannot ${method.toUpperCase()} ${path}`,
+          });
+          // After the guard of the internal token: no token, no answer about the route.
+          const bare = request(off.getHttpServer())[method](path);
+          const anonymous = await (body === undefined ? bare : bare.send(body));
+          expect(anonymous.status, `${method} ${path}`).toBe(401);
+        }
+
+        expect(await outboxTotal()).toBe(total);
+        expect(await readTask(victim.key)).toMatchObject({ key: victim.key });
+        expect(await readList(list.id)).toMatchObject({ id: list.id, archivedAt: null });
+        expect(
+          (await storedLists([list.id])).get(list.id)?.deleted_at,
+          'the list is not a tombstone',
+        ).toBeNull();
+        expect((await trashPageOf(camille, { limit: 100 })).items.map((item) => item.id)).toEqual(
+          expect.arrayContaining([restoreEntryId, eraseEntryId, keepEntryId]) as unknown,
+        );
+
+        // The page, the restoration and the erasure answer as they do with the switch on.
+        const page = await read(
+          ListTrashInternalResponse,
+          '/internal/v1/trash/entries',
+          camille,
+          { limit: 100 },
+          { target: off },
+        );
+        expect(page.items.map((item) => item.id)).toEqual(
+          expect.arrayContaining([restoreEntryId, eraseEntryId, keepEntryId]) as unknown,
+        );
+        const restored = await restoreRequest(restoreEntryId, camille, { target: off });
+        expect(restored.status, restored.text).toBe(200);
+        expect(conforms(RestoreTrashEntryInternalResponse, bodyOf(restored)).task.key).toBe(
+          toRestore.key,
+        );
+        const erased = await send('delete', `/internal/v1/trash/entries/${eraseEntryId}`, camille, {
+          target: off,
+        });
+        expect(erased.status, erased.text).toBe(204);
+        expectProblem(
+          await restoreRequest(randomUUID(), camille, { target: off }),
+          404,
+          'trash-entry.not-found',
+        );
+        expectProblem(
+          await send('get', `/internal/v1/tasks/${toKeep.key}`, camille, { target: off }),
+          404,
+          'task.trashed',
+        );
+      } finally {
+        await off.close();
+      }
+
+      expect(await storedTask(toRestore.key)).toMatchObject({ trash_entry_id: null });
+      expect(await storedTask(toErase.key)).toBeUndefined();
+      expect((await storedTask(toKeep.key))?.trash_entry_id).toBe(keepEntryId);
+      // With the switch on again, the four routes answer.
+      expect((await trashRequest(victim.key)).status).toBe(200);
+    });
+  });
+
+  describe('a restoration never exposes the tasks a deletion job has not moved', () => {
+    it('answers 404 trash-entry.not-found to the restoration of an entry of a deleted list while its job still has tasks to move, and restores it once the job finished, leaving the other tasks in the trash', async () => {
+      const list = await createList(camille, produit.space.id, { name: 'Suppression en cours' });
+      const early = await createTask(camille, list.id, { name: 'Tâche déjà supprimée' });
+      const earlyEntry = await trashTask(early.key);
+      const pending = [
+        await createTask(camille, list.id, { name: 'Reste à déplacer 1' }),
+        await createTask(camille, list.id, { name: 'Reste à déplacer 2' }),
+        await createTask(camille, list.id, { name: 'Reste à déplacer 3' }),
+      ];
+      const held = await taskIdOf(pending[1]?.key ?? '');
+      const waitsBefore = await lockWaits();
+
+      // The job cannot move the tasks while a task row is held: it waits for it, with the list
+      // deleted and its three tasks still out of the trash.
+      const during = await whileHeld([taskLock(held)], async () => {
+        const deleted = await deleteListRequest(list.id);
+        expect(deleted.status, deleted.text).toBe(204);
+        await waitForLockWait(waitsBefore);
+        const total = await outboxTotal();
+        const refused = await restoreRequest(earlyEntry.id);
+        const unknown = await restoreRequest(randomUUID());
+        return {
+          refused,
+          unknown,
+          appended: (await outboxTotal()) - total,
+          list: (await storedLists([list.id])).get(list.id),
+          early: await storedTask(early.key),
+          waiting: await countOf(
+            'select count(*)::int as total from tasks where list_id = $1 and trash_entry_id is null',
+            [list.id],
+          ),
+        };
+      });
+
+      expectProblem(during.refused, 404, 'trash-entry.not-found');
+      expect(problemOf(during.refused)).toEqual(problemOf(during.unknown));
+      expect(during.appended).toBe(0);
+      expect(during.list?.deleted_at).not.toBeNull();
+      expect(during.early?.trash_entry_id).toBe(earlyEntry.id);
+      expect(during.waiting).toBe(3);
+
+      await jobsSettled();
+      const restored = await restoreEntry(earlyEntry.id);
+
+      expect(restored).toMatchObject({
+        task: { key: early.key },
+        listRestored: true,
+        spaceRestored: false,
+      });
+      for (const task of pending) {
+        expect((await storedTask(task.key))?.trash_entry_id, task.key).not.toBeNull();
+      }
+      expect(await storedTask(early.key)).toMatchObject({ trash_entry_id: null });
+    });
+  });
+
+  describe('a restored space and list republish who reaches them', () => {
+    it('appends space.access-changed.v1 and list.access-changed.v1 with the grants as they stand, between the restored events, and leaves a member removed meanwhile out of every snapshot', async () => {
+      const space = await createSpace(camille, {
+        name: 'Atelier de service',
+        prefix: 'ATS',
+        icon: 'rocket',
+        color: 'violet',
+      });
+      const list = await createList(camille, space.space.id, { name: 'Chantiers' });
+      const task = await createTask(camille, list.id, { name: 'Chantier de rénovation' });
+      await grant(camille, 'spaces', space.space.id, theo.userId, 'comment');
+      await grant(camille, 'spaces', space.space.id, lea.userId, 'view');
+      await grant(camille, 'lists', list.id, theo.userId, 'view');
+      await grant(camille, 'lists', list.id, hugo.userId, 'comment');
+      expect((await deleteSpaceRequest(space.space.id)).status).toBe(204);
+      await jobsSettled();
+      const entry = (await trashPageOf(camille, { limit: 100 })).items.find(
+        (item) => item.task.key === task.key,
+      );
+      expect(entry?.list.state).toBe('deleted');
+
+      // Théo leaves the organization while the space is deleted, and comes back with a new
+      // membership: his grants are gone, and the removal announced their end for the tombstones
+      // (the access events, with him in `changedUserIds`) but no content change of the space.
+      const grantsOf = async (table: 'space_grants' | 'list_grants'): Promise<number> =>
+        countOf(`select count(*)::int as total from ${table} where user_id = $1`, [theo.userId]);
+      expect(await grantsOf('space_grants')).toBe(1);
+      expect(await grantsOf('list_grants')).toBe(1);
+      const beforeRemoval = await lastEventId();
+      publishMember('removed', atelierNordId, theo, 'member', 2);
+      await vi.waitFor(
+        async () => {
+          expect(await grantsOf('space_grants')).toBe(0);
+          expect(await grantsOf('list_grants')).toBe(0);
+          expect(await activeMembers(atelierNordId)).not.toContain(theo.userId);
+        },
+        { timeout: 60_000, interval: 250 },
+      );
+      const removal = (await eventsAfter(beforeRemoval)).filter(
+        (row) => (row.payload as { spaceId?: string }).spaceId === space.space.id,
+      );
+      expect(removal.map((row) => row.event_name).sort()).toEqual([
+        'list.access-changed.v1',
+        'space.access-changed.v1',
+      ]);
+      for (const row of removal) {
+        const payload = conforms(
+          row.event_name === 'space.access-changed.v1'
+            ? taskEventSchemas['space.access-changed.v1']
+            : taskEventSchemas['list.access-changed.v1'],
+          row.payload,
+        );
+        expect(payload.changedUserIds, row.event_name).toEqual([theo.userId]);
+        expect(payload.actor, row.event_name).toEqual({ type: 'system', id: 'task-service' });
+        expect(JSON.stringify(payload.grants), row.event_name).not.toContain(theo.userId);
+      }
+      publishMember('joined', atelierNordId, theoAgain, 'member', 3);
+      await vi.waitFor(
+        async () => {
+          expect(await activeMembers(atelierNordId)).toContain(theo.userId);
+        },
+        { timeout: 60_000, interval: 250 },
+      );
+      const marker = await lastEventId();
+
+      const restored = await restoreEntry(entry?.id ?? '');
+
+      expect(restored).toMatchObject({ listRestored: true, spaceRestored: true });
+      const events = await eventsAfter(marker);
+      expect(events.map((row) => row.event_name)).toEqual([
+        'space.restored.v1',
+        'space.access-changed.v1',
+        'list.restored.v1',
+        'list.access-changed.v1',
+        'task.restored.v1',
+      ]);
+      const [spaceRestored, spaceAccess, listRestored, listAccess] = events;
+      const spaceEvent = conforms(taskEventSchemas['space.restored.v1'], spaceRestored?.payload);
+      const spaceGrants = conforms(
+        taskEventSchemas['space.access-changed.v1'],
+        spaceAccess?.payload,
+      );
+      const listEvent = conforms(taskEventSchemas['list.restored.v1'], listRestored?.payload);
+      const listGrants = conforms(taskEventSchemas['list.access-changed.v1'], listAccess?.payload);
+      expect(spaceGrants).toMatchObject({
+        actor: { type: 'user', id: camille.userId },
+        spaceId: space.space.id,
+        version: spaceEvent.version,
+        grants: [{ userId: lea.userId, role: 'view' }],
+      });
+      expect(listGrants).toMatchObject({
+        actor: { type: 'user', id: camille.userId },
+        listId: list.id,
+        spaceId: space.space.id,
+        version: listEvent.version,
+        organizationAccess: true,
+        grants: [{ userId: hugo.userId, role: 'comment' }],
+      });
+      expect(JSON.stringify(events.map((row) => row.payload))).not.toContain(theo.userId);
+    });
+  });
+
+  describe('the purge erases an oversized entry in chunks', () => {
+    it('erases an entry of more than 500 tasks, archived subtasks included, deepest first, hides it from its first chunk, and erases a younger due entry in the same run', async () => {
+      const list = await createList(camille, produit.space.id, { name: 'Gros dossier' });
+      const root = await createTask(camille, list.id, {
+        name: 'Dossier de reprise',
+        subtasks: Array.from({ length: 25 }, (_, index) => ({ name: `Lot ${String(index + 1)}` })),
+      });
+      const children = (await subtasksOf(root.key)).keys;
+      expect(children).toHaveLength(25);
+      const parents = new Map<string, string>(children.map((key) => [key, root.key]));
+      for (let start = 0; start < children.length; start += 5) {
+        await Promise.all(
+          children.slice(start, start + 5).map(async (child) => {
+            for (let number = 1; number <= 20; number += 1) {
+              const leaf = await createSubtask(child, {
+                name: `Tâche ${String(number)} du lot ${child}`,
+              });
+              parents.set(leaf.key, child);
+            }
+          }),
+        );
+      }
+      for (const child of children.slice(0, 3)) {
+        await archiveTask(child);
+      }
+      const big = await trashTask(root.key);
+      expect(big.subtaskCount).toBe(525);
+      const small = await createTask(camille, list.id, {
+        name: 'Petit dossier',
+        subtasks: [{ name: 'Un' }, { name: 'Deux' }],
+      });
+      const smallKeys = [small.key, ...(await subtasksOf(small.key)).keys];
+      const smallEntry = await trashTask(small.key);
+      await asSystem(
+        `update trash_entries set trashed_at = trashed_at - interval '32 days' where id = $1`,
+        [big.id],
+      );
+      await asSystem(
+        `update trash_entries set trashed_at = trashed_at - interval '31 days' where id = $1`,
+        [smallEntry.id],
+      );
+      const purgeJobs = async (): Promise<number> =>
+        countOf(
+          `select count(*)::int as total from pgboss.job
+            where name = $1 and data ->> 'organizationId' = $2`,
+          [PURGE_TRASH_QUEUE, atelierNordId],
+        );
+      const jobsBefore = await purgeJobs();
+      const handler = service().get(ScheduleTrashPurgeHandler, { strict: false });
+      const waitsBefore = await lockWaits();
+      const lastChild = children.at(-1) ?? '';
+
+      // The second chunk needs the last lot, which is held: the first chunk is committed and the
+      // job waits.
+      const during = await whileHeld([taskLock(await taskIdOf(lastChild))], async () => {
+        await handler.handle({
+          id: randomUUID(),
+          queue: 'task.schedule-trash-purge',
+          payload: null,
+          organizationId: null,
+          attempt: 1,
+          signal: new AbortController().signal,
+        });
+        const remaining = async (): Promise<number> =>
+          countOf('select count(*)::int as total from tasks where trash_entry_id = $1', [big.id]);
+        await vi.waitFor(
+          async () => {
+            expect(await remaining()).toBeLessThan(526);
+          },
+          { timeout: 60_000, interval: 100 },
+        );
+        await waitForLockWait(waitsBefore);
+        const [entryRow] = await asSystem<{
+          readonly task_count: number;
+          readonly by_type: string | null;
+          readonly by_id: string | null;
+        }>(
+          `select task_count, purge_requested_by_type as by_type, purge_requested_by_id as by_id
+             from trash_entries where id = $1`,
+          [big.id],
+        );
+        return {
+          remaining: await remaining(),
+          entryRow,
+          page: await trashPageOf(camille, { limit: 100 }),
+          restore: await restoreRequest(big.id),
+          erase: await purgeRequest(big.id),
+          read: await send('get', `/internal/v1/tasks/${root.key}`, camille),
+        };
+      });
+
+      expect(during.remaining).toBeGreaterThan(0);
+      expect(during.remaining).toBeLessThan(526);
+      expect(during.entryRow).toEqual({
+        task_count: during.remaining,
+        by_type: 'system',
+        by_id: 'task-service',
+      });
+      expect(during.page.items.map((item) => item.id)).not.toContain(big.id);
+      expectProblem(during.restore, 404, 'trash-entry.not-found');
+      expectProblem(during.erase, 404, 'trash-entry.not-found');
+      expectProblem(during.read, 404, 'task.not-found');
+
+      await jobsSettled();
+
+      expect(await purgeJobs()).toBe(jobsBefore + 1);
+      expect(
+        await countOf(
+          'select count(*)::int as total from trash_entries where id = any($1::uuid[])',
+          [[big.id, smallEntry.id]],
+        ),
+      ).toBe(0);
+      expect(await storedTasks([root.key, ...children, ...parents.keys(), ...smallKeys])).toEqual(
+        new Map(),
+      );
+      const events = await purgedOf(big.id);
+      expect(events).toHaveLength(526);
+      const order = new Map(events.map((event, index) => [event.key, index]));
+      expect(order.size).toBe(526);
+      for (const event of events) {
+        expect(event.actor).toEqual({ type: 'system', id: 'task-service' });
+        expect(event.rootKey).toBe(root.key);
+        expect(event.parentKey, event.key).toBe(parents.get(event.key) ?? null);
+      }
+      // The first chunk erased the deepest tasks, the lots and the root came after it.
+      const leaves = new Set(
+        [...parents].filter(([, parent]) => parent !== root.key).map(([key]) => key),
+      );
+      const firstChunk = 526 - during.remaining;
+      expect(
+        events.slice(0, firstChunk).every((event) => leaves.has(event.key)),
+        'the first chunk holds the deepest tasks',
+      ).toBe(true);
+      expect(order.get(root.key) ?? -1).toBeGreaterThanOrEqual(firstChunk);
+      expect((await purgedOf(smallEntry.id)).map((event) => event.key).sort()).toEqual(
+        [...smallKeys].sort(),
+      );
+    });
+  });
+
+  describe('an access request revalidates its target under the locks a deletion takes', () => {
+    /**
+     * Counts the pending requests that name a target.
+     *
+     * @param column - The column that names it.
+     * @param value - The list id, the space id or the task key.
+     * @returns The count.
+     */
+    async function pendingFor(
+      column: 'list_id' | 'space_id' | 'task_key',
+      value: string,
+    ): Promise<number> {
+      return countOf(
+        `select count(*)::int as total from access_requests where state = 'pending' and ${column} = $1`,
+        [value],
+      );
+    }
+
+    it('leaves no pending request on a list deleted while the request was made, in both orders, and answers the same 202', async () => {
+      for (const order of ['request first', 'deletion first'] as const) {
+        const own = await createList(camille, produit.space.id, { name: `Demande, ${order}` });
+        const ask = (): Promise<request.Response> =>
+          send('post', '/internal/v1/access-requests', rose, { body: { listId: own.id } });
+        const remove = (): Promise<request.Response> => deleteListRequest(own.id);
+
+        const { asked, removed } =
+          order === 'request first'
+            ? await behindList(own.id, ask, remove).then(([first, second]) => ({
+                asked: first,
+                removed: second,
+              }))
+            : await behindList(own.id, remove, ask).then(([first, second]) => ({
+                asked: second,
+                removed: first,
+              }));
+
+        expect(asked.status, `${order}: ${asked.text}`).toBe(202);
+        expect(asked.text).toBe('');
+        expect(removed.status, `${order}: ${removed.text}`).toBe(204);
+        await jobsSettled();
+        expect(await pendingFor('list_id', own.id), order).toBe(0);
+      }
+    });
+
+    it('leaves no pending request on a space deleted while the request was made, in both orders, and answers the same 202', async () => {
+      for (const [index, order] of (['request first', 'deletion first'] as const).entries()) {
+        const own = await createSpace(camille, {
+          name: `Espace discret ${String(index + 1)}`,
+          prefix: index === 0 ? 'DSA' : 'DSB',
+          visibility: 'private',
+        });
+        const ask = (): Promise<request.Response> =>
+          send('post', '/internal/v1/access-requests', hugo, { body: { spaceId: own.space.id } });
+        const remove = (): Promise<request.Response> => deleteSpaceRequest(own.space.id);
+
+        const { asked, removed } =
+          order === 'request first'
+            ? await behindSpace(own.space.id, ask, remove).then(([first, second]) => ({
+                asked: first,
+                removed: second,
+              }))
+            : await behindSpace(own.space.id, remove, ask).then(([first, second]) => ({
+                asked: second,
+                removed: first,
+              }));
+
+        expect(asked.status, `${order}: ${asked.text}`).toBe(202);
+        expect(asked.text).toBe('');
+        expect(removed.status, `${order}: ${removed.text}`).toBe(204);
+        await jobsSettled();
+        expect(await pendingFor('space_id', own.space.id), order).toBe(0);
+      }
+    });
+
+    it('leaves no pending request on a task deleted while the request was made, in both orders, and answers the same 202', async () => {
+      const list = await createList(camille, produit.space.id, { name: 'Demandes de tâches' });
+      for (const order of ['request first', 'trash first'] as const) {
+        const task = await createTask(camille, list.id, { name: `Tâche demandée, ${order}` });
+        const ask = (): Promise<request.Response> =>
+          send('post', '/internal/v1/access-requests', nadia, { body: { taskKey: task.key } });
+        const remove = (): Promise<request.Response> => trashRequest(task.key);
+
+        const { asked, removed } =
+          order === 'request first'
+            ? await behindTask(task.key, ask, remove).then(([first, second]) => ({
+                asked: first,
+                removed: second,
+              }))
+            : await behindTask(task.key, remove, ask).then(([first, second]) => ({
+                asked: second,
+                removed: first,
+              }));
+
+        expect(asked.status, `${order}: ${asked.text}`).toBe(202);
+        expect(asked.text).toBe('');
+        expect(removed.status, `${order}: ${removed.text}`).toBe(200);
+        await jobsSettled();
+        expect(await pendingFor('task_key', task.key), order).toBe(0);
+      }
+    });
+  });
+
+  describe('the last erasures of a deleted list serialize on the list', () => {
+    it('erases the tombstone when two transactions erase the last two entries of a deleted list at once, in both orders', async () => {
+      for (const order of ['first entry first', 'second entry first'] as const) {
+        const own = await createList(camille, produit.space.id, {
+          name: `Dernières entrées, ${order}`,
+        });
+        await createTask(camille, own.id, { name: `Première, ${order}` });
+        await createTask(camille, own.id, { name: `Deuxième, ${order}` });
+        expect((await deleteListRequest(own.id)).status).toBe(204);
+        await jobsSettled();
+        const entries = (await trashPageOf(camille, { limit: 100 })).items
+          .filter((item) => item.list.id === own.id)
+          .map((item) => item.id);
+        expect(entries).toHaveLength(2);
+        const [one, other] = order === 'first entry first' ? entries : [...entries].reverse();
+
+        const [byOne, byOther] = await behindList(
+          own.id,
+          () => purgeRequest(one ?? ''),
+          () => purgeRequest(other ?? ''),
+        );
+
+        expect(byOne.status, `${order}: ${byOne.text}`).toBe(204);
+        expect(byOther.status, `${order}: ${byOther.text}`).toBe(204);
+        expect((await storedLists([own.id])).size, order).toBe(0);
+        expect(
+          await countOf('select count(*)::int as total from tasks where list_id = $1', [own.id]),
+        ).toBe(0);
+      }
+    });
+  });
+
+  describe('a restoration and the erasure of its parent entry do not deadlock', () => {
+    it('completes both when a child entry is restored while the entry of its parent is erased, in both orders', async () => {
+      const list = await createList(camille, produit.space.id, { name: 'Parents et enfants' });
+      for (const order of ['erasure first', 'restoration first'] as const) {
+        const parent = await createTask(camille, list.id, { name: `Parent, ${order}` });
+        const child = await createSubtask(parent.key, { name: `Enfant, ${order}` });
+        const childEntry = await trashTask(child.key);
+        const parentEntry = await trashTask(parent.key);
+        const childId = await taskIdOf(child.key);
+        const restore = (): Promise<request.Response> => restoreRequest(childEntry.id);
+        const erase = (): Promise<request.Response> => purgeRequest(parentEntry.id);
+
+        const [restored, erased] = await inOrderBehind(
+          'select 1 from tasks where organization_id = $1 and id = $2 for update',
+          [atelierNordId, childId],
+          order === 'erasure first' ? erase : restore,
+          order === 'erasure first' ? restore : erase,
+        ).then(([first, second]): [request.Response, request.Response] =>
+          order === 'erasure first' ? [second, first] : [first, second],
+        );
+
+        expect(erased.status, `${order}: ${erased.text}`).toBe(204);
+        expect(restored.status, `${order}: ${restored.text}`).toBe(200);
+        expect(conforms(RestoreTrashEntryInternalResponse, bodyOf(restored)).task).toMatchObject({
+          key: child.key,
+          parentKey: null,
+        });
+        expect(await storedTask(parent.key)).toBeUndefined();
+        expect(await storedTask(child.key)).toMatchObject({
+          trash_entry_id: null,
+          parent_key: null,
+        });
+      }
+    });
+  });
+
+  describe('a write on a private list or space the caller does not see does not wait for a lock', () => {
+    it('answers 404 at once, like an unknown id, to the writes of a list and of a space another transaction holds locked', async () => {
+      const unknownList = randomUUID();
+      const unknownSpace = randomUUID();
+      const writes = (
+        listId: string,
+        spaceId: string,
+      ): readonly (readonly [string, HttpMethod, string, object | undefined])[] => [
+        ['list', 'patch', `/internal/v1/lists/${listId}`, { color: 'azur' }],
+        ['list', 'post', `/internal/v1/lists/${listId}/archive`, {}],
+        ['list', 'post', `/internal/v1/lists/${listId}/unarchive`, {}],
+        ['list', 'delete', `/internal/v1/lists/${listId}`, undefined],
+        ['list', 'put', `/internal/v1/lists/${listId}/grants/${lea.userId}`, { role: 'view' }],
+        ['list', 'delete', `/internal/v1/lists/${listId}/grants/${lea.userId}`, undefined],
+        ['space', 'patch', `/internal/v1/spaces/${spaceId}`, { name: 'Autre nom' }],
+        ['space', 'delete', `/internal/v1/spaces/${spaceId}`, undefined],
+        ['space', 'put', `/internal/v1/spaces/${spaceId}/grants/${lea.userId}`, { role: 'view' }],
+        ['space', 'delete', `/internal/v1/spaces/${spaceId}/grants/${lea.userId}`, undefined],
+      ];
+      const answers = async (
+        listId: string,
+        spaceId: string,
+        actor: Person,
+      ): Promise<
+        { readonly label: string; readonly response: request.Response; readonly ms: number }[]
+      > => {
+        const results: { label: string; response: request.Response; ms: number }[] = [];
+        for (const [kind, method, path, body] of writes(listId, spaceId)) {
+          const started = performance.now();
+          const response = await send(method, path, actor, { body });
+          results.push({
+            label: `${kind} ${method} ${path}`,
+            response,
+            ms: performance.now() - started,
+          });
+        }
+        return results;
+      };
+      const unknown = await answers(unknownList, unknownSpace, camille);
+
+      const held = await whileHeld(
+        [listLock(entretiens.id), spaceLock(recherche.space.id)],
+        async () => ({
+          camille: await answers(entretiens.id, recherche.space.id, camille),
+          chloe: await answers(entretiens.id, recherche.space.id, chloe),
+        }),
+      );
+
+      for (const [who, results] of Object.entries(held)) {
+        for (const [index, result] of results.entries()) {
+          const code = result.label.startsWith('list') ? 'list.not-found' : 'space.not-found';
+          expectProblem(result.response, 404, code);
+          expect(result.ms, `${who}: ${result.label}`).toBeLessThan(2500);
+          expect(problemOf(result.response), `${who}: ${result.label}`).toEqual(
+            problemOf(unknown[index]?.response ?? result.response),
+          );
+        }
+      }
+    });
+  });
+
+  describe('a move out of a list cannot strand a task in a deleted list', () => {
+    it('answers 404 task.not-found to a move whose source list was deleted before it took its locks, and keeps the task for the deletion job', async () => {
+      const source = await createList(camille, produit.space.id, { name: 'Liste à quitter' });
+      const target = await createList(camille, produit.space.id, { name: 'Liste d’arrivée' });
+      const task = await createTask(camille, source.id, { name: 'Tâche qui part' });
+      const waitsBefore = await lockWaits();
+
+      const move = await whileHeld([taskLock(await taskIdOf(task.key))], async () => {
+        const pendingMove = send('patch', `/internal/v1/tasks/${task.key}`, camille, {
+          body: { listId: target.id },
+        });
+        await waitForLockWait(waitsBefore);
+        expect((await deleteListRequest(source.id)).status).toBe(204);
+        return { pendingMove };
+      }).then(async ({ pendingMove }) => pendingMove);
+
+      expectProblem(move, 404, 'task.not-found');
+      expect(await storedTask(task.key)).toMatchObject({ list_id: source.id });
+      await jobsSettled();
+      expect((await storedTask(task.key))?.trash_entry_id).not.toBeNull();
+      expect(
+        await countOf('select count(*)::int as total from tasks where list_id = $1', [target.id]),
+      ).toBe(0);
+    });
+
+    it('trashes a task left out of the trash before the cursor of the job of a deleted list, by rescanning the list', async () => {
+      const list = await createList(camille, produit.space.id, { name: 'Liste à rescanner' });
+      const tasks: TaskBody[] = [];
+      for (let number = 1; number <= 51; number += 1) {
+        tasks.push(
+          await createTask(camille, list.id, { name: `Tâche ${String(number)} à déplacer` }),
+        );
+      }
+      const first = tasks[0];
+      const last = tasks.at(-1);
+      const waitsBefore = await lockWaits();
+      let stranded = '';
+
+      // The first batch takes 50 roots and commits; the second waits for the 51st, which is held.
+      // A task lands in the list before the cursor, as a move that raced the deletion would have
+      // left it.
+      await whileHeld([taskLock(await taskIdOf(last?.key ?? ''))], async () => {
+        expect((await deleteListRequest(list.id)).status).toBe(204);
+        await waitForLockWait(waitsBefore);
+        await vi.waitFor(
+          async () => {
+            expect(
+              await countOf(
+                'select count(*)::int as total from tasks where list_id = $1 and trash_entry_id is not null',
+                [list.id],
+              ),
+            ).toBe(50);
+          },
+          { timeout: 30_000, interval: 100 },
+        );
+        const client = await migrator.connect();
+        try {
+          await client.query('begin');
+          await client.query(`select set_config('app.system_access', 'on', true)`);
+          await client.query(
+            `create temp table stranded on commit drop as
+               select * from tasks where organization_id = $1 and id = $2`,
+            [atelierNordId, await taskIdOf(first?.key ?? '')],
+          );
+          await client.query(
+            `update stranded set id = uuidv7(), key_prefix = 'ZZZ', key_number = 1,
+                    created_at = created_at - interval '1 day', trash_entry_id = null`,
+          );
+          const inserted = await client.query<{ readonly id: string }>(
+            'insert into tasks select * from stranded returning id::text as id',
+          );
+          stranded = inserted.rows[0]?.id ?? '';
+          await client.query('commit');
+        } finally {
+          client.release();
+        }
+      });
+      expect(stranded).not.toBe('');
+
+      await jobsSettled();
+
+      expect(
+        await countOf(
+          'select count(*)::int as total from tasks where list_id = $1 and trash_entry_id is null',
+          [list.id],
+        ),
+      ).toBe(0);
+      expect(
+        await countOf(
+          'select count(*)::int as total from tasks where id = $1 and trash_entry_id is not null',
+          [stranded],
+        ),
+      ).toBe(1);
+    });
+  });
+
+  describe('the requests of a tombstone erased before its job ran are still dropped', () => {
+    it('drops the pending request of a list whose last entry was erased before its deletion job started', async () => {
+      const list = await createList(camille, produit.space.id, {
+        name: 'Liste effacée avant son job',
+      });
+      const task = await createTask(camille, list.id, { name: 'Dernière tâche de la liste' });
+      const entry = await trashTask(task.key);
+      await jobsSettled();
+      const asked = await send('post', '/internal/v1/access-requests', rose, {
+        body: { listId: list.id },
+      });
+      expect(asked.status, asked.text).toBe(202);
+      const pending = async (): Promise<number> =>
+        countOf(`select count(*)::int as total from access_requests where list_id = $1`, [list.id]);
+      expect(await pending()).toBe(1);
+
+      const release = await deleteListHoldingJob(list.id);
+      await purgeEntry(entry.id);
+
+      expect((await storedLists([list.id])).size).toBe(0);
+      expect(await pending()).toBe(1);
+      await release();
+      await jobsSettled();
+      expect(await pending()).toBe(0);
+    });
+
+    it('drops the pending request of a space erased before its deletion job started', async () => {
+      const own = await createSpace(camille, {
+        name: 'Espace effacé avant son job',
+        prefix: 'EFF',
+        visibility: 'private',
+      });
+      const task = await createTask(camille, own.firstList.id, {
+        name: 'Dernière tâche de l’espace',
+      });
+      const entry = await trashTask(task.key);
+      await jobsSettled();
+      const asked = await send('post', '/internal/v1/access-requests', hugo, {
+        body: { spaceId: own.space.id },
+      });
+      expect(asked.status, asked.text).toBe(202);
+      const pending = async (): Promise<number> =>
+        countOf(`select count(*)::int as total from access_requests where space_id = $1`, [
+          own.space.id,
+        ]);
+      expect(await pending()).toBe(1);
+
+      const release = await deleteSpaceHoldingJob(own.space.id);
+      await purgeEntry(entry.id);
+
+      expect(
+        await countOf('select count(*)::int as total from spaces where id = $1', [own.space.id]),
+      ).toBe(0);
+      expect(await pending()).toBe(1);
+      await release();
+      await jobsSettled();
+      expect(await pending()).toBe(0);
+    });
+  });
+
+  describe('a restored member that is still archived is announced archived again', () => {
+    /**
+     * Reads the restored and archived events appended after a known row, as name, key, version and
+     * the root of the archive.
+     *
+     * @param marker - The id of the last row before.
+     * @returns The events, in the order of the outbox.
+     */
+    async function restoredAndArchivedSince(marker: string): Promise<
+      {
+        readonly name: string;
+        readonly key: string;
+        readonly version: number;
+        readonly rootKey: string;
+        readonly actor: unknown;
+        readonly occurredAt: string;
+      }[]
+    > {
+      return (await eventsAfter(marker))
+        .filter((row) => ['task.restored.v1', 'task.archived.v1'].includes(row.event_name))
+        .map((row) => {
+          const payload =
+            row.event_name === 'task.restored.v1'
+              ? conforms(taskEventSchemas['task.restored.v1'], row.payload)
+              : conforms(taskEventSchemas['task.archived.v1'], row.payload);
+          return {
+            name: row.event_name,
+            key: payload.key,
+            version: payload.version,
+            rootKey: payload.rootKey,
+            actor: payload.actor,
+            occurredAt: payload.occurredAt,
+          };
+        });
+    }
+
+    it('archives each archived member again at the restoration: task.restored.v1 at V then task.archived.v1 at V+1 right after, at the instant of the restoration, by the person who restored it, with the root of its archive', async () => {
+      const list = await createList(camille, produit.space.id, { name: 'Reprise d’archives' });
+      const root = await createTask(camille, list.id, { name: 'Chantier mixte' });
+      const live = await createSubtask(root.key, { name: 'Partie vivante' });
+      const part = await createSubtask(root.key, { name: 'Partie archivée' });
+      const leaf = await createSubtask(part.key, { name: 'Détail archivé' });
+      await archiveTask(part.key, camille);
+      const entry = await trashTask(root.key);
+      const marker = await lastEventId();
+
+      await restoreEntry(entry.id, hugo);
+
+      const events = await restoredAndArchivedSince(marker);
+      expect(events.map((event) => [event.name, event.key])).toEqual([
+        ['task.restored.v1', root.key],
+        ['task.restored.v1', live.key],
+        ['task.restored.v1', part.key],
+        ['task.archived.v1', part.key],
+        ['task.restored.v1', leaf.key],
+        ['task.archived.v1', leaf.key],
+      ]);
+      const stored = await storedTasks([part.key, leaf.key]);
+      for (const key of [part.key, leaf.key]) {
+        const restored = events.find(
+          (event) => event.name === 'task.restored.v1' && event.key === key,
+        );
+        const archived = events.find(
+          (event) => event.name === 'task.archived.v1' && event.key === key,
+        );
+        expect(archived, key).toMatchObject({
+          version: (restored?.version ?? 0) + 1,
+          rootKey: part.key,
+          actor: { type: 'user', id: hugo.userId },
+        });
+        // The archive is the restoration's: its instant and its author.
+        expect(instantOf(archived?.occurredAt), key).toBe(instantOf(restored?.occurredAt));
+        expect(instantOf(stored.get(key)?.archived_at), key).toBe(instantOf(archived?.occurredAt));
+        expect(stored.get(key)?.version, key).toBe(archived?.version);
+      }
+      const page = await read(
+        ListArchivedTasksInternalResponse,
+        '/internal/v1/archives/tasks',
+        camille,
+        { limit: 100 },
+      );
+      const listed = page.items.find((item) => item.task.key === part.key);
+      expect(listed).toMatchObject({ archivedBy: { type: 'user', id: hugo.userId } });
+      expect(instantOf(listed?.archivedAt)).toBe(
+        instantOf(events.find((event) => event.name === 'task.archived.v1')?.occurredAt),
+      );
+    });
+
+    it('detaches an archived root restored while its parent is in the trash, keeps its archive and announces both', async () => {
+      const origin = await createList(camille, produit.space.id, {
+        name: 'Liste d’origine de l’archive',
+      });
+      const home = await createList(camille, produit.space.id, {
+        name: 'Liste d’accueil du parent',
+      });
+      const parent = await createTask(camille, origin.id, { name: 'Parent déplacé puis supprimé' });
+      const child = await archiveTask(
+        (await createSubtask(parent.key, { name: 'Sous-tâche archivée du parent' })).key,
+      );
+      await patchTask(parent.key, { listId: home.id });
+      expect((await deleteListRequest(origin.id)).status).toBe(204);
+      await jobsSettled();
+      const childEntry = (await trashPageOf(camille, { limit: 100 })).items.find(
+        (item) => item.task.key === child.key,
+      );
+      expect(childEntry?.list).toMatchObject({ id: origin.id, state: 'deleted' });
+      await trashTask(parent.key);
+      const marker = await lastEventId();
+
+      const restored = await restoreEntry(childEntry?.id ?? '');
+
+      expect(restored).toMatchObject({
+        task: {
+          key: child.key,
+          parentKey: null,
+          archivedBy: { type: 'user', id: camille.userId },
+        },
+        detached: true,
+        listRestored: true,
+      });
+      expect(await storedTask(child.key)).toMatchObject({ parent_key: null, trash_entry_id: null });
+      const events = await restoredAndArchivedSince(marker);
+      expect(events.map((event) => [event.name, event.key])).toEqual([
+        ['task.restored.v1', child.key],
+        ['task.archived.v1', child.key],
+      ]);
+      // Archived again at the restoration: one version more, the instant of the restoration.
+      expect(restored.task.version).toBe(events[1]?.version);
+      expect(events[1]?.version).toBe((events[0]?.version ?? 0) + 1);
+      expect(instantOf(restored.task.archivedAt)).toBe(instantOf(events[1]?.occurredAt));
+      expect(instantOf(restored.task.archivedAt)).toBe(instantOf(events[0]?.occurredAt));
+      expect(instantOf((await storedTask(child.key))?.archived_at)).toBe(
+        instantOf(restored.task.archivedAt),
+      );
+      const restoredEvent = (await eventsAfter(marker)).find(
+        (row) => row.event_name === 'task.restored.v1',
+      );
+      expect(
+        conforms(taskEventSchemas['task.restored.v1'], restoredEvent?.payload).parentKey,
+      ).toBeNull();
+    });
+  });
+
+  describe('a restoration that read its list live cannot restore a list deleted meanwhile', () => {
+    it('answers 404 trash-entry.not-found and restores nothing when the list is deleted between its read and its locks while its job still has tasks to move, then restores once the job finished', async () => {
+      const space = await createSpace(camille, {
+        name: 'Course de restauration',
+        prefix: 'CRS',
+        icon: 'rocket',
+        color: 'violet',
+      });
+      const list = await createList(camille, space.space.id, { name: 'Liste en course' });
+      const first = await createTask(camille, list.id, { name: 'Entrée à restaurer' });
+      const entry = await trashTask(first.key);
+      const pending = await createTask(camille, list.id, { name: 'Tâche restée vivante' });
+      const waitsBefore = await lockWaits();
+
+      // The restoration has read its list live and waits for the lock of its space; the deletion
+      // of the list commits meanwhile and its job is held, with a task left to move.
+      const raced = await whileHeld([spaceShareLock(space.space.id)], async () => {
+        const restoration = restoreRequest(entry.id);
+        await waitForLockWait(waitsBefore);
+        const release = await deleteListHoldingJob(list.id);
+        return { restoration, release, marker: await lastEventId() };
+      });
+      const refused = await raced.restoration;
+
+      expectProblem(refused, 404, 'trash-entry.not-found');
+      expect(await eventsAfter(raced.marker)).toEqual([]);
+      expect((await storedLists([list.id])).get(list.id)).toMatchObject({
+        deleted_by_id: camille.userId,
+        restored_at: null,
+      });
+      expect((await storedLists([list.id])).get(list.id)?.deleted_at).not.toBeNull();
+      expect(await storedTask(first.key)).toMatchObject({ trash_entry_id: entry.id });
+      expect(await storedTask(pending.key)).toMatchObject({ trash_entry_id: null });
+
+      await raced.release();
+      await jobsSettled();
+      expect(await restoreEntry(entry.id)).toMatchObject({ listRestored: true });
+      expect((await storedTask(pending.key))?.trash_entry_id).not.toBeNull();
+    });
+  });
+
+  describe('the lists are locked in ascending id by every writer that takes several', () => {
+    it('moves a task between two lists while a member holding grants on both is removed, in both orders, without a deadlock', async () => {
+      for (const [order, member] of [
+        ['removal first', ugo],
+        ['move first', vera],
+      ] as const) {
+        const low = await createList(camille, produit.space.id, { name: `Liste basse, ${order}` });
+        const high = await createList(camille, produit.space.id, { name: `Liste haute, ${order}` });
+        expect(low.id < high.id).toBe(true);
+        await grant(camille, 'lists', low.id, member.userId, 'view');
+        await grant(camille, 'lists', high.id, member.userId, 'view');
+        const task = await createTask(camille, high.id, { name: `Tâche à descendre, ${order}` });
+        const move = (): Promise<request.Response> =>
+          send('patch', `/internal/v1/tasks/${task.key}`, camille, { body: { listId: low.id } });
+        const remove = (): void => {
+          publishMember('removed', atelierNordId, member, 'member', 2);
+        };
+        const waits = await lockWaits();
+
+        const raced = await whileHeld([listLock(low.id)], async () => {
+          let pendingMove: Promise<request.Response>;
+          if (order === 'removal first') {
+            remove();
+            await waitForLockWait(waits);
+            pendingMove = move();
+          } else {
+            pendingMove = move();
+            await waitForLockWait(waits);
+            remove();
+          }
+          await waitForLockWait(waits + 1);
+          return { pendingMove };
+        });
+
+        const moved = await raced.pendingMove;
+        expect(moved.status, `${order}: ${moved.text}`).toBe(200);
+        await vi.waitFor(
+          async () => {
+            const jobs = await migrator.query<{ readonly state: string; readonly retries: number }>(
+              `select state, retry_count as retries from pgboss.job
+                where name = 'task.clean-up-removed-member' and data -> 'payload' ->> 'userId' = $1`,
+              [member.userId],
+            );
+            expect(jobs.rows.map((row) => row.state)).toEqual(['completed']);
+            expect(jobs.rows[0]?.retries, 'the clean-up was not retried').toBe(0);
+          },
+          { timeout: 90_000, interval: 250 },
+        );
+        expect(await storedTask(task.key)).toMatchObject({ list_id: low.id });
+        expect(
+          await countOf('select count(*)::int as total from list_grants where user_id = $1', [
+            member.userId,
+          ]),
+        ).toBe(0);
+      }
+    });
+
+    it('moves a task between two lists of a space while the space is deleted, in both orders, without a deadlock', async () => {
+      for (const order of ['deletion first', 'move first'] as const) {
+        const own = await createSpace(camille, {
+          name: `Espace en mouvement, ${order}`,
+          prefix: order === 'deletion first' ? 'MVA' : 'MVB',
+          icon: 'rocket',
+          color: 'violet',
+        });
+        const low = own.firstList;
+        const high = await createList(camille, own.space.id, { name: `Liste haute, ${order}` });
+        expect(low.id < high.id).toBe(true);
+        const task = await createTask(camille, high.id, { name: `Tâche en mouvement, ${order}` });
+        const move = (): Promise<request.Response> =>
+          send('patch', `/internal/v1/tasks/${task.key}`, camille, { body: { listId: low.id } });
+        const remove = (): Promise<request.Response> => deleteSpaceRequest(own.space.id);
+        const waits = await lockWaits();
+
+        const answers = await whileHeld([listLock(low.id)], async () => {
+          const startFirst = order === 'deletion first' ? remove : move;
+          const startSecond = order === 'deletion first' ? move : remove;
+          const first = startFirst();
+          await waitForLockWait(waits);
+          const second = startSecond();
+          await waitForLockWait(waits + 1);
+          return { first, second };
+        });
+        const [firstAnswer, secondAnswer] = await Promise.all([answers.first, answers.second]);
+        const [removed, moved] =
+          order === 'deletion first' ? [firstAnswer, secondAnswer] : [secondAnswer, firstAnswer];
+
+        expect(removed.status, `${order}: ${removed.text}`).toBe(204);
+        if (order === 'deletion first') {
+          // The target list is a tombstone: the move reads it as a list it does not see.
+          expect(moved.status, `${order}: ${moved.text}`).toBe(422);
+          expect(bodyOf(moved)).toMatchObject({ code: 'task.list-invalid' });
+        } else {
+          expect(moved.status, `${order}: ${moved.text}`).toBe(200);
+        }
+        await jobsSettled();
+        expect((await storedTask(task.key))?.trash_entry_id, order).not.toBeNull();
+      }
+    });
+  });
+
+  describe('two purge batches lock the deleted lists they erase in one order', () => {
+    it('erases entries of the lists of two deleted spaces in crossed orders from two batches at once, without a deadlock', async () => {
+      const spaces = [
+        await createSpace(camille, { name: 'Espace croisé A', prefix: 'XAA', color: 'violet' }),
+        await createSpace(camille, { name: 'Espace croisé B', prefix: 'XBB', color: 'orange' }),
+      ];
+      const lists = [
+        await createList(camille, spaces[0]?.space.id ?? '', { name: 'Liste croisée A' }),
+        await createList(camille, spaces[1]?.space.id ?? '', { name: 'Liste croisée B' }),
+      ];
+      const tasks = {
+        a1: await createTask(camille, lists[0]?.id ?? '', { name: 'Croisée A1' }),
+        a2: await createTask(camille, lists[0]?.id ?? '', { name: 'Croisée A2' }),
+        b1: await createTask(camille, lists[1]?.id ?? '', { name: 'Croisée B1' }),
+        b2: await createTask(camille, lists[1]?.id ?? '', { name: 'Croisée B2' }),
+      };
+      for (const space of spaces) {
+        expect((await deleteSpaceRequest(space.space.id)).status).toBe(204);
+      }
+      await jobsSettled();
+      const entries = new Map(
+        (await trashPageOf(camille, { limit: 100 })).items.map((item) => [item.task.key, item.id]),
+      );
+      const entryOf = (key: string): string => entries.get(key) ?? '';
+      const mine = [tasks.a1, tasks.a2, tasks.b1, tasks.b2].map((task) => entryOf(task.key));
+      // The first batch takes the two entries handed over, list A first; the second finds them
+      // locked and takes the two entries due, list B first.
+      await asSystem(
+        `update trash_entries set purge_requested_at = now() - interval '2 minutes',
+                purge_requested_by_type = 'user', purge_requested_by_id = $2
+          where id = $1`,
+        [entryOf(tasks.a1.key), camille.userId],
+      );
+      await asSystem(
+        `update trash_entries set purge_requested_at = now() - interval '1 minute',
+                purge_requested_by_type = 'user', purge_requested_by_id = $2
+          where id = $1`,
+        [entryOf(tasks.b1.key), camille.userId],
+      );
+      await asSystem(
+        `update trash_entries set trashed_at = trashed_at - interval '40 days' where id = $1`,
+        [entryOf(tasks.b2.key)],
+      );
+      await asSystem(
+        `update trash_entries set trashed_at = trashed_at - interval '31 days' where id = $1`,
+        [entryOf(tasks.a2.key)],
+      );
+      const batch = service().get(PurgeTrashBatch, { strict: false });
+      const run = (): Promise<unknown> =>
+        runWithOrganizationContext(contextOf(atelierNordId), () =>
+          batch.execute({ organizationId: atelierNordId }),
+        );
+      const waits = await lockWaits();
+
+      const running = await whileHeld(
+        [listLock(lists[0]?.id ?? ''), listLock(lists[1]?.id ?? '')],
+        async () => {
+          const first = run();
+          await waitForLockWait(waits);
+          const second = run();
+          await waitForLockWait(waits + 1);
+          return { first, second };
+        },
+      );
+      const [one, two] = await Promise.all([running.first, running.second]);
+
+      expect(one).toMatchObject({ outcome: 'purged', entries: 2 });
+      expect(two).toMatchObject({ outcome: 'purged', entries: 2 });
+      expect(
+        await countOf(
+          'select count(*)::int as total from trash_entries where id = any($1::uuid[])',
+          [mine],
+        ),
+      ).toBe(0);
+      expect((await storedLists(lists.map((list) => list.id))).size).toBe(0);
+      expect(
+        await countOf('select count(*)::int as total from spaces where id = any($1::uuid[])', [
+          spaces.map((space) => space.space.id),
+        ]),
+      ).toBe(0);
+    });
+  });
+
+  describe('the requests of the lists of a deleted space are dropped by its job', () => {
+    it('drops the pending request of a list whose last entry was erased before the job of its space ran', async () => {
+      const own = await createSpace(camille, {
+        name: 'Espace aux demandes',
+        prefix: 'DCN',
+        icon: 'rocket',
+        color: 'violet',
+      });
+      const list = await createList(camille, own.space.id, { name: 'Liste demandée' });
+      const task = await createTask(camille, list.id, { name: 'Tâche de la liste demandée' });
+      const entry = await trashTask(task.key);
+      await jobsSettled();
+      const asked = await send('post', '/internal/v1/access-requests', nadia, {
+        body: { listId: list.id },
+      });
+      expect(asked.status, asked.text).toBe(202);
+      const pending = async (): Promise<number> =>
+        countOf(`select count(*)::int as total from access_requests where list_id = $1`, [list.id]);
+      expect(await pending()).toBe(1);
+
+      const release = await deleteSpaceHoldingJob(own.space.id);
+      await purgeEntry(entry.id);
+
+      expect((await storedLists([list.id])).size).toBe(0);
+      expect(await pending()).toBe(1);
+      await release();
+      await jobsSettled();
+      expect(await pending()).toBe(0);
     });
   });
 
