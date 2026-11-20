@@ -21,6 +21,8 @@ The tasks of each organization (P3a, "Tâches") and what hangs from a task:
   this module (see Decisions);
 - the access check of a task for the realtime gateway, and the reading of tasks by key or id for
   the access requests of the access-requests module;
+- the attachment access decision for the API gateway, based on the current membership, task
+  placement, list role and archive state in one read-only snapshot;
 - the archives of the tasks (P3b-1, "Tasks" of `openapi/public/archives.yaml`): the archive of a
   task with its live subtasks, the restoration of a whole archive, and the page "Archives" (its
   tabs "Listes" and "Tâches"), served here because both need the task tables;

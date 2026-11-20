@@ -3323,6 +3323,46 @@ describe('the access model: grants, the switch, the effective role and access re
   });
 
   describe('the access checks of the realtime gateway', () => {
+    it('authorizes attachment checks only for the API gateway with a current role', async () => {
+      const path = `/internal/v1/tasks/${entretiensTask.key}/attachment-access`;
+      for (const mode of ['read', 'write']) {
+        const allowed = await send('get', `${path}?mode=${mode}`, hugo);
+        expect(allowed.status).toBe(204);
+        expect(allowed.headers['cache-control']).toBe('no-store');
+        expect(allowed.text).toBe('');
+      }
+
+      const readOnly = await send('get', `${path}?mode=read`, lea);
+      expect(readOnly.status).toBe(204);
+      expect(readOnly.headers['cache-control']).toBe('no-store');
+      expectProblem(await send('get', `${path}?mode=write`, lea), 403, 'access.role-insufficient');
+
+      const hidden = await send('get', `${path}?mode=read`, camille);
+      expectProblem(hidden, 404, 'task.not-found');
+      expect(hidden.headers['cache-control']).toBe('no-store');
+      const missing = await send(
+        'get',
+        '/internal/v1/tasks/RCH-999/attachment-access?mode=read',
+        hugo,
+      );
+      expectProblem(missing, 404, 'task.not-found');
+      expect(missing.headers['cache-control']).toBe('no-store');
+
+      expectProblem(
+        await send('get', `${path}?mode=read`, hugo, { issuer: 'realtime-gateway' }),
+        403,
+        'auth.issuer-not-allowed',
+      );
+      for (const query of [
+        '',
+        '?mode=delete',
+        '?mode=read&unexpected=1',
+        '?mode=read&mode=write',
+      ]) {
+        expectProblem(await send('get', `${path}${query}`, hugo), 400, 'request.invalid');
+      }
+    });
+
     it('answers the role of the actor on a list and on a task to the realtime gateway', async () => {
       const realtime = { issuer: 'realtime-gateway' } as const;
       for (const [viewer, listId, spaceId, role] of [

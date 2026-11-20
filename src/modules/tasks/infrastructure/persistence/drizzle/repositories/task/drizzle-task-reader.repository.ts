@@ -278,6 +278,27 @@ export class DrizzleTaskReader implements TaskReader {
     return row === undefined ? null : toTaskLocation(row);
   }
 
+  /** Reads a task's location and archive state in one tenant-scoped statement. */
+  public async attachmentLocationByKey(
+    organizationId: string,
+    key: TaskKey,
+  ): Promise<(TaskLocation & { readonly archived: boolean }) | null> {
+    const rows = await this.db
+      .select({ ...LOCATION_COLUMNS, archivedAt: tasks.archivedAt })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.organizationId, organizationId),
+          eq(tasks.keyPrefix, key.prefix),
+          eq(tasks.keyNumber, key.number),
+          untrashedTask(),
+        ),
+      )
+      .limit(1);
+    const row = rows[0];
+    return row === undefined ? null : { ...toTaskLocation(row), archived: row.archivedAt !== null };
+  }
+
   /**
    * Method locationsByIds
    *

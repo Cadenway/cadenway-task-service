@@ -109,6 +109,12 @@ export interface TaskReader {
    */
   locationByKey(organizationId: string, key: TaskKey): Promise<TaskLocation | null>;
 
+  /** Reads a live or archived task without its collections, excluding trashed tasks. */
+  attachmentLocationByKey(
+    organizationId: string,
+    key: TaskKey,
+  ): Promise<(TaskLocation & { readonly archived: boolean }) | null>;
+
   /**
    * Method locationsByIds
    *
