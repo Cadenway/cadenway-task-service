@@ -10,13 +10,17 @@ import { DrizzleReportingReader } from './drizzle-reporting-reader.repository.js
 const org = '01938f6e-6d1a-7c3e-9a51-2f0c4b8d7e10';
 const otherOrg = '01938f6e-6d1a-7c3e-9a51-2f0c4b8d7e20';
 const space = '019a7000-0000-7000-8000-000000000001';
+const otherSpace = '019a7000-0000-7000-8000-000000000002';
 const list = '019a7001-0000-7000-8000-000000000001';
 const otherList = '019a7001-0000-7000-8000-000000000002';
 const user = '019a7001-0000-7000-8000-000000000003';
+const secondUser = '019a7001-0000-7000-8000-000000000004';
 const first = '019a7002-0000-7000-8000-000000000001';
 const second = '019a7002-0000-7000-8000-000000000002';
 const third = '019a7002-0000-7000-8000-000000000003';
 const field = '019a7003-0000-7000-8000-000000000001';
+const retiredField = '019a7003-0000-7000-8000-000000000002';
+const foreignSpaceField = '019a7003-0000-7000-8000-000000000003';
 const filter: TaskFilter = {
   statuses: null,
   priorities: null,
@@ -96,7 +100,16 @@ describe('DrizzleReportingReader', () => {
     `,
       [org, first, second, third, space, list, otherList, otherOrg],
     );
-    await pool.query(`insert into task_assignees values ($1,$2,$3,0)`, [org, first, user]);
+    await pool.query(
+      `insert into task_assignees values
+       ($1,$2,$3,0),($1,$4,$3,1),($1,$4,$5,0),($6,$2,$5,0)`,
+      [org, first, user, second, secondUser, otherOrg],
+    );
+    await pool.query(
+      `insert into task_labels values
+       ($1,$2,'design','Design',1),($1,$2,'review','Review',0),($3,$4,'foreign','Foreign',0)`,
+      [org, second, otherOrg, first],
+    );
     await pool.query(
       `insert into task_time_entries values
       ($1,'019a7004-0000-7000-8000-000000000001',$2,$4,30,'2026-11-23'),
@@ -112,12 +125,18 @@ describe('DrizzleReportingReader', () => {
       [org, first, second, third],
     );
     await pool.query(
-      `insert into space_custom_fields values ($1,$2,$3,'Points','number',0,true,1,null)`,
-      [org, field, space],
+      `insert into space_custom_fields values
+       ($1,$2,$3,'Points','number',0,true,1,null),
+       ($1,$4,$3,'Retired','text',1,false,1,now()),
+       ($1,$5,$6,'Foreign space','text',0,false,1,null),
+       ($7,$2,$3,'Foreign organization','number',0,false,1,null)`,
+      [org, field, space, retiredField, foreignSpaceField, otherSpace, otherOrg],
     );
     await pool.query(
-      `insert into task_custom_field_values values ($1,$2,$3,3,null),($1,$4,$3,1,null)`,
-      [org, first, field, second],
+      `insert into task_custom_field_values values
+       ($1,$2,$3,3,null),($1,$4,$3,1,null),($1,$4,$5,null,'Retired'),
+       ($1,$4,$6,null,'Other space'),($7,$2,$3,99,null)`,
+      [org, first, field, second, retiredField, foreignSpaceField, otherOrg],
     );
     reader = new DrizzleReportingReader(drizzle(pool));
   });
@@ -208,7 +227,21 @@ describe('DrizzleReportingReader', () => {
     expect(result.rowCount).toBe(2);
     const firstPage = await result.readPage(0);
     expect(firstPage.map((row) => row.taskKey)).toEqual(['CAD-2', 'CAD-1']);
-    expect(firstPage[0]?.customValues[field]).toBe(1);
+    expect(firstPage[0]).toEqual({
+      taskKey: 'CAD-2',
+      name: 'Second',
+      status: 'progress',
+      priority: 'basse',
+      assignees: [secondUser, user],
+      dueDate: '2026-11-26',
+      labels: ['Review', 'Design'],
+      customValues: { [field]: 1 },
+    });
+    expect(firstPage[1]).toMatchObject({
+      assignees: [user],
+      labels: [],
+      customValues: { [field]: 3 },
+    });
     expect(
       (
         await reader.prepareExport(

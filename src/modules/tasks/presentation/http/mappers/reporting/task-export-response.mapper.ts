@@ -51,7 +51,8 @@ export async function writeTaskExport(
 
   async function write(chunk: string): Promise<void> {
     signal.throwIfAborted();
-    if (!response.write(chunk)) await once(response, 'drain', { signal });
+    // Use UTF-8 bytes so the HTTP response and socket agree on the backpressure threshold.
+    if (!response.write(Buffer.from(chunk, 'utf8'))) await once(response, 'drain', { signal });
   }
 
   try {
