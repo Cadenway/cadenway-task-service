@@ -170,6 +170,26 @@ describe('LockTrashLists: the lists of trash entries are locked spaces first, li
     ]);
   });
 
+  it('holds an additional space in the same order before locking any linked list', async () => {
+    const spaces = atelierNord();
+    await new LockTrashLists(spaces).execute(
+      lockOf({ mode: 'hold', listIds: [BACKLOG], additionalSpaceIds: [DESIGN] }),
+    );
+    expect(spaces.journal).toEqual([
+      `space ${DESIGN} share`,
+      `space ${PRODUIT} share`,
+      `list ${BACKLOG} share`,
+    ]);
+  });
+
+  it('holds the additional space even when there are no linked lists', async () => {
+    const spaces = atelierNord();
+    await new LockTrashLists(spaces).execute(
+      lockOf({ mode: 'hold', listIds: [], additionalSpaceIds: [DESIGN] }),
+    );
+    expect(spaces.journal).toEqual([`space ${DESIGN} share`]);
+  });
+
   it('locks a live list as a deleted one, and a space once for several of its lists', async () => {
     const spaces = new InMemorySpaces({
       spaces: [spaceState()],

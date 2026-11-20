@@ -29,6 +29,9 @@ export interface LockTrashListsInput {
    */
   readonly listIds: readonly string[];
 
+  /** Additional spaces to include in the same ordered placement lock. */
+  readonly additionalSpaceIds?: readonly string[];
+
   /**
    * Property mode
    *

@@ -319,6 +319,7 @@ export interface SpaceDirectory {
    * @param {readonly string[]} listIds - The lists.
    * @param {'hold' | 'erase'} mode - How the caller holds them.
    * @param {Viewer | null} viewer - The member whose role is read again, `null` for the service.
+   * @param {readonly string[]} [additionalSpaceIds] - Additional spaces to hold in the same order.
    * @returns {Promise<readonly TrashListLock[]>} What the lock found for each list.
    */
   lockTrashLists(
@@ -326,6 +327,7 @@ export interface SpaceDirectory {
     listIds: readonly string[],
     mode: 'hold' | 'erase',
     viewer: Viewer | null,
+    additionalSpaceIds?: readonly string[],
   ): Promise<readonly TrashListLock[]>;
   // #endregion
 }

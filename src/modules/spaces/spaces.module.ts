@@ -50,6 +50,7 @@ import { provisionOnboardingSpaceProvider } from './composition/providers/use-ca
 import { ProvisionOnboardingSpace } from './public/space/provision-onboarding-space.js';
 import { deleteSpaceProvider } from './composition/providers/use-cases/space/delete-space.provider.js';
 import { findFavoriteSpacesProvider } from './composition/providers/use-cases/space/find-favorite-spaces.provider.js';
+import { resolveGoalSpacesProvider } from './composition/providers/use-cases/goal/resolve-goal-spaces.provider.js';
 import { getSpaceProvider } from './composition/providers/use-cases/space/get-space.provider.js';
 import { handOverAwaitingSpacesProvider } from './composition/providers/use-cases/space/hand-over-awaiting-spaces.provider.js';
 import { handOverPrivateSpacesProvider } from './composition/providers/use-cases/space/hand-over-private-spaces.provider.js';
@@ -87,6 +88,7 @@ import { RestoreArchivedList } from './public/list/restore-archived-list.js';
 import { RestoreDeletedList } from './public/list/restore-deleted-list.js';
 import { AllocateTaskKeys } from './public/space/allocate-task-keys.js';
 import { FindFavoriteSpaces } from './public/space/find-favorite-spaces.js';
+import { ResolveGoalSpaces } from './public/goal/resolve-goal-spaces.js';
 import { HandOverAwaitingSpaces } from './public/space/hand-over-awaiting-spaces.js';
 import { HandOverPrivateSpaces } from './public/space/hand-over-private-spaces.js';
 import { PurgeDeletedSpace } from './public/space/purge-deleted-space.js';
@@ -162,6 +164,7 @@ markIdempotent(SpaceListsController.prototype, 'create');
     updateSpaceProvider,
     deleteSpaceProvider,
     findFavoriteSpacesProvider,
+    resolveGoalSpacesProvider,
     handOverPrivateSpacesProvider,
     handOverAwaitingSpacesProvider,
     createListProvider,
@@ -210,6 +213,7 @@ markIdempotent(SpaceListsController.prototype, 'create');
     ResolveTaskTemplateSpace,
     ResolveCustomFieldSpace,
     FindFavoriteSpaces,
+    ResolveGoalSpaces,
     CreateListCopy,
     HandOverPrivateSpaces,
     HandOverAwaitingSpaces,

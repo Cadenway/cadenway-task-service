@@ -27,39 +27,40 @@ access-requests module.
 
 ## Public entry points
 
-| Entry point                                 | Consumers                                                                                                        |
-| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `spaces.module`                             | access-requests, deletion-lifecycle, favorites, member-lifecycle, onboarding, saved-views, task-templates, tasks |
-| `public/space/provision-onboarding-space`   | onboarding                                                                                                       |
-| `public/space/hand-over-private-spaces`     | member-lifecycle                                                                                                 |
-| `public/space/hand-over-awaiting-spaces`    | member-lifecycle                                                                                                 |
-| `public/space/allocate-task-keys`           | tasks                                                                                                            |
-| `public/list/find-visible-list`             | favorites, saved-views, tasks                                                                                    |
-| `public/list/create-list-copy`              | tasks                                                                                                            |
-| `public/list/find-list-reader-audience`     | tasks                                                                                                            |
-| `public/list/find-visible-lists`            | favorites, saved-views, tasks                                                                                    |
-| `public/list/find-visible-space-lists`      | tasks                                                                                                            |
-| `public/list/list-current-sprints`          | tasks                                                                                                            |
-| `public/list/list-sidebar-lists`            | tasks                                                                                                            |
-| `public/list/list-visible-list-ids`         | tasks                                                                                                            |
-| `public/list/list-archived-lists`           | tasks                                                                                                            |
-| `public/list/restore-archived-list`         | tasks                                                                                                            |
-| `public/list/list-trash-lists`              | tasks                                                                                                            |
-| `public/list/find-trash-list`               | tasks                                                                                                            |
-| `public/list/restore-deleted-list`          | tasks                                                                                                            |
-| `public/list/purge-deleted-list`            | tasks                                                                                                            |
-| `public/list/hold-list`                     | tasks                                                                                                            |
-| `public/list/lock-deleted-list`             | tasks                                                                                                            |
-| `public/list/lock-trash-lists`              | favorites, saved-views, tasks                                                                                    |
-| `public/list/list-deleted-space-lists`      | deletion-lifecycle                                                                                               |
-| `public/space/purge-deleted-space`          | deletion-lifecycle                                                                                               |
-| `public/access/find-access-target`          | access-requests                                                                                                  |
-| `public/access/list-managed-access-targets` | access-requests                                                                                                  |
-| `public/access/grant-requested-access`      | access-requests                                                                                                  |
-| `public/access/remove-member-grants`        | member-lifecycle                                                                                                 |
-| `public/space/find-favorite-spaces`         | favorites                                                                                                        |
-| `public/space/resolve-task-template-space`  | task-templates                                                                                                   |
-| `public/space/resolve-custom-field-space`   | tasks                                                                                                            |
+| Entry point                                 | Consumers                                                                                                               |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `spaces.module`                             | access-requests, deletion-lifecycle, favorites, goals, member-lifecycle, onboarding, saved-views, task-templates, tasks |
+| `public/goal/resolve-goal-spaces`           | goals                                                                                                                   |
+| `public/space/provision-onboarding-space`   | onboarding                                                                                                              |
+| `public/space/hand-over-private-spaces`     | member-lifecycle                                                                                                        |
+| `public/space/hand-over-awaiting-spaces`    | member-lifecycle                                                                                                        |
+| `public/space/allocate-task-keys`           | tasks                                                                                                                   |
+| `public/list/find-visible-list`             | favorites, saved-views, tasks                                                                                           |
+| `public/list/create-list-copy`              | tasks                                                                                                                   |
+| `public/list/find-list-reader-audience`     | tasks                                                                                                                   |
+| `public/list/find-visible-lists`            | favorites, saved-views, tasks                                                                                           |
+| `public/list/find-visible-space-lists`      | tasks                                                                                                                   |
+| `public/list/list-current-sprints`          | tasks                                                                                                                   |
+| `public/list/list-sidebar-lists`            | tasks                                                                                                                   |
+| `public/list/list-visible-list-ids`         | tasks                                                                                                                   |
+| `public/list/list-archived-lists`           | tasks                                                                                                                   |
+| `public/list/restore-archived-list`         | tasks                                                                                                                   |
+| `public/list/list-trash-lists`              | tasks                                                                                                                   |
+| `public/list/find-trash-list`               | tasks                                                                                                                   |
+| `public/list/restore-deleted-list`          | tasks                                                                                                                   |
+| `public/list/purge-deleted-list`            | tasks                                                                                                                   |
+| `public/list/hold-list`                     | tasks                                                                                                                   |
+| `public/list/lock-deleted-list`             | tasks                                                                                                                   |
+| `public/list/lock-trash-lists`              | favorites, saved-views, tasks                                                                                           |
+| `public/list/list-deleted-space-lists`      | deletion-lifecycle                                                                                                      |
+| `public/space/purge-deleted-space`          | deletion-lifecycle                                                                                                      |
+| `public/access/find-access-target`          | access-requests                                                                                                         |
+| `public/access/list-managed-access-targets` | access-requests                                                                                                         |
+| `public/access/grant-requested-access`      | access-requests                                                                                                         |
+| `public/access/remove-member-grants`        | member-lifecycle                                                                                                        |
+| `public/space/find-favorite-spaces`         | favorites                                                                                                               |
+| `public/space/resolve-task-template-space`  | task-templates                                                                                                          |
+| `public/space/resolve-custom-field-space`   | tasks                                                                                                                   |
 
 `SpacesModule` exports these providers; each runs in `SpacesUnitOfWork.run`, which joins the
 tenant transaction of its caller, or opens one for the batches of the clean-up job. Inputs carry
@@ -68,6 +69,10 @@ copy of the memberships.
 
 `ResolveCustomFieldSpace` returns the viewer's space role and management permission. A mutation
 holds the space until its caller commits so that access and field order cannot change underneath it.
+
+`ResolveGoalSpaces` reports effective roles on the requested spaces for the verified member.
+It omits spaces visible solely through a list grant. A goal write can hold the space and recheck
+its authorization until the caller's tenant transaction commits.
 
 - `FindListReaderAudience` returns the access sources of an already authorized task's list.
   It joins the caller's snapshot and reads only the bounded list and space grants. The tasks

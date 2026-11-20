@@ -84,6 +84,7 @@ const publicTables = [
   'checklist_items',
   'event_versions',
   'favorites',
+  'goals',
   'idempotency_keys',
   'list_grants',
   'lists',
@@ -117,7 +118,7 @@ const publicTables = [
  * deletion of lists and spaces, then the trash root snapshot, collaboration, planning and the
  * task library.
  */
-const appliedMigrations = 16;
+const appliedMigrations = 17;
 
 /**
  * Runs `docker compose` on the throwaway project.
@@ -470,7 +471,7 @@ describe('task-service wiring', () => {
       }>(
         `select relname, relrowsecurity, relforcerowsecurity from pg_class
           where relnamespace = 'public'::regnamespace
-            and relname in ('favorites', 'onboarding_states', 'saved_views', 'space_custom_fields',
+            and relname in ('favorites', 'goals', 'onboarding_states', 'saved_views', 'space_custom_fields',
                             'task_approval_reviewers', 'task_approval_rounds', 'task_comments',
                             'task_custom_field_values', 'task_dependencies', 'task_templates',
                             'task_time_entries', 'task_watcher_overrides')
@@ -479,6 +480,7 @@ describe('task-service wiring', () => {
       expect(journal.rows).toEqual([{ applied: appliedMigrations }]);
       expect(security.rows).toEqual([
         { relname: 'favorites', relrowsecurity: true, relforcerowsecurity: true },
+        { relname: 'goals', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'onboarding_states', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'saved_views', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'space_custom_fields', relrowsecurity: true, relforcerowsecurity: true },
@@ -716,6 +718,7 @@ describe('task-service wiring', () => {
       { relname: 'checklist_items', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'event_versions', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'favorites', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'goals', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'idempotency_keys', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'list_grants', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'lists', relrowsecurity: true, relforcerowsecurity: true },
@@ -751,6 +754,7 @@ describe('task-service wiring', () => {
       { tablename: 'checklist_items', policyname: 'checklist_items_organization_isolation' },
       { tablename: 'event_versions', policyname: 'event_versions_organization_isolation' },
       { tablename: 'favorites', policyname: 'favorites_organization_isolation' },
+      { tablename: 'goals', policyname: 'goals_organization_isolation' },
       { tablename: 'idempotency_keys', policyname: 'idempotency_keys_organization_isolation' },
       { tablename: 'list_grants', policyname: 'list_grants_organization_isolation' },
       { tablename: 'lists', policyname: 'lists_organization_isolation' },

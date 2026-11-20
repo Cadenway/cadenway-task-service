@@ -22,7 +22,8 @@ type TrashListLock = LockTrashListsOutput['lists'][number];
  * spaces one by one in the order `(created_at, id)` of every locker of several spaces
  * (`SpaceRepository.lockInOrder`), then the lists in one statement in ascending id, the order of
  * every locker of several lists, which reads them again: spaces before lists, after the entries
- * and the tasks the caller locked (the global order of `src/modules/tasks/MODULE.md`).
+ * and the tasks the caller locked (the global order of `src/modules/tasks/MODULE.md`). Additional
+ * spaces requested by the caller join the same space lock order.
  *
  * `hold` takes `FOR SHARE` on both: a change of the visibility, the owner or the grants of a
  * space, a change of the grants of a list and a deletion of either lock them
@@ -82,7 +83,7 @@ export class LockTrashLists {
    */
   public async execute(input: LockTrashListsInput): Promise<LockTrashListsOutput> {
     const listIds: string[] = [...new Set(input.listIds)];
-    if (listIds.length === 0) {
+    if (listIds.length === 0 && (input.additionalSpaceIds?.length ?? 0) === 0) {
       return { lists: [] };
     }
     return this.unitOfWork.run(async (store: SpacesStore): Promise<LockTrashListsOutput> => {
@@ -94,12 +95,15 @@ export class LockTrashLists {
       const spaceMode: 'share' | 'update' = input.mode === 'hold' ? 'share' : 'update';
       await store.spaces.lockInOrder(
         organizationId,
-        [...new Set(seen.map((list: TaskList): string => list.snapshot.spaceId))].map(
-          (id: string): { readonly id: string; readonly mode: 'share' | 'update' } => ({
-            id,
-            mode: spaceMode,
-          }),
-        ),
+        [
+          ...new Set([
+            ...seen.map((list: TaskList): string => list.snapshot.spaceId),
+            ...(input.additionalSpaceIds ?? []),
+          ]),
+        ].map((id: string): { readonly id: string; readonly mode: 'share' | 'update' } => ({
+          id,
+          mode: spaceMode,
+        })),
       );
       const locked = new Map<string, TaskList>(
         (
