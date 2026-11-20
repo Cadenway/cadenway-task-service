@@ -195,31 +195,93 @@ describe('DrizzleReportingReader', () => {
 
   it('sorts active field values, rejects unknown fields, and retains headers for an empty list', async () => {
     const order = { key: 'manual', descending: false } as const;
-    const result = await reader.exportRows(org, list, space, filter, order, {
-      column: field,
-      direction: 'asc',
-    });
-    expect(result.rows.map((row) => row.taskKey)).toEqual(['CAD-2', 'CAD-1']);
-    expect(result.rows[0]?.customValues[field]).toBe(1);
+    const result = await reader.prepareExport(
+      org,
+      list,
+      space,
+      filter,
+      order,
+      { column: field, direction: 'asc' },
+      10_001,
+    );
+    if (result.invalidSort) throw new Error('The test field should be available.');
+    expect(result.rowCount).toBe(2);
+    const firstPage = await result.readPage(0);
+    expect(firstPage.map((row) => row.taskKey)).toEqual(['CAD-2', 'CAD-1']);
+    expect(firstPage[0]?.customValues[field]).toBe(1);
     expect(
       (
-        await reader.exportRows(org, list, space, filter, order, {
-          column: third,
-          direction: 'asc',
-        })
+        await reader.prepareExport(
+          org,
+          list,
+          space,
+          filter,
+          order,
+          { column: third, direction: 'asc' },
+          10_001,
+        )
       ).invalidSort,
     ).toBe(true);
     expect(
-      (
-        await reader.exportRows(
-          org,
-          otherList,
-          space,
-          { ...filter, statuses: ['done'] },
-          order,
-          null,
-        )
-      ).fields,
-    ).toEqual([{ id: field, name: 'Points' }]);
+      await reader.prepareExport(
+        org,
+        otherList,
+        space,
+        { ...filter, statuses: ['done'] },
+        order,
+        null,
+        10_001,
+      ),
+    ).toMatchObject({ rowCount: 0, fields: [{ id: field, name: 'Points' }] });
+  });
+
+  it('selects at most one row above the limit and hydrates ordered pages in the snapshot', async () => {
+    if (pool === null) throw new Error('The test database is not ready.');
+    const largeList = '019a7001-0000-7000-8000-000000000005';
+    await pool.query(
+      `insert into tasks (organization_id,id,key_prefix,key_number,space_id,list_id,name,status,priority)
+       select $1,uuidv7(),'CAD',series,$2,$3,lpad(series::text,5,'0'),'todo','haute'
+       from generate_series(1,10000) as series`,
+      [org, space, largeList],
+    );
+    const client = await pool.connect();
+    try {
+      await client.query('begin isolation level repeatable read read only');
+      const order = { key: 'manual', descending: false } as const;
+      const selection = await new DrizzleReportingReader(drizzle(client)).prepareExport(
+        org,
+        largeList,
+        space,
+        filter,
+        order,
+        { column: 'name', direction: 'desc' },
+        10_001,
+      );
+      if (selection.invalidSort) throw new Error('Name should be sortable.');
+      expect(selection.rowCount).toBe(10_000);
+
+      await pool.query(
+        `insert into tasks (organization_id,id,key_prefix,key_number,space_id,list_id,name,status,priority)
+         select $1,uuidv7(),'CAD',series,$2,$3,lpad(series::text,5,'0'),'todo','haute'
+         from generate_series(10001,10100) as series`,
+        [org, space, largeList],
+      );
+      const firstPage = await selection.readPage(0);
+      const secondPage = await selection.readPage(250);
+      expect(firstPage).toHaveLength(250);
+      expect(secondPage).toHaveLength(250);
+      expect(firstPage[0]?.name).toBe('10000');
+      expect(firstPage.at(-1)?.name).toBe('09751');
+      expect(secondPage[0]?.name).toBe('09750');
+      expect(await selection.readPage(10_000)).toEqual([]);
+      expect(
+        await reader.prepareExport(org, largeList, space, filter, order, null, 10_001),
+      ).toMatchObject({
+        rowCount: 10_001,
+      });
+    } finally {
+      await client.query('rollback');
+      client.release();
+    }
   });
 });

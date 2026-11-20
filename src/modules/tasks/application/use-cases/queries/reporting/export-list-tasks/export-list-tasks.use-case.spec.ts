@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { ExportListTasksSink } from '../../../../models/reporting/export-list-tasks-sink.model.js';
+import type { ReportingExportRow } from '../../../../models/reporting/reporting-export-row.model.js';
 import type { ReportingExportRows } from '../../../../models/reporting/reporting-export-rows.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { ReportingReader } from '../../../../ports/outbound/persistence/reporting/reporting-reader.port.js';
@@ -29,26 +31,55 @@ const input: ExportListTasksInput = {
 function fixture(
   data: ReportingExportRows,
   visible = true,
-): { useCase: ExportListTasks; read: ReturnType<typeof vi.fn> } {
+): {
+  useCase: ExportListTasks;
+  read: ReturnType<typeof vi.fn>;
+  options: ReturnType<typeof vi.fn>;
+} {
   const read = vi.fn().mockResolvedValue(data);
-  const reader = { exportRows: read } as unknown as ReportingReader;
-  const work: ReportingUnitOfWork = { runReadOnly: async (fn) => fn(reader) };
+  const reader = { prepareExport: read } as unknown as ReportingReader;
+  const options = vi.fn();
+  const work: ReportingUnitOfWork = {
+    async runReadOnly(fn, settings) {
+      options(settings);
+      return fn(reader);
+    },
+  };
   const members = { roleOf: vi.fn().mockResolvedValue('member') } as unknown as MemberDirectory;
   const spaces = {
     findVisibleList: vi.fn().mockResolvedValue(visible ? { space: { id: 'space' } } : null),
   } as unknown as SpaceDirectory;
-  return { useCase: new ExportListTasks(work, members, spaces), read };
+  return { useCase: new ExportListTasks(work, members, spaces), read, options };
 }
 
+function sinkFixture(): {
+  start: ReturnType<typeof vi.fn<ExportListTasksSink['start']>>;
+  row: ReturnType<typeof vi.fn<ExportListTasksSink['row']>>;
+} {
+  return { start: vi.fn<ExportListTasksSink['start']>().mockReturnValue(true), row: vi.fn() };
+}
+
+const row: ReportingExportRow = {
+  taskKey: 'CAD-1',
+  name: 'a',
+  status: 'todo',
+  priority: 'haute',
+  assignees: ['b', 'a'],
+  dueDate: null,
+  labels: [],
+  customValues: {},
+};
+
 describe('ExportListTasks', () => {
-  it('returns escaped CSV fragments and account IDs in assignment order', async () => {
-    const { useCase, read } = fixture({
+  it('delivers escaped CSV fragments and account IDs in assignment order without retrying', async () => {
+    const { useCase, read, options } = fixture({
       invalidSort: false,
       fields: [
         { id: 'a', name: '=Header' },
         { id: 'b', name: 'Points' },
       ],
-      rows: [
+      rowCount: 1,
+      readPage: vi.fn().mockResolvedValue([
         {
           taskKey: 'CAD-1',
           name: '  =SUM(1)',
@@ -59,73 +90,117 @@ describe('ExportListTasks', () => {
           labels: ['front'],
           customValues: { a: '+client', b: -3 },
         },
-      ],
+      ]),
     });
-    const result = await useCase.execute(input);
-    expect(result.filename).toBe('list-list.csv');
-    expect(result.header).toBe(
-      '"Identifiant";"Nom";"Statut";"Priorité";"Assignés";"Échéance";"Étiquettes";"\'=Header";"Points"',
+    const sink = sinkFixture();
+    expect(await useCase.execute(input, sink)).toEqual({ rowCount: 1 });
+    expect(sink.start).toHaveBeenCalledWith({
+      filename: 'list-list.csv',
+      header:
+        '"Identifiant";"Nom";"Statut";"Priorité";"Assignés";"Échéance";"Étiquettes";"\'=Header";"Points"',
+    });
+    expect(sink.row).toHaveBeenCalledExactlyOnceWith({
+      beforeAssignees: ['"CAD-1"', '"\'  =SUM(1)"', '"En cours"', '"Haute"'],
+      assigneeIds: ['user-b', 'user-a'],
+      afterAssignees: ['""', '"front"', '"\'+client"', '"-3"'],
+    });
+    expect(read).toHaveBeenCalledWith(
+      'org',
+      'list',
+      'space',
+      expect.anything(),
+      input.order,
+      null,
+      10_001,
     );
-    expect(result.rows).toEqual([
-      {
-        beforeAssignees: ['"CAD-1"', '"\'  =SUM(1)"', '"En cours"', '"Haute"'],
-        assigneeIds: ['user-b', 'user-a'],
-        afterAssignees: ['""', '"front"', '"\'+client"', '"-3"'],
-      },
-    ]);
-    expect(read).toHaveBeenCalledWith('org', 'list', 'space', expect.anything(), input.order, null);
+    expect(options).toHaveBeenCalledExactlyOnceWith({ maxAttempts: 1 });
   });
 
   it('retains ordinary ordering for the gateway to sort by resolved people names', async () => {
-    const row = {
-      taskKey: 'CAD-1',
-      name: 'a',
-      status: 'todo' as const,
-      priority: 'haute' as const,
-      assignees: ['b', 'a'],
-      dueDate: null,
-      labels: [],
-      customValues: {},
-    };
     const { useCase, read } = fixture({
       invalidSort: false,
       fields: [],
-      rows: [row, { ...row, taskKey: 'CAD-2', assignees: [] }],
+      rowCount: 2,
+      readPage: vi.fn().mockResolvedValue([row, { ...row, taskKey: 'CAD-2', assignees: [] }]),
     });
-    const result = await useCase.execute({
-      ...input,
-      sheetSort: { column: 'people', direction: 'desc' },
-    });
-    expect(read).toHaveBeenCalledWith('org', 'list', 'space', expect.anything(), input.order, null);
-    expect(result.rows.map((item) => item.assigneeIds)).toEqual([['b', 'a'], []]);
+    const sink = sinkFixture();
+    await useCase.execute({ ...input, sheetSort: { column: 'people', direction: 'desc' } }, sink);
+    expect(read).toHaveBeenCalledWith(
+      'org',
+      'list',
+      'space',
+      expect.anything(),
+      input.order,
+      null,
+      10_001,
+    );
+    expect(sink.row.mock.calls.map(([item]) => item.assigneeIds)).toEqual([['b', 'a'], []]);
   });
 
   it('refuses an over-limit selection before producing a projection', async () => {
-    const row = {
-      taskKey: 'CAD-1',
-      name: 'a',
-      status: 'todo' as const,
-      priority: 'haute' as const,
-      assignees: [],
-      dueDate: null,
-      labels: [],
-      customValues: {},
-    };
+    const readPage = vi.fn();
+    const sink = sinkFixture();
     const { useCase } = fixture({
       invalidSort: false,
       fields: [],
-      rows: Array.from({ length: 10001 }, () => row),
+      rowCount: 10_001,
+      readPage,
     });
-    await expect(useCase.execute(input)).rejects.toMatchObject({
+    await expect(useCase.execute(input, sink)).rejects.toMatchObject({
       reason: 'export-row-limit-reached',
     });
+    expect(sink.start).not.toHaveBeenCalled();
+    expect(readPage).not.toHaveBeenCalled();
   });
 
   it('does not read rows for an invisible list', async () => {
-    const { useCase, read } = fixture({ invalidSort: false, fields: [], rows: [] }, false);
-    await expect(useCase.execute(input)).rejects.toMatchObject({
+    const { useCase, read } = fixture({ invalidSort: true }, false);
+    await expect(useCase.execute(input, sinkFixture())).rejects.toMatchObject({
       refusal: { reason: 'list-not-found' },
     });
     expect(read).not.toHaveBeenCalled();
+  });
+
+  it('does not read the next page until the current row is accepted by the consumer', async () => {
+    const readPage = vi.fn().mockResolvedValue([row]);
+    const { useCase } = fixture({ invalidSort: false, fields: [], rowCount: 2, readPage });
+    const latch: { accept?: () => void } = {};
+    const accepted = new Promise<void>((resolve) => {
+      latch.accept = resolve;
+    });
+    const sink = sinkFixture();
+    sink.row.mockReturnValueOnce(accepted);
+    const exportResult = useCase.execute(input, sink);
+    await vi.waitFor(() => {
+      expect(sink.row).toHaveBeenCalledOnce();
+    });
+    expect(readPage).toHaveBeenCalledExactlyOnceWith(0);
+    latch.accept?.();
+    expect(await exportResult).toEqual({ rowCount: 2 });
+    expect(readPage).toHaveBeenLastCalledWith(1);
+  });
+
+  it('stops the transaction on disconnect without reading the next page', async () => {
+    const closed = new AbortController();
+    const readPage = vi.fn().mockResolvedValue([row]);
+    const { useCase } = fixture({ invalidSort: false, fields: [], rowCount: 2, readPage });
+    const sink = sinkFixture();
+    sink.row.mockImplementation(() => {
+      closed.abort();
+    });
+
+    await expect(useCase.execute({ ...input, signal: closed.signal }, sink)).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    expect(readPage).toHaveBeenCalledExactlyOnceWith(0);
+  });
+
+  it('does not load any rows when the consumer only asks for the metadata', async () => {
+    const readPage = vi.fn();
+    const { useCase } = fixture({ invalidSort: false, fields: [], rowCount: 2, readPage });
+    const sink = sinkFixture();
+    sink.start.mockReturnValue(false);
+    expect(await useCase.execute(input, sink)).toEqual({ rowCount: 2 });
+    expect(readPage).not.toHaveBeenCalled();
   });
 });

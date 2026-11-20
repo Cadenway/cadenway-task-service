@@ -5,6 +5,7 @@ import type { SQL } from 'drizzle-orm';
 import type { TaskFilter } from '../../../../../application/models/query/task-filter.model.js';
 import type { TaskOrder } from '../../../../../application/models/query/task-order.model.js';
 import type { ReportingBatch } from '../../../../../application/models/reporting/reporting-batch.model.js';
+import type { ReportingExportRow } from '../../../../../application/models/reporting/reporting-export-row.model.js';
 import type { ReportingExportRows } from '../../../../../application/models/reporting/reporting-export-rows.model.js';
 import type { ReportingReader } from '../../../../../application/ports/outbound/persistence/reporting/reporting-reader.port.js';
 import type { TaskSummaryView } from '../../../../../application/projections/task/task-summary.projection.js';
@@ -14,7 +15,7 @@ import type { buildWorkload } from '../../../../../domain/policies/reporting/wor
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import { anyOf } from '../../mappers/page/any-of.mapper.js';
 import { taskFilterCondition } from '../../mappers/query/task-filter.mapper.js';
-import { orderTerms, sortValueExpression } from '../../mappers/query/task-order.mapper.js';
+import { orderTerms } from '../../mappers/query/task-order.mapper.js';
 import { taskPageColumns } from '../../mappers/query/task-page-row.mapper.js';
 import { liveTask } from '../../mappers/task/live-task.mapper.js';
 import { toStatusKey } from '../../mappers/task/task-values.mapper.js';
@@ -33,6 +34,8 @@ type DashboardTask = Parameters<typeof buildTeamDashboard>[1][number] & {
   readonly summary: TaskSummaryView;
 };
 type DashboardTransition = Parameters<typeof buildTeamDashboard>[2][number];
+
+const EXPORT_PAGE_SIZE = 250;
 
 /** Bounds every keyset page, even when called by another internal consumer. */
 function pageLimit(limit: number): number {
@@ -207,17 +210,20 @@ export class DrizzleReportingReader implements ReportingReader {
     }));
   }
 
-  /** Reads a bounded export with active custom fields and the requested sort. */
-  public async exportRows(
+  /** Selects a bounded set of IDs once, with active custom fields and the requested sort. */
+  public async prepareExport(
     organizationId: string,
     listId: string,
     spaceId: string,
     filter: TaskFilter,
     order: TaskOrder,
     sheetSort: { readonly column: string; readonly direction: 'asc' | 'desc' } | null,
+    limit: number,
   ): Promise<ReportingExportRows> {
-    const customFields = new DrizzleCustomFieldRepository(this.db);
-    const definitions = await customFields.activeDefinitions(organizationId, spaceId);
+    const definitions = await new DrizzleCustomFieldRepository(this.db).activeDefinitions(
+      organizationId,
+      spaceId,
+    );
     const builtins = [
       'name',
       'status',
@@ -237,7 +243,7 @@ export class DrizzleReportingReader implements ReportingReader {
       !builtins.includes(sheetSort.column) &&
       requestedField === undefined
     ) {
-      return { fields: [], rows: [], invalidSort: true };
+      return { invalidSort: true };
     }
     const pointsField = definitions.find((field) => field.sprintPoints);
     const clientField = definitions.find(
@@ -273,48 +279,60 @@ export class DrizzleReportingReader implements ReportingReader {
       sheetSort === null
         ? sql``
         : sql`${keys[sheetSort.column] ?? fieldValue} ${sql.raw(sheetSort.direction === 'desc' ? 'desc' : 'asc')} nulls last, `;
-    const rows: ReportingExportRows['rows'][number][] = [];
-    for (let offset = 0; offset <= 10000; offset += 500) {
-      const limit = Math.min(500, 10001 - offset);
-      const page = await this.pages.load(
-        organizationId,
-        sql`
-        select ${taskPageColumns()}, ${sortValueExpression(order)} as "sortValue" from ${tasks}
-        where ${taskFilterCondition(organizationId, listId, filter)} and ${tasks.spaceId} = ${spaceId}::uuid
-        order by ${primaryOrder}${orderTerms(order)} limit ${limit} offset ${offset}`,
-      );
-      const values = await customFields.valuesForTaskPage(
-        organizationId,
-        page.map(({ task }) => ({
-          taskId: task.id,
-          spaceId: task.spaceId,
-          listId: task.listId,
-        })),
-      );
-      const valuesByTask = new Map<string, Record<string, string | number>>();
-      for (const value of values) {
-        let fields = valuesByTask.get(value.taskId);
-        if (fields === undefined) {
-          fields = {};
-          valuesByTask.set(value.taskId, fields);
-        }
-        fields[value.fieldId] = value.value;
-      }
-      rows.push(
-        ...page.map(({ task }) => ({
-          taskKey: task.key,
-          name: task.name,
-          status: task.status,
-          priority: task.priority,
-          assignees: task.assigneeIds,
-          dueDate: task.dueDate,
-          labels: task.labels,
-          customValues: valuesByTask.get(task.id) ?? {},
-        })),
-      );
-      if (page.length < limit) break;
-    }
-    return { fields: definitions.map(({ id, name }) => ({ id, name })), rows, invalidSort: false };
+    // Match at most one row above the cap; sorting never needs to examine the rest of the list.
+    const selected = await this.db.execute<{ id: string }>(sql`
+      with eligible("taskId") as materialized (
+        select ${tasks.id} from ${tasks}
+        where ${taskFilterCondition(organizationId, listId, filter)}
+          and ${tasks.spaceId} = ${spaceId}::uuid
+        limit ${limit}
+      )
+      select ${tasks.id} as "id"
+      from ${tasks} join eligible on ${tasks.id} = eligible."taskId"
+      where ${tasks.organizationId} = ${organizationId}::uuid
+      order by ${primaryOrder}${orderTerms(order)}`);
+    const ids = selected.rows.map(({ id }) => id);
+    return {
+      fields: definitions.map(({ id, name }) => ({ id, name })),
+      rowCount: ids.length,
+      invalidSort: false,
+      readPage: (offset) =>
+        this.exportPage(
+          organizationId,
+          listId,
+          spaceId,
+          ids.slice(offset, offset + EXPORT_PAGE_SIZE),
+        ),
+    };
+  }
+
+  /** Reads the next page in the prepared order without retaining the previous page. */
+  private async exportPage(
+    organizationId: string,
+    listId: string,
+    spaceId: string,
+    ids: readonly string[],
+  ): Promise<readonly ReportingExportRow[]> {
+    if (ids.length === 0) return [];
+    const page = await this.pages.load(
+      organizationId,
+      sql`
+        select ${taskPageColumns()}, null as "sortValue" from ${tasks}
+        where ${tasks.organizationId} = ${organizationId}::uuid
+          and ${tasks.listId} = ${listId}::uuid and ${tasks.spaceId} = ${spaceId}::uuid
+          and ${anyOf(tasks.id, ids, 'uuid')}
+        order by array_position(${sql.param(ids)}::uuid[], ${tasks.id})`,
+    );
+    return page.map(({ task }) => ({
+      taskKey: task.key,
+      name: task.name,
+      status: task.status,
+      priority: task.priority,
+      assignees: task.assigneeIds,
+      dueDate: task.dueDate,
+      labels: task.labels,
+      customValues: task.customFieldValues ?? {},
+    }));
   }
   // #endregion
 }
