@@ -2872,18 +2872,17 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
           new PurgeTrashBatch(unitOfWork, spaces).execute({ organizationId: atelierNordId }),
       );
       const due = await batch(
-        'purge batch | Atelier Delta, announce the entry of 651 tasks',
+        'purge batch | Atelier Delta, erase the first 500 tasks of the entry',
         atelierDeltaId,
         (unitOfWork, spaces) =>
           new PurgeTrashBatch(unitOfWork, spaces).execute({ organizationId: atelierDeltaId }),
       );
       const chunks = await batch(
-        'purge batch | Atelier Delta, announcement and both bounded erasure batches',
+        'purge batch | Atelier Delta, both bounded erasure batches',
         atelierDeltaId,
         async (unitOfWork, spaces) => {
           const purge = new PurgeTrashBatch(unitOfWork, spaces);
           return [
-            await purge.execute({ organizationId: atelierDeltaId }),
             await purge.execute({ organizationId: atelierDeltaId }),
             await purge.execute({ organizationId: atelierDeltaId }),
           ];
@@ -2896,10 +2895,9 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
       expect(keyset.result).toMatchObject({ outcome: 'trashed' });
       expect(large.result).toMatchObject({ outcome: 'trashed' });
       expect(handedOver.result).toMatchObject({ outcome: 'purged' });
-      // The announcement commits the root-first events; a later batch erases 500 tasks.
-      expect(due.result).toMatchObject({ outcome: 'purged', entries: 0, tasks: 0 });
+      // Each batch emits events only for the tasks it erases in that transaction.
+      expect(due.result).toMatchObject({ outcome: 'purged', entries: 0, tasks: 500 });
       expect(chunks.result).toMatchObject([
-        { outcome: 'purged', entries: 0, tasks: 0 },
         { outcome: 'purged', entries: 0, tasks: 500 },
         { outcome: 'purged', entries: 1, tasks: 151 },
       ]);
@@ -2937,7 +2935,7 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
     }, 300_000);
   });
 
-  it('(extra 2) probes a deleted list of 20,000 tasks all in the trash for a task out of it, reads a task by key under FOR SHARE SKIP LOCKED, and erases an oversized entry whole as one purge batch does', async () => {
+  it('(extra 2) probes deleted lists, reads a task by key under FOR SHARE SKIP LOCKED, and erases a bounded part of an oversized entry', async () => {
     const lists: readonly (readonly [string, string, string])[] = [
       ['all 20,000 tasks in the trash', atelierDeltaId, fullTrashListId],
       ['15,000 of 20,000 tasks in the trash', atelierNordId, largeListId],
@@ -2974,13 +2972,19 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
           TaskKey.parse('VOL-12'),
         ),
     );
-    // A purge batch takes an entry of more than 500 tasks alone and erases it whole: its 651 tasks
-    // locked FOR UPDATE in one statement, then the erasure of the entry and of everything of them.
+    // A purge batch locks and erases the first 500 tasks of an oversized entry.
     const oversized = await measure(
-      'oversized entry | lock and erasure of the whole entry of 651 tasks, alone in its batch',
+      'oversized entry | lock and erasure of the first 500 tasks',
       async (db) => {
-        await new DrizzleTaskRepository(db).lockTrashEntries(atelierNordId, [bigEntryId], true);
-        await new DrizzleTrashEntryRepository(db).erase(atelierNordId, [bigEntryId]);
+        const trash = new DrizzleTrashEntryRepository(db);
+        const entry = await trash.lock(atelierNordId, bigEntryId);
+        if (entry === null) throw new Error('The oversized entry was not found.');
+        const ids = await trash.lockPart(atelierNordId, bigEntryId, 500);
+        expect(ids).toHaveLength(500);
+        await trash.erasePart(atelierNordId, entry, ids, new Date(), {
+          type: 'system',
+          id: 'task-service',
+        });
       },
       { write: true },
     );

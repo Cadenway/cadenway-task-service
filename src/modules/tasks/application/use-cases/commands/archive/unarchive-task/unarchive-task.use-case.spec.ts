@@ -222,6 +222,17 @@ describe('UnarchiveTask: a restoration brings the whole archive back, from its r
 });
 
 describe('UnarchiveTask: the parent of the root takes it back, or the root is detached', () => {
+  it('detaches the root when its parent is in the trash', async () => {
+    const { tasks, useCase } = atelierNord(
+      archivedSubtree({ trash: { entryId: '019a7400-0000-7000-8000-000000000482' } }),
+    );
+
+    const view = await useCase.execute(unarchive({ taskKey: 'CAD-483' }));
+
+    expect(view.parentKey).toBeNull();
+    expect(tasks.stored(CAD_483).parentId).toBeNull();
+  });
+
   it('keeps a live parent of its list with room and levels for the archive', async () => {
     const { tasks, useCase } = atelierNord(archivedSubtree());
 
@@ -404,6 +415,7 @@ describe('UnarchiveTask: a task that is not archived answers as it is', () => {
     expect(view).toMatchObject({ version: 12, archivedAt: null });
     expect(tasks.events).toEqual([]);
     expect(tasks.trace).not.toContain('tasks.lockArchive');
+    expect(tasks.trace).not.toContain('tasks.lockByIds');
   });
 
   it('checks If-Match on its version', async () => {

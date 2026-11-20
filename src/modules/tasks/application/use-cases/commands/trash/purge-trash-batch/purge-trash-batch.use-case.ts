@@ -28,9 +28,7 @@ const MAX_ENTRIES: number = 20;
  * Constant MAX_TASKS
  *
  * @description
- * The budget of a batch, in tasks: it takes whole entries of 500 tasks or fewer while the entries
- * taken hold fewer than 500 tasks, so a batch erases 999 tasks at most (499, then one entry of
- * 500); a larger entry is announced once, then erased in parts of at most 500.
+ * Maximum number of tasks erased in one transaction, across all entries in the batch.
  *
  * @type {number}
  */
@@ -50,14 +48,10 @@ const MAX_TASKS: number = 500;
  * instant less 30 days, `purgeDueBefore`, the oldest first), 20 at most, `FOR UPDATE SKIP LOCKED`,
  * so two jobs of one organization share them.
  *
- * - When the first entry holds more than 500 tasks, one transaction appends all its events root
- *   first and marks it purging, hiding it from restoration. Later transactions erase its deepest
- *   tasks in parts of 500; the final transaction erases the remaining tasks and entry without
- *   emitting the events again. The marker and each progress count commit with their own work.
- * - Otherwise it takes the entries in their order while the entries taken hold fewer than 500
- *   tasks, each of 500 tasks or fewer (it stops at an entry larger than that, which a later batch
- *   starts when it comes first), so it erases 999 tasks at most; the entries locked and
- *   not taken wait for the next batch.
+ * An oversized entry is erased in parts, breadth-first from the remaining roots. The original
+ * root goes first and its snapshot identifies the entry in subsequent events. Each part appends
+ * events only for the tasks erased in its transaction. The last part also erases the entry.
+ * Otherwise the batch takes whole entries in order as long as they fit in the remaining budget.
  *
  * It locks the tasks of all the entries taken `FOR UPDATE` in one statement ordered by id
  * (`trash_entry_id = any($entries)`, `lockTrashEntries`), and the eraser emits one
@@ -223,22 +217,16 @@ export class PurgeTrashBatch {
    * Method take
    *
    * @description
-   * The entries the batch erases whole: the first alone when it holds more than 500 tasks (their
-   * stored `task_count`), else in their order, each of 500 tasks or fewer, while the entries taken
-   * hold fewer than 500 tasks; the first entry larger than that stops the batch.
+   * Picks consecutive whole entries while their stored counts fit in the batch budget.
    *
    * @param {readonly TrashEntryRecord[]} entries - The entries locked, at least one.
    * @returns {readonly TrashEntryRecord[]} The entries taken.
    */
   private take(entries: readonly TrashEntryRecord[]): readonly TrashEntryRecord[] {
-    const [first] = entries;
-    if (first !== undefined && (first.taskCount > MAX_TASKS || first.rootErased)) {
-      return [first];
-    }
     const taken: TrashEntryRecord[] = [];
     let held: number = 0;
     for (const entry of entries) {
-      if (held >= MAX_TASKS || entry.taskCount > MAX_TASKS || entry.rootErased) {
+      if (held + entry.taskCount > MAX_TASKS || entry.rootErased) {
         break;
       }
       taken.push(entry);

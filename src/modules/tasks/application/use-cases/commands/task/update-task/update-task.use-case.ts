@@ -7,6 +7,7 @@ import type { TaskState } from '../../../../../domain/value-objects/task/task-st
 import type { TaskUpdate } from '../../../../../domain/value-objects/task/task-update.value-object.js';
 import type { PlannedChange } from '../../../../models/placement/planned-change.model.js';
 import type { LocatedTask } from '../../../../models/task/located-task.model.js';
+import type { LockedSubtree } from '../../../../models/task/locked-subtree.model.js';
 import type { LocateRequest } from '../../../../models/task/locate-request.model.js';
 import type { ListPlacement } from '../../../../models/placement/list-placement.model.js';
 import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
@@ -18,7 +19,7 @@ import { ViewerResolver } from '../../../../services/member/viewer-resolver.serv
 import { TaskChangeWriter } from '../../../../services/task/task-change-writer.service.js';
 import { TaskLocator } from '../../../../services/task/task-locator.service.js';
 import { TaskMovePlanner } from '../../../../services/task/task-move-planner.service.js';
-import { TrashTreeLocker } from '../../../../services/trash/trash-tree-locker.service.js';
+import { TaskSubtreeLocker } from '../../../../services/task/task-subtree-locker.service.js';
 import { TaskRuleGuard } from '../../../../services/task/task-rule-guard.service.js';
 import { TaskViewBuilder } from '../../../../services/task/task-view-builder.service.js';
 import type { UpdateTaskInput } from './update-task.input.js';
@@ -59,7 +60,7 @@ export class UpdateTask {
   private readonly planner: TaskMovePlanner;
 
   /** Acquires a moving tree in the same order as trash. */
-  private readonly trees: TrashTreeLocker;
+  private readonly trees: TaskSubtreeLocker;
 
   /** Checks placement under its space and list locks. */
   private readonly spaces: SpaceDirectory;
@@ -95,7 +96,7 @@ export class UpdateTask {
     this.viewers = new ViewerResolver(members);
     this.locator = new TaskLocator(spaces);
     this.planner = new TaskMovePlanner(spaces);
-    this.trees = new TrashTreeLocker();
+    this.trees = new TaskSubtreeLocker();
     this.spaces = spaces;
     this.rules = new TaskRuleGuard();
     this.writer = new TaskChangeWriter();
@@ -140,11 +141,17 @@ export class UpdateTask {
           };
           const moving: boolean =
             input.patch.listId !== undefined || input.patch.parentKey !== undefined;
-          const located: LocatedTask = moving
-            ? await this.locateMove(store, viewer, request, input)
-            : await this.locator.locate(store, { ...request, lock: true });
+          const move = moving ? await this.locateMove(store, viewer, request, input) : null;
+          const located: LocatedTask =
+            move?.located ?? (await this.locator.locate(store, { ...request, lock: true }));
           const { task } = located;
-          const plan: PlannedChange = await this.planner.plan(store, viewer, located, input.patch);
+          const plan: PlannedChange = await this.planner.plan(
+            store,
+            viewer,
+            located,
+            input.patch,
+            move?.subtree ?? null,
+          );
           const now: Date = await store.clock.now();
           const update: TaskUpdate = this.rules.apply((): TaskUpdate =>
             task.update(plan.patch, plan.statuses, now),
@@ -170,7 +177,7 @@ export class UpdateTask {
     viewer: Viewer,
     request: LocateRequest,
     input: UpdateTaskInput,
-  ): Promise<LocatedTask> {
+  ): Promise<{ readonly located: LocatedTask; readonly subtree: LockedSubtree }> {
     const found: LocatedTask = await this.locator.locate(store, request);
     const { organizationId } = input;
     const targetId: string | undefined = input.patch.listId;
@@ -203,40 +210,41 @@ export class UpdateTask {
       if (!canWriteTasksOf(placement.list.callerRole))
         throw new TaskRefusal({ reason: 'role-insufficient', role: placement.list.callerRole });
     }
-    const tree = (
-      await this.trees.lock(
-        store,
-        organizationId,
-        [found.task.snapshot.id],
-        [],
-        Infinity,
-        parent === null ? [] : [parent.snapshot.id],
-        true,
-      )
-    ).trees[0];
-    if (tree === undefined) {
+    const locked = await this.trees.lock(
+      store,
+      found.task,
+      parent === null ? [] : [parent.snapshot.id],
+      true,
+      true,
+    );
+    const root: Task | undefined = locked.tasks.find(
+      (candidate: Task): boolean => candidate.snapshot.id === found.task.snapshot.id,
+    );
+    if (root === undefined) {
       await this.locator.locate(store, request);
       throw new RetryMoveTree();
     }
     if (parent !== null) {
-      parent = await store.tasks.findByKey(organizationId, parent.snapshot.key, false);
+      parent =
+        locked.tasks.find((task: Task): boolean => task.snapshot.id === parent?.snapshot.id) ??
+        null;
       if (parent === null || parent.isInTrash)
         throw new TaskRefusal({ reason: 'parent-invalid', parentKey: input.patch.parentKey ?? '' });
     }
     const listIds: string[] = [
-      tree.root.snapshot.listId,
+      root.snapshot.listId,
       ...(targetId === undefined ? [] : [targetId]),
       ...(parent === null ? [] : [parent.snapshot.listId]),
     ];
     const locks = await this.spaces.lockTrashLists(organizationId, listIds, 'hold', viewer);
-    const source = locks.find((list) => list.listId === tree.root.snapshot.listId);
+    const source = locks.find((list) => list.listId === root.snapshot.listId);
     if (source?.outcome !== 'live' || source.role === null)
       throw new TaskRefusal({ reason: 'task-not-found' });
     if (!canWriteTasksOf(source.role))
       throw new TaskRefusal({ reason: 'role-insufficient', role: source.role });
-    const confirmed: LocatedTask = await this.locator.confirm(store, request, tree.root);
+    const confirmed: LocatedTask = await this.locator.confirm(store, request, root);
     for (const list of locks) {
-      if (list.listId === tree.root.snapshot.listId) continue;
+      if (list.listId === root.snapshot.listId) continue;
       if (list.outcome !== 'live' || list.role === null) {
         if (parent !== null && list.listId === parent.snapshot.listId)
           throw new TaskRefusal({
@@ -248,7 +256,7 @@ export class UpdateTask {
       if (!canWriteTasksOf(list.role))
         throw new TaskRefusal({ reason: 'role-insufficient', role: list.role });
     }
-    return confirmed;
+    return { located: confirmed, subtree: locked };
   }
 
   /**

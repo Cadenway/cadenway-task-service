@@ -496,6 +496,7 @@ describe('UpdateTask: attaching and detaching a subtask', () => {
     await useCase.execute(patchOf({ parentKey: 'CAD-482' }, { taskKey: 'CAD-490' }));
 
     expect(tasks.trace).not.toContain('tasks.findByKey:lock');
+    expect(acquisitions).toHaveLength(1);
     expect(acquisitions[0]?.sort()).toEqual([CAD_482, CAD_490].sort());
     expect(tasks.trace.indexOf('tasks.lockByIds')).toBeLessThan(
       tasks.trace.indexOf('spaces.lockTrashLists'),
@@ -1111,21 +1112,19 @@ describe('UpdateTask: the trash and the deleted lists in a move or an attachment
 
     // #region Methods
     /**
-     * Records the hold and answers the list deleted when it is the one named.
+     * Records the lock and answers the named list as deleted.
      *
      * @param organizationId - The organization.
-     * @param listId - The list.
-     * @returns The list, deleted by Camille Martin, or as the usual directory holds it.
+     * @param args - The lists, lock mode and acting member.
+     * @returns The locked lists with the named list marked deleted.
      */
-    public override holdList(
-      organizationId: string,
-      listId: string,
-    ): ReturnType<InMemorySpaceDirectory['holdList']> {
-      if (listId !== this.deletedOnHold) {
-        return super.holdList(organizationId, listId);
-      }
-      this.holdCalls.push(listId);
-      return Promise.resolve({ outcome: 'deleted', deletedBy: { type: 'user', id: CAMILLE } });
+    public override async lockTrashLists(
+      ...args: Parameters<InMemorySpaceDirectory['lockTrashLists']>
+    ): ReturnType<InMemorySpaceDirectory['lockTrashLists']> {
+      const lists = await super.lockTrashLists(...args);
+      return lists.map((list) =>
+        list.listId === this.deletedOnHold ? { ...list, outcome: 'deleted' as const } : list,
+      );
     }
     // #endregion
   }
@@ -1139,7 +1138,7 @@ describe('UpdateTask: the trash and the deleted lists in a move or an attachment
         new UpdateTask(tasks, atelierNordMembers(), spaces).execute(patchOf({ listId: BUGS })),
       ),
     ).toEqual({ reason: 'list-invalid' });
-    expect(spaces.holdCalls).toEqual([SPRINT_14, BUGS]);
+    expect(spaces.lockTrashCalls[0]?.listIds).toEqual([SPRINT_14, BUGS]);
     expect(tasks.stored(CAD_482).listId).toBe(SPRINT_14);
   });
 
@@ -1152,7 +1151,7 @@ describe('UpdateTask: the trash and the deleted lists in a move or an attachment
         new UpdateTask(tasks, atelierNordMembers(), spaces).execute(patchOf({ listId: BUGS })),
       ),
     ).toEqual({ reason: 'task-not-found' });
-    expect(spaces.holdCalls).toEqual([SPRINT_14]);
+    expect(spaces.lockTrashCalls[0]?.listIds).toEqual([SPRINT_14, BUGS]);
     expect(tasks.stored(CAD_482).listId).toBe(SPRINT_14);
   });
 
@@ -1169,7 +1168,7 @@ describe('UpdateTask: the trash and the deleted lists in a move or an attachment
         ),
       ),
     ).toEqual({ reason: 'task-not-found' });
-    expect(spaces.holdCalls).toEqual([SPRINT_14]);
+    expect(spaces.lockTrashCalls[0]?.listIds).toEqual([SPRINT_14, BUGS]);
     expect(tasks.stored(CAD_490).parentId).toBeNull();
   });
 
@@ -1182,8 +1181,10 @@ describe('UpdateTask: the trash and the deleted lists in a move or an attachment
       patchOf({ listId: BUGS }),
     );
 
-    expect(trace.indexOf('spaces.holdList')).toBeGreaterThan(trace.lastIndexOf('tasks.lockByIds'));
-    expect(spaces.holdCalls).toEqual([SPRINT_14, BUGS]);
+    expect(trace.indexOf('spaces.lockTrashLists')).toBeGreaterThan(
+      trace.lastIndexOf('tasks.lockByIds'),
+    );
+    expect(spaces.lockTrashCalls[0]?.listIds).toEqual([SPRINT_14, BUGS]);
   });
 
   it('holds the two lists of a move in ascending list id, whichever it leaves', async () => {
@@ -1195,8 +1196,7 @@ describe('UpdateTask: the trash and the deleted lists in a move or an attachment
         new UpdateTask(tasks, atelierNordMembers(), spaces).execute(patchOf({ listId: SPRINT_14 })),
       ),
     ).toEqual({ reason: 'task-not-found' });
-    // Sprint 14 sorts before Bugs: the target is held first, then the list the task leaves.
-    expect(spaces.holdCalls).toEqual([SPRINT_14, BUGS]);
+    expect(spaces.lockTrashCalls[0]?.listIds).toEqual([BUGS, SPRINT_14]);
     expect(tasks.stored(CAD_482).listId).toBe(BUGS);
   });
 

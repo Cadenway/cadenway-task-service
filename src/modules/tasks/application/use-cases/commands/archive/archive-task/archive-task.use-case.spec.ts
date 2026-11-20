@@ -186,9 +186,7 @@ describe('ArchiveTask: an archive takes the task and its live subtasks at every 
     expect(tasks.trace.filter((call: string): boolean => !call.startsWith('spaces.'))).toEqual([
       `members.roleOf:${CAMILLE}:lock`,
       'tasks.findByKey:read',
-      'tasks.trashTrees',
       'tasks.lockByIds',
-      'tasks.trashTrees',
       'tasks.writeArchives',
       'events.archived',
       'events.archived',
@@ -252,6 +250,7 @@ describe('ArchiveTask: an archived task answers as it is', () => {
     expect(view).toMatchObject({ version: 12, archivedAt: archiveFrom(CAD_482).at });
     expect(tasks.events).toEqual([]);
     expect(tasks.trace).not.toContain('tasks.writeArchives');
+    expect(tasks.trace).not.toContain('tasks.lockByIds');
   });
 
   it('answers an archived root whose live parent moved to another list as detached', async () => {

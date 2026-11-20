@@ -1332,7 +1332,6 @@ describe('the live condition and the archives keep the statements of the tasks o
     }
     const lockPlan = members.find((plan) => plan.label.includes('lockArchive'));
     expect(lockPlan?.indexes).toContain('tasks_pkey');
-    expect(lockPlan?.indexes).toContain('tasks_parent_created_index');
   }, 300_000);
 
   it('reads the archived lists and their total through lists_organization_archived_index, the lists of a page by primary key, and their live tasks by tasks_list_created_index', async () => {

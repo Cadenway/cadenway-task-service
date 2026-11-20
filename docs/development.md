@@ -119,11 +119,13 @@ entries and tombstones only once `TRASH_WRITES_ENABLED` is `true`. While it is `
 an entry, the trash page and the jobs are always served. The release before ignores `trash_entry_id` and
 `deleted_at`: it would show the trash and the deleted lists and spaces as live. So:
 
-- with the switch off, no entry and no tombstone exists, and the release before stays a safe rollback
-  target (`.claude/rules/migrations.md`: the running version keeps working on the expanded schema);
-- once it is turned on in an environment (`TASK_SERVICE_TRASH_WRITES_ENABLED=true` in cadenway-ops), the
-  minimum rollback target there is this release: roll forward, or turn the switch off and keep this
-  release (it still reads and erases the trash), never back to a release before `0007_trash.sql`.
+- Before first activation, the expanded schema remains compatible with the previous release.
+  Finish rolling out the worker that supports `0008_trash_root_snapshot.sql` before setting
+  `TASK_SERVICE_TRASH_WRITES_ENABLED=true` in cadenway-ops.
+- Record that release as the environment's minimum rollback target as soon as the switch is
+  enabled. A worker built before it cannot resume a partially erased entry after the root goes
+  away. Turning off writes after activation keeps the existing jobs running, so retain a
+  worker that supports this migration.
 
 Turn it on locally to try the trash; the integration tests of the trash run with it on.
 

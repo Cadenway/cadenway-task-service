@@ -35,10 +35,12 @@ import {
  * `TrashEntryRepository` on `trash_entries` (and, for an erasure, on the task tables), in the
  * transaction of its unit of work. Every statement names `organization_id`, the first column of
  * every key and index it reads; row-level security is the second barrier. An entry is read with
- * its root by the primary key of `tasks`. The page and its total read `trash_entries_trashed_index`
+ * its root by the primary key of `tasks`, or with its stored snapshot when a previous purge batch
+ * erased the root. The page and its total read `trash_entries_trashed_index`
  * (the entries still in the trash), the hand-over to the purge `trash_entries_purge_requested_index`;
  * the locks are `FOR UPDATE` of the entry row only, `SKIP LOCKED` for the batches of the purge. An
- * erasure is seven set-based statements whatever the number of entries and tasks.
+ * whole-entry erasure is seven set-based statements; a partial erasure writes its remaining count
+ * and root snapshot in the same transaction as the task deletions.
  */
 export class DrizzleTrashEntryRepository implements TrashEntryRepository {
   // #region Properties
@@ -268,7 +270,12 @@ export class DrizzleTrashEntryRepository implements TrashEntryRepository {
     return this.many(dueEntriesStatement(organizationId, dueBefore, limit));
   }
 
-  /** Locks the first tasks of the remaining forest in breadth-first order. */
+  /**
+   * Locks the first tasks of the remaining forest and the rows whose references they detach.
+   * All rows are locked by ascending id in one statement. The limit bounds the selected tasks,
+   * while the number of surviving references is determined by the data. Returns only the
+   * selected tasks in breadth-first order.
+   */
   public async lockPart(
     organizationId: string,
     entryId: string,
@@ -276,18 +283,29 @@ export class DrizzleTrashEntryRepository implements TrashEntryRepository {
   ): Promise<readonly string[]> {
     const result = await this.db.execute<{
       id: string;
-      depth: number;
+      depth: number | null;
     }>(sql`with recursive tree (id, depth) as (
       select t.id, 0 from ${tasks} as t where t.organization_id = ${organizationId}::uuid and t.trash_entry_id = ${entryId}::uuid
       and not exists (select 1 from ${tasks} as p where p.organization_id = t.organization_id and p.id = t.parent_id and p.trash_entry_id = t.trash_entry_id)
       union all select child.id, tree.depth + 1 from ${tasks} as child join tree on child.parent_id = tree.id
       where child.organization_id = ${organizationId}::uuid and child.trash_entry_id = ${entryId}::uuid
-    ) cycle id set is_cycle using path
-    select ${tasks.id} as id, picked.depth as depth from ${tasks} join
-      (select id, depth from tree where not is_cycle order by depth, id limit ${limit}) as picked on picked.id = ${tasks.id}
-    where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.trashEntryId} = ${entryId}::uuid
+    ) cycle id set is_cycle using path,
+    picked as materialized (select id, depth from tree where not is_cycle order by depth, id limit ${limit}),
+    targets as (
+      select id from picked
+      union
+      select child.id from ${tasks} as child join picked on child.parent_id = picked.id
+        where child.organization_id = ${organizationId}::uuid
+      union
+      select member.id from ${tasks} as member join picked on member.archive_root_id = picked.id
+        where member.organization_id = ${organizationId}::uuid and member.trash_entry_id = ${entryId}::uuid
+    )
+    select ${tasks.id} as id, picked.depth as depth from ${tasks}
+    left join picked on picked.id = ${tasks.id}
+    where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.id} in (select id from targets)
     order by ${tasks.id} for update of ${tasks}`);
     return result.rows
+      .filter((row): row is { id: string; depth: number } => row.depth !== null)
       .sort((a, b) => a.depth - b.depth || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
       .map((row) => row.id);
   }

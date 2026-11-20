@@ -75,7 +75,7 @@ export class TrashEraser {
    * @param {readonly TrashEntryErasure[]} erasures - The entries, each locked with its tasks.
    * @param {Viewer | null} editor - The person who erases, who needs `edit` on every list of the
    * entries under its lock, or `null` for the purge job, which needs no role.
-   * @param {boolean} announced - Whether the entry's events were already committed.
+   * @param {boolean} eventsAppended - Whether the caller appended these tasks' events in this transaction.
    * @returns {Promise<TrashErasureCounts>} The tasks, lists and spaces erased.
    * @throws {TaskRefusal} `trash-entry-not-found` when the person no longer has `edit` on a list
    * under its lock.
@@ -87,12 +87,12 @@ export class TrashEraser {
     organizationId: string,
     erasures: readonly TrashEntryErasure[],
     editor: Viewer | null,
-    announced: boolean = false,
+    eventsAppended: boolean = false,
   ): Promise<TrashErasureCounts> {
     if (erasures.length === 0) {
       return { tasks: 0, listsPurged: 0, spacesPurged: 0 };
     }
-    if (!announced) await this.announce(store, erasures);
+    if (!eventsAppended) await this.announce(store, erasures);
     await store.trash.erase(
       organizationId,
       erasures.map(({ entry }: TrashEntryErasure): string => entry.id),
@@ -134,7 +134,7 @@ export class TrashEraser {
   }
 
   /** Appends every event of locked entries in root-first order. */
-  public async announce(store: TasksStore, erasures: readonly TrashEntryErasure[]): Promise<void> {
+  private async announce(store: TasksStore, erasures: readonly TrashEntryErasure[]): Promise<void> {
     const now: Date = await store.clock.now();
     for (const { entry, tasks, actor } of erasures) {
       const purged: readonly Task[] = tasks.map((task: Task): Task => task.purge(now));

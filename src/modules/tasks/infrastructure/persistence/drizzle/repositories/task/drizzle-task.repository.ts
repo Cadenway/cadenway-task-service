@@ -1,5 +1,5 @@
 import type { TransactionDatabase } from '@cadenway/nest-common/database';
-import { and, asc, eq, getTableColumns, gt, sql } from 'drizzle-orm';
+import { and, asc, eq, getTableColumns, gt, isNull, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 
 import type { PagePosition } from '../../../../../application/models/page/page-position.model.js';
@@ -498,9 +498,10 @@ export class DrizzleTaskRepository implements TaskRepository {
    * Method lockArchive
    *
    * @description
-   * Reads the tree, archive members and root's parent through their indexes, then locks the union
-   * by primary key in ascending id. The caller checks the archive and trash state again after
-   * waiting. Loads assignees, labels and parent keys after the lock, not checklists.
+   * Reads the archive members and the root's parent through their indexes, then locks the union
+   * by primary key in ascending id. Tasks in the trash, including the parent, are excluded. The
+   * caller checks the archive and trash state again after waiting. Loads assignees, labels and
+   * parent keys after the lock, not checklists.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} rootId - The root of the archive.
@@ -513,14 +514,15 @@ export class DrizzleTaskRepository implements TaskRepository {
       .where(
         and(
           eq(tasks.organizationId, organizationId),
-          sql`${tasks.id} = any(array(with recursive tree (id, list_id) as (
-              select id, list_id from tasks where organization_id = ${organizationId}::uuid and id = ${rootId}::uuid and trash_entry_id is null
-              union
-              select child.id, child.list_id from tasks as child join tree on child.parent_id = tree.id
-              where child.organization_id = ${organizationId}::uuid and child.list_id = tree.list_id and child.trash_entry_id is null
-            ) select id from tree
-            union select id from tasks where organization_id = ${organizationId}::uuid and archive_root_id = ${rootId}::uuid and trash_entry_id is null
-            union select parent_id from tasks where organization_id = ${organizationId}::uuid and id = ${rootId}::uuid and parent_id is not null))`,
+          isNull(tasks.trashEntryId),
+          sql`${tasks.id} = any(array(
+            select id from tasks where organization_id = ${organizationId}::uuid and archive_root_id = ${rootId}::uuid and trash_entry_id is null
+            union
+            select parent.id from tasks as root
+            join tasks as parent on parent.organization_id = root.organization_id and parent.id = root.parent_id
+            where root.organization_id = ${organizationId}::uuid and root.id = ${rootId}::uuid
+              and root.trash_entry_id is null and root.archive_root_id = root.id and parent.trash_entry_id is null
+          ))`,
         ),
       )
       .orderBy(asc(tasks.id))

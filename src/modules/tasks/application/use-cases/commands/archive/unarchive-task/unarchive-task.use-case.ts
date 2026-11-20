@@ -1,5 +1,4 @@
 import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
-import { canWriteTasksOf } from '../../../../../domain/policies/task/task-write.policy.js';
 import {
   treeHeight,
   takesRestoredRoot,
@@ -21,7 +20,6 @@ import { TaskAnnouncer } from '../../../../services/task/task-announcer.service.
 import { TaskLocator } from '../../../../services/task/task-locator.service.js';
 import { TaskRuleGuard } from '../../../../services/task/task-rule-guard.service.js';
 import { TaskViewBuilder } from '../../../../services/task/task-view-builder.service.js';
-import { TrashTreeLocker } from '../../../../services/trash/trash-tree-locker.service.js';
 import type { UnarchiveTaskInput } from './unarchive-task.input.js';
 import type { UnarchiveTaskOutput } from './unarchive-task.output.js';
 
@@ -82,9 +80,6 @@ export class UnarchiveTask {
   /** Finds the task. */
   private readonly locator: TaskLocator;
 
-  /** Locks a live tree when the path is not archived. */
-  private readonly trees: TrashTreeLocker;
-
   /** Maps the refusals of the domain. */
   private readonly rules: TaskRuleGuard;
 
@@ -116,7 +111,6 @@ export class UnarchiveTask {
     this.spaces = spaces;
     this.viewers = new ViewerResolver(members);
     this.locator = new TaskLocator(spaces);
-    this.trees = new TrashTreeLocker();
     this.rules = new TaskRuleGuard();
     this.announcer = new TaskAnnouncer();
     this.views = new TaskViewBuilder();
@@ -159,42 +153,8 @@ export class UnarchiveTask {
             });
             const { archive } = task.snapshot;
             if (archive === null) {
-              const tree = (
-                await this.trees.lock(
-                  store,
-                  input.organizationId,
-                  [task.snapshot.id],
-                  [],
-                  Infinity,
-                  [],
-                  true,
-                )
-              ).trees[0];
-              if (tree?.root.snapshot.archive !== null) throw new RetryArchive();
-              const [list] = await this.spaces.lockTrashLists(
-                input.organizationId,
-                [tree.root.snapshot.listId],
-                'hold',
-                viewer,
-              );
-              if (list?.outcome !== 'live' || list.role === null)
-                throw new TaskRefusal({ reason: 'task-not-found' });
-              if (!canWriteTasksOf(list.role))
-                throw new TaskRefusal({ reason: 'role-insufficient', role: list.role });
-              const confirmed = await this.locator.confirm(
-                store,
-                {
-                  organizationId: input.organizationId,
-                  viewer,
-                  taskKey: input.taskKey,
-                  edit: true,
-                  lock: false,
-                  archived: 'allow',
-                  expectedVersions: input.expectedVersions,
-                },
-                tree.root,
-              );
-              return this.views.build(store.reader, confirmed.task);
+              this.locator.requireVersion(task, input.expectedVersions);
+              return this.views.build(store.reader, task);
             }
             const restored: Task | null = await this.restore(
               store,
@@ -306,7 +266,6 @@ export class UnarchiveTask {
    * @param {readonly Task[]} members - The members of the archive, locked.
    * @param {readonly Task[]} locked - The archive members and parent locked together.
    * @returns {Promise<boolean>} `true` when the root keeps its parent or has none.
-   * @throws {Error} When the parent is missing, a defect the foreign key prevents.
    */
   private async keepsParent(
     store: TasksStore,
@@ -321,8 +280,8 @@ export class UnarchiveTask {
     const parent: Task | undefined = locked.find(
       (candidate: Task): boolean => candidate.snapshot.id === parentId,
     );
-    if (parent === undefined) {
-      throw new Error(`The parent ${parentId} of the archived task ${id} is missing.`);
+    if (parent === undefined || parent.isInTrash) {
+      return false;
     }
     const level: number = await store.tasks.levelOf(organizationId, parentId);
     const childCount: number = await store.tasks.childCount(organizationId, parentId);

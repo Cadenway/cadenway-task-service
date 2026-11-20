@@ -2932,28 +2932,11 @@ export class InMemoryTasks implements TasksUnitOfWork {
         lockArchive: (organizationId: string, rootId: string): Promise<readonly Task[]> => {
           this.trace.push('tasks.lockArchive');
           const parentId: string | null = tasks.get(rootId)?.parentId ?? null;
-          const root: TaskState | undefined = tasks.get(rootId);
-          const treeIds = new Set<string>();
-          if (root?.trash === null) {
-            treeIds.add(rootId);
-            for (let size = 0; size !== treeIds.size;) {
-              size = treeIds.size;
-              for (const row of inOrganization(organizationId)) {
-                if (
-                  row.trash === null &&
-                  row.listId === root.listId &&
-                  row.parentId !== null &&
-                  treeIds.has(row.parentId)
-                )
-                  treeIds.add(row.id);
-              }
-            }
-          }
           return Promise.resolve(
             inOrganization(organizationId)
               .filter(
                 (row: TaskState): boolean =>
-                  archiveOf(row) === rootId || row.id === parentId || treeIds.has(row.id),
+                  row.trash === null && (archiveOf(row) === rootId || row.id === parentId),
               )
               .sort((left: TaskState, right: TaskState): number => left.id.localeCompare(right.id))
               // The members are locked without their checklists, as the statement loads them.
