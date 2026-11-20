@@ -3,6 +3,7 @@ import { JobProducer } from '@cadenway/nest-jobs/runtime';
 import { OutboxRelay, OutboxWriter } from '@cadenway/nest-messaging/outbox';
 import type { FactoryProvider } from '@nestjs/common';
 
+import { PurgeIntakeContacts } from '../../../../../intake/public/form/purge-intake-contacts.js';
 import type { TasksUnitOfWork } from '../../../../application/ports/outbound/transactions/task/tasks-unit-of-work.port.js';
 import { TenantTasksUnitOfWork } from '../../../../infrastructure/persistence/drizzle/transactions/task/tenant-tasks.unit-of-work.js';
 import { TASKS_UNIT_OF_WORK } from '../../../tokens/task/tasks-unit-of-work.token.js';
@@ -19,11 +20,15 @@ import { TASKS_UNIT_OF_WORK } from '../../../tokens/task/tasks-unit-of-work.toke
  */
 export const tasksUnitOfWorkProvider: FactoryProvider<TasksUnitOfWork> = {
   provide: TASKS_UNIT_OF_WORK,
-  inject: [TenantTransactionRunner, OutboxWriter, OutboxRelay, JobProducer],
+  inject: [TenantTransactionRunner, OutboxWriter, OutboxRelay, JobProducer, PurgeIntakeContacts],
   useFactory: (
     runner: TenantTransactionRunner,
     outbox: OutboxWriter,
     relay: OutboxRelay,
     jobs: JobProducer,
-  ): TasksUnitOfWork => new TenantTasksUnitOfWork(runner, outbox, relay, jobs),
+    contacts: PurgeIntakeContacts,
+  ): TasksUnitOfWork =>
+    new TenantTasksUnitOfWork(runner, outbox, relay, jobs, {
+      purge: (organizationId, taskIds) => contacts.execute({ organizationId, taskIds }),
+    }),
 };

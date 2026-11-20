@@ -44,6 +44,7 @@ import {
 } from '@cadenway/contracts/validators/internal/task-service';
 import {
   createApplication,
+  getOrganizationContext,
   InternalTokenSigner,
   loadConfig,
   runWithOrganizationContext,
@@ -4005,16 +4006,16 @@ describe('the archives of lists and tasks', () => {
     }
 
     /**
-     * Sends a request and counts the statements it sends to PostgreSQL on the connections of the
-     * application (the clients that send anything but the control of a transaction, the outbox
-     * relay and the job queues, which run on their own connections and schedule), and its wall
-     * time.
+     * Sends a request and measures the PostgreSQL work issued under its verified actor. System
+     * jobs also use the application pool, so the pool alone cannot identify the request's clients.
      *
      * @param call - The request.
+     * @param actor - The user issuing the request.
      * @returns The response and what it cost.
      */
     async function measure(
       call: () => Promise<request.Response>,
+      actor: Person,
     ): Promise<{ readonly response: request.Response; readonly cost: RequestCost }> {
       const seen: { readonly client: unknown; readonly text: string }[] = [];
       const prototype = pg.Client.prototype as unknown as {
@@ -4022,14 +4023,17 @@ describe('the archives of lists and tasks', () => {
       };
       const original = prototype.query;
       prototype.query = function (this: unknown, ...args: unknown[]): unknown {
-        const first = args[0];
-        seen.push({
-          client: this,
-          text:
-            typeof first === 'string'
-              ? first
-              : ((first as { text?: string } | undefined)?.text ?? ''),
-        });
+        const currentActor = getOrganizationContext()?.actor;
+        if (currentActor?.type === 'user' && currentActor.id === actor.userId) {
+          const first = args[0];
+          seen.push({
+            client: this,
+            text:
+              typeof first === 'string'
+                ? first
+                : ((first as { text?: string } | undefined)?.text ?? ''),
+          });
+        }
         return Reflect.apply(original, this, args);
       };
       const started = performance.now();
@@ -4112,7 +4116,7 @@ describe('the archives of lists and tasks', () => {
         return row;
       };
 
-      const archive = await measure(() => act('archive', 'tasks', root.key, camille));
+      const archive = await measure(() => act('archive', 'tasks', root.key, camille), camille);
 
       const archived = taskAnswer(archive.response, ArchiveTaskInternalResponse);
       expect(archived).toMatchObject({ key: root.key, subtaskCounts: { total: 25, closed: 0 } });
@@ -4128,7 +4132,13 @@ describe('the archives of lists and tasks', () => {
       expect(new Set(archivedKeys).size).toBe(treeSize);
       expect(archivedKeys[0]).toBe(root.key);
 
-      const restoration = await measure(() => act('unarchive', 'tasks', root.key, camille));
+      const restoration = await measure(async () => {
+        const [answer] = await Promise.all([
+          act('unarchive', 'tasks', root.key, camille),
+          asSystem('select count(*) from intake_submissions'),
+        ]);
+        return answer;
+      }, camille);
 
       const restored = taskAnswer(restoration.response, UnarchiveTaskInternalResponse);
       expect(restored).toMatchObject({

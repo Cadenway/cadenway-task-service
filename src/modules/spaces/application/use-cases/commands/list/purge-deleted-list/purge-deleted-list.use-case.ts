@@ -109,6 +109,7 @@ export class PurgeDeletedList {
         return { outcome: 'not-deleted' };
       }
       await store.libraryCleanup.removeListViews(input.organizationId, [list.snapshot.id]);
+      await store.libraryCleanup.purgeListIntake(input.organizationId, list.snapshot.id);
       await store.libraryCleanup.purgeTargetFavorites(input.organizationId, 'list', [
         list.snapshot.id,
       ]);

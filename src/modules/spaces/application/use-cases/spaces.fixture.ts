@@ -524,6 +524,16 @@ export class InMemoryMembers implements MemberDirectory {
  */
 export class InMemorySpaces implements SpacesUnitOfWork {
   // #region Properties
+  /** A failure injected into intake cleanup to exercise transaction rollback. */
+  public intakeCleanupError: Error | null = null;
+
+  /** Intake cleanup calls committed with the surrounding transaction. */
+  public intakeCleanupCalls: {
+    readonly operation: 'revoke' | 'purge';
+    readonly organizationId: string;
+    readonly listIds: readonly string[];
+  }[] = [];
+
   /** Cleanup operations committed with the transaction. */
   public libraryCleanupCalls: {
     readonly operation: 'views' | 'templates' | 'favorites';
@@ -1291,6 +1301,7 @@ export class InMemorySpaces implements SpacesUnitOfWork {
     const events: RecordedEvent[] = [...this.events];
     const jobs: RecordedTrashJob[] = [...this.jobs];
     const libraryCleanupCalls = [...this.libraryCleanupCalls];
+    const intakeCleanupCalls = [...this.intakeCleanupCalls];
     const findAnySpace = (organizationId: string, id: string): Space | null => {
       const state: SpaceState | undefined = spaces.get(id);
       return state?.organizationId === organizationId ? Space.restore(state) : null;
@@ -2236,6 +2247,16 @@ export class InMemorySpaces implements SpacesUnitOfWork {
         },
       },
       libraryCleanup: {
+        revokeListIntake: (organizationId, listIds): Promise<void> => {
+          if (this.intakeCleanupError !== null) return Promise.reject(this.intakeCleanupError);
+          intakeCleanupCalls.push({ operation: 'revoke', organizationId, listIds });
+          return Promise.resolve();
+        },
+        purgeListIntake: (organizationId, listId): Promise<void> => {
+          if (this.intakeCleanupError !== null) return Promise.reject(this.intakeCleanupError);
+          intakeCleanupCalls.push({ operation: 'purge', organizationId, listIds: [listId] });
+          return Promise.resolve();
+        },
         removeListViews: (organizationId: string, targetIds: readonly string[]): Promise<void> => {
           if (this.libraryCleanupError !== null) return Promise.reject(this.libraryCleanupError);
           libraryCleanupCalls.push({ operation: 'views', organizationId, targetIds });
@@ -2270,6 +2291,7 @@ export class InMemorySpaces implements SpacesUnitOfWork {
     this.events = events;
     this.jobs = jobs;
     this.libraryCleanupCalls = libraryCleanupCalls;
+    this.intakeCleanupCalls = intakeCleanupCalls;
     return result;
   }
 

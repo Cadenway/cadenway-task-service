@@ -4,6 +4,12 @@ export interface SpaceLibraryCleanup {
   /** Permanently removes views and their favorites for the listed tombstones. */
   removeListViews(organizationId: string, listIds: readonly string[]): Promise<void>;
 
+  /** Revokes intake publications for lists marked deleted in this transaction. */
+  revokeListIntake(organizationId: string, listIds: readonly string[]): Promise<void>;
+
+  /** Removes an erased list's intake configuration and keeps key reservations. */
+  purgeListIntake(organizationId: string, listId: string): Promise<void>;
+
   /** Permanently removes the templates owned by a deleted space. */
   removeSpaceTemplates(organizationId: string, spaceId: string): Promise<void>;
 

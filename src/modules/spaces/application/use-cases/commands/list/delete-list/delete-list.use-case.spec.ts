@@ -70,6 +70,20 @@ function atelierNord(): InMemorySpaces {
 }
 
 describe('DeleteList: a member with edit on the list deletes it ("Supprimer la liste")', () => {
+  it('rolls the tombstone back when revoking the intake publication fails', async () => {
+    const spaces = atelierNord();
+    spaces.intakeCleanupError = new Error('intake cleanup failed');
+
+    await expect(
+      new DeleteList(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteSprint()),
+    ).rejects.toThrow('intake cleanup failed');
+
+    expect(spaces.lists.get(SPRINT_14)).toEqual(sprintState({ version: 3 }));
+    expect(spaces.intakeCleanupCalls).toEqual([]);
+    expect(spaces.events).toEqual([]);
+    expect(spaces.jobs).toEqual([]);
+  });
+
   it('permanently removes views in the deletion transaction and retains list favorites', async () => {
     const spaces = atelierNord();
 
@@ -77,6 +91,9 @@ describe('DeleteList: a member with edit on the list deletes it ("Supprimer la l
 
     expect(spaces.libraryCleanupCalls).toEqual([
       { operation: 'views', organizationId: ATELIER_NORD, targetIds: [SPRINT_14] },
+    ]);
+    expect(spaces.intakeCleanupCalls).toEqual([
+      { operation: 'revoke', organizationId: ATELIER_NORD, listIds: [SPRINT_14] },
     ]);
   });
 

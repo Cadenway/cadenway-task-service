@@ -1,4 +1,5 @@
 import type { WatcherOverrideRepository } from '../../ports/outbound/persistence/watcher/watcher-override-repository.port.js';
+import type { IntakeContactCleanup } from '../../ports/outbound/intake/trash/intake-contact-cleanup.port.js';
 import type { TrashJobs } from '../../ports/outbound/jobs/trash/trash-jobs.port.js';
 import type { TaskEvents } from '../../ports/outbound/messaging/task/task-events.port.js';
 import type { ActivityRepository } from '../../ports/outbound/persistence/activity/activity-repository.port.js';
@@ -30,6 +31,9 @@ export interface TasksStore {
   // #endregion
 
   // #region Properties
+  /** Private contacts erased with their task rows. */
+  readonly intakeContacts: IntakeContactCleanup;
+
   /** The tasks with their assignees, labels and checklist. */
   readonly tasks: TaskRepository;
 

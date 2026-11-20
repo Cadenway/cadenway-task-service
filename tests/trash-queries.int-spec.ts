@@ -2611,6 +2611,7 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
       };
       const store = (): TasksStore => ({
         savepoint: (work) => work(),
+        intakeContacts: { purge: (): Promise<void> => Promise.resolve() },
         dependencies: new DrizzleTaskDependencyRepository(db),
         tasks: new DrizzleTaskRepository(db),
         customFields: new DrizzleCustomFieldRepository(db),

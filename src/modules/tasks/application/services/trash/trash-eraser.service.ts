@@ -93,6 +93,10 @@ export class TrashEraser {
       return { tasks: 0, listsPurged: 0, spacesPurged: 0 };
     }
     if (!eventsAppended) await this.announce(store, erasures);
+    await store.intakeContacts.purge(
+      organizationId,
+      erasures.flatMap(({ tasks }) => tasks.map((task) => task.snapshot.id)),
+    );
     await store.trash.erase(
       organizationId,
       erasures.map(({ entry }: TrashEntryErasure): string => entry.id),

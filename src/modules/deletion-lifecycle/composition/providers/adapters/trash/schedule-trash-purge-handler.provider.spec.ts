@@ -9,6 +9,7 @@ import type { TestingModule } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { FavoritesStorageModule } from '../../../../../favorites/favorites.module.js';
+import { IntakeStorageModule } from '../../../../../intake/intake.module.js';
 import { OnboardingStateModule } from '../../../../../onboarding/onboarding.module.js';
 import { SavedViewsStorageModule } from '../../../../../saved-views/saved-views.module.js';
 import { TaskTemplatesStorageModule } from '../../../../../task-templates/task-templates.module.js';
@@ -79,6 +80,7 @@ describe('DeletionLifecycleModule composition of the workers and the schedule', 
       imports: [
         KitDoubles,
         FavoritesStorageModule,
+        IntakeStorageModule,
         OnboardingStateModule,
         SavedViewsStorageModule,
         TaskTemplatesStorageModule,

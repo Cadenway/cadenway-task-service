@@ -144,6 +144,7 @@ export class PurgeTrashBatch {
             spacesPurged: counts.spacesPurged,
           };
         }
+        await store.intakeContacts.purge(organizationId, ids);
         await store.trash.erasePart(
           organizationId,
           first,

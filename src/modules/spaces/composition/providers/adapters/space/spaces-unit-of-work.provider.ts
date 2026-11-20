@@ -4,6 +4,8 @@ import { OutboxRelay, OutboxWriter } from '@cadenway/nest-messaging/outbox';
 import type { FactoryProvider } from '@nestjs/common';
 
 import { PurgeTargetFavorites } from '../../../../../favorites/public/purge/purge-target-favorites.js';
+import { PurgeDeletedListIntake } from '../../../../../intake/public/form/purge-deleted-list-intake.js';
+import { RevokeDeletedListIntake } from '../../../../../intake/public/form/revoke-deleted-list-intake.js';
 import { RemoveListSavedViews } from '../../../../../saved-views/public/view/remove-list-saved-views.js';
 import { RemoveSpaceTaskTemplates } from '../../../../../task-templates/public/template/remove-space-task-templates.js';
 import type { SpaceLibraryCleanup } from '../../../../application/ports/outbound/library/space/space-library-cleanup.port.js';
@@ -32,6 +34,8 @@ export const spacesUnitOfWorkProvider: FactoryProvider<SpacesUnitOfWork> = {
     RemoveListSavedViews,
     RemoveSpaceTaskTemplates,
     PurgeTargetFavorites,
+    RevokeDeletedListIntake,
+    PurgeDeletedListIntake,
   ],
   useFactory: (
     runner: TenantTransactionRunner,
@@ -41,12 +45,18 @@ export const spacesUnitOfWorkProvider: FactoryProvider<SpacesUnitOfWork> = {
     views: RemoveListSavedViews,
     templates: RemoveSpaceTaskTemplates,
     favorites: PurgeTargetFavorites,
+    revokeIntake: RevokeDeletedListIntake,
+    purgeIntake: PurgeDeletedListIntake,
   ): SpacesUnitOfWork => {
     const libraryCleanup: SpaceLibraryCleanup = {
       async removeListViews(organizationId, listIds): Promise<void> {
         const targetIds = await views.execute({ organizationId, listIds });
         await favorites.execute({ organizationId, kind: 'saved-view', targetIds });
       },
+      revokeListIntake: (organizationId, listIds): Promise<void> =>
+        revokeIntake.execute({ organizationId, listIds }),
+      purgeListIntake: (organizationId, listId): Promise<void> =>
+        purgeIntake.execute({ organizationId, listId }),
       removeSpaceTemplates: (organizationId, spaceId): Promise<void> =>
         templates.execute(organizationId, spaceId),
       purgeTargetFavorites: (organizationId, kind, targetIds): Promise<void> =>

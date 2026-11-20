@@ -8,6 +8,7 @@ import type { OutboxRelay, OutboxWriter } from '@cadenway/nest-messaging/outbox'
 
 import type { ReadOptions } from '../../../../../application/models/transactions/read-options.model.js';
 import type { TasksStore } from '../../../../../application/models/transactions/tasks-store.model.js';
+import type { IntakeContactCleanup } from '../../../../../application/ports/outbound/intake/trash/intake-contact-cleanup.port.js';
 import type { TasksUnitOfWork } from '../../../../../application/ports/outbound/transactions/task/tasks-unit-of-work.port.js';
 import { PostgresqlTransactionClock } from '../../../../adapters/postgresql/transaction-clock.adapter.js';
 import { JobsTrashJobs } from '../../../../jobs/pg-boss/trash/jobs-trash-jobs.adapter.js';
@@ -110,6 +111,9 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
    * @readonly
    */
   private readonly jobs: JobProducer;
+
+  /** Removes intake contacts in the active task transaction. */
+  private readonly intakeContacts: IntakeContactCleanup;
   // #endregion
 
   // #region Constructor
@@ -123,6 +127,7 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
    * @param {OutboxWriter} outbox - The outbox writer.
    * @param {OutboxRelay} relay - The outbox relay.
    * @param {JobProducer} jobs - The job producer.
+   * @param {IntakeContactCleanup} intakeContacts - The transactional contact cleanup.
    * @constructor
    */
   public constructor(
@@ -130,11 +135,13 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
     outbox: OutboxWriter,
     relay: OutboxRelay,
     jobs: JobProducer,
+    intakeContacts: IntakeContactCleanup,
   ) {
     this.runner = runner;
     this.outbox = outbox;
     this.relay = relay;
     this.jobs = jobs;
+    this.intakeContacts = intakeContacts;
   }
   // #endregion
 
@@ -196,6 +203,7 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
       (transaction: TransactionScope): Promise<TResult> =>
         work({
           savepoint: (attempt) => withTaskSavepoint(transaction, attempt),
+          intakeContacts: this.intakeContacts,
           tasks: new DrizzleTaskRepository(transaction.db),
           customFields: new DrizzleCustomFieldRepository(transaction.db),
           time: new DrizzleTaskTimeRepository(transaction.db),

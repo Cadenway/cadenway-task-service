@@ -18,14 +18,14 @@ the removal committed.
 
 ## Public entry points
 
-| Entry point                                        | Consumers                                                                                   |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `organization-members.module`                      | access-requests, favorites, goals, member-lifecycle, onboarding, saved-views, spaces, tasks |
-| `public/membership/apply-membership-change`        | member-lifecycle                                                                            |
-| `public/membership/find-organization-member`       | access-requests, favorites, goals, onboarding, saved-views, spaces, tasks                   |
-| `public/membership/find-organization-member-roles` | tasks                                                                                       |
-| `public/membership/find-organization-owner`        | spaces                                                                                      |
-| `public/membership/list-active-members`            | tasks                                                                                       |
+| Entry point                                        | Consumers                                                                                           |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `organization-members.module`                      | access-requests, favorites, goals, intake, member-lifecycle, onboarding, saved-views, spaces, tasks |
+| `public/membership/apply-membership-change`        | member-lifecycle                                                                                    |
+| `public/membership/find-organization-member`       | access-requests, favorites, goals, intake, onboarding, saved-views, spaces, tasks                   |
+| `public/membership/find-organization-member-roles` | tasks                                                                                               |
+| `public/membership/find-organization-owner`        | spaces                                                                                              |
+| `public/membership/list-active-members`            | tasks                                                                                               |
 
 `OrganizationMembersModule` exports each public provider with its input and output types.
 

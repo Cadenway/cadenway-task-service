@@ -59,6 +59,8 @@ import { createSubtaskProvider } from './composition/providers/use-cases/subtask
 import { listSubtasksProvider } from './composition/providers/use-cases/subtask/list-subtasks.provider.js';
 import { checkTaskAccessProvider } from './composition/providers/use-cases/task/check-task-access.provider.js';
 import { createTaskProvider } from './composition/providers/use-cases/task/create-task.provider.js';
+import { createIntakeTaskProvider } from './composition/providers/use-cases/intake/create-intake-task.provider.js';
+import { resolveIntakeContactTaskProvider } from './composition/providers/use-cases/intake/resolve-intake-contact-task.provider.js';
 import { createOnboardingExampleProvider } from './composition/providers/use-cases/onboarding/create-onboarding-example.provider.js';
 import { CreateOnboardingExample } from './public/onboarding/create-onboarding-example.js';
 import { FIRST_ONBOARDING_TASK } from './composition/tokens/onboarding/first-onboarding-task.token.js';
@@ -109,6 +111,8 @@ import { ReadTaskTemplateSource } from './public/task/read-task-template-source.
 import { MeasureGoalTargets } from './public/goal/measure-goal-targets.js';
 import { ListTasksController } from './presentation/http/controllers/task/list-tasks.controller.js';
 import { TaskParticipantsController } from './presentation/http/controllers/task/task-participants.controller.js';
+import { CreateIntakeTask } from './public/intake/create-intake-task.js';
+import { ResolveIntakeContactTask } from './public/intake/resolve-intake-contact-task.js';
 import { TasksController } from './presentation/http/controllers/task/tasks.controller.js';
 import { TaskTrashController } from './presentation/http/controllers/trash/task-trash.controller.js';
 import { TrashController } from './presentation/http/controllers/trash/trash.controller.js';
@@ -236,6 +240,8 @@ markIdempotent(TaskTimeController.prototype, 'create');
     spaceDirectoryProvider,
     trashWritesProvider,
     createTaskProvider,
+    createIntakeTaskProvider,
+    resolveIntakeContactTaskProvider,
     createOnboardingExampleProvider,
     duplicateTaskProvider,
     duplicateListProvider,
@@ -294,6 +300,8 @@ markIdempotent(TaskTimeController.prototype, 'create');
     listUntrashedTaskIdsProvider,
   ],
   exports: [
+    CreateIntakeTask,
+    ResolveIntakeContactTask,
     CreateOnboardingExample,
     ChangeTaskApproval,
     ReadTaskApproval,

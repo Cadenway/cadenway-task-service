@@ -22,6 +22,7 @@ import { jobQueues } from './config/job-queues.js';
 import { AccessRequestsModule } from './modules/access-requests/access-requests.module.js';
 import { DeletionLifecycleModule } from './modules/deletion-lifecycle/deletion-lifecycle.module.js';
 import { FavoritesModule, FavoritesStorageModule } from './modules/favorites/favorites.module.js';
+import { IntakeModule, IntakeStorageModule } from './modules/intake/intake.module.js';
 import { GoalsModule } from './modules/goals/goals.module.js';
 import { MemberLifecycleModule } from './modules/member-lifecycle/member-lifecycle.module.js';
 import { OrganizationMembersModule } from './modules/organization-members/organization-members.module.js';
@@ -120,10 +121,10 @@ function runJobInOrganization(
  *   deploy definition may not set `stop_grace_period`: a batch of the clean-up job takes about a
  *   second and the handler starts no batch once its signal aborts, so it stops at a batch boundary;
  *   an attempt still running after that is failed and retried. The queues are the clean-up of a
- *   removed member (`MemberLifecycleModule`) and the four of the deletions and the trash
- *   (`DeletionLifecycleModule`); the one durable schedule, `task.schedule-trash-purge` at 03:00
- *   UTC, is registered at start-up by every replica (the same row) and creates its job without
- *   organization.
+ *   removed member (`MemberLifecycleModule`), four of the deletions and the trash
+ *   (`DeletionLifecycleModule`), and intake receipt cleanup (`IntakeModule`). Every replica
+ *   registers the same durable schedules: `task.schedule-trash-purge` at 03:00 UTC and
+ *   `task.purge-intake-receipts` every minute. Both create system jobs without an organization.
  * - `PlatformModule`: the owner of the kit tables in the migrations of the service.
  * - `OrganizationMembersModule`: the copy of the memberships of organization-service, the source of
  *   the members and roles of the service.
@@ -209,6 +210,7 @@ function runJobInOrganization(
     // Register only the lifecycle ports globally so the owning capabilities can clean up
     // in the caller's transaction without importing the modules that depend on their reads.
     FavoritesStorageModule,
+    IntakeStorageModule,
     SavedViewsStorageModule,
     TaskTemplatesStorageModule,
     SpacesModule,
@@ -223,6 +225,7 @@ function runJobInOrganization(
     TaskTemplatesModule,
     SavedViewsModule,
     FavoritesModule,
+    IntakeModule,
     GoalsModule,
   ],
 })

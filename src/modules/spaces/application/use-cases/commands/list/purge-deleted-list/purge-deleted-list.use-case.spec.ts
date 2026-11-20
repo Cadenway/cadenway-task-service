@@ -57,6 +57,9 @@ describe('PurgeDeletedList: a deleted list is erased with the last of its entrie
       { userId: NADIA, role: 'view' },
     ]);
     expect(spaces.events).toEqual([]);
+    expect(spaces.intakeCleanupCalls).toEqual([
+      { operation: 'purge', organizationId: ATELIER_NORD, listIds: [SPRINT_14] },
+    ]);
     expect(spaces.libraryCleanupCalls).toEqual([
       { operation: 'views', organizationId: ATELIER_NORD, targetIds: [SPRINT_14] },
       {

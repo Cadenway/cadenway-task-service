@@ -30,6 +30,7 @@ import { findVisibleListsProvider } from './composition/providers/use-cases/list
 import { findVisibleSpaceListsProvider } from './composition/providers/use-cases/list/find-visible-space-lists.provider.js';
 import { getListProvider } from './composition/providers/use-cases/list/get-list.provider.js';
 import { holdListProvider } from './composition/providers/use-cases/list/hold-list.provider.js';
+import { resolveIntakePlacementProvider } from './composition/providers/use-cases/intake/resolve-intake-placement.provider.js';
 import { lockDeletedListProvider } from './composition/providers/use-cases/list/lock-deleted-list.provider.js';
 import { lockTrashListsProvider } from './composition/providers/use-cases/list/lock-trash-lists.provider.js';
 import { listArchivedListsProvider } from './composition/providers/use-cases/list/list-archived-lists.provider.js';
@@ -77,6 +78,7 @@ import { FindListReaderAudience } from './public/list/find-list-reader-audience.
 import { FindVisibleLists } from './public/list/find-visible-lists.js';
 import { FindVisibleSpaceLists } from './public/list/find-visible-space-lists.js';
 import { HoldList } from './public/list/hold-list.js';
+import { ResolveIntakePlacement } from './public/intake/resolve-intake-placement.js';
 import { LockDeletedList } from './public/list/lock-deleted-list.js';
 import { LockTrashLists } from './public/list/lock-trash-lists.js';
 import { ListArchivedLists } from './public/list/list-archived-lists.js';
@@ -196,6 +198,7 @@ markIdempotent(SpaceListsController.prototype, 'create');
     restoreDeletedListProvider,
     purgeDeletedListProvider,
     holdListProvider,
+    resolveIntakePlacementProvider,
     lockDeletedListProvider,
     lockTrashListsProvider,
     listDeletedSpaceListsProvider,
@@ -241,6 +244,7 @@ markIdempotent(SpaceListsController.prototype, 'create');
     RestoreDeletedList,
     PurgeDeletedList,
     HoldList,
+    ResolveIntakePlacement,
     LockDeletedList,
     LockTrashLists,
     ListDeletedSpaceLists,
