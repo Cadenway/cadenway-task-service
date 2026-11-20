@@ -57,6 +57,15 @@ describe('PurgeDeletedList: a deleted list is erased with the last of its entrie
       { userId: NADIA, role: 'view' },
     ]);
     expect(spaces.events).toEqual([]);
+    expect(spaces.libraryCleanupCalls).toEqual([
+      { operation: 'views', organizationId: ATELIER_NORD, targetIds: [SPRINT_14] },
+      {
+        operation: 'favorites',
+        organizationId: ATELIER_NORD,
+        kind: 'list',
+        targetIds: [SPRINT_14],
+      },
+    ]);
   });
 
   it('erases the deleted space and its grants with its last list, its prefix kept', async () => {
@@ -72,6 +81,17 @@ describe('PurgeDeletedList: a deleted list is erased with the last of its entrie
     expect(spaces.spaces.has(PRODUIT)).toBe(false);
     expect(spaces.grants).toEqual([]);
     expect(spaces.prefixOwners.get(`${ATELIER_NORD}/CAD`)).toBe(PRODUIT);
+    expect(spaces.libraryCleanupCalls).toEqual([
+      { operation: 'views', organizationId: ATELIER_NORD, targetIds: [SPRINT_14] },
+      {
+        operation: 'favorites',
+        organizationId: ATELIER_NORD,
+        kind: 'list',
+        targetIds: [SPRINT_14],
+      },
+      { operation: 'templates', organizationId: ATELIER_NORD, targetIds: [PRODUIT] },
+      { operation: 'favorites', organizationId: ATELIER_NORD, kind: 'space', targetIds: [PRODUIT] },
+    ]);
   });
 
   it('keeps the deleted space while another list row of it is left', async () => {

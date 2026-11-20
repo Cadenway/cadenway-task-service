@@ -10,9 +10,13 @@ import type {
 } from '@cadenway/contracts/events/organization-service';
 import {
   CreateListInternalResponse,
+  CreateFavoriteInternalResponse,
+  CreateSavedViewInternalResponse,
   CreateSpaceInternalResponse,
+  GetFavoriteInternalResponse,
   GetListInternalResponse,
   GetSpaceInternalResponse,
+  ListFavoritesInternalResponse,
   ListListsInternalResponse,
   ListSpacesInternalResponse,
   UpdateListInternalResponse,
@@ -39,6 +43,7 @@ import type { z } from 'zod';
 
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
+import { PurgeMemberFavorites } from '../src/modules/favorites/public/purge/purge-member-favorites.js';
 
 // The spaces and lists of the organizations, on a disposable PostgreSQL and NATS: the service as
 // main.ts assembles it (the `task_app` role, the `task` NATS user), started from compose.dev.yaml as
@@ -217,7 +222,7 @@ type SpaceBody = z.output<typeof GetSpaceInternalResponse>;
 type ListBody = z.output<typeof GetListInternalResponse>;
 
 /** HTTP verbs the spec uses. */
-type HttpMethod = 'get' | 'post' | 'patch';
+type HttpMethod = 'get' | 'post' | 'patch' | 'delete';
 
 /** What a call adds to its path. */
 interface SendOptions {
@@ -538,7 +543,7 @@ describe('spaces and lists', () => {
    * @returns The number of rows.
    */
   async function countRows(
-    table: 'spaces' | 'lists' | 'space_prefixes',
+    table: 'spaces' | 'lists' | 'space_prefixes' | 'favorites',
     condition: string,
     ...params: readonly unknown[]
   ): Promise<number> {
@@ -1617,6 +1622,265 @@ describe('spaces and lists', () => {
       expectProblem(other, 422, 'idempotency.key-reused');
       expect(await countRows('lists', `name = 'Rétrospectives'`)).toBe(1);
       expect(await countRows('lists', `name = 'Autre'`)).toBe(0);
+    });
+  });
+
+  describe('private favorites', () => {
+    const collection = '/internal/v1/me/favorites';
+
+    it('replays creation, isolates actor and tenant, and hides a listed favorite until unarchive', async () => {
+      const { space, firstList } = await createSpace(camille, { name: 'Favoris', prefix: 'FAV' });
+      const body = { kind: 'space', targetId: space.id };
+      const headers = { 'Idempotency-Key': 'favorite-space-replay' };
+      const created = await send('post', collection, lea, { body, headers });
+      const replay = await send('post', collection, lea, { body, headers });
+
+      expect(created.status).toBe(201);
+      const favorite = conforms(CreateFavoriteInternalResponse, bodyOf(created));
+      const path = `${collection}/${favorite.id}`;
+      expect(favorite.target).toEqual({ name: 'Favoris', href: `/v1/spaces/${space.id}` });
+      expect(created.headers.location).toBe(path);
+      expect(created.headers.etag).toBe('"1"');
+      expect(replay.status).toBe(201);
+      expect(replay.headers['idempotent-replayed']).toBe('true');
+      expect(replay.headers.location).toBe(path);
+      expect(bodyOf(replay)).toEqual(bodyOf(created));
+      expectProblem(await send('post', collection, lea, { body }), 409, 'favorite.already-exists');
+
+      const sameTarget = await send('post', collection, camille, { body });
+      expect(sameTarget.status).toBe(201);
+      expect(conforms(CreateFavoriteInternalResponse, bodyOf(sameTarget)).id).not.toBe(favorite.id);
+      expectProblem(await send('get', path, camille), 404, 'favorite.not-found');
+      expectProblem(await send('delete', path, camille), 404, 'favorite.not-found');
+      expectProblem(
+        await send('get', path, solene, { organizationId: atelierDeltaId }),
+        404,
+        'favorite.not-found',
+      );
+      const read = await send('get', path, lea);
+      expect(read.status).toBe(200);
+      expect(conforms(GetFavoriteInternalResponse, bodyOf(read))).toEqual(favorite);
+      expect(read.headers.etag).toBe('"1"');
+
+      const listFavorite = await send('post', collection, lea, {
+        body: { kind: 'list', targetId: firstList.id },
+      });
+      expect(listFavorite.status).toBe(201);
+      const listed = conforms(CreateFavoriteInternalResponse, bodyOf(listFavorite));
+      const listPath = `${collection}/${listed.id}`;
+      const page = await send('get', `${collection}?limit=1`, lea);
+      expect(page.status).toBe(200);
+      const first = conforms(ListFavoritesInternalResponse, bodyOf(page));
+      expect(first.items.map(({ id }) => id)).toEqual([favorite.id]);
+      expect(first.nextCursor).not.toBeNull();
+      const cursor = encodeURIComponent(first.nextCursor ?? '');
+      const next = await send('get', `${collection}?cursor=${cursor}`, lea);
+      expect(conforms(ListFavoritesInternalResponse, bodyOf(next))).toEqual({
+        items: [listed],
+        nextCursor: null,
+      });
+      expectProblem(
+        await send('get', `${collection}?cursor=${cursor}`, camille),
+        400,
+        'request.invalid',
+      );
+
+      expect(
+        (await send('post', `/internal/v1/lists/${firstList.id}/archive`, camille, { body: {} }))
+          .status,
+      ).toBe(200);
+      expectProblem(await send('get', listPath, lea), 404, 'favorite.not-found');
+      expectProblem(await send('delete', listPath, lea), 404, 'favorite.not-found');
+      const archived = await send('get', `${collection}?limit=1`, lea);
+      expect(conforms(ListFavoritesInternalResponse, bodyOf(archived))).toEqual({
+        items: [favorite],
+        nextCursor: null,
+      });
+      expect(
+        (await send('post', `/internal/v1/lists/${firstList.id}/unarchive`, camille, { body: {} }))
+          .status,
+      ).toBe(200);
+      expect(
+        conforms(GetFavoriteInternalResponse, bodyOf(await send('get', listPath, lea))),
+      ).toEqual(listed);
+      expectProblem(
+        await send('delete', listPath, lea, { headers: { 'If-Match': '"2"' } }),
+        412,
+        'request.version-mismatch',
+      );
+      expect((await send('delete', listPath, lea, { headers: { 'If-Match': '"1"' } })).status).toBe(
+        204,
+      );
+      expect((await send('delete', path, lea)).status).toBe(204);
+    });
+
+    it('purges saved-view favorites for all owners in the transaction deleting the view', async () => {
+      const { firstList } = await createSpace(camille, { name: 'Vues favorites', prefix: 'VFA' });
+      const views = `/internal/v1/lists/${firstList.id}/saved-views`;
+      const response = await send('post', views, camille, {
+        body: {
+          name: 'Perspective',
+          configuration: { layout: 'list', filters: {}, sort: 'manual', groupBy: null },
+        },
+      });
+      expect(response.status).toBe(201);
+      const view = conforms(CreateSavedViewInternalResponse, bodyOf(response));
+      const body = { kind: 'saved-view', targetId: view.id };
+
+      const own = await send('post', collection, camille, { body });
+      const other = await send('post', collection, lea, { body });
+      expect(own.status).toBe(201);
+      expect(other.status).toBe(201);
+      const favorite = conforms(CreateFavoriteInternalResponse, bodyOf(other));
+      expect(favorite.target).toEqual({
+        name: view.name,
+        listId: firstList.id,
+        href: `/v1/lists/${firstList.id}/saved-views/${view.id}`,
+      });
+      expect(await countRows('favorites', 'target_id = $2', view.id)).toBe(2);
+
+      expect((await send('delete', `${views}/${view.id}`, camille)).status).toBe(204);
+      expect(await countRows('favorites', 'target_id = $2', view.id)).toBe(0);
+      expectProblem(
+        await send('get', `${collection}/${favorite.id}`, lea),
+        404,
+        'favorite.not-found',
+      );
+      expectProblem(
+        await send('post', collection, lea, { body }),
+        404,
+        'favorite.target-not-found',
+      );
+    });
+
+    it('serializes concurrent additions at capacity including hidden stored favorites', async () => {
+      const { space, firstList } = await createSpace(camille, {
+        name: 'Limite favoris',
+        prefix: 'LFA',
+      });
+      await inTenant(atelierNordId, (client) =>
+        client.query(
+          `insert into favorites (organization_id, user_id, kind, target_id)
+           select $1::uuid, $2::uuid, 'list', uuidv7() from generate_series(1, 199)`,
+          [atelierNordId, ines.userId],
+        ),
+      );
+      try {
+        const outcomes = await Promise.all([
+          send('post', collection, ines, { body: { kind: 'space', targetId: space.id } }),
+          send('post', collection, ines, { body: { kind: 'list', targetId: firstList.id } }),
+        ]);
+        expect(outcomes.map(({ status }) => status).sort()).toEqual([201, 422]);
+        const refusal = outcomes.find(({ status }) => status === 422);
+        expect(refusal).toBeDefined();
+        if (refusal !== undefined) {
+          expectProblem(refusal, 422, 'favorite.limit-reached');
+        }
+        expect(await countRows('favorites', 'user_id = $2', ines.userId)).toBe(200);
+      } finally {
+        await inTenant(atelierNordId, (client) =>
+          client.query('delete from favorites where organization_id = $1 and user_id = $2', [
+            atelierNordId,
+            ines.userId,
+          ]),
+        );
+      }
+    });
+
+    it('lets a rejoined account add a favorite after its older collection is cleared', async () => {
+      const { space, firstList } = await createSpace(camille, {
+        name: 'Retour aux favoris',
+        prefix: 'RFA',
+      });
+      const actor = { userId: randomUUID() };
+      const oldFavorite = randomUUID();
+      await inTenant(atelierNordId, async (client) => {
+        await client.query(
+          `insert into organization_members
+             (organization_id, id, user_id, role, version, removed_at)
+           values ($1, $2, $3, 'member', 2, now())`,
+          [atelierNordId, randomUUID(), actor.userId],
+        );
+        await client.query(
+          `insert into favorites (organization_id, id, user_id, kind, target_id)
+           values ($1, $2, $3, 'list', $4)`,
+          [atelierNordId, oldFavorite, actor.userId, firstList.id],
+        );
+      });
+
+      const blocker = await migrator.connect();
+      let cleanup: Promise<void> | undefined;
+      let adding: Promise<request.Response> | undefined;
+      try {
+        await blocker.query('begin');
+        await blocker.query(`select set_config('app.system_access', 'on', true)`);
+        await blocker.query(
+          'select 1 from favorites where organization_id = $1 and id = $2 for update',
+          [atelierNordId, oldFavorite],
+        );
+        cleanup = inTenant(atelierNordId, () =>
+          service().get(PurgeMemberFavorites).execute({
+            organizationId: atelierNordId,
+            userId: actor.userId,
+          }),
+        );
+        void cleanup.catch(() => undefined);
+
+        await vi.waitFor(async () => {
+          const pending = await inTenant(atelierNordId, (client) =>
+            client.query(
+              `select 1 from pg_stat_activity where pid <> pg_backend_pid()
+               and wait_event_type = 'Lock' and query like 'delete from "favorites"%'`,
+            ),
+          );
+          expect(pending.rows).toHaveLength(1);
+        }, waitOptions);
+
+        await inTenant(atelierNordId, (client) =>
+          client.query(
+            `insert into organization_members (organization_id, id, user_id, role, version)
+             values ($1, $2, $3, 'member', 1)`,
+            [atelierNordId, randomUUID(), actor.userId],
+          ),
+        );
+        adding = send('post', collection, actor, { body: { kind: 'space', targetId: space.id } });
+        void adding.catch(() => undefined);
+
+        await vi.waitFor(async () => {
+          const pending = await inTenant(atelierNordId, (client) =>
+            client.query(
+              `select 1 from pg_stat_activity where pid <> pg_backend_pid()
+               and wait_event = 'advisory' and query like 'select pg_advisory_xact_lock(%'`,
+            ),
+          );
+          expect(pending.rows).toHaveLength(1);
+        }, waitOptions);
+
+        await blocker.query('rollback');
+        await cleanup;
+        const added = await adding;
+        expect(added.status).toBe(201);
+        const current = conforms(
+          ListFavoritesInternalResponse,
+          bodyOf(await send('get', collection, actor)),
+        );
+        expect(current.items.map(({ targetId }) => targetId)).toEqual([space.id]);
+        expect(await countRows('favorites', 'user_id = $2', actor.userId)).toBe(1);
+      } finally {
+        await blocker.query('rollback');
+        blocker.release();
+        await Promise.allSettled([cleanup, adding]);
+        await inTenant(atelierNordId, async (client) => {
+          await client.query('delete from favorites where organization_id = $1 and user_id = $2', [
+            atelierNordId,
+            actor.userId,
+          ]);
+          await client.query(
+            'delete from organization_members where organization_id = $1 and user_id = $2',
+            [atelierNordId, actor.userId],
+          );
+        });
+      }
     });
   });
 

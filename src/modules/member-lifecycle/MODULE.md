@@ -10,7 +10,8 @@ tenant transaction:
 - for a removal, enqueues the `task.clean-up-removed-member` job, which runs after the commit: it
   hands the private spaces the former member owned to the owner of the organization
   (`HandOverPrivateSpaces` of spaces), or leaves them awaiting an owner while the copy does not
-  hold that owner, then removes their grants of spaces and lists (`RemoveMemberGrants` of spaces),
+  hold that owner, then removes their private favorites (`PurgeMemberFavorites` of favorites),
+  after a locked membership recheck, then removes their grants of spaces and lists (`RemoveMemberGrants` of spaces),
   then drops their access requests, pending or answered (`DropMemberAccessRequests` of
   access-requests), then
   removes the member from the assignees of every task, closed tasks included
@@ -172,7 +173,7 @@ unapplied, with no later correction.
 - A removal of the copy commits whatever the spaces, the grants, the access requests or the tasks
   hold; only a transient failure redelivers it.
 - A removal enqueues exactly one clean-up job per membership and version, in its transaction; the
-  job hands the private spaces over, then removes the grants of the former member, then drops their
+  job hands the private spaces over, removes the former member's favorites and grants, then drops their
   access requests, pending or answered, then removes them from every task, after the commit,
   unless the copy holds them as a member again when a batch runs. A join or a role change enqueues
   nothing, so a member who becomes a guest keeps the tasks, the grants and the requests they hold.
@@ -204,12 +205,14 @@ runner of the kit (any 8-4-4-4-12 hexadecimal id, in either case). `CleanUpRemov
 loops within the attempt, each batch in its own tenant transaction:
 
 1. `HandOverPrivateSpaces` (spaces): up to 100 private spaces, until a batch finds none;
-2. `RemoveMemberGrants` (spaces): up to 100 grants, space grants first, then list grants, each
+2. `PurgeMemberFavorites` (favorites): removes the bounded private collection after a locked
+   membership recheck, in a tenant transaction, and emits no event;
+3. `RemoveMemberGrants` (spaces): up to 100 grants, space grants first, then list grants, each
    with its `space.access-changed.v1` or `list.access-changed.v1`, until a batch finds none;
-3. `DropMemberAccessRequests` (access-requests): up to 500 access requests of the account,
+4. `DropMemberAccessRequests` (access-requests): up to 500 access requests of the account,
    pending or answered (the answered ones carry the free text the person wrote), and its attempts,
    without event, until a batch finds none;
-4. `UnassignRemovedMember` (tasks): up to 500 tasks after the last task id of the previous batch,
+5. `UnassignRemovedMember` (tasks): up to 500 tasks after the last task id of the previous batch,
    until a batch finds none.
 
 It stops only on an empty batch, never on a short one, and for good on a batch that finds the
@@ -218,7 +221,7 @@ expiration of the queue, or a shutdown past the 8 s `shutdownTimeoutMs` of the r
 10 s default grace period of Docker: a batch takes about a second, and the handler stops at a batch
 boundary). A failed batch (the database, a lock or statement timeout) rolls back alone: the batches
 before it stay committed, the attempt fails with a `CleanUpStepError` that names the step
-(`spaces`, `grants`, `requests` or `tasks`) and the batches committed before it, the error of the
+(`spaces`, `favorites`, `grants`, `requests` or `tasks`) and the batches committed before it, the error of the
 batch as its `cause`, and pg-boss retries the job 8 times with backoff from
 10 s, capped at 30 min (the last attempt starts 42 to 72 minutes after the first failure when the
 attempts fail fast). A retry starts again from the spaces, grants, requests and tasks still

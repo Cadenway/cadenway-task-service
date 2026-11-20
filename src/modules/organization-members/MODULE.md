@@ -18,12 +18,12 @@ the removal committed.
 
 ## Public entry points
 
-| Entry point                                  | Consumers                                        |
-| -------------------------------------------- | ------------------------------------------------ |
-| `organization-members.module`                | spaces, member-lifecycle, tasks, access-requests |
-| `public/membership/apply-membership-change`  | member-lifecycle                                 |
-| `public/membership/find-organization-member` | spaces, tasks, access-requests                   |
-| `public/membership/find-organization-owner`  | spaces                                           |
+| Entry point                                  | Consumers                                                                |
+| -------------------------------------------- | ------------------------------------------------------------------------ |
+| `organization-members.module`                | access-requests, favorites, member-lifecycle, saved-views, spaces, tasks |
+| `public/membership/apply-membership-change`  | member-lifecycle                                                         |
+| `public/membership/find-organization-member` | access-requests, favorites, saved-views, spaces, tasks                   |
+| `public/membership/find-organization-owner`  | spaces                                                                   |
 
 `OrganizationMembersModule` exports the `ApplyMembershipChange`, `FindOrganizationMember` and
 `FindOrganizationOwner` providers, each with its input type and, for the two readings, its output type.

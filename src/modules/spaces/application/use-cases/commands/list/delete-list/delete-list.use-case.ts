@@ -137,6 +137,7 @@ export class DeleteList {
       const actor: EventActor = { type: 'user', id: input.actorUserId };
       const list: TaskList = stored.delete(actor, await store.clock.now());
       await store.lists.update(list);
+      await store.libraryCleanup.removeListViews(input.organizationId, [list.snapshot.id]);
       await store.events.listDeleted(list, actor);
       await store.trashQueue.enqueue({
         kind: 'list',

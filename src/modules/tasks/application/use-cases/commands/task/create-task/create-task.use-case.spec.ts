@@ -103,6 +103,31 @@ describe('CreateTask: a member creates a task in a list they see', () => {
     ]);
   });
 
+  it('creates ordered unchecked checklist items with new IDs at version one', async () => {
+    const { tasks, useCase } = atelierNord();
+    const input = createTask({ checklistTexts: [' First ', 'Second'] });
+    const first = await useCase.execute(input);
+    const second = await useCase.execute(input);
+
+    expect(first.version).toBe(1);
+    expect(first.checklist).toEqual([
+      expect.objectContaining({ text: 'First', done: false }),
+      expect.objectContaining({ text: 'Second', done: false }),
+    ]);
+    expect(tasks.stored(first.id).checklist).toEqual([
+      { ...first.checklist[0], position: 0 },
+      { ...first.checklist[1], position: 1 },
+    ]);
+    const ids: string[] = [...first.checklist, ...second.checklist].map((item) => item.id);
+    expect(new Set(ids).size).toBe(4);
+    expect(tasks.events.map((event) => event.kind)).toEqual([
+      'created',
+      'assigned',
+      'created',
+      'assigned',
+    ]);
+  });
+
   it('appends task.created.v1 then one task.assigned.v1 per assignee', async () => {
     const { tasks, useCase } = atelierNord();
 

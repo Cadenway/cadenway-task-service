@@ -51,16 +51,17 @@ the archive and the deletion of a list; this module never writes a list.
 
 ## Public entry points
 
-| Entry point                                           | Consumers                                             |
-| ----------------------------------------------------- | ----------------------------------------------------- |
-| `tasks.module`                                        | member-lifecycle, access-requests, deletion-lifecycle |
-| `public/assignee/unassign-removed-member`             | member-lifecycle                                      |
-| `public/task/find-task-reference`                     | access-requests                                       |
-| `public/task/find-task-references`                    | access-requests                                       |
-| `public/trash/trash-deleted-list-tasks`               | deletion-lifecycle                                    |
-| `public/trash/purge-trash-batch`                      | deletion-lifecycle                                    |
-| `public/trash/list-organizations-with-trash-to-purge` | deletion-lifecycle                                    |
-| `public/trash/list-untrashed-task-ids`                | deletion-lifecycle                                    |
+| Entry point                                           | Consumers                                                             |
+| ----------------------------------------------------- | --------------------------------------------------------------------- |
+| `tasks.module`                                        | member-lifecycle, access-requests, deletion-lifecycle, task-templates |
+| `public/task/read-task-template-source`               | task-templates                                                        |
+| `public/assignee/unassign-removed-member`             | member-lifecycle                                                      |
+| `public/task/find-task-reference`                     | access-requests                                                       |
+| `public/task/find-task-references`                    | access-requests                                                       |
+| `public/trash/trash-deleted-list-tasks`               | deletion-lifecycle                                                    |
+| `public/trash/purge-trash-batch`                      | deletion-lifecycle                                                    |
+| `public/trash/list-organizations-with-trash-to-purge` | deletion-lifecycle                                                    |
+| `public/trash/list-untrashed-task-ids`                | deletion-lifecycle                                                    |
 
 `TasksModule` exports the `FindTaskReference` and `FindTaskReferences` providers, which the
 access-requests module reads the task of a request with: `{ organizationId, taskKey }` to a
@@ -290,6 +291,10 @@ where archived_at is null` is not used by "Mes tâches". To revisit by replacing
   a new migration (a merged migration is never edited).
 
 ## API
+
+Normal task creation accepts an optional initial checklist. Its items are created in request
+order with fresh IDs and are unchecked. The items share the new task's version 1 and its
+creation transaction. Subtask creation still uses its separate contract.
 
 `openapi/internal/task-service.yaml` (`@cadenway/contracts` 0.10.0), actor `user`, organization
 required; issuer `api-gateway` for every route but the access check, which accepts

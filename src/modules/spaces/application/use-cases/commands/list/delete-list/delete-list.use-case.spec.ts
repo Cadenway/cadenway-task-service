@@ -70,6 +70,30 @@ function atelierNord(): InMemorySpaces {
 }
 
 describe('DeleteList: a member with edit on the list deletes it ("Supprimer la liste")', () => {
+  it('permanently removes views in the deletion transaction and retains list favorites', async () => {
+    const spaces = atelierNord();
+
+    await new DeleteList(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteSprint());
+
+    expect(spaces.libraryCleanupCalls).toEqual([
+      { operation: 'views', organizationId: ATELIER_NORD, targetIds: [SPRINT_14] },
+    ]);
+  });
+
+  it('rolls the tombstone, event and job back when view cleanup fails', async () => {
+    const spaces = atelierNord();
+    spaces.libraryCleanupError = new Error('cleanup failed');
+
+    await expect(
+      new DeleteList(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteSprint()),
+    ).rejects.toThrow('cleanup failed');
+
+    expect(spaces.lists.get(SPRINT_14)).toEqual(sprintState({ version: 3 }));
+    expect(spaces.events).toEqual([]);
+    expect(spaces.jobs).toEqual([]);
+    expect(spaces.libraryCleanupCalls).toEqual([]);
+  });
+
   it('makes a tombstone at the instant of the transaction, by the actor, at the next version', async () => {
     const spaces = atelierNord();
 

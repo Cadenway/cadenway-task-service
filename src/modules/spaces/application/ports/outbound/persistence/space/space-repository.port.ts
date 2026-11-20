@@ -156,6 +156,13 @@ export interface SpaceRepository {
    */
   listAllVisible(organizationId: string, viewer: Viewer): Promise<SpaceWithGrants[]>;
 
+  /** Loads active, readable spaces restricted to the given candidate IDs. */
+  findVisibleByIds(
+    organizationId: string,
+    viewer: Viewer,
+    ids: readonly string[],
+  ): Promise<SpaceWithGrants[]>;
+
   /**
    * Method lockPrivateOwnedBy
    *

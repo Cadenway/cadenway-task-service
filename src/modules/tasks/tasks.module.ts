@@ -35,6 +35,7 @@ import { createTaskProvider } from './composition/providers/use-cases/task/creat
 import { findTaskReferenceProvider } from './composition/providers/use-cases/task/find-task-reference.provider.js';
 import { findTaskReferencesProvider } from './composition/providers/use-cases/task/find-task-references.provider.js';
 import { getTaskDetailProvider } from './composition/providers/use-cases/task/get-task-detail.provider.js';
+import { readTaskTemplateSourceProvider } from './composition/providers/use-cases/task/read-task-template-source.provider.js';
 import { getTaskProvider } from './composition/providers/use-cases/task/get-task.provider.js';
 import { updateTaskProvider } from './composition/providers/use-cases/task/update-task.provider.js';
 import { emptyTrashProvider } from './composition/providers/use-cases/trash/empty-trash.provider.js';
@@ -60,6 +61,7 @@ import { TaskAssigneesController } from './presentation/http/controllers/assigne
 import { ChecklistItemsController } from './presentation/http/controllers/checklist/checklist-items.controller.js';
 import { TaskLabelsController } from './presentation/http/controllers/label/task-labels.controller.js';
 import { SubtasksController } from './presentation/http/controllers/subtask/subtasks.controller.js';
+import { ReadTaskTemplateSource } from './public/task/read-task-template-source.js';
 import { ListTasksController } from './presentation/http/controllers/task/list-tasks.controller.js';
 import { TasksController } from './presentation/http/controllers/task/tasks.controller.js';
 import { TaskTrashController } from './presentation/http/controllers/trash/task-trash.controller.js';
@@ -159,6 +161,7 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
     updateTaskProvider,
     getTaskProvider,
     getTaskDetailProvider,
+    readTaskTemplateSourceProvider,
     createSubtaskProvider,
     listSubtasksProvider,
     assignTaskProvider,
@@ -196,6 +199,7 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
     listUntrashedTaskIdsProvider,
   ],
   exports: [
+    ReadTaskTemplateSource,
     UnassignRemovedMember,
     FindTaskReference,
     FindTaskReferences,

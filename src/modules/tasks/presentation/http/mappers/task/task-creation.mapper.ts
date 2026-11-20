@@ -38,6 +38,7 @@ export function toCreateTaskInput(
     estimateMinutes: body.estimateMinutes ?? null,
     labels: body.labels,
     subtaskNames: body.subtasks.map((subtask: { name: string }): string => subtask.name),
+    checklistTexts: body.checklist?.map(({ text }): string => text) ?? [],
   };
 }
 

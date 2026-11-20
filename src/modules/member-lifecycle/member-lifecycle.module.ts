@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { AccessRequestsModule } from '../access-requests/access-requests.module.js';
+import { FavoritesModule } from '../favorites/favorites.module.js';
 import { OrganizationMembersModule } from '../organization-members/organization-members.module.js';
 import { SpacesModule } from '../spaces/spaces.module.js';
 import { TasksModule } from '../tasks/tasks.module.js';
@@ -8,6 +9,7 @@ import { memberGrantsProvider } from './composition/providers/adapters/access/me
 import { memberAccessRequestsProvider } from './composition/providers/adapters/access-request/member-access-requests.provider.js';
 import { taskAssignmentsProvider } from './composition/providers/adapters/assignee/task-assignments.provider.js';
 import { cleanUpRemovedMemberHandlerProvider } from './composition/providers/adapters/clean-up/clean-up-removed-member-handler.provider.js';
+import { memberFavoritesProvider } from './composition/providers/adapters/favorites/member-favorites.provider.js';
 import { memberEventsHandlerProvider } from './composition/providers/adapters/membership/member-events-handler.provider.js';
 import { memberEventsRedeliveryProvider } from './composition/providers/adapters/membership/member-events-redelivery.provider.js';
 import { memberEventUnitOfWorkProvider } from './composition/providers/adapters/membership/member-event-unit-of-work.provider.js';
@@ -35,13 +37,20 @@ import { cleanUpRemovedMemberProvider } from './composition/providers/use-cases/
  * export.
  */
 @Module({
-  imports: [OrganizationMembersModule, SpacesModule, TasksModule, AccessRequestsModule],
+  imports: [
+    OrganizationMembersModule,
+    SpacesModule,
+    TasksModule,
+    AccessRequestsModule,
+    FavoritesModule,
+  ],
   providers: [
     memberEventUnitOfWorkProvider,
     membershipCopyProvider,
     privateSpaceHandoverProvider,
     memberGrantsProvider,
     memberAccessRequestsProvider,
+    memberFavoritesProvider,
     taskAssignmentsProvider,
     applyMemberEventProvider,
     cleanUpRemovedMemberProvider,

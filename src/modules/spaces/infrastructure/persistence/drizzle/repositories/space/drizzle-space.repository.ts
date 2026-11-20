@@ -1,5 +1,5 @@
 import type { TransactionDatabase } from '@cadenway/nest-common/database';
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 
 import type { SpaceWithGrants } from '../../../../../application/models/access/space-with-grants.model.js';
@@ -320,6 +320,23 @@ export class DrizzleSpaceRepository implements SpaceRepository {
     const rows: VisibleSpaceRow[] = await this.visibleTo(organizationId, viewer, undefined).orderBy(
       asc(spacePositionInSidebar()),
       asc(spaces.id),
+    );
+    return rows.map(toSpaceWithGrants);
+  }
+
+  /** Uses the sidebar visibility joins on the bounded set of candidate space IDs. */
+  public async findVisibleByIds(
+    organizationId: string,
+    viewer: Viewer,
+    ids: readonly string[],
+  ): Promise<SpaceWithGrants[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+    const rows: VisibleSpaceRow[] = await this.visibleTo(
+      organizationId,
+      viewer,
+      inArray(spaces.id, ids),
     );
     return rows.map(toSpaceWithGrants);
   }

@@ -659,14 +659,14 @@ export class DrizzleTaskListRepository implements TaskListRepository {
    * @param {string} spaceId - The deleted space, locked by the caller.
    * @param {ListActor} by - Who deleted the space.
    * @param {Date} at - The instant of the deletion of the space.
-   * @returns {Promise<number>} How many lists were written.
+   * @returns {Promise<readonly string[]>} The lists written.
    */
   public async markDeletedWithSpace(
     organizationId: string,
     spaceId: string,
     by: ListActor,
     at: Date,
-  ): Promise<number> {
+  ): Promise<readonly string[]> {
     const marked: { id: string }[] = await this.db
       .update(taskLists)
       .set({
@@ -683,7 +683,7 @@ export class DrizzleTaskListRepository implements TaskListRepository {
         ),
       )
       .returning({ id: taskLists.id });
-    return marked.length;
+    return marked.map(({ id }) => id);
   }
 
   /**

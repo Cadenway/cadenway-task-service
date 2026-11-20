@@ -55,5 +55,8 @@ export interface CreateTaskInput {
 
   /** The names of the subtasks to create with the task, in order. */
   readonly subtaskNames: readonly string[];
+
+  /** Ordered text of unchecked items to create with the task. */
+  readonly checklistTexts?: readonly string[];
   // #endregion
 }

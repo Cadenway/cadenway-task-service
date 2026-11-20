@@ -354,14 +354,14 @@ export interface TaskListRepository {
    * @param {string} spaceId - The deleted space.
    * @param {ListActor} by - Who deleted the space.
    * @param {Date} at - The instant of the deletion of the space.
-   * @returns {Promise<number>} How many lists were deleted with it.
+   * @returns {Promise<readonly string[]>} The IDs of the lists deleted with it.
    */
   markDeletedWithSpace(
     organizationId: string,
     spaceId: string,
     by: ListActor,
     at: Date,
-  ): Promise<number>;
+  ): Promise<readonly string[]>;
 
   /**
    * Method listDeletedIdsOfSpace

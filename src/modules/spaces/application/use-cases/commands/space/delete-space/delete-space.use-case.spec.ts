@@ -63,6 +63,37 @@ function atelierNord(): InMemorySpaces {
 }
 
 describe('DeleteSpace: who manages a space deletes it with its lists ("Supprimer l’espace")', () => {
+  it('removes the views of newly deleted lists and the space templates, retaining favorites', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState(), designState()],
+      lists: [
+        backlogState(),
+        sprintState({ deletedAt: DELETED_AT, deletedBy: { type: 'user', id: CAMILLE } }),
+      ],
+    });
+
+    await new DeleteSpace(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteProduit());
+
+    expect(spaces.libraryCleanupCalls).toEqual([
+      { operation: 'views', organizationId: ATELIER_NORD, targetIds: [BACKLOG] },
+      { operation: 'templates', organizationId: ATELIER_NORD, targetIds: [PRODUIT] },
+    ]);
+  });
+
+  it('rolls space and list tombstones back if library cleanup fails', async () => {
+    const spaces = atelierNord();
+    spaces.libraryCleanupError = new Error('cleanup failed');
+
+    await expect(
+      new DeleteSpace(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteProduit()),
+    ).rejects.toThrow('cleanup failed');
+
+    expect(spaces.spaces.get(PRODUIT)).toEqual(spaceState({ version: 5 }));
+    expect(spaces.lists.get(BACKLOG)).toEqual(backlogState({ version: 2 }));
+    expect(spaces.events).toEqual([]);
+    expect(spaces.jobs).toEqual([]);
+  });
+
   it('makes a tombstone of the space at the instant of the transaction, by the actor, at the next version', async () => {
     const spaces = atelierNord();
 

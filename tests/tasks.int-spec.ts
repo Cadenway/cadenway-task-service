@@ -16,11 +16,14 @@ import {
   CreateSpaceInternalResponse,
   CreateSubtaskInternalResponse,
   CreateTaskInternalResponse,
+  CreateTaskTemplateInternalResponse,
   GetTaskDetailInternalResponse,
   GetTaskInternalResponse,
+  GetTaskTemplateInternalResponse,
   ListListActivityInternalResponse,
   ListSubtasksInternalResponse,
   ListTaskActivityInternalResponse,
+  ListTaskTemplatesInternalResponse,
   RemoveTaskLabelInternalResponse,
   UpdateChecklistItemInternalResponse,
   UpdateSpaceInternalResponse,
@@ -1016,6 +1019,181 @@ describe('tasks', () => {
     });
     directionList = directionCreated.firstList;
   }, 300_000);
+
+  describe('task templates', () => {
+    it('snapshots allowed ingredients, replays creation and scopes pagination and deletion', async () => {
+      const { space, firstList } = await createSpace(camille, {
+        name: 'Templates',
+        prefix: 'TPL',
+        visibility: 'organization',
+      });
+      const other = await createSpace(
+        solene,
+        { name: 'Other templates', prefix: 'OTPL' },
+        atelierDeltaId,
+      );
+      const source = await createTask(camille, firstList.id, {
+        name: 'Prepare the release',
+        description: '## Steps',
+        priority: 'haute',
+        labels: ['Release'],
+        assigneeIds: [hugo.userId],
+        dueDate: '2026-11-20',
+        checklist: [{ text: ' Check migration ' }, { text: 'Publish release' }],
+        subtasks: [{ name: 'Write notes' }],
+      });
+      expect(source.checklist).toMatchObject([
+        { text: 'Check migration', done: false },
+        { text: 'Publish release', done: false },
+      ]);
+      const path = `/internal/v1/spaces/${space.id}/task-templates`;
+      const create = {
+        body: { sourceTaskKey: source.key },
+        headers: { 'Idempotency-Key': 'create-local-template' },
+      };
+      const first = await send('post', path, camille, create);
+      expectStatus(first, 201);
+      const snapshot = conforms(CreateTaskTemplateInternalResponse, bodyOf(first));
+      expect(bodyOf(first)).toEqual({
+        id: snapshot.id,
+        spaceId: space.id,
+        name: 'Prepare the release',
+        title: 'Prepare the release',
+        description: '## Steps',
+        priority: 'haute',
+        labels: ['Release'],
+        checklist: ['Check migration', 'Publish release'],
+        subtasks: ['Write notes'],
+        createdAt: snapshot.createdAt,
+        version: 1,
+      });
+      const itemPath = `${path}/${snapshot.id}`;
+      expect(first.headers.location).toBe(itemPath);
+      expect(first.headers.etag).toBe('"1"');
+      const replay = await send('post', path, camille, create);
+      expectStatus(replay, 201);
+      expect(bodyOf(replay)).toEqual(snapshot);
+      expect(replay.headers.location).toBe(itemPath);
+      expect(replay.headers.etag).toBe('"1"');
+      expectStatus(
+        await send('post', path, camille, { body: { sourceTaskKey: source.key, name: 'Second' } }),
+        201,
+      );
+
+      const fetched = await send('get', itemPath, hugo);
+      expectStatus(fetched, 200);
+      expect(conforms(GetTaskTemplateInternalResponse, bodyOf(fetched))).toEqual(snapshot);
+      expect(fetched.headers.etag).toBe('"1"');
+      const initialPage = await send('get', `${path}?limit=1`, hugo);
+      expectStatus(initialPage, 200);
+      const page = conforms(ListTaskTemplatesInternalResponse, bodyOf(initialPage));
+      expect(page.items.map((item) => item.id)).toEqual([snapshot.id]);
+      expect(page.nextCursor).toBeTypeOf('string');
+      const cursor = encodeURIComponent(page.nextCursor ?? '');
+      const next = await send('get', `${path}?limit=1&cursor=${cursor}`, hugo);
+      expectStatus(next, 200);
+      expect(conforms(ListTaskTemplatesInternalResponse, bodyOf(next))).toMatchObject({
+        items: [{ name: 'Second' }],
+        nextCursor: null,
+      });
+      const otherPath = `/internal/v1/spaces/${other.space.id}/task-templates`;
+      expectProblem(
+        await send('get', `${otherPath}/${snapshot.id}`, solene, {
+          organizationId: atelierDeltaId,
+        }),
+        404,
+        'template.not-found',
+      );
+      expectProblem(
+        await send('get', `${otherPath}?cursor=${cursor}`, solene, {
+          organizationId: atelierDeltaId,
+        }),
+        400,
+        'request.invalid',
+      );
+      expectProblem(
+        await send('delete', itemPath, camille, { headers: { 'If-Match': '"2"' } }),
+        412,
+        'request.version-mismatch',
+      );
+      expectStatus(
+        await send('delete', itemPath, camille, { headers: { 'If-Match': '"1"' } }),
+        204,
+      );
+      expectProblem(await send('get', itemPath, camille), 404, 'template.not-found');
+
+      const rows = await asSystem<{ payload: unknown }>(
+        `select payload from outbox_events
+          where organization_id = $1 and event_name = 'space.task-template-changed.v1'
+            and payload->>'templateId' = $2 order by id`,
+        [atelierNordId, snapshot.id],
+      );
+      const events = rows.map(({ payload }) =>
+        conforms(taskEventSchemas['space.task-template-changed.v1'], payload),
+      );
+      expect(events.map(({ action, version }) => ({ action, version }))).toEqual([
+        { action: 'created', version: 1 },
+        { action: 'deleted', version: 2 },
+      ]);
+      for (const event of events) {
+        expect(event).toMatchObject({
+          spaceId: space.id,
+          templateId: snapshot.id,
+          organizationId: atelierNordId,
+        });
+        expect(event).not.toHaveProperty('description');
+        expect(event).not.toHaveProperty('checklist');
+      }
+    });
+
+    it('refuses a restricted source and serializes simultaneous writes at capacity', async () => {
+      const { space, firstList } = await createSpace(camille, {
+        name: 'Template capacity',
+        prefix: 'CAP',
+        visibility: 'organization',
+      });
+      const path = `/internal/v1/spaces/${space.id}/task-templates`;
+      const restrictedResponse = await send(
+        'post',
+        `/internal/v1/spaces/${space.id}/lists`,
+        camille,
+        {
+          body: { name: 'Restricted', organizationAccess: false },
+        },
+      );
+      expectStatus(restrictedResponse, 201);
+      const restricted = conforms(CreateListInternalResponse, bodyOf(restrictedResponse));
+      const restrictedTask = await createTask(camille, restricted.id, {
+        name: 'Restricted source',
+      });
+      expectProblem(
+        await send('post', path, camille, { body: { sourceTaskKey: restrictedTask.key } }),
+        422,
+        'template.source-restricted',
+      );
+
+      const first = await createTask(camille, firstList.id, { name: 'First source' });
+      const second = await createTask(camille, firstList.id, { name: 'Second source' });
+      await asSystem(
+        `insert into task_templates
+            (organization_id, space_id, name, title, priority, labels, checklist, subtasks)
+           select $1, $2, 'Preset ' || item, 'Preset', 'moyenne', '[]', '[]', '[]'
+             from generate_series(1, 49) as item`,
+        [atelierNordId, space.id],
+      );
+      const responses = await Promise.all([
+        send('post', path, camille, { body: { sourceTaskKey: first.key } }),
+        send('post', path, camille, { body: { sourceTaskKey: second.key } }),
+      ]);
+      expect(responses.map((response) => response.status).sort()).toEqual([201, 422]);
+      expect(responses.map(bodyOf)).toContainEqual(
+        expect.objectContaining({ code: 'template.limit-reached' }),
+      );
+      const page = await send('get', `${path}?limit=100`, camille);
+      expectStatus(page, 200);
+      expect(conforms(ListTaskTemplatesInternalResponse, bodyOf(page)).items).toHaveLength(50);
+    });
+  });
 
   afterAll(async () => {
     try {

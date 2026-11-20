@@ -929,6 +929,18 @@ export class Task {
     return { text: normalized, done: false, position: last === undefined ? 0 : last.position + 1 };
   }
 
+  /** Drafts a new task's initial unchecked checklist in request order. */
+  public static draftInitialChecklist(texts: readonly string[]): readonly ChecklistItemDraft[] {
+    if (texts.length > MAX_CHECKLIST_ITEMS) {
+      throw new ChecklistLimitReachedError();
+    }
+    return texts.map((text: string, position: number): ChecklistItemDraft => ({
+      text: normalizeChecklistText(text),
+      done: false,
+      position,
+    }));
+  }
+
   /**
    * Method addChecklistItem
    *

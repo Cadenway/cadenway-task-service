@@ -141,7 +141,14 @@ export class DeleteSpace {
       const at: Date = await store.clock.now();
       const space: Space = stored.delete(actor, at);
       await store.spaces.update(space);
-      await store.lists.markDeletedWithSpace(input.organizationId, space.snapshot.id, actor, at);
+      const deletedListIds: readonly string[] = await store.lists.markDeletedWithSpace(
+        input.organizationId,
+        space.snapshot.id,
+        actor,
+        at,
+      );
+      await store.libraryCleanup.removeListViews(input.organizationId, deletedListIds);
+      await store.libraryCleanup.removeSpaceTemplates(input.organizationId, space.snapshot.id);
       await store.events.spaceDeleted(space, actor);
       await store.trashQueue.enqueue({
         kind: 'space',
