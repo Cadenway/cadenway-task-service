@@ -61,8 +61,15 @@
     {
       "idx": 8,
       "version": "7",
-      "when": 1795164299895,
-      "tag": "0008_collaboration",
+      "when": 1795162488435,
+      "tag": "0008_trash_root_snapshot",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1795166510010,
+      "tag": "0009_collaboration",
       "breakpoints": true
     }
   ]

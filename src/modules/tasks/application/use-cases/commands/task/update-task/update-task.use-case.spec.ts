@@ -177,20 +177,28 @@ describe('UpdateTask: the status, the cancellation and the completion', () => {
   });
 
   it('uses the resulting list to determine the audience when a status patch also moves the task', async () => {
-    const tasks = new InMemoryTasks({ tasks: [taskState()] });
+    const trace: string[] = [];
+    const tasks = new InMemoryTasks({ tasks: [taskState()], trace });
     const spaces = new InMemorySpaceDirectory({
+      trace,
       lists: atelierNordLists().map((list) =>
         list.id === BUGS ? { ...list, organizationAccess: false } : list,
       ),
       listGrants: { [BUGS]: { [CAMILLE]: 'edit' } },
     });
-    await new UpdateTask(tasks, atelierNordMembers(), spaces).execute(
+    await new UpdateTask(tasks, atelierNordMembers([], trace), spaces).execute(
       patchOf({ status: 'review', listId: BUGS }),
     );
 
     expect(tasks.events.find((event) => event.kind === 'statusChanged')).toMatchObject({
       watcherIds: [CAMILLE],
     });
+    expect(spaces.lockTrashCalls.map(({ listIds }) => listIds)).toEqual([[SPRINT_14, BUGS]]);
+    expect(trace.filter((entry) => entry === 'tasks.lockByIds')).toHaveLength(1);
+    expect(trace.indexOf(`members.roleOf:${INES}:lock`)).toBeLessThan(
+      trace.indexOf('tasks.lockByIds'),
+    );
+    expect(trace.indexOf('tasks.lockByIds')).toBeLessThan(trace.indexOf('spaces.lockTrashLists'));
   });
 
   it('retries an audience that gains a watcher after preflight and commits the status once', async () => {
@@ -540,13 +548,23 @@ describe('UpdateTask: attaching and detaching a subtask', () => {
     ]);
   });
 
-  it('locks the task before the parent and the descendants', async () => {
-    const { tasks, useCase } = atelierNord([taskState(), cad490State()]);
+  it('locks the task and parent together before locking placements', async () => {
+    const acquisitions: string[][] = [];
+    const { tasks, useCase } = racing([taskState(), cad490State()], (repository) => ({
+      ...repository,
+      lockByIds: async (organizationId, ids, withChecklists) => {
+        acquisitions.push([...ids]);
+        return repository.lockByIds(organizationId, ids, withChecklists);
+      },
+    }));
 
     await useCase.execute(patchOf({ parentKey: 'CAD-482' }, { taskKey: 'CAD-490' }));
 
-    expect(tasks.trace.indexOf('tasks.findByKey:lock')).toBeLessThan(
-      tasks.trace.indexOf('tasks.lockByIds'),
+    expect(tasks.trace).not.toContain('tasks.findByKey:lock');
+    expect(acquisitions).toHaveLength(1);
+    expect(acquisitions[0]?.sort()).toEqual([CAD_482, CAD_490].sort());
+    expect(tasks.trace.indexOf('tasks.lockByIds')).toBeLessThan(
+      tasks.trace.indexOf('spaces.lockTrashLists'),
     );
   });
 
@@ -701,6 +719,33 @@ describe('UpdateTask: the visibility is checked again when the lock shows anothe
 });
 
 describe('UpdateTask: the parent to attach to is checked on the list it is in once locked', () => {
+  it('refuses a proposed parent erased before its ordered lock', async () => {
+    let erased = false;
+    const { tasks, useCase } = racing([taskState(), cad490State()], (repository) => ({
+      ...repository,
+      findByKey: (organizationId, key, locked) =>
+        erased && key.format() === 'CAD-482'
+          ? Promise.resolve(null)
+          : repository.findByKey(organizationId, key, locked),
+      lockByIds: async (organizationId, ids, withChecklists) => {
+        erased = true;
+        return repository.lockByIds(
+          organizationId,
+          ids.filter((id) => id !== CAD_482),
+          withChecklists,
+        );
+      },
+    }));
+
+    expect(
+      await refusalOf(useCase.execute(patchOf({ parentKey: 'CAD-482' }, { taskKey: 'CAD-490' }))),
+    ).toEqual({
+      reason: 'parent-invalid',
+      parentKey: 'CAD-482',
+    });
+    expect(tasks.stored(CAD_490).parentId).toBeNull();
+  });
+
   /**
    * Shows CAD-482 in another list once it is locked as a parent.
    *
@@ -1132,23 +1177,17 @@ describe('UpdateTask: the trash and the deleted lists in a move or an attachment
 
     // #region Methods
     /**
-     * Records the hold and answers the list deleted when it is the one named.
+     * Records the lock and answers the named list as deleted.
      *
-     * @param organizationId - The organization.
-     * @param listIds - The lists.
-     * @param mode - The mode of the lock.
-     * @param viewer - The acting member.
-     * @returns The held lists, including the one concurrently deleted.
+     * @param args - The organization, lists, lock mode and acting member.
+     * @returns The locked lists with the named list marked deleted.
      */
     public override async lockTrashLists(
-      organizationId: string,
-      listIds: readonly string[],
-      mode: Parameters<InMemorySpaceDirectory['lockTrashLists']>[2],
-      viewer: Parameters<InMemorySpaceDirectory['lockTrashLists']>[3],
+      ...args: Parameters<InMemorySpaceDirectory['lockTrashLists']>
     ): ReturnType<InMemorySpaceDirectory['lockTrashLists']> {
-      const held = await super.lockTrashLists(organizationId, listIds, mode, viewer);
-      return held.map((list) =>
-        list.listId === this.deletedOnHold ? { ...list, outcome: 'deleted' } : list,
+      const lists = await super.lockTrashLists(...args);
+      return lists.map((list) =>
+        list.listId === this.deletedOnHold ? { ...list, outcome: 'deleted' as const } : list,
       );
     }
     // #endregion
@@ -1212,7 +1251,7 @@ describe('UpdateTask: the trash and the deleted lists in a move or an attachment
     expect(spaces.lockTrashCalls[0]?.listIds).toEqual([SPRINT_14, BUGS]);
   });
 
-  it('holds the two lists of a move in ascending list id, whichever it leaves', async () => {
+  it('hands both lists to the shared lock operation whichever list the move leaves', async () => {
     const tasks = new InMemoryTasks({ tasks: [taskState({ listId: BUGS })] });
     const spaces = new DeletedUnderHold(BUGS);
 
@@ -1221,8 +1260,7 @@ describe('UpdateTask: the trash and the deleted lists in a move or an attachment
         new UpdateTask(tasks, atelierNordMembers(), spaces).execute(patchOf({ listId: SPRINT_14 })),
       ),
     ).toEqual({ reason: 'task-not-found' });
-    // Sprint 14 sorts before Bugs: the target is held first, then the list the task leaves.
-    expect(spaces.lockTrashCalls[0]?.listIds).toEqual([SPRINT_14, BUGS]);
+    expect(spaces.lockTrashCalls[0]?.listIds).toEqual([BUGS, SPRINT_14]);
     expect(tasks.stored(CAD_482).listId).toBe(BUGS);
   });
 

@@ -28,8 +28,7 @@ const MAX_LOCK_PASSES: number = 5;
  * trees are read again under the locks; a task that joined a tree meanwhile is locked in one more
  * statement, until the trees read hold nothing unlocked. A deletion and the deletion job lock each
  * tree with its root in that one statement, so they take common rows in one order on the first
- * pass; a second pass (a tree that changed meanwhile) and a move, which locks its task by key
- * first, do not follow it.
+ * pass; a second pass (a tree that changed meanwhile) does not follow it.
  */
 export class TrashTreeLocker {
   // #region Methods
@@ -46,6 +45,8 @@ export class TrashTreeLocker {
    * (none for a deletion and the deletion job, which lock the root with its tree).
    * @param {number} maxTasks - The roots are taken until their trees hold this many tasks or more;
    * `Infinity` to take them all.
+   * @param {readonly string[]} otherIds - Additional tasks to lock with the trees.
+   * @param {boolean} withChecklists - Whether to load checklists for the locked tasks.
    * @returns {Promise<LockedTrashTrees>} The roots taken and their trees.
    * @throws {Error} When the trees keep changing under the locks, or a task is in two trees:
    * defects.
@@ -56,10 +57,13 @@ export class TrashTreeLocker {
     rootIds: readonly string[],
     held: readonly Task[],
     maxTasks: number,
+    otherIds: readonly string[] = [],
+    withChecklists: boolean = false,
   ): Promise<LockedTrashTrees> {
     const locked = new Map<string, Task>(
       held.map((task: Task): [string, Task] => [task.snapshot.id, task]),
     );
+    const missingOthers = new Set<string>();
     const read: readonly TrashTreeNode[] = await store.tasks.trashTrees(organizationId, rootIds);
     const examined: readonly string[] = this.take(rootIds, read, maxTasks);
     let nodes: readonly TrashTreeNode[] = read.filter((node: TrashTreeNode): boolean =>
@@ -67,13 +71,21 @@ export class TrashTreeLocker {
     );
     for (let pass = 0; pass < MAX_LOCK_PASSES; pass += 1) {
       const unlocked: readonly string[] = [
-        ...new Set(nodes.map((node: TrashTreeNode): string => node.id)),
-      ].filter((id: string): boolean => !locked.has(id));
+        ...new Set([...nodes.map((node: TrashTreeNode): string => node.id), ...otherIds]),
+      ].filter((id: string): boolean => !locked.has(id) && !missingOthers.has(id));
       if (unlocked.length === 0) {
         return { examined, trees: this.treesOf(examined, nodes, locked) };
       }
-      for (const task of await store.tasks.lockByIds(organizationId, unlocked, false)) {
+      const acquired: readonly Task[] = await store.tasks.lockByIds(
+        organizationId,
+        unlocked,
+        withChecklists,
+      );
+      for (const task of acquired) {
         locked.set(task.snapshot.id, task);
+      }
+      for (const id of otherIds) {
+        if (unlocked.includes(id) && !locked.has(id)) missingOthers.add(id);
       }
       nodes = await store.tasks.trashTrees(organizationId, examined);
     }

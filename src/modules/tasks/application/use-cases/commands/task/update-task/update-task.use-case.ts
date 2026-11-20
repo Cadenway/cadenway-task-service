@@ -1,10 +1,17 @@
 import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
 import type { MemberRole } from '../../../../../domain/value-objects/member/member-role.value-object.js';
+import { InvalidTaskError } from '../../../../../domain/errors/task/invalid-task.error.js';
+import { canWriteTasksOf } from '../../../../../domain/policies/task/task-write.policy.js';
+import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
 import type { TaskState } from '../../../../../domain/value-objects/task/task-state.value-object.js';
 import type { TaskUpdate } from '../../../../../domain/value-objects/task/task-update.value-object.js';
 import type { PlannedChange } from '../../../../models/placement/planned-change.model.js';
 import type { LocatedTask } from '../../../../models/task/located-task.model.js';
+import type { LockedSubtree } from '../../../../models/task/locked-subtree.model.js';
+import type { LocateRequest } from '../../../../models/task/locate-request.model.js';
+import type { ListPlacement } from '../../../../models/placement/list-placement.model.js';
+import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
 import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
@@ -15,6 +22,7 @@ import { TaskLocator } from '../../../../services/task/task-locator.service.js';
 import { TaskMovePlanner } from '../../../../services/task/task-move-planner.service.js';
 import { DescriptionMentionGuard } from '../../../../services/mention/description-mention-guard.service.js';
 import { appendDescriptionMentionChange } from '../../../../services/mention/description-mention-event.service.js';
+import { TaskSubtreeLocker } from '../../../../services/task/task-subtree-locker.service.js';
 import { TaskRuleGuard } from '../../../../services/task/task-rule-guard.service.js';
 import { TaskViewBuilder } from '../../../../services/task/task-view-builder.service.js';
 import { EffectiveWatchers } from '../../../../services/watcher/effective-watchers.service.js';
@@ -42,13 +50,16 @@ interface PreparedUpdate {
   // #endregion
 }
 
+/** Releases task locks before retrying a changed moving tree. */
+class RetryMoveTree extends Error {}
+
 /**
  * Class UpdateTask
  *
  * @description
  * Patches a task the actor sees (`PATCH /internal/v1/tasks/{taskKey}`). Locks follow the order of
- * the module: the membership of the actor, the task `FOR NO KEY UPDATE`, then, for a move or an
- * attach, the new parent and the descendants in one ordered statement. Visibility comes first
+ * the module: the membership of the actor, then for a move or an attachment the task, its tree
+ * and the new parent together in id order, followed by the spaces and lists. Visibility comes first
  * (`task-not-found`), then `edit` on the list of the task (`role-insufficient`), then the archive
  * (`task-archived`), then `If-Match` (`version-mismatch` with the stored version), then the target
  * of a move or an attach (`list-invalid`, `parent-invalid` when not seen, `role-insufficient` when
@@ -72,6 +83,12 @@ export class UpdateTask {
 
   /** Resolves the target of a move or an attach. */
   private readonly planner: TaskMovePlanner;
+
+  /** Acquires a moving tree in the same order as trash. */
+  private readonly trees: TaskSubtreeLocker;
+
+  /** Checks placement under its space and list locks. */
+  private readonly spaces: SpaceDirectory;
 
   /** Maps the refusals of the domain. */
   private readonly rules: TaskRuleGuard;
@@ -110,6 +127,8 @@ export class UpdateTask {
     this.viewers = new ViewerResolver(members);
     this.locator = new TaskLocator(spaces);
     this.planner = new TaskMovePlanner(spaces);
+    this.trees = new TaskSubtreeLocker();
+    this.spaces = spaces;
     this.rules = new TaskRuleGuard();
     this.descriptionMentions = new DescriptionMentionGuard(members, spaces);
     this.writer = new TaskChangeWriter();
@@ -136,31 +155,129 @@ export class UpdateTask {
    * `version-mismatch`, for the list a move goes to or the list of the new parent.
    */
   public async execute(input: UpdateTaskInput): Promise<UpdateTaskOutput> {
-    return this.unitOfWork.run(async (store: TasksStore): Promise<UpdateTaskOutput> => {
-      const prepare = (): Promise<PreparedUpdate> => this.prepare(store, input);
-      const { task, descendants, update, now, watcherIds } =
-        input.patch.status === undefined
-          ? await prepare()
-          : await withWatcherAudienceRetry(store, prepare);
-      if (update.changed.length > 0) {
-        await this.writer.commit(store, task, update, input.actorUserId, now, watcherIds);
-        if (update.changed.includes('descriptionMentions')) {
-          await appendDescriptionMentionChange(
-            store.events,
-            task.snapshot.descriptionMentions,
-            update.task,
-            {
-              type: 'user',
-              id: input.actorUserId,
-            },
-          );
-        }
-        if (update.changed.includes('listId') || update.changed.includes('spaceId')) {
-          await this.moveDescendants(store, descendants, update.task, input, now);
-        }
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.unitOfWork.run((store) => this.apply(store, input));
+      } catch (error: unknown) {
+        if (!(error instanceof RetryMoveTree)) throw error;
       }
-      return this.views.build(store.reader, update.task);
-    });
+    }
+    throw new Error(`The task ${input.taskKey} kept leaving its tree while it was locked.`);
+  }
+
+  /** Writes the prepared change, activity and events while the preflight's locks remain held. */
+  private async apply(store: TasksStore, input: UpdateTaskInput): Promise<UpdateTaskOutput> {
+    const prepare = (): Promise<PreparedUpdate> => this.prepare(store, input);
+    const { task, descendants, update, now, watcherIds } =
+      input.patch.status === undefined
+        ? await prepare()
+        : await withWatcherAudienceRetry(store, prepare);
+    if (update.changed.length > 0) {
+      await this.writer.commit(store, task, update, input.actorUserId, now, watcherIds);
+      if (update.changed.includes('descriptionMentions')) {
+        await appendDescriptionMentionChange(
+          store.events,
+          task.snapshot.descriptionMentions,
+          update.task,
+          {
+            type: 'user',
+            id: input.actorUserId,
+          },
+        );
+      }
+      if (update.changed.includes('listId') || update.changed.includes('spaceId')) {
+        await this.moveDescendants(store, descendants, update.task, input, now);
+      }
+    }
+    return this.views.build(store.reader, update.task);
+  }
+
+  /** Acquires the moving tree and any new parent before locking their placements. */
+  private async locateMove(
+    store: TasksStore,
+    viewer: Viewer,
+    request: LocateRequest,
+    input: UpdateTaskInput,
+  ): Promise<{ readonly located: LocatedTask; readonly subtree: LockedSubtree }> {
+    const found: LocatedTask = await this.locator.locate(store, request);
+    const { organizationId } = input;
+    const targetId: string | undefined = input.patch.listId;
+    if (targetId !== undefined && targetId !== found.task.snapshot.listId) {
+      const target: ListPlacement | null = await this.spaces.findVisibleList(
+        organizationId,
+        viewer,
+        targetId,
+      );
+      if (target === null) throw new TaskRefusal({ reason: 'list-invalid' });
+      if (!canWriteTasksOf(target.list.callerRole))
+        throw new TaskRefusal({ reason: 'role-insufficient', role: target.list.callerRole });
+    }
+    let parent: Task | null = null;
+    if (typeof input.patch.parentKey === 'string') {
+      const parentKey: string = input.patch.parentKey;
+      try {
+        parent = await store.tasks.findByKey(organizationId, TaskKey.parse(parentKey), false);
+      } catch (error: unknown) {
+        if (!(error instanceof InvalidTaskError)) throw error;
+      }
+      if (parent === null || parent.isInTrash)
+        throw new TaskRefusal({ reason: 'parent-invalid', parentKey });
+      const placement: ListPlacement | null = await this.spaces.findVisibleList(
+        organizationId,
+        viewer,
+        parent.snapshot.listId,
+      );
+      if (placement === null) throw new TaskRefusal({ reason: 'parent-invalid', parentKey });
+      if (!canWriteTasksOf(placement.list.callerRole))
+        throw new TaskRefusal({ reason: 'role-insufficient', role: placement.list.callerRole });
+    }
+    const locked = await this.trees.lock(
+      store,
+      found.task,
+      parent === null ? [] : [parent.snapshot.id],
+      true,
+      true,
+    );
+    const root: Task | undefined = locked.tasks.find(
+      (candidate: Task): boolean => candidate.snapshot.id === found.task.snapshot.id,
+    );
+    if (root === undefined) {
+      await this.locator.locate(store, request);
+      throw new RetryMoveTree();
+    }
+    if (parent !== null) {
+      parent =
+        locked.tasks.find((task: Task): boolean => task.snapshot.id === parent?.snapshot.id) ??
+        null;
+      if (parent === null || parent.isInTrash)
+        throw new TaskRefusal({ reason: 'parent-invalid', parentKey: input.patch.parentKey ?? '' });
+    }
+    const listIds: string[] = [
+      root.snapshot.listId,
+      ...(targetId === undefined ? [] : [targetId]),
+      ...(parent === null ? [] : [parent.snapshot.listId]),
+    ];
+    const locks = await this.spaces.lockTrashLists(organizationId, listIds, 'hold', viewer);
+    const source = locks.find((list) => list.listId === root.snapshot.listId);
+    if (source?.outcome !== 'live' || source.role === null)
+      throw new TaskRefusal({ reason: 'task-not-found' });
+    if (!canWriteTasksOf(source.role))
+      throw new TaskRefusal({ reason: 'role-insufficient', role: source.role });
+    const confirmed: LocatedTask = await this.locator.confirm(store, request, root);
+    for (const list of locks) {
+      if (list.listId === root.snapshot.listId) continue;
+      if (list.outcome !== 'live' || list.role === null) {
+        if (parent !== null && list.listId === parent.snapshot.listId)
+          throw new TaskRefusal({
+            reason: 'parent-invalid',
+            parentKey: input.patch.parentKey ?? '',
+          });
+        throw new TaskRefusal({ reason: 'list-invalid' });
+      }
+      if (!canWriteTasksOf(list.role))
+        throw new TaskRefusal({ reason: 'role-insufficient', role: list.role });
+    }
+    return { located: confirmed, subtree: locked };
   }
 
   /** Acquires and verifies the write's locks before any task, activity or outbox write. */
@@ -175,11 +292,14 @@ export class UpdateTask {
       viewer,
       input.patch.descriptionMentions ?? [],
     );
-    const request = {
+    const request: LocateRequest = {
       organizationId: input.organizationId,
       viewer,
       taskKey: input.taskKey,
       edit: true,
+      lock: false,
+      archived: 'refuse',
+      expectedVersions: input.expectedVersions,
     };
     const heldRoles =
       input.patch.status === undefined
@@ -196,22 +316,26 @@ export class UpdateTask {
             ).task.snapshot,
             viewer,
           );
-    const located: LocatedTask = await this.locator.locate(store, {
-      ...request,
-      lock: true,
-      archived: 'refuse',
-      expectedVersions: input.expectedVersions,
-    });
+    const moving = input.patch.listId !== undefined || input.patch.parentKey !== undefined;
+    const move = moving ? await this.locateMove(store, viewer, request, input) : null;
+    const located: LocatedTask =
+      move?.located ?? (await this.locator.locate(store, { ...request, lock: true }));
     const { task } = located;
-    const plan: PlannedChange = await this.planner.plan(store, viewer, located, input.patch);
+    const plan: PlannedChange = await this.planner.plan(
+      store,
+      viewer,
+      located,
+      input.patch,
+      move?.subtree ?? null,
+    );
     const now: Date = await store.clock.now();
     const update: TaskUpdate = this.rules.apply((): TaskUpdate =>
       task.update(plan.patch, plan.statuses, now),
     );
     const statusChanged = update.changed.includes('status');
     const { listId } = update.task.snapshot;
-    if ((statusChanged || recipients.length > 0) && listId === task.snapshot.listId) {
-      await this.planner.holdPlacement(input.organizationId, viewer, listId, listId);
+    if (move === null && (statusChanged || recipients.length > 0)) {
+      await this.planner.holdPlacement(input.organizationId, viewer, listId);
     }
     if (recipients.length > 0) {
       await this.descriptionMentions.requireEligible(input.organizationId, listId, recipients);

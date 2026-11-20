@@ -141,6 +141,23 @@ describe('DrizzleSpaceRepository: a tombstone answers as an unknown space, but t
 });
 
 describe('DrizzleSpaceRepository: lockInOrder locks in the order of the handover, each in its mode', () => {
+  it('binds a large collection of spaces as one array', async () => {
+    const { spaces, statements } = capturing();
+    const ids: string[] = Array.from(
+      { length: 65_536 },
+      (_, index: number): string =>
+        `00000000-0000-0000-0000-${index.toString(16).padStart(12, '0')}`,
+    );
+
+    await spaces.lockInOrder(
+      ORGANIZATION,
+      ids.map((id: string) => ({ id, mode: 'share' as const })),
+    );
+
+    expect(statements[0]?.text).toContain('"spaces"."id" = any($2::uuid[])');
+    expect(statements[0]?.values).toEqual([ORGANIZATION, ids]);
+  });
+
   it('reads the order first, then locks each space alone, for no key update or for share', async () => {
     const { spaces, statements } = capturing([[PRODUIT], [DESIGN]]);
 
