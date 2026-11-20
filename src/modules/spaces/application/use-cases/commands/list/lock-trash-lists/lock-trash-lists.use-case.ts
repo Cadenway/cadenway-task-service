@@ -36,7 +36,9 @@ type TrashListLock = LockTrashListsOutput['lists'][number];
  * The role is read in one statement after the locks, as `FindTrashList` and `ListTrashLists` read
  * it. It runs in `SpacesUnitOfWork.run`, which joins the tenant transaction of the caller; it
  * writes nothing. Cost: one statement per space of the lists (an organization holds few spaces),
- * three for the lists, O(lists given).
+ * two for the lists, O(lists given), and the role: one lean row for one list, the lean rows of
+ * every list of the organization the viewer has a role on for several (O(lists of the
+ * organization), as `ListTrashLists`).
  */
 export class LockTrashLists {
   // #region Properties

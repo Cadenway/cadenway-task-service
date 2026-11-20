@@ -26,8 +26,10 @@ const MAX_LOCK_PASSES: number = 5;
  * under `maxTasks` (the first always), their tasks are locked in one statement ordered by id
  * (`FOR NO KEY UPDATE`, without the checklists, which the trash never writes or emits), and the
  * trees are read again under the locks; a task that joined a tree meanwhile is locked in one more
- * statement, until the trees read hold nothing unlocked. Within one call the locks follow one order;
- * across writers they do not (the root of a deletion is locked by key first), as for a move.
+ * statement, until the trees read hold nothing unlocked. A deletion and the deletion job lock each
+ * tree with its root in that one statement, so they take common rows in one order on the first
+ * pass; a second pass (a tree that changed meanwhile) and a move, which locks its task by key
+ * first, do not follow it.
  */
 export class TrashTreeLocker {
   // #region Methods
@@ -40,8 +42,8 @@ export class TrashTreeLocker {
    * @param {TasksStore} store - The store of the transaction.
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} rootIds - The roots, in the order to take them.
-   * @param {readonly Task[]} held - The tasks the caller holds locked already (the root of a
-   * deletion, locked by key), kept as they are.
+   * @param {readonly Task[]} held - The tasks the caller holds locked already, kept as they are
+   * (none for a deletion and the deletion job, which lock the root with its tree).
    * @param {number} maxTasks - The roots are taken until their trees hold this many tasks or more;
    * `Infinity` to take them all.
    * @returns {Promise<LockedTrashTrees>} The roots taken and their trees.

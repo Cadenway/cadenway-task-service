@@ -16,9 +16,9 @@ import type { RestoreArchivedListOutput } from './restore-archived-list.output.j
  * archived task the member restores ("Restoring any task of an archive restores the whole archive,
  * from its root, to its list, which is restored too when it is archived" of
  * `openapi/public/archives.yaml`). Through the guard of every write of a list
- * (`EditableListLocator.find`), it locks the list `FOR NO KEY UPDATE` until the end of the
- * transaction (after the tasks the caller locked), reads its space without lock and computes the
- * role of the member on the list with the policies of the domain, from the role in the
+ * (`EditableListLocator.find`), it holds its space `FOR SHARE` and locks the list
+ * `FOR NO KEY UPDATE` until the end of the transaction (after the tasks the caller locked), and
+ * computes the role of the member on the list with the policies of the domain, from the role in the
  * organization the caller passes (no membership is read). A list that does not exist, of another
  * organization or that the member has no role on answers `not-found`; a role without `edit`
  * answers `role-insufficient`; a live list answers `not-archived`. Each of these writes nothing,

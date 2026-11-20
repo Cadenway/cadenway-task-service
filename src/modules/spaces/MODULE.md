@@ -135,7 +135,8 @@ copy of the memberships.
   both `FOR SHARE` ("Vider la corbeille"), `erase` the spaces `FOR NO KEY UPDATE` and the lists
   `FOR UPDATE` (an erasure, which may then erase a tombstone with `PurgeDeletedList`); `role` is
   the role of `viewer` (`{ userId, role }`, or `null` for the service) as if not deleted, read
-  under those locks, `null` without a viewer or a role. O(lists given). No write.
+  under those locks, `null` without a viewer or a role. O(lists given) for the locks; the role
+  of several lists reads the lean rows of the organization, as `ListTrashLists`. No write.
 - `ListDeletedSpaceLists` (`{ organizationId, spaceId }` to `{ space, listIds }`): holds the
   space `FOR SHARE` until the commit and reads where it stands (`deleted`, `live` for a space
   restored meanwhile, `gone` for an erased or unknown one), then the deleted lists of the space

@@ -628,7 +628,11 @@ changes the assignees.
   or not at all. Known limit, to report: "Supprimer la tâche", a deletion batch, "Supprimer
   définitivement", a batch of the purge and a restoration move or erase an entry in one
   transaction, whatever the archived subtasks it holds (an erasure costs what the trash of the
-  entry cost, in one transaction too).
+  entry cost, in one transaction too: two outbox round trips per task; the 651 tasks of the
+  largest live tree were measured in the plans of `tests/trash-queries.int-spec.ts`). An entry
+  whose erasure keeps failing stays first in every batch of its organization and holds back its
+  purge until the failure is fixed (the job retries it, then dead-letters it: "Retries" of
+  `src/modules/deletion-lifecycle/MODULE.md`).
 - A task in the trash is left out of every collection and count, the subtask reads included,
   through `liveTask` (`archived_at is null and trash_entry_id is null`) and the subtask rule
   (`sameArchiveAsParent` also leaves out the subtasks in the trash); `FindTaskReference(s)` and
@@ -760,8 +764,14 @@ then holds the space and the list and reads the role again under those locks whe
 deletes (`DeleteList`, "Supprimer définitivement", "Vider la corbeille"): a revocation committed
 while it waited is seen. A read that must not wait on a row the actor may not see (an access
 request) takes `FOR SHARE SKIP LOCKED` instead. The known exceptions, answered `500` (`40P01`) by
-PostgreSQL aborting one transaction, are listed below: nested trees whose writers take a task by
-key first (an archive, a move) or lock a tree that changed in a second pass.
+PostgreSQL aborting one transaction (or a retry of a job batch), are: nested trees whose writers
+take a task by key first (an archive, a move) or lock a tree that changed in a second pass
+(below); and the approval of an access request, which locks its request row `FOR UPDATE` before
+the membership of the requester and the space and the list of its target (`GrantRequestedAccess`,
+`src/modules/access-requests/MODULE.md`), while a batch of a deletion job holds the tasks, the
+list or the space and deletes the pending requests last. The two wait in a cycle only when an
+approval read the list live before its deletion committed and reaches its locks after the batch
+started, an interleaving that needs the approval to stall for the whole start of the job.
 
 Lock order of a task write:
 
@@ -770,8 +780,8 @@ Lock order of a task write:
    (the new parent, the moving descendants) in one statement in ascending id order; a restoration
    locks the members of an archive in one statement by id, then the parent of its root;
 3. the `space_prefixes` row, last, by `AllocateTaskKeys`, which serializes the creations of a prefix
-   until the commit; or the list of a restored task, last, by `RestoreArchivedList`, which locks it
-   whether it is archived or not.
+   until the commit; or the space `FOR SHARE` and the list of a restored task, last, by
+   `RestoreArchivedList`, which locks the list whether it is archived or not.
 
 A task write does not lock before it knows the actor may see and change the task: it reads the
 task without a lock, checks the visibility of its list and `edit` on it, then locks it and reads
@@ -802,8 +812,9 @@ root), with one outbox row per task. A concurrent subtask creation or move under
 commits first (the subtask is taken, the moved task is not) or reads the archived task under its
 lock and answers `409`. A restoration locates the task without a lock, then locks every member of
 its archive in one statement ordered by id, without their checklists, then the parent of the root
-in one lean statement (its archive and its list), then the list (`RestoreArchivedList` of spaces,
-always called, deciding on the locked list): lock order members, parent, list. Two restorations of
+in one lean statement (its archive and its list), then its space `FOR SHARE` and the list
+(`RestoreArchivedList` of spaces, always called, deciding on the locked list): lock order members,
+parent, space, list. Two restorations of
 one archive through two members serialize on that statement; the second finds the archive empty
 and reads the task again (live: `200` with its version), 3 attempts at most. A root that is no
 longer in the list of the task located (the archive was restored, moved and archived again

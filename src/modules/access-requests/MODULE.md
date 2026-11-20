@@ -200,7 +200,10 @@ CONFLICT ... DO NOTHING`), and, for a stored request, one outbox append. No stat
   as unknown, so the request stores nothing and answers `202` at once, exactly as for a target
   that does not exist; the time of the answer does not tell an existing private target from an
   unknown one, even under lock contention. Accepted: a request that meets a write of its target is
-  dropped silently (it counts for the hourly limit), and the requester may ask again. A deletion or
+  dropped silently (it counts for the hourly limit), and the requester may ask again. Those
+  writers hold the row for one short transaction: a change of the target, a trash, a restoration
+  or an erasure of an entry of the list (which lock the list, and its space, even when live), a
+  task write for a task target. A deletion or
   a trash of the target either commits first, and the request reads its target deleted or in the
   trash and stores nothing, or is under way during the read, and the request skips the target and
   stores nothing, or starts after the read and waits for the request, whose pending row its job
