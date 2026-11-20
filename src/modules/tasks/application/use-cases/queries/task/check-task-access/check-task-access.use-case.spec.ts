@@ -152,7 +152,7 @@ describe('CheckTaskAccess: one read-only run that writes nothing', () => {
 
     expect(tasks.runs).toBe(1);
     expect(tasks.readOnlyRuns).toBe(1);
-    expect(tasks.snapshotRuns).toBe(0);
+    expect(tasks.snapshotRuns).toBe(1);
     expect(tasks.trace).toContain('reader.locationByKey');
     expect(tasks.trace.filter((call) => call.startsWith('tasks.'))).toEqual([]);
     expect(tasks.events).toEqual([]);

@@ -93,7 +93,9 @@ export class CheckTaskAccess {
         taskKey: location.key,
       };
     };
-    return input.joinWrite === true ? this.unitOfWork.run(work) : this.unitOfWork.runReadOnly(work);
+    return input.joinWrite === true
+      ? this.unitOfWork.run(work)
+      : this.unitOfWork.runReadOnly(work, { snapshot: true });
   }
 
   /**
