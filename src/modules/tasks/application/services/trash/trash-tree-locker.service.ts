@@ -63,6 +63,7 @@ export class TrashTreeLocker {
     const locked = new Map<string, Task>(
       held.map((task: Task): [string, Task] => [task.snapshot.id, task]),
     );
+    const missingOthers = new Set<string>();
     const read: readonly TrashTreeNode[] = await store.tasks.trashTrees(organizationId, rootIds);
     const examined: readonly string[] = this.take(rootIds, read, maxTasks);
     let nodes: readonly TrashTreeNode[] = read.filter((node: TrashTreeNode): boolean =>
@@ -71,12 +72,20 @@ export class TrashTreeLocker {
     for (let pass = 0; pass < MAX_LOCK_PASSES; pass += 1) {
       const unlocked: readonly string[] = [
         ...new Set([...nodes.map((node: TrashTreeNode): string => node.id), ...otherIds]),
-      ].filter((id: string): boolean => !locked.has(id));
+      ].filter((id: string): boolean => !locked.has(id) && !missingOthers.has(id));
       if (unlocked.length === 0) {
         return { examined, trees: this.treesOf(examined, nodes, locked) };
       }
-      for (const task of await store.tasks.lockByIds(organizationId, unlocked, withChecklists)) {
+      const acquired: readonly Task[] = await store.tasks.lockByIds(
+        organizationId,
+        unlocked,
+        withChecklists,
+      );
+      for (const task of acquired) {
         locked.set(task.snapshot.id, task);
+      }
+      for (const id of otherIds) {
+        if (unlocked.includes(id) && !locked.has(id)) missingOthers.add(id);
       }
       nodes = await store.tasks.trashTrees(organizationId, examined);
     }

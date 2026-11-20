@@ -653,6 +653,33 @@ describe('UpdateTask: the visibility is checked again when the lock shows anothe
 });
 
 describe('UpdateTask: the parent to attach to is checked on the list it is in once locked', () => {
+  it('refuses a proposed parent erased before its ordered lock', async () => {
+    let erased = false;
+    const { tasks, useCase } = racing([taskState(), cad490State()], (repository) => ({
+      ...repository,
+      findByKey: (organizationId, key, locked) =>
+        erased && key.format() === 'CAD-482'
+          ? Promise.resolve(null)
+          : repository.findByKey(organizationId, key, locked),
+      lockByIds: async (organizationId, ids, withChecklists) => {
+        erased = true;
+        return repository.lockByIds(
+          organizationId,
+          ids.filter((id) => id !== CAD_482),
+          withChecklists,
+        );
+      },
+    }));
+
+    expect(
+      await refusalOf(useCase.execute(patchOf({ parentKey: 'CAD-482' }, { taskKey: 'CAD-490' }))),
+    ).toEqual({
+      reason: 'parent-invalid',
+      parentKey: 'CAD-482',
+    });
+    expect(tasks.stored(CAD_490).parentId).toBeNull();
+  });
+
   /**
    * Shows CAD-482 in another list once it is locked as a parent.
    *
