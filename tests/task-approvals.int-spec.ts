@@ -248,9 +248,145 @@ describe('task approvals with PostgreSQL and NATS', () => {
       expect(state.taskStatus).toBe('done');
       expect(state.current?.status).toBe('approved');
     });
+
+    it('serializes concurrent approvals and commits only the retried reviewer vote', async () => {
+      const key = await task('Valider ensemble le parcours de connexion');
+      const round = await openRound(key, [camille, hugo]);
+      const path = `/internal/v1/tasks/${key}/approvals/${round.roundId}/votes/me`;
+      const contenders = [camille, hugo] as const;
+      const replies = await Promise.all(
+        contenders.map((actor) =>
+          send('put', path, {
+            actor,
+            body: { decision: 'approved' },
+            headers: { 'If-Match': round.etag },
+          }),
+        ),
+      );
+      expect(replies.map((reply) => reply.status).sort()).toEqual([200, 412]);
+      const winner = replies.find((reply) => reply.status === 200);
+      const loserIndex = replies.findIndex((reply) => reply.status === 412);
+      const loser = contenders[loserIndex];
+      if (winner === undefined || loser === undefined) throw new Error('Missing concurrent vote');
+      const winningState = VoteOnTaskApprovalInternalResponse.parse(winner.body as unknown);
+      expect(winningState.taskStatus).toBe('todo');
+      expect(winningState.current?.status).toBe('pending');
+      expect(
+        winningState.current?.reviewers.filter((reviewer) => reviewer.decision === 'approved'),
+      ).toHaveLength(1);
+      const factsBeforeRetry = await query<{ event_name: string; payload: { version: number } }>(
+        `select event_name, payload from outbox_events where organization_id = $1
+         and payload ->> 'key' = $2 and event_name in ('approval.decided.v1', 'task.status-changed.v1')`,
+        [organizationId, key],
+      );
+      expect(factsBeforeRetry.map((fact) => fact.event_name)).toEqual(['approval.decided.v1']);
+      expect(factsBeforeRetry[0]?.payload.version).toBe(winningState.taskVersion);
+      const activityBeforeRetry = await query<{ count: number }>(
+        `select count(*)::int as count from activity_entries a join tasks t
+         on t.organization_id = a.organization_id and t.id = a.task_id
+         where t.organization_id = $1 and t.key_prefix = 'CAD' and t.key_number = $2
+           and a.kind = 'status'`,
+        [organizationId, Number(key.split('-')[1])],
+      );
+      expect(activityBeforeRetry).toEqual([{ count: 0 }]);
+
+      const retried = await send('put', path, {
+        actor: loser,
+        body: { decision: 'approved' },
+        headers: { 'If-Match': String(winner.headers.etag) },
+      });
+      expect(retried.status, retried.text).toBe(200);
+      const final = VoteOnTaskApprovalInternalResponse.parse(retried.body as unknown);
+      expect(final.taskVersion).toBe(winningState.taskVersion + 1);
+      expect(final.taskStatus).toBe('done');
+      expect(final.current?.status).toBe('approved');
+      expect(final.current?.reviewers.map((reviewer) => reviewer.decision)).toEqual([
+        'approved',
+        'approved',
+      ]);
+      const facts = await query<{ event_name: string; payload: { version: number } }>(
+        `select event_name, payload from outbox_events where organization_id = $1
+         and payload ->> 'key' = $2 and event_name in ('approval.decided.v1', 'task.status-changed.v1')`,
+        [organizationId, key],
+      );
+      expect(facts.filter((fact) => fact.event_name === 'approval.decided.v1')).toHaveLength(2);
+      const transitions = facts.filter((fact) => fact.event_name === 'task.status-changed.v1');
+      expect(transitions).toHaveLength(1);
+      expect(transitions[0]?.payload.version).toBe(final.taskVersion);
+      const activity = await query<{ status_from: string; status_to: string }>(
+        `select a.status_from, a.status_to from activity_entries a join tasks t
+         on t.organization_id = a.organization_id and t.id = a.task_id
+         where t.organization_id = $1 and t.key_prefix = 'CAD' and t.key_number = $2
+           and a.kind = 'status'`,
+        [organizationId, Number(key.split('-')[1])],
+      );
+      expect(activity).toEqual([{ status_from: 'todo', status_to: 'done' }]);
+    });
   });
 
   describe('review visibility follows current membership and task visibility', () => {
+    it('does not disclose a newer version after task access is revoked while a vote waits', async () => {
+      const key = await task('Revue après révocation concurrente');
+      const round = await openRound(key, [camille, hugo]);
+      if (db === undefined) throw new Error('Database did not start');
+      const client = await db.connect();
+      let pending: Promise<request.Response> | undefined;
+      try {
+        await client.query('begin');
+        await client.query("select set_config('app.system_access', 'on', true)");
+        const locked = await client.query<{ id: string }>(
+          `select id from tasks where organization_id = $1 and key_prefix = 'CAD'
+           and key_number = $2 for no key update`,
+          [organizationId, Number(key.split('-')[1])],
+        );
+        const taskId = locked.rows[0]?.id;
+        if (taskId === undefined) throw new Error('Task was not locked');
+        pending = send('put', `/internal/v1/tasks/${key}/approvals/${round.roundId}/votes/me`, {
+          actor: hugo,
+          body: { decision: 'approved' },
+          headers: { 'If-Match': round.etag },
+        });
+        await expect
+          .poll(
+            async () => {
+              const locks = await query<{ waiting: string }>(
+                'select count(*)::text as waiting from pg_locks where not granted',
+              );
+              return Number(locks[0]?.waiting ?? 0);
+            },
+            { timeout: 3_000, interval: 50 },
+          )
+          .toBeGreaterThan(0);
+        await client.query(
+          `update lists set organization_access = false where organization_id = $1 and id = $2`,
+          [organizationId, listId],
+        );
+        await client.query(
+          'update tasks set version = version + 1 where organization_id = $1 and id = $2',
+          [organizationId, taskId],
+        );
+        await client.query('commit');
+        const refused = await pending;
+        expect(refused.status, refused.text).toBe(404);
+        expect(refused.body).toMatchObject({ code: 'task.not-found' });
+        expect(refused.body).not.toHaveProperty('details.version');
+        const votes = await query<{ decision: string | null }>(
+          `select decision from task_approval_reviewers where organization_id = $1
+           and round_id = $2 and reviewer_user_id = $3`,
+          [organizationId, round.roundId, hugo],
+        );
+        expect(votes).toEqual([{ decision: null }]);
+      } finally {
+        await client.query('rollback');
+        client.release();
+        await query(
+          'update lists set organization_access = true where organization_id = $1 and id = $2',
+          [organizationId, listId],
+        );
+        await pending?.catch(() => undefined);
+      }
+    }, 30_000);
+
     it('omits a removed reviewer and rejects their next request', async () => {
       const key = await task('Revue après départ');
       const round = await openRound(key, [camille, hugo]);

@@ -117,13 +117,15 @@ export class ChangeTaskApproval {
     const { task } = await this.locator.locate(store, {
       ...request,
       lock: true,
-      archived: 'refuse',
-      expectedVersions: input.expectedVersions,
     });
     const state = task.snapshot;
     await this.planner.holdPlacement(input.organizationId, viewer, state.listId);
     const placement = await this.spaces.findVisibleList(input.organizationId, viewer, state.listId);
     if (placement === null) throw new WatcherAudienceChanged();
+    this.rules.apply((): void => {
+      task.requireChangeable();
+    });
+    this.locator.requireVersion(task, input.expectedVersions);
 
     const currentReviewerIds = (await operation.discoverReviewerIds(state.id)).map((id) =>
       id.toLowerCase(),

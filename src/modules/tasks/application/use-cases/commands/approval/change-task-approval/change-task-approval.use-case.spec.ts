@@ -5,6 +5,7 @@ import {
   CAD_482,
   CAMILLE,
   HUGO,
+  SPRINT_14,
   InMemorySpaceDirectory,
   InMemoryTasks,
   atelierNordMembers,
@@ -110,6 +111,74 @@ describe('ChangeTaskApproval', () => {
     expect(ChangeTaskApproval.taskRefusalOf(new Error('unrelated'))).toBeNull();
     expect(await useCase.execute(input, operation)).toBe(12);
     expect(tasks.events).toEqual([]);
+  });
+
+  it.each([false, true])(
+    'rechecks list access before exposing a stale version or archived state (archived: %s)',
+    async (archived) => {
+      const tasks = new InMemoryTasks({
+        tasks: [
+          taskState({
+            ...(archived
+              ? {
+                  archive: {
+                    at: new Date('2026-11-01T00:00:00Z'),
+                    by: { type: 'user', id: CAMILLE },
+                    rootId: CAD_482,
+                  },
+                }
+              : {}),
+          }),
+        ],
+      });
+      const spaces = new InMemorySpaceDirectory();
+      spaces.revokedUnderLock.add(SPRINT_14);
+      const useCase = new ChangeTaskApproval(tasks, atelierNordMembers(), spaces);
+      const decide = vi.fn();
+      const error: unknown = await useCase
+        .execute(
+          { ...input, expectedVersions: [11] },
+          { discoverReviewerIds: () => Promise.resolve([]), decide },
+        )
+        .catch((failure: unknown) => failure);
+      expect(ChangeTaskApproval.taskRefusalOf(error)).toEqual({
+        reason: 'task-not-found',
+        details: {},
+      });
+      expect(decide).not.toHaveBeenCalled();
+      expect(tasks.events).toEqual([]);
+    },
+  );
+
+  it('returns the archive refusal before a stale version when edit access remains', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [
+        taskState({
+          archive: {
+            at: new Date('2026-11-01T00:00:00Z'),
+            by: { type: 'user', id: CAMILLE },
+            rootId: CAD_482,
+          },
+        }),
+      ],
+    });
+    const useCase = new ChangeTaskApproval(
+      tasks,
+      atelierNordMembers(),
+      new InMemorySpaceDirectory(),
+    );
+    const decide = vi.fn();
+    const error: unknown = await useCase
+      .execute(
+        { ...input, expectedVersions: [11] },
+        { discoverReviewerIds: () => Promise.resolve([]), decide },
+      )
+      .catch((failure: unknown) => failure);
+    expect(ChangeTaskApproval.taskRefusalOf(error)).toEqual({
+      reason: 'task-archived',
+      details: { key: 'CAD-482' },
+    });
+    expect(decide).not.toHaveBeenCalled();
   });
 
   it('rolls back the version and outbox when the approval operation fails', async () => {

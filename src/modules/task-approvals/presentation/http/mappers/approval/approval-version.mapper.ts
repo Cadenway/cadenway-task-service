@@ -4,8 +4,7 @@ import { ProblemException } from '@cadenway/nest-common';
 /** Requires the single strong task ETag specified for approval writes. */
 export function approvalExpectedVersion(header: string | undefined): readonly number[] {
   const result = RequestTaskApprovalInternalHeader.safeParse({ 'If-Match': header });
-  const version = result.success ? Number(header?.slice(1, -1)) : NaN;
-  if (!Number.isSafeInteger(version) || version < 1) {
+  if (!result.success) {
     throw new ProblemException({
       status: 400,
       code: 'request.invalid',
@@ -21,5 +20,7 @@ export function approvalExpectedVersion(header: string | undefined): readonly nu
       },
     });
   }
-  return [version];
+  const version = Number(result.data['If-Match'].slice(1, -1));
+  // An unrepresentable version cannot match a stored task version.
+  return Number.isSafeInteger(version) ? [version] : [];
 }
