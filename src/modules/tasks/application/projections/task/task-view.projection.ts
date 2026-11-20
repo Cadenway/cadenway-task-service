@@ -6,6 +6,7 @@ import type { SubtaskCounts } from './subtask-counts.projection.js';
 import type { ChecklistCounts } from './checklist-counts.projection.js';
 import type { TaskActor } from '../../../domain/value-objects/task/task-actor.value-object.js';
 import type { ChecklistItemView } from './checklist-item-view.projection.js';
+import type { Recurrence } from '../../../domain/value-objects/task/recurrence.value-object.js';
 
 /**
  * Interface TaskView
@@ -55,6 +56,15 @@ export interface TaskView {
 
   /** Estimate in whole minutes. */
   readonly estimateMinutes: number | null;
+
+  /** Whether the task is a milestone. */
+  readonly milestone?: boolean;
+
+  /** Current recurrence cadence. */
+  readonly recurrence?: Recurrence;
+
+  /** Key of a live successor visible to the requesting account. */
+  readonly nextOccurrenceKey?: string;
 
   /** The labels, in the order they were added. */
   readonly labels: readonly string[];

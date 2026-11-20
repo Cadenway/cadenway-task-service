@@ -3,10 +3,12 @@ import { Module } from '@nestjs/common';
 import { tenantUnitOfWorkProvider } from './composition/providers/adapters/membership/tenant-unit-of-work.provider.js';
 import { applyMembershipChangeProvider } from './composition/providers/use-cases/membership/apply-membership-change.provider.js';
 import { findOrganizationMemberProvider } from './composition/providers/use-cases/membership/find-organization-member.provider.js';
+import { findOrganizationMemberRolesProvider } from './composition/providers/use-cases/membership/find-organization-member-roles.provider.js';
 import { findOrganizationOwnerProvider } from './composition/providers/use-cases/membership/find-organization-owner.provider.js';
 import { listActiveMembersProvider } from './composition/providers/use-cases/membership/list-active-members.provider.js';
 import { ApplyMembershipChange } from './public/membership/apply-membership-change.js';
 import { FindOrganizationMember } from './public/membership/find-organization-member.js';
+import { FindOrganizationMemberRoles } from './public/membership/find-organization-member-roles.js';
 import { FindOrganizationOwner } from './public/membership/find-organization-owner.js';
 import { ListActiveMembers } from './public/membership/list-active-members.js';
 
@@ -26,12 +28,14 @@ import { ListActiveMembers } from './public/membership/list-active-members.js';
     tenantUnitOfWorkProvider,
     applyMembershipChangeProvider,
     findOrganizationMemberProvider,
+    findOrganizationMemberRolesProvider,
     findOrganizationOwnerProvider,
     listActiveMembersProvider,
   ],
   exports: [
     ApplyMembershipChange,
     FindOrganizationMember,
+    FindOrganizationMemberRoles,
     FindOrganizationOwner,
     ListActiveMembers,
   ],

@@ -2,6 +2,7 @@ import type { DescriptionMention } from '../../../domain/value-objects/mention/d
 import type { StatusKey } from '../../../domain/value-objects/task/status-key.value-object.js';
 import type { PriorityKey } from '../../../domain/value-objects/task/priority-key.value-object.js';
 import type { CancelReason } from '../../../domain/value-objects/task/cancel-reason.value-object.js';
+import type { Recurrence } from '../../../domain/value-objects/task/recurrence.value-object.js';
 
 /**
  * Interface TaskChange
@@ -42,6 +43,12 @@ export interface TaskChange {
 
   /** New estimate in minutes, `null` removes it. */
   readonly estimateMinutes?: number | null;
+
+  /** Whether the task is a milestone. */
+  readonly milestone?: boolean;
+
+  /** New recurrence cadence. */
+  readonly recurrence?: Recurrence;
 
   /** The list to move the task to. */
   readonly listId?: string;

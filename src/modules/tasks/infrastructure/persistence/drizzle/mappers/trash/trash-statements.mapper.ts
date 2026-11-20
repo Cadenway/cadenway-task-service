@@ -365,11 +365,18 @@ export function trashCandidateRootsStatement(
  *
  * @param {string} organizationId - The organization of the transaction.
  * @param {readonly string[]} rootIds - The roots.
- * @returns {SQL} The statement; each row is `{ id, rootId, depth, isCycle }`, by root, depth and
- * id.
+ * @param {number} [readLimit] - Caps the rows read while sizing a single bulk trash root.
+ * @returns {SQL} Rows `{ id, rootId, depth, isCycle }`, ordered by root, depth and id when
+ * unlimited. A bounded read avoids sorting the recursive result.
  */
-export function trashTreesStatement(organizationId: string, rootIds: readonly string[]): SQL {
-  return sql`with recursive tree (id, root_id, list_id, depth) as (select ${tasks.id}, ${tasks.id}, ${tasks.listId}, 0 from ${tasks} where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.id} = any(${sql.param([...rootIds])}::uuid[]) and ${untrashedTask()} union all select ${childTasks.id}, tree.root_id, tree.list_id, tree.depth + 1 from tree join ${tasks} as ${childTasks} on ${childTasks.organizationId} = ${organizationId}::uuid and ${childTasks.parentId} = tree.id where ${childTasks.listId} = tree.list_id and ${untrashedTask(childTasks)}) cycle id set is_cycle using path select id, root_id as "rootId", depth::int as "depth", is_cycle as "isCycle" from tree order by root_id, depth, id`;
+export function trashTreesStatement(
+  organizationId: string,
+  rootIds: readonly string[],
+  readLimit?: number,
+): SQL {
+  const boundary =
+    readLimit === undefined ? sql`order by root_id, depth, id` : sql`limit ${readLimit}`;
+  return sql`with recursive tree (id, root_id, list_id, depth) as (select ${tasks.id}, ${tasks.id}, ${tasks.listId}, 0 from ${tasks} where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.id} = any(${sql.param([...rootIds])}::uuid[]) and ${untrashedTask()} union all select ${childTasks.id}, tree.root_id, tree.list_id, tree.depth + 1 from tree join ${tasks} as ${childTasks} on ${childTasks.organizationId} = ${organizationId}::uuid and ${childTasks.parentId} = tree.id where ${childTasks.listId} = tree.list_id and ${untrashedTask(childTasks)}) cycle id set is_cycle using path select id, root_id as "rootId", depth::int as "depth", is_cycle as "isCycle" from tree ${boundary}`;
 }
 
 /**

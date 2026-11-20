@@ -12,6 +12,10 @@ import { ChecklistLimitReachedError } from '../../errors/task/checklist-limit-re
 import { InvalidTaskError } from '../../errors/task/invalid-task.error.js';
 import { LabelLimitReachedError } from '../../errors/task/label-limit-reached.error.js';
 import { ListInvalidError } from '../../errors/task/list-invalid.error.js';
+import { MilestoneDatesInvalidError } from '../../errors/task/milestone-dates-invalid.error.js';
+import { MilestoneStatusInvalidError } from '../../errors/task/milestone-status-invalid.error.js';
+import { RecurrenceAlreadySpawnedError } from '../../errors/task/recurrence-already-spawned.error.js';
+import { RecurrenceDateOutOfRangeError } from '../../errors/task/recurrence-date-out-of-range.error.js';
 import { StartDateInvalidError } from '../../errors/task/start-date-invalid.error.js';
 import { StatusHiddenError } from '../../errors/task/status-hidden.error.js';
 import { TaskArchivedError } from '../../errors/task/task-archived.error.js';
@@ -140,6 +144,203 @@ function committed(update: TaskUpdate, version: number): TaskState {
   expect(update.task.snapshot.updatedAt).toBe(NOW);
   return update.task.snapshot;
 }
+
+describe('Task milestone lifecycle', () => {
+  it('creates dated milestones with aligned dates and also accepts undated milestones', () => {
+    const dated: TaskDraft = Task.create(
+      newTask({ milestone: true, dueDate: '2026-11-20', startDate: undefined }),
+      ALL_STATUSES,
+      NOW,
+    );
+    expect(dated).toMatchObject({
+      milestone: true,
+      status: 'todo',
+      dueDate: '2026-11-20',
+      startDate: '2026-11-20',
+      estimateMinutes: null,
+    });
+    expect(Task.create(newTask({ milestone: true }), ALL_STATUSES, NOW)).toMatchObject({
+      milestone: true,
+      dueDate: null,
+      startDate: null,
+      estimateMinutes: null,
+    });
+  });
+
+  it('keeps milestone, visibility and cancellation refusals distinct', () => {
+    expect(() =>
+      Task.create(newTask({ milestone: true, status: 'review' }), ALL_STATUSES, NOW),
+    ).toThrow(MilestoneStatusInvalidError);
+    expect(() =>
+      Task.create(newTask({ milestone: true, dueDate: '2026-11-20' }), ALL_STATUSES, NOW),
+    ).toThrow(MilestoneDatesInvalidError);
+    expect(() =>
+      cad482().update({ milestone: true, status: 'blocked' }, statusesHiding('blocked'), NOW),
+    ).toThrow(StatusHiddenError);
+    expect(() =>
+      cad482().update({ milestone: true, status: 'cancelled' }, ALL_STATUSES, NOW),
+    ).toThrow(CancelReasonRequiredError);
+  });
+
+  it('normalizes conversion and preserves the normalized values after disabling the milestone', () => {
+    const update: TaskUpdate = cad482().update({ milestone: true }, ALL_STATUSES, NOW);
+    expect(update.changed).toEqual(['status', 'startDate', 'estimateMinutes', 'milestone']);
+    expect(committed(update, 13)).toMatchObject({
+      milestone: true,
+      status: 'todo',
+      dueDate: '2026-11-12',
+      startDate: '2026-11-12',
+      estimateMinutes: null,
+    });
+    const disabled: TaskUpdate = update.task.update({ milestone: false }, ALL_STATUSES, NOW);
+    expect(disabled.changed).toEqual(['milestone']);
+    expect(committed(disabled, 14)).toMatchObject({
+      milestone: false,
+      status: 'todo',
+      dueDate: '2026-11-12',
+      startDate: '2026-11-12',
+      estimateMinutes: null,
+    });
+  });
+
+  it('reports reaching a milestone only on a transition into done', () => {
+    const reached: TaskUpdate = cad482().update(
+      { milestone: true, status: 'done' },
+      ALL_STATUSES,
+      NOW,
+    );
+    expect(reached.milestoneReached).toBe(true);
+    expect(committed(reached, 13).completedAt).toBe(NOW);
+    expect(
+      reached.task.update({ status: 'done' }, ALL_STATUSES, NOW).milestoneReached,
+    ).toBeUndefined();
+    expect(
+      cad482({ status: 'done', completedAt: NOW }).update({ milestone: true }, ALL_STATUSES, NOW)
+        .milestoneReached,
+    ).toBeUndefined();
+    const reopened: TaskUpdate = reached.task.update({ status: 'todo' }, ALL_STATUSES, NOW);
+    expect(reopened.task.update({ status: 'done' }, ALL_STATUSES, NOW).milestoneReached).toBe(true);
+  });
+
+  it('rejects invalid persisted milestones while reading legacy ordinary tasks', () => {
+    expect(() => Task.restore(taskState({ milestone: true }))).toThrow(MilestoneStatusInvalidError);
+    expect(() => Task.restore(taskState({ milestone: true, status: 'todo' }))).toThrow(
+      MilestoneDatesInvalidError,
+    );
+    expect(cad482().snapshot).toEqual(taskState());
+  });
+});
+
+describe('Task recurrence lifecycle', () => {
+  it('links the new occurrence and clears the source cadence in the single completion version', () => {
+    const task: Task = cad482({
+      recurrence: 'monthly',
+      dueDate: '2026-01-31',
+      startDate: '2026-01-29',
+    });
+    const preview: TaskUpdate = task.update({ status: 'done' }, ALL_STATUSES, NOW);
+    expect(preview.nextOccurrence).toEqual({
+      dueDate: '2026-02-28',
+      startDate: '2026-02-26',
+      monthlyAnchorDay: 31,
+      recurrence: 'monthly',
+    });
+    const nextKey: TaskKey = TaskKey.parse('CAD-483');
+    const update: TaskUpdate = task.update({ status: 'done' }, ALL_STATUSES, NOW, nextKey);
+    expect(update.nextOccurrence).toEqual(preview.nextOccurrence);
+    expect(update.changed).toEqual(['status', 'recurrence', 'nextOccurrenceKey']);
+    expect(committed(update, 13)).toMatchObject({
+      status: 'done',
+      completedAt: NOW,
+      recurrence: 'none',
+      monthlyAnchorDay: null,
+      nextOccurrenceKey: nextKey,
+    });
+    expect(task.snapshot.version).toBe(12);
+    expect(task.snapshot.recurrence).toBe('monthly');
+    expect(
+      update.task.update({ status: 'done' }, ALL_STATUSES, NOW).nextOccurrence,
+    ).toBeUndefined();
+    const reopened: Task = update.task.update({ status: 'todo' }, ALL_STATUSES, NOW).task;
+    expect(reopened.snapshot.nextOccurrenceKey).toBe(nextKey);
+    expect(reopened.update({ status: 'done' }, ALL_STATUSES, NOW).nextOccurrence).toBeUndefined();
+    expect(() => reopened.update({ recurrence: 'monthly' }, ALL_STATUSES, NOW)).toThrow(
+      RecurrenceAlreadySpawnedError,
+    );
+  });
+
+  it('carries the monthly anchor into a fresh root and retains milestone date alignment', () => {
+    const successor: TaskDraft = Task.create(
+      newTask({
+        milestone: true,
+        recurrence: 'monthly',
+        monthlyAnchorDay: 31,
+        dueDate: '2026-02-28',
+        startDate: '2026-02-28',
+      }),
+      ALL_STATUSES,
+      NOW,
+    );
+    expect(successor).toMatchObject({
+      parentId: null,
+      status: 'todo',
+      recurrence: 'monthly',
+      monthlyAnchorDay: 31,
+      completedAt: null,
+    });
+    const update: TaskUpdate = Task.restore(taskState({ ...successor })).update(
+      { status: 'done' },
+      ALL_STATUSES,
+      NOW,
+    );
+    expect(update.nextOccurrence).toEqual({
+      recurrence: 'monthly',
+      monthlyAnchorDay: 31,
+      dueDate: '2026-03-31',
+      startDate: '2026-03-31',
+    });
+    expect(update.milestoneReached).toBe(true);
+  });
+
+  it('leaves an undated or cancelled completion without an occurrence', () => {
+    const undated: Task = cad482({ recurrence: 'daily', dueDate: null, startDate: null });
+    expect(undated.update({ status: 'done' }, ALL_STATUSES, NOW).nextOccurrence).toBeUndefined();
+    const cancelled: TaskUpdate = cad482({ recurrence: 'weekly' }).update(
+      { status: 'cancelled', cancelReason: 'duplicate' },
+      ALL_STATUSES,
+      NOW,
+    );
+    expect(cancelled.nextOccurrence).toBeUndefined();
+    expect(cancelled.task.snapshot.recurrence).toBe('weekly');
+  });
+
+  it('refuses an out-of-range occurrence and a successor key supplied without a valid plan', () => {
+    const atLimit: Task = cad482({ recurrence: 'weekly', dueDate: '9999-12-31', startDate: null });
+    expect(() => atLimit.update({ status: 'done' }, ALL_STATUSES, NOW)).toThrow(
+      RecurrenceDateOutOfRangeError,
+    );
+    const key: TaskKey = TaskKey.parse('CAD-483');
+    expect(() => cad482().update({ status: 'done' }, ALL_STATUSES, NOW, key)).toThrow(
+      InvalidTaskError,
+    );
+    const recurring: Task = cad482({ recurrence: 'weekly' });
+    expect(() =>
+      recurring.update({ status: 'done' }, ALL_STATUSES, NOW, recurring.snapshot.key),
+    ).toThrow(InvalidTaskError);
+  });
+
+  it('allows creation in done and restore without consuming the recurrence', () => {
+    const draft: TaskDraft = Task.create(
+      newTask({ status: 'done', recurrence: 'weekly', dueDate: '2026-11-20' }),
+      ALL_STATUSES,
+      NOW,
+    );
+    expect(draft).toMatchObject({ recurrence: 'weekly', completedAt: NOW });
+    const source: Task = Task.restore(taskState({ ...draft }));
+    expect(source.update({ status: 'done' }, ALL_STATUSES, NOW).nextOccurrence).toBeUndefined();
+    expect(source.snapshot.recurrence).toBe('weekly');
+  });
+});
 
 describe('Task.create: a new task in a list the caller sees', () => {
   it('normalizes the name, labels and assignees and keeps the description as sent', () => {

@@ -54,10 +54,15 @@ export interface SpaceDirectory {
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The acting member, with the role of the copy.
+   * @param {boolean} [editOnly] - Includes only lists with an effective edit role when true.
    * @returns {Promise<readonly string[]>} The ids of the lists; empty when the viewer has a role on
    * none.
    */
-  visibleListIds(organizationId: string, viewer: Viewer): Promise<readonly string[]>;
+  visibleListIds(
+    organizationId: string,
+    viewer: Viewer,
+    editOnly?: boolean,
+  ): Promise<readonly string[]>;
 
   /**
    * Method findVisibleSpaceLists

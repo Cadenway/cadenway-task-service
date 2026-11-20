@@ -5,7 +5,7 @@ import type { TaskLocation } from '../../../../../application/projections/task/t
 import type { TaskReferenceView } from '../../../../../application/projections/task/task-reference.projection.js';
 import type { TaskSummaryView } from '../../../../../application/projections/task/task-summary.projection.js';
 import type { TaskRow } from './task.mapper.js';
-import { toCancelReason, toPriorityKey, toStatusKey } from './task-values.mapper.js';
+import { toCancelReason, toPriorityKey, toRecurrence, toStatusKey } from './task-values.mapper.js';
 
 /**
  * Type TaskSummaryRow
@@ -28,6 +28,8 @@ export type TaskSummaryRow = Pick<
   | 'dueDate'
   | 'startDate'
   | 'estimateMinutes'
+  | 'milestone'
+  | 'recurrence'
   | 'completedAt'
   | 'createdAt'
   | 'listId'
@@ -87,6 +89,8 @@ export function toTaskSummary(
     dueDate: row.dueDate,
     startDate: row.startDate,
     estimateMinutes: row.estimateMinutes,
+    milestone: row.milestone,
+    recurrence: toRecurrence(row.recurrence, subject),
     labels,
     parentKey,
     listId: row.listId,

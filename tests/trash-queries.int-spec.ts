@@ -65,6 +65,8 @@ import { DrizzleLabelReader } from '../src/modules/tasks/infrastructure/persiste
 import { DrizzleTaskQueryReader } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/query/drizzle-task-query-reader.repository.js';
 import { DrizzleTaskReader } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/task/drizzle-task-reader.repository.js';
 import { DrizzleTaskRepository } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/task/drizzle-task.repository.js';
+import { DrizzleTaskCopiesRepository } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/task/drizzle-task-copies.repository.js';
+import { DrizzleTaskDependencyRepository } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/dependency/drizzle-task-dependency.repository.js';
 import { DrizzleTrashEntryRepository } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/trash/drizzle-trash-entry.repository.js';
 
 // The plans of the statements the trash, the purge and the deletion of lists and spaces of P3b-1
@@ -2607,7 +2609,9 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
       };
       const store = (): TasksStore => ({
         savepoint: (work) => work(),
+        dependencies: new DrizzleTaskDependencyRepository(db),
         tasks: new DrizzleTaskRepository(db),
+        copies: new DrizzleTaskCopiesRepository(db),
         watcherOverrides: new DrizzleWatcherOverrideRepository(db),
         reader: new DrizzleTaskReader(db),
         activity: new DrizzleActivityRepository(db),

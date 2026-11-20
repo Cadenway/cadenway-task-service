@@ -1,10 +1,24 @@
 import { describe, expect, it } from 'vitest';
 
+import { TaskGroupsQuery } from '../../dto/input/query/task-groups-query.dto.js';
+import { ListTasksQuery } from '../../dto/input/task/list-tasks-query.dto.js';
 import { taskFilterFingerprint, toTaskFilterInput, toTaskOrder } from './task-filter.mapper.js';
 
 const CAMILLE = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b31';
 
 describe('the filters of the tasks of a list', () => {
+  it('preserves both boolean filters and separates them from the unfiltered cursor', () => {
+    const all = toTaskFilterInput(ListTasksQuery.schema.parse({}));
+    const milestones = toTaskFilterInput(ListTasksQuery.schema.parse({ milestone: 'true' }));
+    const tasks = toTaskFilterInput(
+      TaskGroupsQuery.schema.parse({ groupBy: 'status', milestone: 'false' }),
+    );
+
+    expect(taskFilterFingerprint(all)).not.toHaveProperty('milestone');
+    expect(taskFilterFingerprint(milestones)).toHaveProperty('milestone', true);
+    expect(taskFilterFingerprint(tasks)).toHaveProperty('milestone', false);
+  });
+
   it('leaves a filter the query does not name to null and reads the level as given', () => {
     expect(toTaskFilterInput({ level: 'roots' })).toEqual({
       statuses: null,

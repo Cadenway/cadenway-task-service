@@ -38,6 +38,12 @@ export interface RawTaskPageRow {
   /** Estimate in minutes. */
   readonly estimateMinutes: number | null;
 
+  /** Whether the task is a milestone. */
+  readonly milestone: boolean;
+
+  /** Stored recurrence cadence. */
+  readonly recurrence: string;
+
   /** Completion instant as ISO 8601 text in UTC. */
   readonly completedAt: string | null;
 

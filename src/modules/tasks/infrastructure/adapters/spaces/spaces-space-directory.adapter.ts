@@ -465,13 +465,19 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {Viewer} viewer - The acting member, with the role of the copy.
+   * @param {boolean} [editOnly] - Includes only lists the viewer can edit.
    * @returns {Promise<readonly string[]>} The ids of the lists the viewer has a role on.
    */
-  public async visibleListIds(organizationId: string, viewer: Viewer): Promise<readonly string[]> {
+  public async visibleListIds(
+    organizationId: string,
+    viewer: Viewer,
+    editOnly: boolean = false,
+  ): Promise<readonly string[]> {
     const output: ListVisibleListIdsOutput = await this.listVisibleListIds.execute({
       organizationId,
       viewerUserId: viewer.userId,
       viewerRole: viewer.role,
+      ...(editOnly ? { editOnly } : {}),
     });
     return output.listIds;
   }

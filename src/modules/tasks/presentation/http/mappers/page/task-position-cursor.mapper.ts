@@ -46,7 +46,7 @@ const LONE_SURROGATE: RegExp = /\p{Surrogate}/u;
  * @param {string} text - The text.
  * @returns {boolean} Whether it is a storable date.
  */
-function isStoredDate(text: string): boolean {
+export function isStoredDate(text: string): boolean {
   const parts: RegExpExecArray | null = CALENDAR_DATE.exec(text);
   if (parts === null) {
     return false;

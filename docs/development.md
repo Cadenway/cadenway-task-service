@@ -142,6 +142,14 @@ comment writes. Before `0009`, the server cannot read a task or list activity pa
 comment. To close public comment writes after activation, roll back the gateway and keep a
 task-service image that can read the stored activity.
 
+### Milestone and recurrence rollout
+
+Roll out the task-service image containing `0010_task_planning.sql` to all replicas and workers
+before deploying the gateway that accepts milestone and recurrence writes. Record the first
+compatible task-service image as the rollback floor after either field is used. Earlier
+writers can apply an invalid status or dates to a milestone, or complete a recurring task
+without creating its successor.
+
 ### Calling the service locally
 
 Every route but `/health/*` requires an internal token. The key in `.env.example` is a placeholder

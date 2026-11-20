@@ -94,6 +94,7 @@ const publicTables = [
   'spaces',
   'task_assignees',
   'task_comments',
+  'task_dependencies',
   'task_labels',
   'task_watcher_overrides',
   'tasks',
@@ -106,7 +107,7 @@ const publicTables = [
  * the lists and the access requests, then the archives of lists and tasks, then the trash and the
  * deletion of lists and spaces, then the trash root snapshot and task collaboration.
  */
-const appliedMigrations = 10;
+const appliedMigrations = 11;
 
 /**
  * Runs `docker compose` on the throwaway project.
@@ -459,11 +460,13 @@ describe('task-service wiring', () => {
       }>(
         `select relname, relrowsecurity, relforcerowsecurity from pg_class
           where relnamespace = 'public'::regnamespace
-            and relname in ('task_comments', 'task_watcher_overrides') order by relname`,
+            and relname in ('task_comments', 'task_dependencies', 'task_watcher_overrides')
+          order by relname`,
       );
       expect(journal.rows).toEqual([{ applied: appliedMigrations }]);
       expect(security.rows).toEqual([
         { relname: 'task_comments', relrowsecurity: true, relforcerowsecurity: true },
+        { relname: 'task_dependencies', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'task_watcher_overrides', relrowsecurity: true, relforcerowsecurity: true },
       ]);
     } finally {
@@ -699,6 +702,7 @@ describe('task-service wiring', () => {
       { relname: 'spaces', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_assignees', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_comments', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'task_dependencies', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_labels', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_watcher_overrides', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'tasks', relrowsecurity: true, relforcerowsecurity: true },
@@ -726,6 +730,7 @@ describe('task-service wiring', () => {
       { tablename: 'spaces', policyname: 'spaces_organization_isolation' },
       { tablename: 'task_assignees', policyname: 'task_assignees_organization_isolation' },
       { tablename: 'task_comments', policyname: 'task_comments_organization_isolation' },
+      { tablename: 'task_dependencies', policyname: 'task_dependencies_organization_isolation' },
       { tablename: 'task_labels', policyname: 'task_labels_organization_isolation' },
       {
         tablename: 'task_watcher_overrides',

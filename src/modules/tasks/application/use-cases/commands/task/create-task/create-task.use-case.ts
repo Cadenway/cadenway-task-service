@@ -173,6 +173,8 @@ export class CreateTask {
             dueDate: input.dueDate,
             startDate: input.startDate,
             estimateMinutes: input.estimateMinutes,
+            milestone: input.milestone,
+            recurrence: input.recurrence,
             labels: input.labels,
             createdBy: creator,
           },

@@ -52,6 +52,10 @@ function rowOf(state: TaskState, overrides: Partial<TaskRow> = {}): TaskRow {
     dueDate: state.dueDate,
     startDate: state.startDate,
     estimateMinutes: state.estimateMinutes,
+    milestone: state.milestone ?? false,
+    recurrence: state.recurrence ?? 'none',
+    monthlyAnchorDay: state.monthlyAnchorDay ?? null,
+    nextOccurrenceKey: state.nextOccurrenceKey?.format() ?? null,
     completedAt: state.completedAt,
     createdAt: state.createdAt,
     createdByType: state.createdBy.type,
@@ -73,7 +77,13 @@ describe('toTask: a stored row becomes the task it stores', () => {
     const state: TaskState = taskState();
     const task = toTask(rowOf(state), null, state.assigneeIds, state.labels, state.checklist);
 
-    expect(task.snapshot).toEqual(state);
+    expect(task.snapshot).toEqual({
+      ...state,
+      milestone: false,
+      recurrence: 'none',
+      monthlyAnchorDay: null,
+      nextOccurrenceKey: null,
+    });
   });
 
   it('ignores stale spans from before a legacy writer replaced the description', () => {
@@ -216,6 +226,37 @@ describe('toTask: a stored row becomes the task it stores', () => {
       InvalidTaskError,
     );
   });
+
+  it('restores the recurrence chain marker and rejects an unknown stored cadence', () => {
+    const row = rowOf(taskState(), {
+      recurrence: 'none',
+      monthlyAnchorDay: null,
+      nextOccurrenceKey: 'CAD-500',
+    });
+
+    const restored = toTask(row, null, [], [], []);
+    expect(restored.snapshot).toMatchObject({
+      milestone: false,
+      recurrence: 'none',
+      monthlyAnchorDay: null,
+    });
+    expect(restored.snapshot.nextOccurrenceKey?.format()).toBe('CAD-500');
+    expect(() => toTask({ ...row, recurrence: 'yearly' }, null, [], [], [])).toThrow(
+      'stored recurrence',
+    );
+  });
+
+  it('preserves the monthly anchor when mapping an active recurrence', () => {
+    const row = rowOf(taskState(), { recurrence: 'monthly', monthlyAnchorDay: 31 });
+    const restored = toTask(row, null, [], [], []);
+
+    expect(restored.snapshot).toMatchObject({ recurrence: 'monthly', monthlyAnchorDay: 31 });
+    expect(toTaskUpdate(restored)).toMatchObject({
+      recurrence: 'monthly',
+      monthlyAnchorDay: 31,
+      nextOccurrenceKey: null,
+    });
+  });
 });
 
 describe('toTaskInsert: a draft becomes the columns of a new task', () => {
@@ -258,11 +299,38 @@ describe('toTaskInsert: a draft becomes the columns of a new task', () => {
 
     const restored = toTask(stored, state.parentKey, state.assigneeIds, state.labels, []);
 
-    expect(restored.snapshot).toEqual({ ...state, updatedAt: CREATED_AT, version: 1 });
+    expect(restored.snapshot).toEqual({
+      ...state,
+      milestone: false,
+      recurrence: 'none',
+      monthlyAnchorDay: null,
+      nextOccurrenceKey: null,
+      updatedAt: CREATED_AT,
+      version: 1,
+    });
   });
 });
 
 describe('toTaskUpdate: a changed task becomes the columns to write', () => {
+  it('persists a successor key independently of the successor row', () => {
+    const task = toTask(
+      rowOf(taskState(), {
+        recurrence: 'none',
+        nextOccurrenceKey: 'CAD-500',
+      }),
+      null,
+      [],
+      [],
+      [],
+    );
+
+    expect(toTaskUpdate(task)).toMatchObject({
+      milestone: false,
+      recurrence: 'none',
+      monthlyAnchorDay: null,
+      nextOccurrenceKey: 'CAD-500',
+    });
+  });
   it('writes the members a change can touch with the version and instant of the change', () => {
     const before = cad482();
     const after = before.update({ priority: 'urgente', status: 'review' }, ALL_STATUSES, NOW).task;

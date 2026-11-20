@@ -37,6 +37,7 @@ export class TaskFilterBuilder {
       search: input.search,
       dueFrom: input.dueFrom,
       dueTo: input.dueTo,
+      ...(input.milestone === undefined ? {} : { milestone: input.milestone }),
       rootsOnly: input.level === 'roots',
     };
   }

@@ -12,6 +12,11 @@ import { SpacesModule } from '../spaces/spaces.module.js';
 import { memberDirectoryProvider } from './composition/providers/adapters/membership/member-directory.provider.js';
 import { trashWritesProvider } from './composition/providers/adapters/feature/trash-writes.provider.js';
 import { spaceDirectoryProvider } from './composition/providers/adapters/space/space-directory.provider.js';
+import { duplicateListProvider } from './composition/providers/use-cases/list/duplicate-list.provider.js';
+import { duplicateTaskProvider } from './composition/providers/use-cases/task/duplicate-task.provider.js';
+import { ListDuplicateController } from './presentation/http/controllers/duplicate/list-duplicate.controller.js';
+import { TaskDuplicateController } from './presentation/http/controllers/duplicate/task-duplicate.controller.js';
+import { RequiredDuplicateBodyGuard } from './presentation/http/guards/duplicate/required-duplicate-body.guard.js';
 import { tasksUnitOfWorkProvider } from './composition/providers/adapters/task/tasks-unit-of-work.provider.js';
 import { trashSystemUnitOfWorkProvider } from './composition/providers/adapters/trash/trash-system-unit-of-work.provider.js';
 import { listListActivityProvider } from './composition/providers/use-cases/activity/list-list-activity.provider.js';
@@ -24,12 +29,15 @@ import { assignTaskProvider } from './composition/providers/use-cases/assignee/a
 import { unassignRemovedMemberProvider } from './composition/providers/use-cases/assignee/unassign-removed-member.provider.js';
 import { removeMemberWatcherOverridesProvider } from './composition/providers/use-cases/watcher/remove-member-watcher-overrides.provider.js';
 import { unassignTaskProvider } from './composition/providers/use-cases/assignee/unassign-task.provider.js';
+import { bulkTaskActionProvider } from './composition/providers/use-cases/bulk/bulk-task-action.provider.js';
 import { addChecklistItemProvider } from './composition/providers/use-cases/checklist/add-checklist-item.provider.js';
 import { updateChecklistItemProvider } from './composition/providers/use-cases/checklist/update-checklist-item.provider.js';
+import { taskDependencyProviders } from './composition/providers/use-cases/dependency/task-dependency.provider.js';
 import { countListTaskGroupsProvider } from './composition/providers/use-cases/list/count-list-task-groups.provider.js';
 import { getListCountsProvider } from './composition/providers/use-cases/list/get-list-counts.provider.js';
 import { listListTasksProvider } from './composition/providers/use-cases/list/list-list-tasks.provider.js';
 import { getSpaceOverviewProvider } from './composition/providers/use-cases/space/get-space-overview.provider.js';
+import { listSpaceMilestonesProvider } from './composition/providers/use-cases/space/list-space-milestones.provider.js';
 import { listLabelsProvider } from './composition/providers/use-cases/label/list-labels.provider.js';
 import { getHomeProvider } from './composition/providers/use-cases/user/get-home.provider.js';
 import { listMyTasksProvider } from './composition/providers/use-cases/user/list-my-tasks.provider.js';
@@ -56,6 +64,7 @@ import { trashDeletedListTasksProvider } from './composition/providers/use-cases
 import { trashTaskProvider } from './composition/providers/use-cases/trash/trash-task.provider.js';
 import { ListCountsController } from './presentation/http/controllers/count/list-counts.controller.js';
 import { SpaceOverviewController } from './presentation/http/controllers/count/space-overview.controller.js';
+import { SpaceMilestonesController } from './presentation/http/controllers/milestone/space-milestones.controller.js';
 import { LabelsController } from './presentation/http/controllers/label/labels.controller.js';
 import { TaskGroupsController } from './presentation/http/controllers/query/task-groups.controller.js';
 import { UserTasksController } from './presentation/http/controllers/user/user-tasks.controller.js';
@@ -65,10 +74,12 @@ import { TaskActivityController } from './presentation/http/controllers/activity
 import { ArchivesController } from './presentation/http/controllers/archive/archives.controller.js';
 import { TaskArchiveController } from './presentation/http/controllers/archive/task-archive.controller.js';
 import { TaskAssigneesController } from './presentation/http/controllers/assignee/task-assignees.controller.js';
+import { BulkTaskActionsController } from './presentation/http/controllers/bulk/bulk-task-actions.controller.js';
 import { TaskWatchersController } from './presentation/http/controllers/watcher/task-watchers.controller.js';
 import { listWatchersProvider } from './composition/providers/use-cases/watcher/list-watchers.provider.js';
 import { setTaskWatcherProvider } from './composition/providers/use-cases/watcher/set-task-watcher.provider.js';
 import { ChecklistItemsController } from './presentation/http/controllers/checklist/checklist-items.controller.js';
+import { TaskDependenciesController } from './presentation/http/controllers/dependency/task-dependencies.controller.js';
 import { TaskLabelsController } from './presentation/http/controllers/label/task-labels.controller.js';
 import { SubtasksController } from './presentation/http/controllers/subtask/subtasks.controller.js';
 import { ListTasksController } from './presentation/http/controllers/task/list-tasks.controller.js';
@@ -89,7 +100,7 @@ import { TrashDeletedListTasks } from './public/trash/trash-deleted-list-tasks.j
  * Function markIdempotent
  *
  * @description
- * Marks a creation route `@Idempotent()`, so that the `Idempotency-Key` interceptor of
+ * Marks a write route `@Idempotent()`, so that the `Idempotency-Key` interceptor of
  * `DatabaseModule` (`idempotency: true` in `AppModule`) records its answer with the key for 24 hours
  * and replays it, with the recorded `Location` and `ETag` ("Creations" of
  * `openapi/internal/task-service.yaml`). The decorator of the kit lives in
@@ -98,7 +109,7 @@ import { TrashDeletedListTasks } from './public/trash/trash-deleted-list-tasks.j
  * decorator would set.
  *
  * @param {object} prototype - The prototype of the controller.
- * @param {string} method - The name of its creation handler.
+ * @param {string} method - The name of its write handler.
  * @throws {Error} When the controller has no such handler: the module does not load.
  */
 function markIdempotent(prototype: object, method: string): void {
@@ -115,6 +126,10 @@ function markIdempotent(prototype: object, method: string): void {
 markIdempotent(ListTasksController.prototype, 'create');
 markIdempotent(SubtasksController.prototype, 'create');
 markIdempotent(ChecklistItemsController.prototype, 'add');
+markIdempotent(TaskDependenciesController.prototype, 'create');
+markIdempotent(ListDuplicateController.prototype, 'duplicate');
+markIdempotent(TaskDuplicateController.prototype, 'duplicate');
+markIdempotent(BulkTaskActionsController.prototype, 'execute');
 
 /**
  * Class TasksModule
@@ -149,14 +164,19 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
     TaskGroupsController,
     ListCountsController,
     SpaceOverviewController,
+    SpaceMilestonesController,
     LabelsController,
     UserTasksController,
+    BulkTaskActionsController,
     TasksController,
     TaskAssigneesController,
     TaskWatchersController,
     TaskLabelsController,
     SubtasksController,
     ChecklistItemsController,
+    TaskDependenciesController,
+    TaskDuplicateController,
+    ListDuplicateController,
     TaskActivityController,
     TaskArchiveController,
     ArchivesController,
@@ -166,12 +186,16 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
     TaskParticipantsController,
   ],
   providers: [
+    RequiredDuplicateBodyGuard,
     tasksUnitOfWorkProvider,
     memberDirectoryProvider,
     spaceDirectoryProvider,
     trashWritesProvider,
     createTaskProvider,
+    duplicateTaskProvider,
+    duplicateListProvider,
     updateTaskProvider,
+    bulkTaskActionProvider,
     getTaskProvider,
     getTaskDetailProvider,
     listTaskParticipantsProvider,
@@ -187,12 +211,14 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
     removeTaskLabelProvider,
     addChecklistItemProvider,
     updateChecklistItemProvider,
+    ...taskDependencyProviders,
     listTaskActivityProvider,
     listListActivityProvider,
     listListTasksProvider,
     countListTaskGroupsProvider,
     getListCountsProvider,
     getSpaceOverviewProvider,
+    listSpaceMilestonesProvider,
     listLabelsProvider,
     listMyTasksProvider,
     getHomeProvider,

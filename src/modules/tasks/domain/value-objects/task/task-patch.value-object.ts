@@ -2,6 +2,7 @@ import type { DescriptionMention } from '../mention/description-mention.value-ob
 import type { TaskAttachment } from '../subtask/task-attachment.value-object.js';
 import type { CancelReason } from './cancel-reason.value-object.js';
 import type { PriorityKey } from './priority-key.value-object.js';
+import type { Recurrence } from './recurrence.value-object.js';
 import type { StatusKey } from './status-key.value-object.js';
 import type { TaskPlacement } from './task-placement.value-object.js';
 
@@ -119,6 +120,12 @@ export interface TaskPatch {
    * @readonly
    */
   readonly estimateMinutes?: number | null;
+
+  /** Sets or removes the milestone rules on the resulting task (P3b-2 decision 11). */
+  readonly milestone?: boolean;
+
+  /** Changes the cadence. A predecessor with a successor cannot be rearmed. */
+  readonly recurrence?: Recurrence;
 
   /**
    * Property list

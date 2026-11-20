@@ -1,4 +1,5 @@
 import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
+import type { AssigneeCandidate } from '../../../../../domain/value-objects/member/assignee-candidate.value-object.js';
 import type { MemberRole } from '../../../../../domain/value-objects/member/member-role.value-object.js';
 import { InvalidTaskError } from '../../../../../domain/errors/task/invalid-task.error.js';
 import { canWriteTasksOf } from '../../../../../domain/policies/task/task-write.policy.js';
@@ -6,6 +7,7 @@ import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
 import type { TaskState } from '../../../../../domain/value-objects/task/task-state.value-object.js';
 import type { TaskUpdate } from '../../../../../domain/value-objects/task/task-update.value-object.js';
+import type { ScheduledTaskUpdate } from '../../../../models/task/scheduled-task-update.model.js';
 import type { PlannedChange } from '../../../../models/placement/planned-change.model.js';
 import type { LocatedTask } from '../../../../models/task/located-task.model.js';
 import type { LockedSubtree } from '../../../../models/task/locked-subtree.model.js';
@@ -17,6 +19,9 @@ import type { MemberDirectory } from '../../../../ports/outbound/members/members
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
 import { ViewerResolver } from '../../../../services/member/viewer-resolver.service.js';
+import { WatcherAudienceChanged } from '../../../../models/watcher/watcher-audience-changed.model.js';
+import { TaskOccurrenceScheduler } from '../../../../services/task/task-occurrence-scheduler.service.js';
+import { VisibleNextOccurrence } from '../../../../services/task/visible-next-occurrence.service.js';
 import { TaskChangeWriter } from '../../../../services/task/task-change-writer.service.js';
 import { TaskLocator } from '../../../../services/task/task-locator.service.js';
 import { TaskMovePlanner } from '../../../../services/task/task-move-planner.service.js';
@@ -42,12 +47,24 @@ interface PreparedUpdate {
   /** Final task and changed fields. */
   readonly update: TaskUpdate;
 
+  /** Placement and patch resolved under their locks. */
+  readonly plan: PlannedChange;
+
+  /** Viewer and assignee memberships held by the preflight. */
+  readonly viewer: Viewer;
+  readonly candidates: readonly AssigneeCandidate[];
+
   /** Transaction instant. */
   readonly now: Date;
 
   /** Effective status-change event audience. */
   readonly watcherIds: readonly string[];
   // #endregion
+}
+
+/** A milestone conversion can implicitly change an incompatible status to todo. */
+function mayChangeStatus(input: UpdateTaskInput): boolean {
+  return input.patch.status !== undefined || input.patch.milestone === true;
 }
 
 /** Releases task locks before retrying a changed moving tree. */
@@ -96,6 +113,12 @@ export class UpdateTask {
   /** Writes the changes. */
   private readonly writer: TaskChangeWriter;
 
+  /** Creates recurring successors in the same transaction. */
+  private readonly recurrence: TaskOccurrenceScheduler;
+
+  /** Filters the successor reference for the viewer. */
+  private readonly successor: VisibleNextOccurrence;
+
   /** Computes the status-change audience under the task and placement locks. */
   private readonly watchers: EffectiveWatchers;
 
@@ -133,6 +156,8 @@ export class UpdateTask {
     this.descriptionMentions = new DescriptionMentionGuard(members, spaces);
     this.writer = new TaskChangeWriter();
     this.watchers = new EffectiveWatchers(members, spaces);
+    this.recurrence = new TaskOccurrenceScheduler(spaces);
+    this.successor = new VisibleNextOccurrence(spaces);
     this.views = new TaskViewBuilder();
   }
   // #endregion
@@ -168,10 +193,16 @@ export class UpdateTask {
   /** Writes the prepared change, activity and events while the preflight's locks remain held. */
   private async apply(store: TasksStore, input: UpdateTaskInput): Promise<UpdateTaskOutput> {
     const prepare = (): Promise<PreparedUpdate> => this.prepare(store, input);
-    const { task, descendants, update, now, watcherIds } =
-      input.patch.status === undefined
-        ? await prepare()
-        : await withWatcherAudienceRetry(store, prepare);
+    const { task, descendants, plan, now, watcherIds, viewer, candidates } = mayChangeStatus(input)
+      ? await withWatcherAudienceRetry(store, prepare)
+      : await prepare();
+    const scheduled: ScheduledTaskUpdate = await this.recurrence.prepare(
+      task,
+      plan.patch,
+      plan.statuses,
+      now,
+    );
+    const update = scheduled.update;
     if (update.changed.length > 0) {
       await this.writer.commit(store, task, update, input.actorUserId, now, watcherIds);
       if (update.changed.includes('descriptionMentions')) {
@@ -188,8 +219,18 @@ export class UpdateTask {
       if (update.changed.includes('listId') || update.changed.includes('spaceId')) {
         await this.moveDescendants(store, descendants, update.task, input, now);
       }
+      await this.recurrence.createSuccessor(
+        store,
+        scheduled,
+        plan.statuses,
+        candidates,
+        { type: 'user', id: input.actorUserId },
+        now,
+      );
     }
-    return this.views.build(store.reader, update.task);
+    const view = await this.views.build(store.reader, update.task);
+    const nextOccurrenceKey = await this.successor.keyOf(store, update.task, viewer);
+    return nextOccurrenceKey === undefined ? view : { ...view, nextOccurrenceKey };
   }
 
   /** Acquires the moving tree and any new parent before locking their placements. */
@@ -301,20 +342,24 @@ export class UpdateTask {
       archived: 'refuse',
       expectedVersions: input.expectedVersions,
     };
+    const candidateTask = !mayChangeStatus(input)
+      ? null
+      : (
+          await this.locator.locate(store, {
+            ...request,
+            lock: false,
+            archived: 'allow',
+            expectedVersions: null,
+          })
+        ).task;
     const heldRoles =
-      input.patch.status === undefined
+      candidateTask === null
         ? new Map<string, MemberRole | null>()
         : await this.watchers.holdCandidates(
             store,
-            (
-              await this.locator.locate(store, {
-                ...request,
-                lock: false,
-                archived: 'allow',
-                expectedVersions: null,
-              })
-            ).task.snapshot,
+            candidateTask.snapshot,
             viewer,
+            input.patch.status === 'done' ? candidateTask.snapshot.assigneeIds : [],
           );
     const moving = input.patch.listId !== undefined || input.patch.parentKey !== undefined;
     const move = moving ? await this.locateMove(store, viewer, request, input) : null;
@@ -332,6 +377,19 @@ export class UpdateTask {
     const update: TaskUpdate = this.rules.apply((): TaskUpdate =>
       task.update(plan.patch, plan.statuses, now),
     );
+    if (
+      update.nextOccurrence !== undefined &&
+      task.snapshot.assigneeIds.some((id) => !heldRoles.has(id))
+    ) {
+      throw new WatcherAudienceChanged();
+    }
+    const candidates: readonly AssigneeCandidate[] =
+      update.nextOccurrence === undefined
+        ? []
+        : task.snapshot.assigneeIds.map((userId) => ({
+            userId,
+            role: heldRoles.get(userId) ?? null,
+          }));
     const statusChanged = update.changed.includes('status');
     const { listId } = update.task.snapshot;
     if (move === null && (statusChanged || recipients.length > 0)) {
@@ -343,7 +401,16 @@ export class UpdateTask {
     const watcherIds = statusChanged
       ? await this.watchers.forHeldTask(store, update.task.snapshot, heldRoles)
       : [];
-    return { task, descendants: plan.descendants, update, now, watcherIds };
+    return {
+      task,
+      descendants: plan.descendants,
+      update,
+      plan,
+      viewer,
+      candidates,
+      now,
+      watcherIds,
+    };
   }
 
   /**

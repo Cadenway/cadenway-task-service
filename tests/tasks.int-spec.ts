@@ -13,6 +13,7 @@ import {
   AddChecklistItemInternalResponse,
   AddTaskLabelInternalResponse,
   AssignTaskInternalResponse,
+  CountTaskGroupsInternalResponse,
   CreateListInternalResponse,
   CreateSpaceInternalResponse,
   CreateSubtaskInternalResponse,
@@ -26,6 +27,11 @@ import {
   ListTaskWatchersInternalResponse,
   ListTaskParticipantsInternalResponse,
   ListListActivityInternalResponse,
+  ListSpaceMilestonesInternalResponse,
+  ListTasksInternalResponse,
+  CreateTaskDependencyInternalResponse,
+  GetTaskDependencyInternalResponse,
+  ListTaskDependenciesInternalResponse,
   ListSubtasksInternalResponse,
   ListTaskActivityInternalResponse,
   RemoveTaskLabelInternalResponse,
@@ -4107,6 +4113,7 @@ describe('tasks', () => {
       expect(after.events).toBe(1200);
     }, 240_000);
   });
+
   describe('comment repository', () => {
     it('persists and pages comments in tenant scope, versions edits and keeps tombstones', async () => {
       const task = await createTask(camille, produitList.id, { name: 'Comment CAD-482' });
@@ -5042,6 +5049,186 @@ describe('tasks', () => {
           effectiveFollowing: true,
         }),
       ]);
+    });
+  });
+
+  it('filters task lists and groups and pages visible space milestones dated first', async () => {
+    const { space } = await createSpace(camille, {
+      name: 'Milestone filters',
+      prefix: 'MLST',
+      visibility: 'private',
+    });
+    const list = await createList(camille, space.id, 'Milestone list');
+    const archived = await createList(camille, space.id, 'Archived milestone list');
+    const undated = await createTask(camille, list.id, { name: 'Undated', milestone: true });
+    const dated = await createTask(camille, list.id, {
+      name: 'Dated',
+      milestone: true,
+      dueDate: '2026-11-20',
+      recurrence: 'monthly',
+    });
+    const ordinary = await createTask(camille, list.id, { name: 'Ordinary' });
+    await createTask(camille, archived.id, { name: 'Archived list milestone', milestone: true });
+    expectStatus(
+      await send('post', `/internal/v1/lists/${archived.id}/archive`, camille, { body: {} }),
+      200,
+    );
+    expect(dated).toMatchObject({
+      milestone: true,
+      startDate: '2026-11-20',
+      dueDate: '2026-11-20',
+      recurrence: 'monthly',
+    });
+
+    const listPath = `/internal/v1/lists/${list.id}`;
+    for (const [query, keys] of [
+      ['', [undated.key, dated.key, ordinary.key]],
+      ['?milestone=true', [undated.key, dated.key]],
+      ['?milestone=false', [ordinary.key]],
+    ] as const) {
+      const response = await send('get', `${listPath}/tasks${query}`, camille);
+      expectStatus(response, 200);
+      const page = conforms(ListTasksInternalResponse, bodyOf(response));
+      expect(page.total).toBe(keys.length);
+      expect(page.items.map((task) => task.key)).toEqual(keys);
+    }
+    const groupPath = `${listPath}/task-groups?groupBy=status`;
+    const counts = await send('get', `${groupPath}&milestone=true`, camille);
+    expectStatus(counts, 200);
+    expect(conforms(CountTaskGroupsInternalResponse, bodyOf(counts)).total).toBe(2);
+
+    const path = `/internal/v1/spaces/${space.id}/milestones`;
+    expectProblem(await send('get', path, nadia), 404, 'space.not-found');
+    const first = await send('get', `${path}?limit=1`, camille);
+    expectStatus(first, 200);
+    const page = conforms(ListSpaceMilestonesInternalResponse, bodyOf(first));
+    expect(page.total).toBe(2);
+    expect(page.items.map((task) => task.key)).toEqual([dated.key]);
+    if (page.nextCursor === null) throw new Error('A second milestone page is expected.');
+    const second = await send(
+      'get',
+      `${path}?cursor=${encodeURIComponent(page.nextCursor)}`,
+      camille,
+    );
+    expectStatus(second, 200);
+    const last = conforms(ListSpaceMilestonesInternalResponse, bodyOf(second));
+    expect(last).toMatchObject({ total: 2, nextCursor: null, items: [{ key: undated.key }] });
+  });
+
+  describe('task dependency routes', () => {
+    it('replays one cross-list edge and removes it through its blocked anchor', async () => {
+      const a = await createTask(camille, produitList.id, { name: 'Terminer la documentation' });
+      const b = await createTask(camille, marketingList.id, { name: 'Publier les notes' });
+      const path = `/internal/v1/tasks/${a.key}/dependencies`;
+      const body = { otherTaskKey: b.key, direction: 'blocks' };
+      const headers = { 'Idempotency-Key': randomUUID(), 'If-Match': '"1"' };
+      const made = await send('post', path, camille, { body, headers });
+      expect(made.status).toBe(201);
+      const dependency = conforms(CreateTaskDependencyInternalResponse, made.body);
+      expect(dependency).toMatchObject({
+        blocker: { key: a.key, version: 2 },
+        blocked: { key: b.key, version: 2 },
+      });
+      expect(made.headers.etag).toBe('"2"');
+      expect(made.headers.location).toBe(`${path}/${dependency.id}`);
+
+      const replay = await send('post', path, camille, { body, headers });
+      expect(replay.status).toBe(201);
+      expect(replay.headers.location).toBe(made.headers.location);
+      expect(replay.body).toEqual(made.body);
+      const reverse = `/internal/v1/tasks/${b.key}/dependencies`;
+      const page = await send('get', reverse, camille);
+      expect(page.status).toBe(200);
+      expect(conforms(ListTaskDependenciesInternalResponse, page.body).items).toEqual([dependency]);
+      const item = await send('get', `${reverse}/${dependency.id}`, camille);
+      expect(item.status).toBe(200);
+      expect(conforms(GetTaskDependencyInternalResponse, item.body)).toEqual(dependency);
+
+      const deletion = await send('delete', `${reverse}/${dependency.id}`, camille, {
+        headers: { 'If-Match': '"2"' },
+      });
+      expect(deletion.status).toBe(204);
+      expect(deletion.headers.etag).toBe('"3"');
+      expect(await readTask(camille, a.key)).toMatchObject({ version: 3 });
+      expect(await readTask(camille, b.key)).toMatchObject({ version: 3 });
+
+      const events = await asSystem<OutboxRow>(
+        `select event_name, payload, status from outbox_events
+          where organization_id = $1 and payload ->> 'dependencyId' = $2 order by id`,
+        [atelierNordId, dependency.id],
+      );
+      expect(events.map((row) => row.event_name)).toEqual([
+        'task.dependency-added.v1',
+        'task.dependency-removed.v1',
+      ]);
+      expect(
+        conforms(taskEventSchemas['task.dependency-added.v1'], events[0]?.payload),
+      ).toMatchObject({
+        version: 2,
+        blockerVersion: 2,
+        blockedVersion: 2,
+        blockerKey: a.key,
+        blockedKey: b.key,
+      });
+      expect(
+        conforms(taskEventSchemas['task.dependency-removed.v1'], events[1]?.payload),
+      ).toMatchObject({
+        version: 3,
+        blockerVersion: 3,
+        blockedVersion: 3,
+        blockerKey: a.key,
+        blockedKey: b.key,
+      });
+    });
+
+    it('serializes concurrent disjoint endpoint writes that together would close a cycle', async () => {
+      const a = await createTask(camille, produitList.id, { name: 'Graphe A' });
+      const b = await createTask(camille, produitList.id, { name: 'Graphe B' });
+      const c = await createTask(camille, produitList.id, { name: 'Graphe C' });
+      const d = await createTask(camille, produitList.id, { name: 'Graphe D' });
+      const add = (source: TaskBody, target: TaskBody): Promise<request.Response> =>
+        send('post', `/internal/v1/tasks/${source.key}/dependencies`, camille, {
+          body: { otherTaskKey: target.key, direction: 'blocks' },
+        });
+      expect((await add(b, c)).status).toBe(201);
+      expect((await add(d, a)).status).toBe(201);
+
+      const holder = await migrator.connect();
+      let writes: Promise<readonly request.Response[]> | undefined;
+      try {
+        await holder.query('begin');
+        await holder.query('select pg_advisory_xact_lock(hashtextextended($1, 0))', [
+          `task-dependencies:${atelierNordId}`,
+        ]);
+        const result = await holder.query<{ readonly pid: number }>(
+          'select pg_backend_pid() as pid',
+        );
+        writes = Promise.all([add(a, b), add(c, d)]);
+        await vi.waitFor(
+          async () => {
+            const matches = await asSystem<{ readonly waiting: number }>(
+              `select count(*)::int as waiting
+               from pg_locks holders
+               join pg_locks waiters using (locktype, classid, objid, objsubid)
+              where holders.pid = $1 and holders.locktype = 'advisory'
+                and holders.granted and not waiters.granted`,
+              [result.rows[0]?.pid],
+            );
+            expect(matches[0]?.waiting).toBe(2);
+          },
+          { timeout: 3_000, interval: 20 },
+        );
+      } finally {
+        await holder.query('rollback');
+        holder.release();
+        await writes;
+      }
+      const answers = await writes;
+      expect(answers.map((response) => response.status).sort()).toEqual([201, 422]);
+      const refusal = answers.find((response) => response.status === 422);
+      if (refusal === undefined) throw new Error('One write should have been refused.');
+      expectProblem(refusal, 422, 'dependency.cycle');
+      expect(refusal.body).not.toHaveProperty('details');
     });
   });
 });

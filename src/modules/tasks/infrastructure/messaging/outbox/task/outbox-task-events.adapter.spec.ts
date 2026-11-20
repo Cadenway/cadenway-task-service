@@ -1,9 +1,11 @@
 import { eventSchemas } from '@cadenway/contracts/events/task-service';
 import type {
   EventName,
+  MilestoneReachedV1,
   TaskArchivedV1,
   TaskAssignedV1,
   TaskCreatedV1,
+  TaskOccurrenceCreatedV1,
   TaskPurgedV1,
   TaskStatusChangedV1,
   TaskTrashedV1,
@@ -160,6 +162,13 @@ const cad482: Omit<TaskCreatedV1, 'id' | 'occurredAt'> = {
   completedAt: null,
 };
 
+/** Ordinary task snapshots report both scheduling defaults explicitly. */
+const cad482Scheduled: Omit<TaskCreatedV1, 'id' | 'occurredAt'> = {
+  ...cad482,
+  milestone: false,
+  recurrence: 'none',
+};
+
 /** CAD-482 cancelled as a duplicate with a note, with its description and checklist. */
 const cancelledWithNote: Task = Task.restore(
   taskState({
@@ -195,7 +204,7 @@ describe('OutboxTaskEvents: the task.* events on the outbox, as the contract def
       const expected: TaskCreatedV1 = {
         id: EVENT_ID,
         occurredAt: OCCURRED_AT,
-        ...cad482,
+        ...cad482Scheduled,
         version: 1,
       };
       expect(parsed(append, 'task.created.v1')).toStrictEqual(expected);
@@ -207,7 +216,7 @@ describe('OutboxTaskEvents: the task.* events on the outbox, as the contract def
       const expected: TaskCreatedV1 = {
         id: EVENT_ID,
         occurredAt: OCCURRED_AT,
-        ...cad482,
+        ...cad482Scheduled,
         version: 1,
         key: 'CAD-483',
         parentKey: 'CAD-482',
@@ -266,7 +275,7 @@ describe('OutboxTaskEvents: the task.* events on the outbox, as the contract def
       const expected: TaskUpdatedV1 = {
         id: EVENT_ID,
         occurredAt: OCCURRED_AT,
-        ...cad482,
+        ...cad482Scheduled,
         version: 13,
         key: state.key.format(),
         listId: state.listId,
@@ -293,7 +302,7 @@ describe('OutboxTaskEvents: the task.* events on the outbox, as the contract def
       const expected: TaskUpdatedV1 = {
         id: EVENT_ID,
         occurredAt: OCCURRED_AT,
-        ...cad482,
+        ...cad482Scheduled,
         actor: { type: 'system', id: 'task-service' },
         version: 13,
         assigneeIds: [CAMILLE],
@@ -312,6 +321,148 @@ describe('OutboxTaskEvents: the task.* events on the outbox, as the contract def
       expect(parsed(outbox.appends[0], 'task.updated.v1')).toMatchObject({
         changed: ['priority', 'name'],
       });
+    });
+  });
+
+  describe('milestone and recurrence facts', () => {
+    it('keeps scheduling values in created and updated snapshots and reports a reset', async () => {
+      const task: Task = Task.restore(
+        taskState({
+          version: 1,
+          status: 'todo',
+          startDate: '2026-11-12',
+          estimateMinutes: null,
+          milestone: true,
+          recurrence: 'weekly',
+        }),
+      );
+      await events.taskCreated(task, camille);
+      await events.taskUpdated(
+        Task.restore({ ...task.snapshot, version: 2, milestone: false, recurrence: 'none' }),
+        ['milestone', 'recurrence'],
+        camille,
+      );
+
+      expect(parsed(outbox.appends[0], 'task.created.v1')).toMatchObject({
+        milestone: true,
+        recurrence: 'weekly',
+      });
+      expect(parsed(outbox.appends[1], 'task.updated.v1')).toMatchObject({
+        milestone: false,
+        recurrence: 'none',
+        changed: ['milestone', 'recurrence'],
+      });
+    });
+
+    it('appends a completed undated milestone and the supplied watcher audience', async () => {
+      const task: Task = Task.restore(
+        taskState({
+          version: 13,
+          status: 'done',
+          startDate: null,
+          dueDate: null,
+          estimateMinutes: null,
+          milestone: true,
+          completedAt: new Date(OCCURRED_AT),
+        }),
+      );
+      await events.milestoneReached(task, [INES], camille);
+
+      const expected: MilestoneReachedV1 = {
+        id: EVENT_ID,
+        occurredAt: OCCURRED_AT,
+        organizationId: ATELIER_NORD,
+        actor: camille,
+        version: 13,
+        key: 'CAD-482',
+        spaceId: PRODUIT,
+        listId: SPRINT_14,
+        name: cad482.name,
+        dueDate: null,
+        completedAt: OCCURRED_AT,
+        watcherIds: [INES],
+      };
+      const append: RecordedAppend | undefined = outbox.appends[0];
+      expect(append?.transaction).toBe(transaction);
+      expect(append?.schemas).toBe(eventSchemas);
+      expect(append?.data).not.toHaveProperty('description');
+      expect(append?.data).not.toHaveProperty('checklist');
+      expect(parsed(append, 'milestone.reached.v1')).toStrictEqual(expected);
+      expect(log).toEqual(['append milestone.reached.v1', 'wake']);
+    });
+
+    it('uses the predecessor version and the successor due date and key for the occurrence fact', async () => {
+      const successorKey: TaskKey = TaskKey.of('CAD', 495);
+      const predecessor: Task = Task.restore(
+        taskState({
+          version: 13,
+          status: 'done',
+          completedAt: new Date(OCCURRED_AT),
+          recurrence: 'none',
+          nextOccurrenceKey: successorKey,
+        }),
+      );
+      const successor: Task = Task.restore(
+        taskState({
+          key: successorKey,
+          version: 1,
+          status: 'todo',
+          dueDate: '2026-11-19',
+          startDate: '2026-11-18',
+          recurrence: 'weekly',
+        }),
+      );
+      await events.taskOccurrenceCreated(predecessor, successor, 'weekly', camille);
+
+      const expected: TaskOccurrenceCreatedV1 = {
+        id: EVENT_ID,
+        occurredAt: OCCURRED_AT,
+        organizationId: ATELIER_NORD,
+        actor: camille,
+        version: 13,
+        predecessorKey: 'CAD-482',
+        predecessorVersion: 13,
+        successorKey: 'CAD-495',
+        spaceId: PRODUIT,
+        listId: SPRINT_14,
+        dueDate: '2026-11-19',
+        cadence: 'weekly',
+      };
+      const append: RecordedAppend | undefined = outbox.appends[0];
+      expect(append?.transaction).toBe(transaction);
+      expect(append?.schemas).toBe(eventSchemas);
+      expect(append?.data).not.toHaveProperty('name');
+      expect(append?.data).not.toHaveProperty('description');
+      expect(append?.data).not.toHaveProperty('checklist');
+      expect(parsed(append, 'task.occurrence-created.v1')).toStrictEqual(expected);
+      expect(log).toEqual(['append task.occurrence-created.v1', 'wake']);
+    });
+
+    it('refuses to append a reached milestone without a completion instant', async () => {
+      const task: Task = Task.restore(
+        taskState({
+          status: 'todo',
+          milestone: true,
+          startDate: '2026-11-12',
+          estimateMinutes: null,
+        }),
+      );
+      await expect(events.milestoneReached(task, [], camille)).rejects.toThrow(
+        'requires a completion instant',
+      );
+      expect(log).toEqual([]);
+    });
+
+    it('refuses to append an occurrence without a successor due date', async () => {
+      await expect(
+        events.taskOccurrenceCreated(
+          Task.restore(taskState()),
+          Task.restore(subtaskState()),
+          'weekly',
+          camille,
+        ),
+      ).rejects.toThrow('requires a successor due date');
+      expect(log).toEqual([]);
     });
   });
 

@@ -9,9 +9,9 @@ import type { CreateTaskBody } from '../../dto/input/task/create-task-body.dto.j
  *
  * @description
  * Maps the body of a task creation to the input of the use case: the members the contract lets
- * out or sends as `null` become `null`, the accounts to assign are lower-cased (the schema accepts
- * a UUID in either case, the use case compares them as stored) and each subtask is reduced to its
- * name, since it takes everything else from the task.
+ * out or sends as `null` become `null`. A milestone's omitted start stays absent so the domain
+ * can align it with the due date. The accounts to assign are lower-cased and each subtask is
+ * reduced to its name.
  *
  * @param {Caller} caller - The organization and the user of the verified token.
  * @param {string} listId - The list of the path.
@@ -42,8 +42,12 @@ export function toCreateTaskInput(
     priority: body.priority,
     assigneeIds: body.assigneeIds.map((userId: string): string => userId.toLowerCase()),
     dueDate: body.dueDate ?? null,
-    startDate: body.startDate ?? null,
+    ...(body.milestone === true && body.startDate === undefined
+      ? {}
+      : { startDate: body.startDate ?? null }),
     estimateMinutes: body.estimateMinutes ?? null,
+    ...(body.milestone === undefined ? {} : { milestone: body.milestone }),
+    ...(body.recurrence === undefined ? {} : { recurrence: body.recurrence }),
     labels: body.labels,
     subtaskNames: body.subtasks.map((subtask: { name: string }): string => subtask.name),
   };

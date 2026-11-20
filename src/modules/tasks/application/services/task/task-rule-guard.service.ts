@@ -10,6 +10,10 @@ import { ChecklistLimitReachedError } from '../../../domain/errors/task/checklis
 import { InvalidDescriptionMentionsError } from '../../../domain/errors/task/invalid-description-mentions.error.js';
 import { LabelLimitReachedError } from '../../../domain/errors/task/label-limit-reached.error.js';
 import { ListInvalidError } from '../../../domain/errors/task/list-invalid.error.js';
+import { MilestoneDatesInvalidError } from '../../../domain/errors/task/milestone-dates-invalid.error.js';
+import { MilestoneStatusInvalidError } from '../../../domain/errors/task/milestone-status-invalid.error.js';
+import { RecurrenceAlreadySpawnedError } from '../../../domain/errors/task/recurrence-already-spawned.error.js';
+import { RecurrenceDateOutOfRangeError } from '../../../domain/errors/task/recurrence-date-out-of-range.error.js';
 import { StartDateInvalidError } from '../../../domain/errors/task/start-date-invalid.error.js';
 import { StatusHiddenError } from '../../../domain/errors/task/status-hidden.error.js';
 import { TaskArchivedError } from '../../../domain/errors/task/task-archived.error.js';
@@ -95,6 +99,18 @@ export class TaskRuleGuard {
     }
     if (error instanceof StartDateInvalidError) {
       return new TaskRefusal({ reason: 'start-date-invalid' });
+    }
+    if (error instanceof MilestoneStatusInvalidError) {
+      return new TaskRefusal({ reason: 'milestone-status-invalid' });
+    }
+    if (error instanceof MilestoneDatesInvalidError) {
+      return new TaskRefusal({ reason: 'milestone-dates-invalid' });
+    }
+    if (error instanceof RecurrenceAlreadySpawnedError) {
+      return new TaskRefusal({ reason: 'recurrence-already-spawned' });
+    }
+    if (error instanceof RecurrenceDateOutOfRangeError) {
+      return new TaskRefusal({ reason: 'recurrence-date-out-of-range' });
     }
     if (error instanceof ListInvalidError) {
       return new TaskRefusal({ reason: 'list-invalid' });

@@ -77,7 +77,7 @@ function labelCondition(labelKeys: readonly string[]): SQL {
  * @param {string} search - The text, as sent.
  * @returns {SQL} The condition.
  */
-function searchCondition(search: string): SQL {
+export function searchCondition(search: string): SQL {
   const key: SQL = sql`lower(${tasks.keyPrefix} || '-' || ${tasks.keyNumber}::text)`;
   return sql`(${foldText(search)} <> '' and (strpos(${foldText(tasks.name)}, ${foldText(search)}) > 0 or strpos(${key}, ${foldText(search)}) > 0 or exists (select 1 from ${taskLabels} where ${taskLabels.organizationId} = ${tasks.organizationId} and ${taskLabels.taskId} = ${tasks.id} and strpos(${foldText(taskLabels.labelKey)}, ${foldText(search)}) > 0)))`;
 }
@@ -113,6 +113,7 @@ export function taskFilterCondition(
     filter.search === null ? undefined : searchCondition(filter.search),
     filter.dueFrom === null ? undefined : sql`${tasks.dueDate} >= ${filter.dueFrom}::date`,
     filter.dueTo === null ? undefined : sql`${tasks.dueDate} <= ${filter.dueTo}::date`,
+    filter.milestone == null ? undefined : eq(tasks.milestone, filter.milestone),
   ];
   return and(...conditions) ?? sql`true`;
 }

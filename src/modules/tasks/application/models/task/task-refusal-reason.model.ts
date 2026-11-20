@@ -45,9 +45,14 @@ export type TaskRefusalReason =
   | { readonly reason: 'space-not-found' }
   | { readonly reason: 'user-not-found' }
   | { readonly reason: 'checklist-item-not-found' }
+  | { readonly reason: 'dependency-not-found' }
+  | { readonly reason: 'dependency-cycle' }
+  | { readonly reason: 'dependency-already-exists' }
+  | { readonly reason: 'dependency-limit-reached' }
+  | { readonly reason: 'list-duplicate-limit-reached' }
   | {
       readonly reason: 'role-insufficient';
-      readonly role: AccessRole;
+      readonly role: AccessRole | null;
       readonly requiredRole?: 'comment';
     }
   | { readonly reason: 'task-archived'; readonly key: string }
@@ -77,6 +82,10 @@ export type TaskRefusalReason =
   | { readonly reason: 'watcher-recipient-invalid' }
   | { readonly reason: 'watcher-limit-reached' }
   | { readonly reason: 'start-date-invalid' }
+  | { readonly reason: 'milestone-status-invalid' }
+  | { readonly reason: 'milestone-dates-invalid' }
+  | { readonly reason: 'recurrence-already-spawned' }
+  | { readonly reason: 'recurrence-date-out-of-range' }
   | { readonly reason: 'list-invalid' }
   | { readonly reason: 'parent-invalid'; readonly parentKey: string }
   | { readonly reason: 'subtask-depth-exceeded' }
