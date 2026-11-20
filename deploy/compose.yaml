@@ -9,7 +9,8 @@
 #
 # INTERNAL_TOKEN_TRUSTED_ISSUERS lists who may call this service: the API gateway, the realtime
 # gateway (access checks before a socket joins a room), and automation-service and
-# integration-service (actions only). The folded scalar gives the service one line of JSON.
+# integration-service (actions only). Document trust for the dedicated space proof is optional
+# until its signer is provisioned. The folded scalar gives the service one line of JSON.
 #
 # MIGRATION_DATABASE_URL is deliberately absent: the GitOps agent of cadenway-ops hands the
 # migrator's URL to the one-off migration container only (docs/database.md there), so the running
@@ -25,6 +26,7 @@ services:
       NATS_USER: task
       NATS_PASSWORD: ${TASK_NATS_PASSWORD}
       INTERNAL_TOKEN_AUDIENCE: task-service
+      DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: ${DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS:-}
       # Off until the release that turns the trash on (docs/development.md, "Trash writes").
       TRASH_WRITES_ENABLED: ${TASK_SERVICE_TRASH_WRITES_ENABLED:-false}
       INTERNAL_TOKEN_TRUSTED_ISSUERS: >-

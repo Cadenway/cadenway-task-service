@@ -24,7 +24,8 @@ import { z } from 'zod';
  *   accepts an anonymous local broker, but every broker of Cadenway refuses a connection without
  *   them.
  * - `INTERNAL_TOKEN_AUDIENCE` and `INTERNAL_TOKEN_TRUSTED_ISSUERS`: the `aud` this service accepts
- *   and the public keys of the backends allowed to call it.
+ *   and the public keys of the backends allowed to call it. A hosted environment can pass the
+ *   Document issuer's keys separately in `DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS`.
  *
  * - `TRASH_WRITES_ENABLED` (`TrashConfig`): whether the writes that put something in the trash or
  *   make a tombstone are served ("Supprimer la tâche", `DELETE` of a list and of a space, "Vider la
@@ -71,6 +72,26 @@ export interface TrashConfig {
   // #endregion
 }
 
+/** Parses the optional hosted Document key list with the kit's public issuer rules. */
+const documentIssuerConfig = z
+  .string()
+  .trim()
+  .optional()
+  .transform((input, context): InternalTokenVerifierConfig['INTERNAL_TOKEN_TRUSTED_ISSUERS'] => {
+    if (input === undefined || input === '' || input === 'null') return {};
+    try {
+      const keys: unknown = JSON.parse(`[${input}]`);
+      const parsed = internalTokenVerifierConfigShape.INTERNAL_TOKEN_TRUSTED_ISSUERS.safeParse(
+        JSON.stringify({ 'document-service': keys }),
+      );
+      if (parsed.success) return parsed.data;
+    } catch {
+      // Report the variable without its contents.
+    }
+    context.addIssue({ code: 'custom', message: 'Expected comma-separated public Ed25519 JWKs.' });
+    return z.NEVER;
+  });
+
 /**
  * Constant appConfigSchema
  *
@@ -82,13 +103,22 @@ export interface TrashConfig {
  *
  * @type {z.ZodType<AppConfig>}
  */
-export const appConfigSchema: z.ZodType<AppConfig> = z.object({
-  ...baseConfigShape,
-  ...databaseConfigShape,
-  ...messagingConfigShape,
-  ...internalTokenVerifierConfigShape,
-  TRASH_WRITES_ENABLED: z.stringbool().default(false),
-});
+export const appConfigSchema: z.ZodType<AppConfig> = z
+  .object({
+    ...baseConfigShape,
+    ...databaseConfigShape,
+    ...messagingConfigShape,
+    ...internalTokenVerifierConfigShape,
+    DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: documentIssuerConfig,
+    TRASH_WRITES_ENABLED: z.stringbool().default(false),
+  })
+  .transform(({ DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS, ...config }): AppConfig => ({
+    ...config,
+    INTERNAL_TOKEN_TRUSTED_ISSUERS: {
+      ...DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS,
+      ...config.INTERNAL_TOKEN_TRUSTED_ISSUERS,
+    },
+  }));
 
 /**
  * Interface MigrationConfig

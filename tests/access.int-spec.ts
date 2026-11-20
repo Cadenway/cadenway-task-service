@@ -37,6 +37,7 @@ import {
   ListTaskActivityInternalResponse,
   ListTasksInternalResponse,
   RefuseAccessRequestInternalResponse,
+  ResolveDocumentSpaceAccessInternalResponse,
   SetListGrantInternalResponse,
   SetSpaceGrantInternalResponse,
   UpdateListInternalResponse,
@@ -67,11 +68,13 @@ import type { z } from 'zod';
 
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
+import { configureDocumentSpaceAccessCache } from '../src/infrastructure/http/document-space-access-cache.js';
 import { DrizzleAccessRequestRepository } from '../src/modules/access-requests/infrastructure/persistence/drizzle/repositories/access-request/drizzle-access-request.repository.js';
 import { DrizzleRequestAttemptRepository } from '../src/modules/access-requests/infrastructure/persistence/drizzle/repositories/attempt/drizzle-request-attempt.repository.js';
 import type { CleanUpRemovedMemberInput } from '../src/modules/member-lifecycle/application/use-cases/commands/membership/clean-up-removed-member/clean-up-removed-member.input.js';
 import type { CleanUpRemovedMemberOutput } from '../src/modules/member-lifecycle/application/use-cases/commands/membership/clean-up-removed-member/clean-up-removed-member.output.js';
 import { CleanUpRemovedMember } from '../src/modules/member-lifecycle/application/use-cases/commands/membership/clean-up-removed-member/clean-up-removed-member.use-case.js';
+import { FindOrganizationMember } from '../src/modules/organization-members/public/membership/find-organization-member.js';
 import type { GrantedResource } from '../src/modules/spaces/application/models/access/granted-resource.model.js';
 import { DrizzleGrantRepository } from '../src/modules/spaces/infrastructure/persistence/drizzle/repositories/access/drizzle-grant.repository.js';
 import { DrizzleTaskListRepository } from '../src/modules/spaces/infrastructure/persistence/drizzle/repositories/list/drizzle-task-list.repository.js';
@@ -215,7 +218,7 @@ interface OutboxRow {
 }
 
 /** The issuers the service trusts. */
-type Issuer = 'api-gateway' | 'realtime-gateway';
+type Issuer = 'api-gateway' | 'realtime-gateway' | 'document-service';
 
 /** A space, as the routes answer it. */
 type SpaceBody = z.output<typeof GetSpaceInternalResponse>;
@@ -652,6 +655,7 @@ function summarize(label: string, document: PlanDocument): PlanLine {
 describe('the access model: grants, the switch, the effective role and access requests', () => {
   const apiGateway = keyPair('test-api-gateway');
   const realtimeGateway = keyPair('test-realtime-gateway');
+  const documentService = keyPair('test-document-service');
   let app: NestExpressApplication | undefined;
   const signers = new Map<Issuer, InternalTokenSigner>();
   let migrator: pg.Pool;
@@ -679,6 +683,7 @@ describe('the access model: grants, the switch, the effective role and access re
   let demoTask: TaskBody;
   let calendarTask: TaskBody;
   let checklistItemId = '';
+  let documentPrivateSpaceId = '';
   const requests = new Map<string, string>();
 
   /**
@@ -1259,6 +1264,7 @@ describe('the access model: grants, the switch, the effective role and access re
       JSON.stringify({
         'api-gateway': [apiGateway.publicJwk],
         'realtime-gateway': [realtimeGateway.publicJwk],
+        'document-service': [documentService.publicJwk],
       }),
     );
 
@@ -1276,6 +1282,7 @@ describe('the access model: grants, the switch, the effective role and access re
       },
       logDestination: { write: (): void => undefined },
     });
+    configureDocumentSpaceAccessCache(app);
     await app.init();
     signers.set(
       'api-gateway',
@@ -1289,6 +1296,13 @@ describe('the access model: grants, the switch, the effective role and access re
       await InternalTokenSigner.create({
         issuer: 'realtime-gateway',
         privateJwk: realtimeGateway.privateJwk,
+      }),
+    );
+    signers.set(
+      'document-service',
+      await InternalTokenSigner.create({
+        issuer: 'document-service',
+        privateJwk: documentService.privateJwk,
       }),
     );
 
@@ -1723,6 +1737,153 @@ describe('the access model: grants, the switch, the effective role and access re
         changedUserIds: [nadia.userId],
       });
       sprint14 = await readList(camille, sprint14.id);
+    });
+
+    it('gives Document only current direct-space roles for active members', async () => {
+      const path = '/internal/v1/spaces/access/resolve';
+      const options = { issuer: 'document-service' } as const;
+      const shared = await createSpace(camille, { name: 'Documents partagés', prefix: 'DPS' });
+      await grant(camille, 'lists', shared.firstList.id, nadia.userId, 'edit');
+      const direct = await createSpace(hugo, {
+        name: 'Documents équipe',
+        prefix: 'DPE',
+        visibility: 'private',
+      });
+      documentPrivateSpaceId = direct.space.id;
+      await grant(hugo, 'spaces', direct.space.id, lea.userId, 'view');
+      const hidden = await createSpace(hugo, {
+        name: 'Documents privés',
+        prefix: 'DPR',
+        visibility: 'private',
+      });
+      await grant(hugo, 'lists', hidden.firstList.id, lea.userId, 'view');
+      const foreign = await createSpace(
+        solene,
+        {
+          name: 'Atelier Delta',
+          prefix: 'DLT',
+          visibility: 'private',
+        },
+        atelierDeltaId,
+      );
+
+      const proof = await send('post', path, lea, {
+        ...options,
+        body: {
+          spaceIds: [
+            direct.space.id.toUpperCase(),
+            hidden.space.id,
+            shared.space.id,
+            direct.space.id,
+            foreign.space.id,
+          ],
+        },
+      });
+      expect(proof.status).toBe(200);
+      expect(proof.headers['cache-control']).toBe('no-store');
+      expect(conforms(ResolveDocumentSpaceAccessInternalResponse, bodyOf(proof))).toEqual({
+        results: [
+          { spaceId: direct.space.id, role: 'view' },
+          { spaceId: shared.space.id, role: 'edit' },
+        ],
+      });
+
+      const guest = await send('post', path, nadia, {
+        ...options,
+        body: { spaceIds: [shared.space.id, direct.space.id] },
+      });
+      expect(guest.status).toBe(200);
+      expect(conforms(ResolveDocumentSpaceAccessInternalResponse, bodyOf(guest))).toEqual({
+        results: [],
+      });
+
+      const empty = await send('post', path, lea, { ...options, body: { spaceIds: [] } });
+      expect(empty.status).toBe(200);
+      expect(conforms(ResolveDocumentSpaceAccessInternalResponse, bodyOf(empty))).toEqual({
+        results: [],
+      });
+      const inactive = await send(
+        'post',
+        path,
+        { userId: randomUUID() },
+        {
+          ...options,
+          body: { spaceIds: [] },
+        },
+      );
+      expectProblem(inactive, 404, 'organization.not-found');
+      expect(inactive.headers['cache-control']).toBe('no-store');
+
+      const wrongIssuer = await send('post', path, lea, { body: { spaceIds: [] } });
+      expectProblem(wrongIssuer, 403, 'auth.issuer-not-allowed');
+      expect(wrongIssuer.headers['cache-control']).toBe('no-store');
+      const noOrganization = await signers.get('document-service')?.sign('task-service', {
+        actor: { type: 'user', id: lea.userId },
+        organizationId: null,
+      });
+      if (noOrganization === undefined) throw new Error('No signer for Document.');
+      const unscoped = await build('post', path, noOrganization, { body: { spaceIds: [] } });
+      expect(unscoped.status).toBe(403);
+      expect(unscoped.headers['cache-control']).toBe('no-store');
+      const systemActor = await signers.get('document-service')?.sign('task-service', {
+        actor: { type: 'system', id: null },
+        organizationId: atelierNordId,
+      });
+      if (systemActor === undefined) throw new Error('No signer for Document.');
+      const system = await build('post', path, systemActor, { body: { spaceIds: [] } });
+      expect(system.status).toBe(403);
+      expect(system.headers['cache-control']).toBe('no-store');
+      const overLimit = await send('post', path, lea, {
+        ...options,
+        body: { spaceIds: Array.from({ length: 101 }, () => randomUUID()) },
+      });
+      expect(overLimit.status).toBe(400);
+      expect(overLimit.headers['cache-control']).toBe('no-store');
+      await asSystem(
+        `delete from list_grants where organization_id = $1 and list_id = any($2::uuid[])`,
+        [atelierNordId, [hidden.firstList.id, shared.firstList.id]],
+      );
+    });
+
+    it('keeps the membership and direct-space proof in one repeatable-read snapshot', async () => {
+      const path = '/internal/v1/spaces/access/resolve';
+      const membership = service().get(FindOrganizationMember);
+      const readMembership = membership.execute.bind(membership);
+      let changed = false;
+      const hook = vi.spyOn(membership, 'execute').mockImplementation(async (input) => {
+        const result = await readMembership(input);
+        if (!changed && input.userId === lea.userId) {
+          changed = true;
+          await asSystem(
+            `delete from space_grants
+              where organization_id = $1 and user_id = $2 and space_id = $3`,
+            [atelierNordId, lea.userId, documentPrivateSpaceId],
+          );
+        }
+        return result;
+      });
+      try {
+        const response = await send('post', path, lea, {
+          issuer: 'document-service',
+          body: { spaceIds: [documentPrivateSpaceId] },
+        });
+        expect(response.status).toBe(200);
+        expect(conforms(ResolveDocumentSpaceAccessInternalResponse, bodyOf(response))).toEqual({
+          results: [{ spaceId: documentPrivateSpaceId, role: 'view' }],
+        });
+        expect(changed).toBe(true);
+        hook.mockRestore();
+        const current = await send('post', path, lea, {
+          issuer: 'document-service',
+          body: { spaceIds: [documentPrivateSpaceId] },
+        });
+        expect(current.status).toBe(200);
+        expect(conforms(ResolveDocumentSpaceAccessInternalResponse, bodyOf(current))).toEqual({
+          results: [],
+        });
+      } finally {
+        hook.mockRestore();
+      }
     });
 
     it('lets a plain member with edit on a list share it, and refuses the grantees who see a list with view or comment with 403 access.role-insufficient', async () => {

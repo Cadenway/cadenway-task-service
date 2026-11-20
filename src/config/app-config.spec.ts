@@ -54,6 +54,41 @@ describe('appConfigSchema', () => {
     ).toThrow(/DATABASE_TRANSACTION_MAX_ATTEMPTS/u);
   });
 
+  it('adds optional hosted Document trust without replacing explicit issuers', () => {
+    const key = {
+      kty: 'OKP',
+      crv: 'Ed25519',
+      x: 'MVZQc5h6AXxnMpaBTaYw5kI-yWWawl6zp8Srhuf5NK0',
+      kid: 'fixture-document',
+    };
+    const input = { ...complete, DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: JSON.stringify(key) };
+    expect(loadConfig(appConfigSchema, input).INTERNAL_TOKEN_TRUSTED_ISSUERS).toMatchObject({
+      'api-gateway': [{ kid: 'local-placeholder' }],
+      'document-service': [key],
+    });
+    const explicit = { ...key, kid: 'explicit-document' };
+    expect(
+      loadConfig(appConfigSchema, {
+        ...input,
+        INTERNAL_TOKEN_TRUSTED_ISSUERS: JSON.stringify({ 'document-service': [explicit] }),
+      }).INTERNAL_TOKEN_TRUSTED_ISSUERS,
+    ).toEqual({ 'document-service': [explicit] });
+    for (const disabled of ['', 'null']) {
+      expect(
+        loadConfig(appConfigSchema, {
+          ...complete,
+          DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: disabled,
+        }).INTERNAL_TOKEN_TRUSTED_ISSUERS,
+      ).not.toHaveProperty('document-service');
+    }
+    expect(() =>
+      loadConfig(appConfigSchema, {
+        ...complete,
+        DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: 'invalid-fixture',
+      }),
+    ).toThrow(/DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS/u);
+  });
+
   it('serves the writes of the trash only when TRASH_WRITES_ENABLED says true', () => {
     expect(
       loadConfig(appConfigSchema, { ...complete, TRASH_WRITES_ENABLED: 'true' }),
