@@ -148,6 +148,7 @@ export class DeleteSpace {
         at,
       );
       await store.libraryCleanup.removeListViews(input.organizationId, deletedListIds);
+      await store.libraryCleanup.revokeListIntake(input.organizationId, deletedListIds);
       await store.libraryCleanup.removeSpaceTemplates(input.organizationId, space.snapshot.id);
       await store.events.spaceDeleted(space, actor);
       await store.trashQueue.enqueue({

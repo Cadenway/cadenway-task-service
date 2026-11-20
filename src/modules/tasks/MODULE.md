@@ -52,21 +52,23 @@ the archive and the deletion of a list; this module never writes a list.
 
 ## Public entry points
 
-| Entry point                                           | Consumers                                                                            |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `tasks.module`                                        | access-requests, deletion-lifecycle, member-lifecycle, task-comments, task-templates |
-| `public/assignee/unassign-removed-member`             | member-lifecycle                                                                     |
-| `public/watcher/remove-member-watcher-overrides`      | member-lifecycle                                                                     |
-| `public/task/record-comment-activity`                 | task-comments                                                                        |
-| `public/task/begin-comment`                           | task-comments                                                                        |
-| `public/task/resolve-comment-task`                    | task-comments                                                                        |
-| `public/task/find-task-reference`                     | access-requests                                                                      |
-| `public/task/find-task-references`                    | access-requests                                                                      |
-| `public/trash/trash-deleted-list-tasks`               | deletion-lifecycle                                                                   |
-| `public/trash/purge-trash-batch`                      | deletion-lifecycle                                                                   |
-| `public/trash/list-organizations-with-trash-to-purge` | deletion-lifecycle                                                                   |
-| `public/trash/list-untrashed-task-ids`                | deletion-lifecycle                                                                   |
-| `public/task/read-task-template-source`               | task-templates                                                                       |
+| Entry point                                           | Consumers                                                                                    |
+| ----------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `tasks.module`                                        | access-requests, deletion-lifecycle, intake, member-lifecycle, task-comments, task-templates |
+| `public/intake/create-intake-task`                    | intake                                                                                       |
+| `public/intake/resolve-intake-contact-task`           | intake                                                                                       |
+| `public/assignee/unassign-removed-member`             | member-lifecycle                                                                             |
+| `public/watcher/remove-member-watcher-overrides`      | member-lifecycle                                                                             |
+| `public/task/record-comment-activity`                 | task-comments                                                                                |
+| `public/task/begin-comment`                           | task-comments                                                                                |
+| `public/task/resolve-comment-task`                    | task-comments                                                                                |
+| `public/task/find-task-reference`                     | access-requests                                                                              |
+| `public/task/find-task-references`                    | access-requests                                                                              |
+| `public/trash/trash-deleted-list-tasks`               | deletion-lifecycle                                                                           |
+| `public/trash/purge-trash-batch`                      | deletion-lifecycle                                                                           |
+| `public/trash/list-organizations-with-trash-to-purge` | deletion-lifecycle                                                                           |
+| `public/trash/list-untrashed-task-ids`                | deletion-lifecycle                                                                           |
+| `public/task/read-task-template-source`               | task-templates                                                                               |
 
 `BeginComment` and `RecordCommentActivity` are exported to task-comments for an authorized task
 version advance and comment activity creation, excerpt update or removal inside the caller's transaction.

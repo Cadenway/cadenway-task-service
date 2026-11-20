@@ -78,6 +78,9 @@ describe('DeleteSpace: who manages a space deletes it with its lists ("Supprimer
       { operation: 'views', organizationId: ATELIER_NORD, targetIds: [BACKLOG] },
       { operation: 'templates', organizationId: ATELIER_NORD, targetIds: [PRODUIT] },
     ]);
+    expect(spaces.intakeCleanupCalls).toEqual([
+      { operation: 'revoke', organizationId: ATELIER_NORD, listIds: [BACKLOG] },
+    ]);
   });
 
   it('rolls space and list tombstones back if library cleanup fails', async () => {

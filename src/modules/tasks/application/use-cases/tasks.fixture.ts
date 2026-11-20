@@ -3020,6 +3020,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
           return Promise.resolve();
         },
       },
+      intakeContacts: { purge: (): Promise<void> => Promise.resolve() },
       tasks: {
         findByKey: (organizationId: string, key: TaskKey, lock: boolean): Promise<Task | null> => {
           this.trace.push(lock ? 'tasks.findByKey:lock' : 'tasks.findByKey:read');

@@ -134,6 +134,53 @@ function bigEntry(
 }
 
 describe('PurgeTrashBatch: one batch of the erasure of the trash of an organization', () => {
+  it('cleans only the contacts of the tasks erased in each bounded part', async () => {
+    const { large } = bigEntry();
+    const cleaned: string[][] = [];
+    const work: TasksUnitOfWork = {
+      run: <TResult>(operation: (store: TasksStore) => Promise<TResult>): Promise<TResult> =>
+        large.run((store) =>
+          operation({
+            ...store,
+            intakeContacts: {
+              purge: (organizationId, taskIds) => {
+                expect(organizationId).toBe(ATELIER_NORD);
+                cleaned.push([...taskIds]);
+                return Promise.resolve();
+              },
+            },
+          }),
+        ),
+      runReadOnly: (operation, options) => large.runReadOnly(operation, options),
+    };
+    const batch = new PurgeTrashBatch(work, new InMemorySpaceDirectory());
+    await batch.execute({ organizationId: ATELIER_NORD });
+    await batch.execute({ organizationId: ATELIER_NORD });
+    expect(cleaned.map((ids) => ids.length)).toEqual([500, 26]);
+    expect(new Set(cleaned.flat()).size).toBe(526);
+    expect(cleaned[0]?.[0]).toBe(CAD_482);
+  });
+
+  it('rolls back the erasure when contact cleanup fails', async () => {
+    const { tasks, directory } = atelierNord({ trashedAt: DUE }, { trashedAt: DUE });
+    const work: TasksUnitOfWork = {
+      run: <TResult>(operation: (store: TasksStore) => Promise<TResult>): Promise<TResult> =>
+        tasks.run((store) =>
+          operation({
+            ...store,
+            intakeContacts: { purge: () => Promise.reject(new Error('contact cleanup failed')) },
+          }),
+        ),
+      runReadOnly: (operation, options) => tasks.runReadOnly(operation, options),
+    };
+    await expect(
+      new PurgeTrashBatch(work, directory).execute({ organizationId: ATELIER_NORD }),
+    ).rejects.toThrow('contact cleanup failed');
+    expect(tasks.trashEntries.has(CAD_482_ENTRY)).toBe(true);
+    expect(tasks.tasks.has(CAD_482)).toBe(true);
+    expect(tasks.events).toHaveLength(0);
+  });
+
   it('erases the entries handed over first, with the requester of "Vider la corbeille"', async () => {
     const { tasks, useCase } = atelierNord(
       { purgeRequest: { at: NOW, by: camille } },

@@ -22,6 +22,7 @@ import { jobQueues } from './config/job-queues.js';
 import { AccessRequestsModule } from './modules/access-requests/access-requests.module.js';
 import { DeletionLifecycleModule } from './modules/deletion-lifecycle/deletion-lifecycle.module.js';
 import { FavoritesModule, FavoritesStorageModule } from './modules/favorites/favorites.module.js';
+import { IntakeModule, IntakeStorageModule } from './modules/intake/intake.module.js';
 import { MemberLifecycleModule } from './modules/member-lifecycle/member-lifecycle.module.js';
 import { OrganizationMembersModule } from './modules/organization-members/organization-members.module.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
@@ -206,6 +207,7 @@ function runJobInOrganization(
     // Register only the lifecycle ports globally so the owning capabilities can clean up
     // in the caller's transaction without importing the modules that depend on their reads.
     FavoritesStorageModule,
+    IntakeStorageModule,
     SavedViewsStorageModule,
     TaskTemplatesStorageModule,
     SpacesModule,
@@ -217,6 +219,7 @@ function runJobInOrganization(
     TaskTemplatesModule,
     SavedViewsModule,
     FavoritesModule,
+    IntakeModule,
   ],
 })
 export class AppModule {}
