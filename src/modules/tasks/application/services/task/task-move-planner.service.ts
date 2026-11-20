@@ -96,6 +96,8 @@ export class TaskMovePlanner {
   ): Promise<PlannedChange> {
     const { task, placement: current } = located;
     const { listId, parentKey, ...fields } = change;
+    // Custom values are validated separately against the resolved destination space.
+    delete fields.customFieldValues;
     const target: ListPlacement = await this.resolveList(task, current, viewer, listId);
     const moves: boolean = target.list.id !== current.list.id;
     let statuses: SpaceStatusUse = target.space.statuses;

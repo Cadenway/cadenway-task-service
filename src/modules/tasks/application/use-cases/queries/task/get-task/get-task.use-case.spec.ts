@@ -30,6 +30,7 @@ import {
 } from '../../../tasks.fixture.js';
 
 import type { GetTaskInput } from './get-task.input.js';
+import type { CustomFieldRepository } from '../../../../ports/outbound/persistence/custom-field/custom-field-repository.port.js';
 import { GetTask } from './get-task.use-case.js';
 
 /**
@@ -65,6 +66,64 @@ function atelierNord(stored = [taskState()]): {
 }
 
 describe('GetTask: a member reads a task of a list they see', () => {
+  it('keeps the authorized space when the task is subsequently moved', async () => {
+    const oldSpace = taskState().spaceId;
+    const oldField = '019a700a-1234-7567-89ab-cdef01234567';
+    const hiddenField = '019a700a-1234-7567-89ab-cdef01234568';
+    const customFields: CustomFieldRepository = {
+      allocateId: () => Promise.resolve(oldField),
+      activeDefinitions: () => Promise.resolve([]),
+      create: () => Promise.resolve(),
+      saveDefinitions: () => Promise.resolve(),
+      retire: () => Promise.resolve(),
+      hasNegativeValues: () => Promise.resolve(false),
+      valuesForTasks: (_organizationId, spaceId) =>
+        Promise.resolve([
+          { taskId: CAD_482, fieldId: spaceId === oldSpace ? oldField : hiddenField, value: 1 },
+        ]),
+      valuesForTaskPage: () => Promise.resolve([]),
+      applyValues: () => Promise.resolve(),
+      clearTasks: () => Promise.resolve(),
+    };
+    const tasks = new InMemoryTasks({
+      tasks: [taskState({ spaceId: DESIGN })],
+      customFields,
+    });
+
+    const values = await tasks.run((store) =>
+      store.reader.customFieldValues(ATELIER_NORD, [{ taskId: CAD_482, spaceId: oldSpace }]),
+    );
+
+    expect(values.get(CAD_482)).toEqual({ [oldField]: 1 });
+  });
+
+  it('loads active custom field values for the visible task', async () => {
+    const fieldId = '019a700a-1234-7567-89ab-cdef01234567';
+    const customFields: CustomFieldRepository = {
+      allocateId: () => Promise.resolve(fieldId),
+      activeDefinitions: () => Promise.resolve([]),
+      create: () => Promise.resolve(),
+      saveDefinitions: () => Promise.resolve(),
+      retire: () => Promise.resolve(),
+      hasNegativeValues: () => Promise.resolve(false),
+      valuesForTasks: (organizationId, spaceId, taskIds) =>
+        Promise.resolve(
+          organizationId === ATELIER_NORD &&
+            spaceId === taskState().spaceId &&
+            taskIds.includes(CAD_482)
+            ? [{ taskId: CAD_482, fieldId, value: 0 }]
+            : [],
+        ),
+      valuesForTaskPage: () => Promise.resolve([]),
+      applyValues: () => Promise.resolve(),
+      clearTasks: () => Promise.resolve(),
+    };
+    const tasks = new InMemoryTasks({ tasks: [taskState()], customFields });
+    const useCase = new GetTask(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
+
+    expect((await useCase.execute(read())).customFieldValues).toEqual({ [fieldId]: 0 });
+  });
+
   it('reads the whole task with its checklist and its counts', async () => {
     const { useCase } = atelierNord([
       taskState(),
@@ -92,6 +151,7 @@ describe('GetTask: a member reads a task of a list they see', () => {
       dueDate: '2026-11-12',
       startDate: '2026-11-11',
       estimateMinutes: 480,
+      customFieldValues: {},
       labels: ['Auth', 'Front'],
       parentKey: null,
       listId: SPRINT_14,

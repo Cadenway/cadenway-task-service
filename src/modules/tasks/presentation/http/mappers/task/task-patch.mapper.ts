@@ -49,6 +49,7 @@ export function toTaskChange(body: UpdateTaskBody): TaskChange {
     ...(body.dueDate === undefined ? {} : { dueDate: body.dueDate }),
     ...(body.startDate === undefined ? {} : { startDate: body.startDate }),
     ...(body.estimateMinutes === undefined ? {} : { estimateMinutes: body.estimateMinutes }),
+    ...(body.customFieldValues === undefined ? {} : { customFieldValues: body.customFieldValues }),
     ...(body.listId === undefined ? {} : { listId: body.listId.toLowerCase() }),
     ...(body.parentKey === undefined ? {} : { parentKey: body.parentKey }),
   };

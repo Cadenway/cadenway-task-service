@@ -49,6 +49,7 @@ export type TaskRefusalReason =
   | { readonly reason: 'dependency-cycle' }
   | { readonly reason: 'dependency-already-exists' }
   | { readonly reason: 'dependency-limit-reached' }
+  | { readonly reason: 'custom-field-value-invalid' }
   | { readonly reason: 'list-duplicate-limit-reached' }
   | {
       readonly reason: 'role-insufficient';

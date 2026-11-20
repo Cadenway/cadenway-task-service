@@ -32,6 +32,7 @@ export function toTask(view: TaskView): Task {
     estimateMinutes: view.estimateMinutes,
     ...(view.milestone === undefined ? {} : { milestone: view.milestone }),
     ...(view.recurrence === undefined ? {} : { recurrence: view.recurrence }),
+    ...(view.customFieldValues === undefined ? {} : { customFieldValues: view.customFieldValues }),
     ...(view.nextOccurrenceKey === undefined ? {} : { nextOccurrenceKey: view.nextOccurrenceKey }),
     labels: [...view.labels],
     parentKey: view.parentKey,

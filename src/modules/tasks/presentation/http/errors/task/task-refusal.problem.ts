@@ -91,6 +91,8 @@ function shapeOf(refusal: TaskRefusalReason): ProblemShape {
       return { status: 409, code: 'dependency.already-exists' };
     case 'dependency-limit-reached':
       return { status: 422, code: 'dependency.limit-reached' };
+    case 'custom-field-value-invalid':
+      return { status: 422, code: 'custom-field.value-invalid' };
     case 'role-insufficient':
       return {
         status: 403,

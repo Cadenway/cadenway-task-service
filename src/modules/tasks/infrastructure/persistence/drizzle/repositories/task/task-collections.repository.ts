@@ -25,6 +25,7 @@ import { checklistItems } from '../../schemas/checklist/checklist-item.schema.js
 import { taskAssignees } from '../../schemas/task/task-assignee.schema.js';
 import { taskLabels } from '../../schemas/task/task-label.schema.js';
 import { tasks } from '../../schemas/task/task.schema.js';
+import { DrizzleCustomFieldRepository } from '../custom-field/drizzle-custom-field.repository.js';
 
 /**
  * The parent of task rows as `parentsOf` reads it: its key, which the task keeps whatever its
@@ -54,8 +55,8 @@ interface ParentOfRow {
  * `= ANY($ids)` parameter; each is served by the prefix `(organization_id, task_id)` of the primary
  * key of its table, or by the primary key of `tasks`. The task repository and the readers share
  * it, so a page of N tasks costs the same number of queries as one task. `summarize` turns the
- * rows of a page into summaries in at most five statements (assignees, labels, subtask counts,
- * checklist counts and the keys and lists of the parents) whatever the number of rows.
+ * rows of a page into summaries in at most six statements (assignees, labels, subtask counts,
+ * checklist counts, parent locations and active custom field values) whatever the number of rows.
  */
 export class DrizzleTaskCollections {
   // #region Properties
@@ -87,6 +88,24 @@ export class DrizzleTaskCollections {
   // #endregion
 
   // #region Methods
+  /** Loads fields for the authorized task and space pairs in one tenant-scoped query. */
+  public async customFieldValuesOf(
+    organizationId: string,
+    tasks: readonly { readonly taskId: string; readonly spaceId: string }[],
+  ): Promise<ReadonlyMap<string, Readonly<Record<string, string | number>>>> {
+    const grouped = new Map<string, Record<string, string | number>>();
+    const rows = await new DrizzleCustomFieldRepository(this.db).valuesForTaskPage(
+      organizationId,
+      tasks,
+    );
+    for (const row of rows) {
+      const values = grouped.get(row.taskId) ?? {};
+      values[row.fieldId] = row.value;
+      grouped.set(row.taskId, values);
+    }
+    return grouped;
+  }
+
   /**
    * Method assigneesOf
    *
@@ -332,8 +351,9 @@ export class DrizzleTaskCollections {
    *
    * @description
    * Turns the rows of a page into the summaries a list shows: the assignees, the labels, the
-   * direct subtask counts and the checklist counts of all the rows in one query each, and the keys
-   * and lists of their parents in one more (none when no row has a parent). A row shows its parent
+   * direct subtask counts and the checklist counts of all the rows in one query each, the keys
+   * and lists of their parents in one more (none when no row has a parent), and their active
+   * custom field values in one query. A row shows its parent
    * only when the parent is in its list and not in the trash (`showsParent`): an archived root
    * whose live parent moved to another list since, or whose parent is in the trash, reads as
    * detached, `parentKey: null`, in every summary (the archives, the subtasks, the pages of the
@@ -364,6 +384,10 @@ export class DrizzleTaskCollections {
     const subtasks = await this.subtaskCountsOf(organizationId, ids);
     const checklists = await this.checklistCountsOf(organizationId, ids);
     const parents = await this.parentsOf(organizationId, parentIds);
+    const customFields = await this.customFieldValuesOf(
+      organizationId,
+      rows.map((row) => ({ taskId: row.id, spaceId: row.spaceId })),
+    );
     return rows.map((row: TaskSummaryRow): TaskSummaryView => {
       let parentKey: string | null = null;
       if (row.parentId !== null) {
@@ -375,14 +399,17 @@ export class DrizzleTaskCollections {
           ? parent.key.format()
           : null;
       }
-      return toTaskSummary(
-        row,
-        parentKey,
-        assignees.get(row.id) ?? [],
-        labels.get(row.id) ?? [],
-        subtasks.get(row.id) ?? { total: 0, closed: 0 },
-        checklists.get(row.id) ?? { total: 0, done: 0 },
-      );
+      return {
+        ...toTaskSummary(
+          row,
+          parentKey,
+          assignees.get(row.id) ?? [],
+          labels.get(row.id) ?? [],
+          subtasks.get(row.id) ?? { total: 0, closed: 0 },
+          checklists.get(row.id) ?? { total: 0, done: 0 },
+        ),
+        customFieldValues: customFields.get(row.id) ?? {},
+      };
     });
   }
 

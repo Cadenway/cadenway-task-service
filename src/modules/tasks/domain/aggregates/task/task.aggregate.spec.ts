@@ -145,6 +145,46 @@ function committed(update: TaskUpdate, version: number): TaskState {
   return update.task.snapshot;
 }
 
+describe('Task custom field change tracking', () => {
+  it('advances an otherwise unchanged task when its stored custom values changed', () => {
+    const task = cad482();
+    const update = task.markCustomFieldValuesChanged(task.update({}, ALL_STATUSES, NOW), NOW);
+
+    committed(update, task.snapshot.version + 1);
+    expect(update.changed).toEqual(['customFieldValues']);
+  });
+
+  it('tracks custom values erased by a move in the same version as the placement change', () => {
+    const task = cad482();
+    const move = task.followMove(MAQUETTES_PLACEMENT, NOW);
+    const update = task.markCustomFieldValuesChanged(move, NOW);
+
+    expect(update.task).toBe(move.task);
+    committed(update, task.snapshot.version + 1);
+    expect(update.changed).toEqual(['listId', 'spaceId', 'customFieldValues']);
+    expect(task.markCustomFieldValuesChanged(update, NOW)).toBe(update);
+  });
+
+  it('preserves a planned recurrence and the version of a combined patch', () => {
+    const task = cad482({ recurrence: 'weekly', dueDate: '2026-11-10', startDate: null });
+    const transition = task.update({ status: 'done' }, ALL_STATUSES, NOW);
+    const update = task.markCustomFieldValuesChanged(transition, NOW);
+
+    expect(transition.nextOccurrence).toBeDefined();
+    expect(update.nextOccurrence).toBe(transition.nextOccurrence);
+    expect(update.changed).toEqual(['status', 'customFieldValues']);
+    committed(update, task.snapshot.version + 1);
+  });
+
+  it('rejects combining custom-value changes with an update scheduled at a different instant', () => {
+    const task = cad482();
+    const earlier = new Date(NOW.getTime() - 1);
+    const update = task.update({ name: 'Audit' }, ALL_STATUSES, earlier);
+
+    expect(() => task.markCustomFieldValuesChanged(update, NOW)).toThrow(InvalidTaskError);
+  });
+});
+
 describe('Task milestone lifecycle', () => {
   it('creates dated milestones with aligned dates and also accepts undated milestones', () => {
     const dated: TaskDraft = Task.create(

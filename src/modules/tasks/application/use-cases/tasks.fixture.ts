@@ -85,6 +85,7 @@ import type { MemberDirectory } from '../ports/outbound/members/membership/membe
 import type { ArchiveReader } from '../ports/outbound/persistence/archive/archive-reader.port.js';
 import type { AssignedTaskReader } from '../ports/outbound/persistence/assignee/assigned-task-reader.port.js';
 import type { TaskCounter } from '../ports/outbound/persistence/count/task-counter.port.js';
+import type { CustomFieldRepository } from '../ports/outbound/persistence/custom-field/custom-field-repository.port.js';
 import type { LabelReader } from '../ports/outbound/persistence/label/label-reader.port.js';
 import type { TaskQueryReader } from '../ports/outbound/persistence/query/task-query-reader.port.js';
 import type { SpaceDirectory } from '../ports/outbound/spaces/space/space-directory.port.js';
@@ -1526,6 +1527,20 @@ const unavailableDependencies: TasksStore['dependencies'] = {
   candidates: dependencyFixtureMissing,
 };
 
+/** Empty custom fields unless a test supplies its own repository. */
+const emptyCustomFields: CustomFieldRepository = {
+  allocateId: () => Promise.resolve('019a7000-0000-7000-8000-000000001001'),
+  activeDefinitions: () => Promise.resolve([]),
+  create: () => Promise.resolve(),
+  saveDefinitions: () => Promise.resolve(),
+  retire: () => Promise.resolve(),
+  hasNegativeValues: () => Promise.resolve(false),
+  valuesForTasks: () => Promise.resolve([]),
+  valuesForTaskPage: () => Promise.resolve([]),
+  applyValues: () => Promise.resolve(),
+  clearTasks: () => Promise.resolve(),
+};
+
 /** What a spec seeds in the fake store. */
 export interface InMemoryTasksSeed {
   // #region Properties
@@ -1546,6 +1561,9 @@ export interface InMemoryTasksSeed {
 
   /** Graph adapter supplied only by dependency specs. */
   readonly dependencies?: TasksStore['dependencies'];
+
+  /** Custom field adapter supplied by specs that exercise field writes. */
+  readonly customFields?: CustomFieldRepository;
   // #endregion
 }
 
@@ -2321,6 +2339,9 @@ export class InMemoryTasks implements TasksUnitOfWork {
   /** The graph adapter, when this fixture is used by dependency specs. */
   private readonly dependencies: TasksStore['dependencies'];
 
+  /** Custom fields supplied by a spec, or the empty adapter. */
+  private readonly customFields: CustomFieldRepository;
+
   /**
    * The ids of the tasks another transaction holds `FOR NO KEY UPDATE` or `FOR UPDATE` (a change
    * or a deletion under way): `shareLocationUnlessLocked` leaves them out, as
@@ -2355,6 +2376,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
     this.now = seed.now ?? NOW;
     this.trace = seed.trace ?? [];
     this.dependencies = seed.dependencies ?? unavailableDependencies;
+    this.customFields = seed.customFields ?? emptyCustomFields;
     this.trashEntries = new Map(
       (seed.trashEntries ?? []).map((row: StoredTrashEntry): [string, StoredTrashEntry] => [
         row.id,
@@ -2928,6 +2950,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
       archives,
       trash,
       dependencies: this.dependencies,
+      customFields: this.customFields,
       copies: {
         listSources: (
           organizationId: string,
@@ -3321,6 +3344,23 @@ export class InMemoryTasks implements TasksUnitOfWork {
         },
       },
       reader: {
+        customFieldValues: async (organizationId, scopes) => {
+          const grouped = new Map<string, Record<string, string | number>>();
+          const existingIds = new Set(inOrganization(organizationId).map((row) => row.id));
+          const matching = scopes.filter((scope) => existingIds.has(scope.taskId));
+          for (const spaceId of new Set(matching.map((scope) => scope.spaceId))) {
+            const ids = matching
+              .filter((scope) => scope.spaceId === spaceId)
+              .map((scope) => scope.taskId);
+            const values = await this.customFields.valuesForTasks(organizationId, spaceId, ids);
+            for (const value of values) {
+              const taskValues = grouped.get(value.taskId) ?? {};
+              taskValues[value.fieldId] = value.value;
+              grouped.set(value.taskId, taskValues);
+            }
+          }
+          return grouped;
+        },
         subtaskCounts: (
           organizationId: string,
           taskIds: readonly string[],
