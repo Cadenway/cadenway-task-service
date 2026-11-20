@@ -36,6 +36,7 @@ import {
 } from './modules/task-templates/task-templates.module.js';
 import { TasksModule } from './modules/tasks/tasks.module.js';
 import { TaskCommentsModule } from './modules/task-comments/task-comments.module.js';
+import { OnboardingModule, OnboardingStateModule } from './modules/onboarding/onboarding.module.js';
 
 /**
  * Function runJobInOrganization
@@ -211,6 +212,8 @@ function runJobInOrganization(
     SpacesModule,
     TasksModule,
     TaskCommentsModule,
+    OnboardingModule,
+    OnboardingStateModule,
     AccessRequestsModule,
     MemberLifecycleModule,
     DeletionLifecycleModule,

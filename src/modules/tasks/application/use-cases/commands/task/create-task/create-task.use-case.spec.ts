@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   ATELIER_NORD,
@@ -66,6 +66,31 @@ function atelierNord(): {
 }
 
 describe('CreateTask: a member creates a task in a list they see', () => {
+  it('records the first normal task for the actor in the task transaction', async () => {
+    const tasks = new InMemoryTasks();
+    const record = vi.fn().mockResolvedValue(undefined);
+    const useCase = new CreateTask(tasks, atelierNordMembers(), new InMemorySpaceDirectory(), {
+      record,
+    });
+
+    await useCase.execute(createTask());
+
+    expect(record).toHaveBeenCalledExactlyOnceWith(ATELIER_NORD, CAMILLE, PRODUIT);
+  });
+
+  it('creates a preset example without changing the first-task marker', async () => {
+    const tasks = new InMemoryTasks();
+    const record = vi.fn().mockResolvedValue(undefined);
+    const useCase = new CreateTask(tasks, atelierNordMembers(), new InMemorySpaceDirectory(), {
+      record,
+    });
+
+    const created = await useCase.executeExample(createTask());
+
+    expect(tasks.stored(created.id)).toMatchObject({ organizationId: ATELIER_NORD, version: 1 });
+    expect(record).not.toHaveBeenCalled();
+  });
+
   it('creates the task at version 1 under the next key of the space, with the defaults', async () => {
     const { tasks, useCase } = atelierNord();
 

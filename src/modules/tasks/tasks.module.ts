@@ -8,6 +8,7 @@ import { Idempotent } from '@cadenway/nest-common/database';
 import { Module } from '@nestjs/common';
 
 import { OrganizationMembersModule } from '../organization-members/organization-members.module.js';
+import { RecordFirstOnboardingTask } from '../onboarding/public/onboarding/record-first-onboarding-task.js';
 import { SpacesModule } from '../spaces/spaces.module.js';
 import { memberDirectoryProvider } from './composition/providers/adapters/membership/member-directory.provider.js';
 import { trashWritesProvider } from './composition/providers/adapters/feature/trash-writes.provider.js';
@@ -47,6 +48,10 @@ import { createSubtaskProvider } from './composition/providers/use-cases/subtask
 import { listSubtasksProvider } from './composition/providers/use-cases/subtask/list-subtasks.provider.js';
 import { checkTaskAccessProvider } from './composition/providers/use-cases/task/check-task-access.provider.js';
 import { createTaskProvider } from './composition/providers/use-cases/task/create-task.provider.js';
+import { createOnboardingExampleProvider } from './composition/providers/use-cases/onboarding/create-onboarding-example.provider.js';
+import { CreateOnboardingExample } from './public/onboarding/create-onboarding-example.js';
+import { FIRST_ONBOARDING_TASK } from './composition/tokens/onboarding/first-onboarding-task.token.js';
+import type { FirstOnboardingTask } from './application/ports/outbound/onboarding/checklist/first-onboarding-task.port.js';
 import { findTaskReferenceProvider } from './composition/providers/use-cases/task/find-task-reference.provider.js';
 import { findTaskReferencesProvider } from './composition/providers/use-cases/task/find-task-references.provider.js';
 import { getTaskDetailProvider } from './composition/providers/use-cases/task/get-task-detail.provider.js';
@@ -188,12 +193,21 @@ markIdempotent(BulkTaskActionsController.prototype, 'execute');
     TaskParticipantsController,
   ],
   providers: [
+    {
+      provide: FIRST_ONBOARDING_TASK,
+      inject: [RecordFirstOnboardingTask],
+      useFactory: (marker: RecordFirstOnboardingTask): FirstOnboardingTask => ({
+        record: (organizationId, actorUserId, spaceId) =>
+          marker.execute({ organizationId, actorUserId, spaceId }),
+      }),
+    },
     RequiredDuplicateBodyGuard,
     tasksUnitOfWorkProvider,
     memberDirectoryProvider,
     spaceDirectoryProvider,
     trashWritesProvider,
     createTaskProvider,
+    createOnboardingExampleProvider,
     duplicateTaskProvider,
     duplicateListProvider,
     updateTaskProvider,
@@ -247,6 +261,7 @@ markIdempotent(BulkTaskActionsController.prototype, 'execute');
     listUntrashedTaskIdsProvider,
   ],
   exports: [
+    CreateOnboardingExample,
     ReadTaskTemplateSource,
     UnassignRemovedMember,
     RemoveMemberWatcherOverrides,
