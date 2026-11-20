@@ -177,6 +177,17 @@ describe('OutboxSpaceEvents: the republish of the access of a restored space or 
     expect(appended.every(acceptedByContract)).toBe(true);
   });
 
+  it('republishes an empty space access snapshot after restoration', async () => {
+    const { events, appended } = recording();
+    const space = Space.restore(spaceState({ restoredAt: COMMITTED_AT, version: 7 }));
+
+    await events.spaceAccessRepublished(space, [], [], BY_CAMILLE);
+
+    expect(appended[0]?.name).toBe('space.access-republished.v1');
+    expect(appended[0]?.payload).toMatchObject({ grants: [], changedUserIds: [], version: 7 });
+    expect(appended.every(acceptedByContract)).toBe(true);
+  });
+
   it('appends space.access-changed.v1 naming every person who holds a grant, and the contract refuses nobody named', async () => {
     const { events, appended } = recording();
     const space = Space.restore(spaceState({ restoredAt: COMMITTED_AT, version: 7 }));

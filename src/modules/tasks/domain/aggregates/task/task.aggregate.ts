@@ -6,6 +6,7 @@ import { InvalidTaskError } from '../../errors/task/invalid-task.error.js';
 import { LabelLimitReachedError } from '../../errors/task/label-limit-reached.error.js';
 import { TaskArchivedError } from '../../errors/task/task-archived.error.js';
 import { TaskInTrashError } from '../../errors/task/task-in-trash.error.js';
+import { validateDescriptionMentions } from '../../policies/mention/description-mentions.policy.js';
 import { checkAttachment, checkNewSubtask } from '../../policies/subtask/subtask-tree.policy.js';
 import { isAssignable, refuseUnassignable } from '../../policies/task/assignability.policy.js';
 import {
@@ -15,6 +16,7 @@ import {
 import { isScheduleValid, resolveSchedule } from '../../policies/task/schedule.policy.js';
 import { checkStatusAvailable } from '../../policies/task/status-availability.policy.js';
 import type { AssigneeCandidate } from '../../value-objects/member/assignee-candidate.value-object.js';
+import type { DescriptionMention } from '../../value-objects/mention/description-mention.value-object.js';
 import type { SubtaskParent } from '../../value-objects/subtask/subtask-parent.value-object.js';
 import { CANCEL_REASONS } from '../../value-objects/task/cancel-reason.value-object.js';
 import type { ChecklistItemDraft } from '../../value-objects/task/checklist-item-draft.value-object.js';
@@ -333,6 +335,7 @@ function checkStoredState(state: TaskState): void {
     throw new InvalidTaskError('the name is trimmed');
   }
   checkDescription(state.description);
+  validateDescriptionMentions(state.description, state.descriptionMentions);
   if (!STATUS_KEYS.includes(state.status)) {
     throw new InvalidTaskError('the status is one of the ten status keys');
   }
@@ -542,6 +545,8 @@ export class Task {
     const createdBy: TaskActor = checkActor(input.createdBy);
     const name: string = normalizeName(input.name);
     const description: string | null = checkDescription(input.description);
+    const descriptionMentions = input.descriptionMentions ?? [];
+    validateDescriptionMentions(description, descriptionMentions);
     const priority: PriorityKey = checkPriority(input.priority);
     const estimateMinutes: number | null = checkEstimate(input.estimateMinutes);
     const labels: readonly string[] = normalizeLabels(input.labels);
@@ -574,6 +579,7 @@ export class Task {
       parentKey: parent === null ? null : parent.key,
       name,
       description,
+      descriptionMentions,
       status: input.status,
       cancelReason: cancellation.cancelReason,
       cancelNote: cancellation.cancelNote,
@@ -678,6 +684,12 @@ export class Task {
     const name: string = patch.name === undefined ? current.name : normalizeName(patch.name);
     const description: string | null =
       patch.description === undefined ? current.description : checkDescription(patch.description);
+    const descriptionMentions: readonly DescriptionMention[] =
+      patch.descriptionMentions ??
+      (description === current.description ? current.descriptionMentions : []);
+    if (patch.descriptionMentions !== undefined) {
+      validateDescriptionMentions(description, descriptionMentions);
+    }
     const priority: PriorityKey =
       patch.priority === undefined ? current.priority : checkPriority(patch.priority);
     const estimateMinutes: number | null =
@@ -711,6 +723,16 @@ export class Task {
     };
     mark('name', name !== current.name);
     mark('description', description !== current.description);
+    mark(
+      'descriptionMentions',
+      descriptionMentions.length !== current.descriptionMentions.length ||
+        descriptionMentions.some((span, index) => {
+          const stored = current.descriptionMentions[index];
+          return (
+            stored?.userId !== span.userId || stored.start !== span.start || stored.end !== span.end
+          );
+        }),
+    );
     mark('status', status !== current.status);
     mark('cancelReason', cancellation.cancelReason !== current.cancelReason);
     mark('cancelNote', cancellation.cancelNote !== current.cancelNote);
@@ -725,6 +747,7 @@ export class Task {
       {
         name,
         description,
+        descriptionMentions,
         status,
         ...cancellation,
         priority,
@@ -1010,6 +1033,31 @@ export class Task {
       new Set<TaskField>(['checklist']),
       now,
     );
+  }
+
+  /**
+   * Advances the task version for a committed comment creation (P3b-2 decision 24).
+   *
+   * @param at - Transaction instant.
+   * @returns The task at its next version.
+   * @throws {TaskArchivedError} When the task is archived.
+   * @throws {TaskInTrashError} When the task is in the trash.
+   * @throws {InvalidTaskError} When the instant is invalid.
+   */
+  public withCommentChange(at: Date): Task {
+    return this.withCollaborationChange(at);
+  }
+
+  /** Advances the version when the task's explicit watcher override changes. */
+  public withWatcherChange(at: Date): Task {
+    return this.withCollaborationChange(at);
+  }
+
+  /** Advances the task version for a write to a separately stored collaboration resource. */
+  private withCollaborationChange(at: Date): Task {
+    this.requireChangeable();
+    requireInstant(at);
+    return new Task({ ...this.state, updatedAt: at, version: this.state.version + 1 });
   }
 
   /**

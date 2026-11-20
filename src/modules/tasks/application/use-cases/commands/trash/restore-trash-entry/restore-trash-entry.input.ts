@@ -14,5 +14,8 @@ export interface RestoreTrashEntryInput {
 
   /** The entry, a UUID the route validated. */
   readonly entryId: string;
+
+  /** Whether to report a pending deletion for an otherwise restorable entry. */
+  readonly reportNotReady?: boolean;
   // #endregion
 }

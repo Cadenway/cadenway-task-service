@@ -173,6 +173,7 @@ export function taskState(overrides: Partial<TaskState> = {}): TaskState {
     parentKey: null,
     name: 'Refondre l’écran de connexion SSO',
     description: 'Remplacer l’écran actuel par la connexion d’entreprise.',
+    descriptionMentions: [],
     status: 'progress',
     cancelReason: null,
     cancelNote: null,

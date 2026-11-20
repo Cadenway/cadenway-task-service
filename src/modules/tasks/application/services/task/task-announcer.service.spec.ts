@@ -40,11 +40,20 @@ describe('TaskAnnouncer: the events of a change follow the order of the contract
       changed: ['status', 'assigneeIds'] as const,
     };
 
-    const events = await eventsOf((out) => new TaskAnnouncer().changed(out, before, update, actor));
+    const events = await eventsOf((out) =>
+      new TaskAnnouncer().changed(out, before, update, actor, [CAMILLE, HUGO]),
+    );
 
     expect(events).toEqual([
       { kind: 'updated', key: 'CAD-482', version: 13, changed: ['status', 'assigneeIds'], actor },
-      { kind: 'statusChanged', key: 'CAD-482', version: 13, previousStatus: 'progress', actor },
+      {
+        kind: 'statusChanged',
+        key: 'CAD-482',
+        version: 13,
+        previousStatus: 'progress',
+        actor,
+        watcherIds: [CAMILLE, HUGO],
+      },
       { kind: 'assigned', key: 'CAD-482', version: 13, assigneeId: HUGO, actor },
     ]);
   });

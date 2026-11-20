@@ -1,3 +1,4 @@
+import type { WatcherOverrideRepository } from '../../ports/outbound/persistence/watcher/watcher-override-repository.port.js';
 import type { TrashJobs } from '../../ports/outbound/jobs/trash/trash-jobs.port.js';
 import type { TaskEvents } from '../../ports/outbound/messaging/task/task-events.port.js';
 import type { ActivityRepository } from '../../ports/outbound/persistence/activity/activity-repository.port.js';
@@ -19,12 +20,20 @@ import type { TransactionClock } from '../../ports/outbound/time/transaction/tra
  * to the tenant transaction of one unit of work: what they write commits together, or not at all.
  */
 export interface TasksStore {
+  // #region Methods
+  /** Runs a preflight under a savepoint, releasing the attempt's locks on failure. */
+  savepoint<TResult>(work: () => Promise<TResult>): Promise<TResult>;
+  // #endregion
+
   // #region Properties
   /** The tasks with their assignees, labels and checklist. */
   readonly tasks: TaskRepository;
 
   /** The read side: counts, pages of subtasks and task references. */
   readonly reader: TaskReader;
+
+  /** Explicit watcher subscriptions. */
+  readonly watcherOverrides: WatcherOverrideRepository;
 
   /** The activity entries. */
   readonly activity: ActivityRepository;

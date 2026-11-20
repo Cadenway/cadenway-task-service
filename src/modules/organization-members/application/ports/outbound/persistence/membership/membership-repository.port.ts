@@ -1,4 +1,6 @@
 import type { Membership } from '../../../../../domain/aggregates/membership/membership.aggregate.js';
+import type { ListActiveMembersInput } from '../../../../use-cases/queries/membership/list-active-members/list-active-members.input.js';
+import type { ListActiveMembersOutput } from '../../../../use-cases/queries/membership/list-active-members/list-active-members.output.js';
 
 /**
  * Interface MembershipRepository
@@ -59,6 +61,9 @@ export interface MembershipRepository {
    * @returns {Promise<Membership[]>} The memberships, empty when the account is not a member.
    */
   listActiveByUser(organizationId: string, userId: string, lock: boolean): Promise<Membership[]>;
+
+  /** Pages current accounts, selecting a least-privileged membership before applying the audience. */
+  listActivePage(input: ListActiveMembersInput): Promise<readonly ListActiveMembersOutput[]>;
 
   /**
    * Method findActiveOwner

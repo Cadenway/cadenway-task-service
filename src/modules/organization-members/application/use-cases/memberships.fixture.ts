@@ -1,4 +1,5 @@
 import { Membership } from '../../domain/aggregates/membership/membership.aggregate.js';
+import { leastPrivilegedMembership } from '../../domain/policies/membership/least-privileged-membership.policy.js';
 import type { MembershipChange } from '../../domain/value-objects/membership/membership-change.value-object.js';
 import type { MembershipState } from '../../domain/value-objects/membership/membership-state.value-object.js';
 import type { MembershipRepository } from '../ports/outbound/persistence/membership/membership-repository.port.js';
@@ -268,6 +269,30 @@ export class InMemoryMemberships implements MembershipsUnitOfWork {
           .reverse();
         return Promise.resolve(
           states.map((state: MembershipState): Membership => Membership.restore(state)),
+        );
+      },
+      listActivePage: (input) => {
+        const byUser = new Map<string, Membership[]>();
+        for (const state of [...rows.values()].reverse()) {
+          if (state.organizationId !== input.organizationId || state.removedAt !== null) continue;
+          const memberships = byUser.get(state.userId) ?? [];
+          memberships.push(Membership.restore(state));
+          byUser.set(state.userId, memberships);
+        }
+        return Promise.resolve(
+          [...byUser.keys()]
+            .sort()
+            .flatMap((userId) => {
+              if (input.after !== null && userId <= input.after) return [];
+              const current = leastPrivilegedMembership(byUser.get(userId) ?? [])?.snapshot;
+              if (current === undefined) return [];
+              const eligible =
+                current.role === 'guest'
+                  ? input.guestIds.includes(userId)
+                  : input.allNonGuests || input.nonGuestIds.includes(userId);
+              return eligible ? [{ userId, memberId: current.id }] : [];
+            })
+            .slice(0, input.limit),
         );
       },
       findActiveOwner: (organizationId: string): Promise<Membership | null> => {

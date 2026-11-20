@@ -158,6 +158,26 @@ export class DrizzleActivityRepository implements ActivityRepository {
       );
   }
 
+  /** Changes only the matching tenant and task comment activity. */
+  public async changeComment(
+    organizationId: string,
+    taskId: string,
+    commentId: string,
+    excerpt: string | null,
+  ): Promise<void> {
+    const condition = and(
+      eq(activityEntries.organizationId, organizationId),
+      eq(activityEntries.taskId, taskId),
+      eq(activityEntries.kind, 'comment'),
+      eq(activityEntries.commentId, commentId),
+    );
+    if (excerpt === null) {
+      await this.db.delete(activityEntries).where(condition);
+    } else {
+      await this.db.update(activityEntries).set({ commentExcerpt: excerpt }).where(condition);
+    }
+  }
+
   /**
    * Method pageOfTask
    *

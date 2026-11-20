@@ -1,5 +1,6 @@
 import type { Task } from '../../../domain/aggregates/task/task.aggregate.js';
 import { InvalidTaskError } from '../../../domain/errors/task/invalid-task.error.js';
+import { canWriteTasksOf } from '../../../domain/policies/task/task-write.policy.js';
 import type { Viewer } from '../../../domain/value-objects/member/viewer.value-object.js';
 import type { TaskAttachment } from '../../../domain/value-objects/subtask/task-attachment.value-object.js';
 import type { SpaceStatusUse } from '../../../domain/value-objects/task/space-status-use.value-object.js';
@@ -34,9 +35,8 @@ import { TaskRuleGuard } from './task-rule-guard.service.js';
  * (a descendant that left the subtree while the locks were taken is not kept); an archived
  * subtask stays in its list with its parent link. A parent in the trash is unseen
  * (`parent-invalid`), read before the locks or under them. The caller holds the source and target
- * lists `FOR SHARE` after locking the tasks: a deletion of the list left either committed first (`task-not-found`, as for
- * any task of a deleted list) or waits, so no task leaves a deleted list; a deletion of the target
- * either committed first (`list-invalid`) or waits and its job moves the task too. It also picks
+ * spaces and lists `FOR SHARE` after locking the tasks and rechecks the acting role. No task
+ * leaves a deleted list. The planner also picks
  * the statuses the domain checks a new status against: those of the space the task ends up in. The
  * rules of the tree (depth, limit, cycles, the list of a subtask) stay with `Task.update`.
  */
@@ -127,6 +127,27 @@ export class TaskMovePlanner {
   }
 
   /**
+   * Holds the placement of a status or mention change without a move and rechecks the role.
+   *
+   * @param organizationId - The task's organization.
+   * @param viewer - The verified acting member.
+   * @param listId - The task's current list.
+   */
+  public async holdPlacement(
+    organizationId: string,
+    viewer: Viewer,
+    listId: string,
+  ): Promise<void> {
+    const [source] = await this.spaces.lockTrashLists(organizationId, [listId], 'hold', viewer);
+    if (source?.outcome !== 'live' || source.role === null) {
+      throw new TaskRefusal({ reason: 'task-not-found' });
+    }
+    if (!canWriteTasksOf(source.role)) {
+      throw new TaskRefusal({ reason: 'role-insufficient', role: source.role });
+    }
+  }
+
+  /**
    * Method resolveList
    *
    * @description
@@ -175,8 +196,7 @@ export class TaskMovePlanner {
    * @param {string} parentKey - The key of the new parent.
    * @param {LockedSubtree} locked - The tree and parent locked before the list placements.
    * @returns {Promise<{ attachment: TaskAttachment; statuses: SpaceStatusUse; descendants: readonly Task[] }>}
-   * The attachment for the domain, the statuses of the space of the parent, the descendants and
-   * the descendants that follow the move.
+   * The attachment for the domain, the parent space's statuses and the descendants that move.
    * @throws {TaskRefusal} `parent-invalid` when the parent is unknown or not seen,
    * `role-insufficient` when the actor sees its list without `edit`, `task-archived` with the key
    * of the parent when the locked parent is archived.

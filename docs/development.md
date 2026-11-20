@@ -130,6 +130,18 @@ an entry, the trash page and the jobs are always served. The release before igno
 
 Turn it on locally to try the trash; the integration tests of the trash run with it on.
 
+### Comment activity rollout
+
+Roll out the task-service image containing `0009_collaboration.sql` to every replica before
+deploying the API gateway that exposes the comment routes. The previous gateway has no comment
+write route, and the service accepts comment writes only from the gateway issuer. This keeps
+new `comment` entries out of the activity table while older task-service replicas are present.
+
+Record the first compatible task-service image as the rollback floor once the gateway serves
+comment writes. Before `0009`, the server cannot read a task or list activity page containing a
+comment. To close public comment writes after activation, roll back the gateway and keep a
+task-service image that can read the stored activity.
+
 ### Calling the service locally
 
 Every route but `/health/*` requires an internal token. The key in `.env.example` is a placeholder

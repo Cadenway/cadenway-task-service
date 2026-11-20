@@ -53,6 +53,7 @@ export class TaskChangeWriter {
    * @param {TaskUpdate} update - The task after the change and what changed.
    * @param {string} actorUserId - The account that made the change.
    * @param {Date} now - The transaction instant.
+   * @param {readonly string[]} watcherIds - The eligible audience for a status change.
    * @returns {Promise<void>} Resolves once written.
    */
   public async commit(
@@ -61,6 +62,7 @@ export class TaskChangeWriter {
     update: TaskUpdate,
     actorUserId: string,
     now: Date,
+    watcherIds: readonly string[] = [],
   ): Promise<void> {
     if (update.changed.length === 0) {
       return;
@@ -75,7 +77,7 @@ export class TaskChangeWriter {
       now,
     );
     await this.recorder.record(store.activity, entries);
-    await this.announcer.changed(store.events, before, update, eventActor);
+    await this.announcer.changed(store.events, before, update, eventActor, watcherIds);
   }
   // #endregion
 }

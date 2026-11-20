@@ -26,6 +26,7 @@ import { OrganizationMembersModule } from './modules/organization-members/organi
 import { PlatformModule } from './modules/platform/platform.module.js';
 import { SpacesModule } from './modules/spaces/spaces.module.js';
 import { TasksModule } from './modules/tasks/tasks.module.js';
+import { TaskCommentsModule } from './modules/task-comments/task-comments.module.js';
 
 /**
  * Function runJobInOrganization
@@ -195,6 +196,7 @@ function runJobInOrganization(
     OrganizationMembersModule,
     SpacesModule,
     TasksModule,
+    TaskCommentsModule,
     AccessRequestsModule,
     MemberLifecycleModule,
     DeletionLifecycleModule,
