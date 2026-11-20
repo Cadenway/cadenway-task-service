@@ -16,7 +16,7 @@ const key = 'A'.repeat(43);
 
 function fixture(form: IntakeForm | null) {
   const store = {
-    loadEditor: vi.fn().mockResolvedValue({ listName: 'Requests', access, eligibility, form }),
+    loadEditor: vi.fn().mockResolvedValue({ access, eligibility, form }),
     saveForm: vi.fn(),
     reservePublicationKey: vi.fn().mockResolvedValue(key),
     loadPublication: vi.fn(),
@@ -48,7 +48,7 @@ describe('PublishIntakeForm', () => {
   });
 
   it('does not allocate a key or write when publication is unchanged', async () => {
-    const form = IntakeForm.create('Requests', eligibility).publish(access, 1, eligibility, key);
+    const form = IntakeForm.create(eligibility).publish(access, 1, eligibility, key);
     const { store, work } = fixture(form);
     await expect(new PublishIntakeForm(work).execute(input)).resolves.toMatchObject({
       version: 2,
@@ -61,7 +61,6 @@ describe('PublishIntakeForm', () => {
   it('reports the effective role and required role when publication is denied', async () => {
     const { store, work } = fixture(null);
     store.loadEditor.mockResolvedValue({
-      listName: 'Requests',
       access: { role: 'view', lifecycle: 'active' },
       eligibility,
       form: null,
@@ -74,7 +73,7 @@ describe('PublishIntakeForm', () => {
   });
 
   it('revokes an existing key with the previous version as a precondition', async () => {
-    const form = IntakeForm.create('Requests', eligibility).publish(access, 1, eligibility, key);
+    const form = IntakeForm.create(eligibility).publish(access, 1, eligibility, key);
     const { store, work } = fixture(form);
     await expect(new DisableIntakeForm(work).execute(input)).resolves.toEqual({ version: 3 });
     expect(store.saveForm).toHaveBeenCalledWith(

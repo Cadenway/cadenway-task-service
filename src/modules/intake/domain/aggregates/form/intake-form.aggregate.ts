@@ -145,17 +145,11 @@ export class IntakeForm {
   // #endregion
 
   // #region Methods
-  /** Version 1 uses the list-specific draft from App.dc.html and the documented task defaults. */
-  public static create(listName: string, eligibility: IntakeDefaultsEligibility): IntakeForm {
-    const prefix = 'Demande pour « ';
-    const suffix = ' »';
-    const name = Array.from(listName)
-      .slice(0, 300 - prefix.length - suffix.length)
-      .join('');
+  /** Uses the neutral text and task defaults defined in the public intake contract. */
+  public static create(eligibility: IntakeDefaultsEligibility): IntakeForm {
     return new IntakeForm({
-      title: prefix + name + suffix,
-      description:
-        'Décrivez votre besoin. L’équipe le reçoit comme une tâche dans « ' + name + ' ».',
+      title: 'Déposer une demande',
+      description: 'Décrivez votre besoin en quelques mots.',
       fields: {
         description: 'optional',
         priority: 'optional',

@@ -7,9 +7,9 @@ import type { IntakeStore } from '../../models/form/intake-store.model.js';
 import type { IntakeTarget } from '../../models/form/intake-target.model.js';
 import type { IntakeUnitOfWork } from '../../ports/outbound/transactions/form/intake-unit-of-work.port.js';
 
-/** A first read derives the default draft without creating a database row. */
+/** Returns the stored form or prepares neutral defaults for its first use. */
 export function currentIntakeForm(editor: IntakeEditor): IntakeForm {
-  return editor.form ?? IntakeForm.create(editor.listName, editor.eligibility);
+  return editor.form ?? IntakeForm.create(editor.eligibility);
 }
 
 /** Adds the effective role to the domain refusal required by the HTTP problem contract. */

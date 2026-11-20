@@ -4,16 +4,22 @@ export interface ResolveIntakePlacementOutput {
   /** Parent space identifier. */
   readonly spaceId: string;
 
-  /** Name displayed on the published form. */
-  readonly listName: string;
-
   /** Whether submission is suspended while the list is archived. */
   readonly archived: boolean;
 
   /** Current configuration of task statuses. */
   readonly statuses: Readonly<
     Record<
-      'triage' | 'backlog' | 'todo' | 'progress' | 'review' | 'testing' | 'waiting' | 'blocked' | 'done' | 'cancelled',
+      | 'triage'
+      | 'backlog'
+      | 'todo'
+      | 'progress'
+      | 'review'
+      | 'testing'
+      | 'waiting'
+      | 'blocked'
+      | 'done'
+      | 'cancelled',
       { readonly name: string | null; readonly hidden: boolean }
     >
   >;

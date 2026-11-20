@@ -73,6 +73,9 @@ export const PURGE_TRASH_QUEUE: string = 'task.purge-trash';
  */
 export const SCHEDULE_TRASH_PURGE_QUEUE: string = 'task.schedule-trash-purge';
 
+/** System-only queue of the minutely intake receipt retention job. */
+export const PURGE_INTAKE_RECEIPTS_QUEUE: string = 'task.purge-intake-receipts';
+
 /**
  * Constant jobQueues
  *
@@ -109,6 +112,8 @@ export const SCHEDULE_TRASH_PURGE_QUEUE: string = 'task.schedule-trash-purge';
  * that, plus the archived subtasks of its entries, which the product does not limit), are idempotent, start no batch once their signal
  * aborts and resume from what is left; their dead letters are described in the MODULE.md of the
  * deletion-lifecycle module.
+ * Intake receipt cleanup uses the same retries and deletes batches of at most 500 rows per
+ * system transaction. Its next occurrence also picks up receipts skipped by a concurrent writer.
  *
  * @type {readonly JobQueueDeclaration[]}
  */
@@ -118,6 +123,7 @@ export const jobQueues: readonly JobQueueDeclaration[] = [
   DROP_TRASHED_TASK_REQUESTS_QUEUE,
   PURGE_TRASH_QUEUE,
   SCHEDULE_TRASH_PURGE_QUEUE,
+  PURGE_INTAKE_RECEIPTS_QUEUE,
 ].map((name: string): JobQueueDeclaration => ({
   name,
   retryLimit: 8,

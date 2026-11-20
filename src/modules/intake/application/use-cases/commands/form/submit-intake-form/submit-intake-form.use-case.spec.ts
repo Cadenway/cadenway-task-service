@@ -11,7 +11,7 @@ const eligibility = {
   eligibleAssignees: new Set<string>(),
 };
 const editor = { role: 'edit' as const, lifecycle: 'active' as const };
-const form = IntakeForm.create('Requests', eligibility).publish(editor, 1, eligibility, key);
+const form = IntakeForm.create(eligibility).publish(editor, 1, eligibility, key);
 const context = { key, lifecycle: 'active' as const, eligibility };
 const input = {
   publicKey: key,
@@ -76,7 +76,19 @@ describe('SubmitIntakeForm', () => {
     const { subject, store } = fixture();
     vi.mocked(store.claimSubmission).mockResolvedValue({ kind: 'in-progress' });
     await expect(subject.execute(input)).rejects.toMatchObject({ reason: 'in-progress' });
-    expect(store.loadPublication).not.toHaveBeenCalled();
+    expect(store.loadPublication).toHaveBeenCalledWith('list', key, false);
+    expect(store.createTask).not.toHaveBeenCalled();
+  });
+
+  it('conceals a publication revoked while a matching submission is in progress', async () => {
+    const { subject, store } = fixture();
+    vi.mocked(store.claimSubmission).mockResolvedValue({ kind: 'in-progress' });
+    vi.mocked(store.loadPublication).mockResolvedValue(null);
+    await expect(subject.execute(input)).rejects.toMatchObject({
+      failure: { kind: 'unavailable' },
+    });
+    expect(store.loadPublication).toHaveBeenCalledWith('list', key, false);
+    expect(store.createTask).not.toHaveBeenCalled();
   });
 
   it('does not replay a receipt after the publication becomes unavailable', async () => {

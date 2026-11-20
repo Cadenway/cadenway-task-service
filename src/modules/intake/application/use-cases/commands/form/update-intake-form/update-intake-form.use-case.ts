@@ -18,10 +18,14 @@ export class UpdateIntakeForm {
   /** Executes the operation in its transaction. */
   public execute(input: UpdateIntakeFormInput): Promise<UpdateIntakeFormOutput> {
     return this.work.run(input.organizationId, async (store) => {
-      const editor = await store.loadEditor(input, true, input.patch.defaultAssigneeId);
+      const patch =
+        input.patch.defaultAssigneeId == null
+          ? input.patch
+          : { ...input.patch, defaultAssigneeId: input.patch.defaultAssigneeId.toLowerCase() };
+      const editor = await store.loadEditor(input, true, patch.defaultAssigneeId);
       const before = currentIntakeForm(editor);
       const after = withIntakeRole(editor.access, () =>
-        before.configure(editor.access, input.expectedVersion, input.patch, editor.eligibility),
+        before.configure(editor.access, input.expectedVersion, patch, editor.eligibility),
       );
       await saveIntakeForm(store, input.listId, before, after, editor.form !== null);
       return after.snapshot();

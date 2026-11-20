@@ -28,9 +28,10 @@ resource owner.
 
 ## API
 
-The intake operations are available to the internal adapter. The management and contact routes
-require the gateway's verified user and organization. The applicant routes require its verified
-system actor without an organization.
+The API gateway calls seven internal operations. The list configuration read, patch, publish and
+disable routes and the task contact read require a verified user and organization. The public form
+read and submission require its verified system actor without an organization. The configuration
+routes return an ETag. Anonymous submissions use the publication-scoped idempotency receipt.
 
 ## Events emitted
 
@@ -67,3 +68,8 @@ deletion removes the private contacts alongside the tasks.
 Archiving suspends delivery until the list is active again. Disabling or removing the list revokes
 the key. A later publication uses a fresh key. A matching successful request can replay its opaque
 receipt for 24 hours while the same publication stays eligible.
+After that window, the minute UTC system schedule `task.purge-intake-receipts` physically removes
+expired receipts in batches of at most 500 per transaction. Concurrent rewrites and other cleanup
+workers skip locked rows for that occurrence. The cleanup leaves active receipts and publication
+key reservations intact. A failed attempt retries, then reaches
+`task.purge-intake-receipts.dead-letter`; the next occurrence retries the remaining expired rows.

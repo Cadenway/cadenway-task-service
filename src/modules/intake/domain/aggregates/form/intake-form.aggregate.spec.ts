@@ -4,7 +4,6 @@ import type { IntakeEditorContext } from '../../policies/form/intake-editor-cont
 import type { IntakePublicationContext } from '../../policies/form/intake-publication-context.policy.js';
 import { IntakeForm } from './intake-form.aggregate.js';
 
-const listName = 'Sprint 14';
 const editor: IntakeEditorContext = { role: 'edit', lifecycle: 'active' };
 const archived: IntakeEditorContext = { ...editor, lifecycle: 'archived' };
 const assigneeId = 'db19d64d-3a16-45ef-9998-e0cf036137fc';
@@ -18,7 +17,7 @@ const publication: IntakePublicationContext = { key, lifecycle: 'active', eligib
 const invalidDefaults: IntakeDefaultsEligibility = { ...eligibility, allowedStatuses: new Set() };
 
 function draft(): IntakeForm {
-  return IntakeForm.create(listName, eligibility);
+  return IntakeForm.create(eligibility);
 }
 
 function published(): IntakeForm {
@@ -26,10 +25,10 @@ function published(): IntakeForm {
 }
 
 describe('IntakeForm', () => {
-  it('starts as an unpublished, list-specific draft with defaults from the mockup', () => {
+  it('starts as an unpublished draft with neutral text and documented defaults', () => {
     expect(draft().configuration(editor)).toEqual({
-      title: 'Demande pour « Sprint 14 »',
-      description: 'Décrivez votre besoin. L’équipe le reçoit comme une tâche dans « Sprint 14 ».',
+      title: 'Déposer une demande',
+      description: 'Décrivez votre besoin en quelques mots.',
       fields: {
         description: 'optional',
         priority: 'optional',
@@ -42,12 +41,9 @@ describe('IntakeForm', () => {
       version: 1,
     });
     expect(
-      IntakeForm.create(listName, { ...eligibility, allowedStatuses: new Set(['todo']) }).snapshot()
+      IntakeForm.create({ ...eligibility, allowedStatuses: new Set(['todo']) }).snapshot()
         .defaultStatus,
     ).toBe('todo');
-    expect(
-      Array.from(IntakeForm.create('🙂'.repeat(300), eligibility).snapshot().title),
-    ).toHaveLength(300);
   });
 
   it('reads archived settings and distinguishes missing access from insufficient access', () => {
@@ -98,7 +94,7 @@ describe('IntakeForm', () => {
       publicKey: key,
       version: 3,
     });
-    expect(current.snapshot().title).toBe('Demande pour « Sprint 14 »');
+    expect(current.snapshot().title).toBe('Déposer une demande');
     expect(changed.configure(editor, 3, {}, eligibility)).toBe(changed);
     expect(changed.configure(editor, 3, { title: ' Une demande ' }, eligibility)).toBe(changed);
     expect(

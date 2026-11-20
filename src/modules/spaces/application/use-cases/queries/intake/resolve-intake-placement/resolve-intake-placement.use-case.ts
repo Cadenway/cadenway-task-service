@@ -43,7 +43,6 @@ export class ResolveIntakePlacement {
 
       return {
         spaceId: space.snapshot.id,
-        listName: list.snapshot.name,
         archived: list.snapshot.archivedAt !== null,
         statuses: space.snapshot.statuses,
         role,

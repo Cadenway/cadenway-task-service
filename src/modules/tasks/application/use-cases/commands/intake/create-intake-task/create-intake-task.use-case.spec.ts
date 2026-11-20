@@ -13,6 +13,7 @@ import {
   placedSpace,
 } from '../../../tasks.fixture.js';
 import type { IntakeTaskPlacement } from '../../../../ports/outbound/spaces/intake/intake-task-placement.port.js';
+import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
 import type { CreateIntakeTaskInput } from './create-intake-task.input.js';
 import { CreateIntakeTask } from './create-intake-task.use-case.js';
 
@@ -79,5 +80,21 @@ describe('CreateIntakeTask', () => {
       refusal: { reason: 'assignee-invalid' },
     });
     expect(tasks.events).toEqual([]);
+  });
+
+  it.each([
+    new TaskRefusal({ reason: 'list-not-found' }),
+    new TaskRefusal({ reason: 'status-hidden', status: 'backlog' }),
+    new TaskRefusal({ reason: 'cancel-reason-required' }),
+    new TaskRefusal({ reason: 'assignee-invalid', userIds: [STRANGER] }),
+  ])('reports an unavailable publication for %s without its details', (error) => {
+    expect(CreateIntakeTask.refusalOf(error)).toBe('unavailable');
+  });
+
+  it('preserves other failures for the caller', () => {
+    expect(
+      CreateIntakeTask.refusalOf(new TaskRefusal({ reason: 'space-not-found' })),
+    ).toBeUndefined();
+    expect(CreateIntakeTask.refusalOf(new Error('Database failed.'))).toBeUndefined();
   });
 });

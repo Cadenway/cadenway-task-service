@@ -31,7 +31,6 @@ describe('ResolveIntakePlacement', () => {
     });
     expect(result).toEqual({
       spaceId: PRODUIT,
-      listName: sprintState().name,
       archived: false,
       statuses: spaceState().statuses,
       role: 'edit',

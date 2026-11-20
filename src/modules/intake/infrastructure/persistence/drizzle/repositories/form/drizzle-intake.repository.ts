@@ -10,6 +10,7 @@ import { intakeContacts } from '../../schemas/form/intake-contact.schema.js';
 import { intakeForms } from '../../schemas/form/intake-form.schema.js';
 import { intakePublications } from '../../schemas/form/intake-publication.schema.js';
 import { intakeSubmissions } from '../../schemas/form/intake-submission.schema.js';
+import { intakeReceiptCutoff } from './drizzle-expired-intake-receipts.repository.js';
 
 function digest(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
@@ -177,7 +178,7 @@ export class DrizzleIntakeRepository {
           eq(intakePublications.listId, listId),
           eq(intakePublications.keyDigest, publicationDigest),
           eq(intakeSubmissions.keyDigest, keyDigest),
-          gt(intakeSubmissions.createdAt, sql`clock_timestamp() - interval '24 hours'`),
+          gt(intakeSubmissions.createdAt, intakeReceiptCutoff),
         ),
       )
       .limit(1);
@@ -216,6 +217,7 @@ export class DrizzleIntakeRepository {
       keyDigest: digest(idempotencyKey),
       fingerprint,
       receipt,
+      createdAt: sql`clock_timestamp()`,
     };
     await this.db
       .insert(intakeSubmissions)
@@ -226,7 +228,7 @@ export class DrizzleIntakeRepository {
           intakeSubmissions.publicationId,
           intakeSubmissions.keyDigest,
         ],
-        set: { fingerprint, receipt, createdAt: sql`clock_timestamp()` },
+        set: { fingerprint, receipt, createdAt: values.createdAt },
       });
   }
 

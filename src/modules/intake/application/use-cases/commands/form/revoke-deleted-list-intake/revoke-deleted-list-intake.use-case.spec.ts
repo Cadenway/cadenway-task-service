@@ -14,12 +14,7 @@ const access = { role: 'edit' as const, lifecycle: 'active' as const };
 const originalKey = 'A'.repeat(43);
 
 function fixture() {
-  const current = IntakeForm.create('Sprint 14', eligibility).publish(
-    access,
-    1,
-    eligibility,
-    originalKey,
-  );
+  const current = IntakeForm.create(eligibility).publish(access, 1, eligibility, originalKey);
   const store = {
     findForm: vi.fn().mockResolvedValue(current),
     saveForm: vi.fn().mockResolvedValue(undefined),
@@ -56,7 +51,7 @@ describe('Intake cleanup', () => {
 
   it('leaves an unpublished draft untouched', async () => {
     const { store, work } = fixture();
-    store.findForm.mockResolvedValue(IntakeForm.create('Sprint 14', eligibility));
+    store.findForm.mockResolvedValue(IntakeForm.create(eligibility));
     await new RevokeDeletedListIntake(work).execute({ organizationId: 'org', listIds: ['first'] });
     expect(store.saveForm).not.toHaveBeenCalled();
   });

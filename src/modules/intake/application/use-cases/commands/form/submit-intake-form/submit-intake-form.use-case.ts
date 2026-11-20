@@ -26,11 +26,14 @@ export class SubmitIntakeForm {
               input.idempotencyKey,
               input.fingerprint,
             );
-      if (claim.kind === 'in-progress') throw new IntakeSubmissionError(claim.kind);
-
-      const publication = await store.loadPublication(target.listId, input.publicKey, true);
+      const publication = await store.loadPublication(
+        target.listId,
+        input.publicKey,
+        claim.kind !== 'in-progress',
+      );
       if (publication === null) throw new IntakeFormError({ kind: 'unavailable' });
       publication.form.publicForm(publication.context);
+      if (claim.kind === 'in-progress') throw new IntakeSubmissionError(claim.kind);
       if (claim.kind === 'key-reused') {
         throw new IntakeSubmissionError(claim.kind);
       }

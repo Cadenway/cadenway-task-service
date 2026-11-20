@@ -5,9 +5,6 @@ import type { IntakeEditorContext } from '../../../domain/policies/form/intake-e
 /** A list, its effective editor rights and the current draft, all resolved in one transaction. */
 export interface IntakeEditor {
   // #region Properties
-  /** Provides listName. */
-  readonly listName: string;
-
   /** Provides access. */
   readonly access: IntakeEditorContext;
 

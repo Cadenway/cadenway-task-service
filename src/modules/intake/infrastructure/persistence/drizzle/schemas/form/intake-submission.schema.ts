@@ -1,6 +1,15 @@
 import { organizationPolicy } from '@cadenway/nest-common/database';
 import { sql } from 'drizzle-orm';
-import { check, foreignKey, pgTable, primaryKey, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import {
+  check,
+  foreignKey,
+  index,
+  pgTable,
+  primaryKey,
+  text,
+  timestamp,
+  uuid,
+} from 'drizzle-orm/pg-core';
 
 import { intakePublications } from './intake-publication.schema.js';
 
@@ -26,6 +35,12 @@ export const intakeSubmissions = pgTable(
       foreignColumns: [intakePublications.organizationId, intakePublications.id],
     }),
     check('intake_submissions_key_digest_check', sql`${table.keyDigest} ~ '^[0-9a-f]{64}$'`),
+    index('intake_submissions_expiry_index').on(
+      table.createdAt,
+      table.organizationId,
+      table.publicationId,
+      table.keyDigest,
+    ),
     organizationPolicy('intake_submissions_organization_isolation'),
   ],
 );

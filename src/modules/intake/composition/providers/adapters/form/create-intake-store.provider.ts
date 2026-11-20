@@ -120,7 +120,6 @@ export function createIntakeStore(
       const target = lock ? await editorPlacement(listId, actor, true) : previewPlacement;
 
       return {
-        listName: target.listName,
         access: { role: 'edit', lifecycle: target.archived ? 'archived' : 'active' },
         form: lock ? await forms.findForm(listId, true) : preview,
         eligibility: {
@@ -161,16 +160,22 @@ export function createIntakeStore(
     completeSubmission: forms.completeSubmission.bind(forms),
 
     async createTask(listId, { task, contactEmail }) {
-      const { taskId } = await tasks.execute({
-        organizationId,
-        listId,
-        name: task.title,
-        description: task.description,
-        status: task.status,
-        priority: task.priority,
-        dueDate: task.dueDate,
-        assigneeId: task.assigneeId?.toLowerCase() ?? null,
-      });
+      const { taskId } = await tasks
+        .execute({
+          organizationId,
+          listId,
+          name: task.title,
+          description: task.description,
+          status: task.status,
+          priority: task.priority,
+          dueDate: task.dueDate,
+          assigneeId: task.assigneeId?.toLowerCase() ?? null,
+        })
+        .catch((error: unknown) => {
+          const kind = CreateIntakeTask.refusalOf(error);
+          if (kind === undefined) throw error;
+          throw new IntakeFormError({ kind });
+        });
       if (contactEmail !== null) await forms.saveContact(taskId, contactEmail);
       return randomBytes(32).toString('base64url');
     },

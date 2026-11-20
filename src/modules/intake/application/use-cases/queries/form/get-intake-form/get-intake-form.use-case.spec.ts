@@ -14,9 +14,7 @@ const access = { role: 'edit' as const, lifecycle: 'active' as const };
 
 function fixture(form: IntakeForm | null) {
   const store = {
-    loadEditor: vi
-      .fn<IntakeStore['loadEditor']>()
-      .mockResolvedValue({ listName: 'Requests', access, eligibility, form }),
+    loadEditor: vi.fn<IntakeStore['loadEditor']>().mockResolvedValue({ access, eligibility, form }),
     saveForm: vi.fn<IntakeStore['saveForm']>(),
     reservePublicationKey: vi.fn(),
     loadPublication: vi.fn(),
@@ -46,7 +44,6 @@ describe('GetIntakeForm', () => {
   it('uses todo when triage is hidden and allows an archived list', async () => {
     const { store, work } = fixture(null);
     store.loadEditor.mockResolvedValue({
-      listName: 'Requests',
       access: { role: 'edit', lifecycle: 'archived' },
       eligibility: { ...eligibility, allowedStatuses: new Set(['todo']) },
       form: null,
@@ -57,10 +54,9 @@ describe('GetIntakeForm', () => {
   });
 
   it('preserves an already saved draft even when its default later becomes unavailable', async () => {
-    const form = IntakeForm.create('Requests', eligibility);
+    const form = IntakeForm.create(eligibility);
     const { store, work } = fixture(form);
     store.loadEditor.mockResolvedValue({
-      listName: 'Renamed list',
       access,
       eligibility: { ...eligibility, allowedStatuses: new Set(['todo']) },
       form,
@@ -74,7 +70,6 @@ describe('GetIntakeForm', () => {
   it('denies non-editors before inserting a draft', async () => {
     const { store, work } = fixture(null);
     store.loadEditor.mockResolvedValue({
-      listName: 'Requests',
       access: { role: 'view', lifecycle: 'active' },
       eligibility,
       form: null,
@@ -89,9 +84,7 @@ describe('GetIntakeForm', () => {
   it('saves once when two first reads are serialized by the list settings lock', async () => {
     const { store, work } = fixture(null);
     let form: IntakeForm | null = null;
-    store.loadEditor.mockImplementation(() =>
-      Promise.resolve({ listName: 'Requests', access, eligibility, form }),
-    );
+    store.loadEditor.mockImplementation(() => Promise.resolve({ access, eligibility, form }));
     store.saveForm.mockImplementation((_listId, state) => {
       form = IntakeForm.reconstitute(state);
       return Promise.resolve();

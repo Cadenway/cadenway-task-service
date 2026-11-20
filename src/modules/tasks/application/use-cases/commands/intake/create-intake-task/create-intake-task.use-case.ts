@@ -44,6 +44,20 @@ export class CreateIntakeTask {
     return isAssignable(role);
   }
 
+  /** Reports that a submitted task cannot use the publication's destination or defaults. */
+  public static refusalOf(error: unknown): 'unavailable' | undefined {
+    if (!(error instanceof TaskRefusal)) return undefined;
+    switch (error.refusal.reason) {
+      case 'list-not-found':
+      case 'status-hidden':
+      case 'cancel-reason-required':
+      case 'assignee-invalid':
+        return 'unavailable';
+      default:
+        return undefined;
+    }
+  }
+
   /** Creates one task and appends its facts in the caller's tenant transaction. */
   public async execute(input: CreateIntakeTaskInput): Promise<CreateIntakeTaskOutput> {
     return this.work.run(async (store): Promise<CreateIntakeTaskOutput> => {
