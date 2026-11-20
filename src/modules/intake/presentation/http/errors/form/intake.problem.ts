@@ -4,12 +4,43 @@ import { IntakeAccessError } from '../../../../application/models/form/intake-ac
 import { IntakeResourceError } from '../../../../application/models/form/intake-resource-error.model.js';
 import { IntakeSubmissionError } from '../../../../application/models/form/intake-submission-error.model.js';
 import { intakeFormFailureOf } from '../../../../application/models/form/intake-form-error.model.js';
+import { IntakeAttachmentError } from '../../../../application/models/attachment/intake-attachment-error.model.js';
 
 /** Converts documented intake refusals to safe internal problems. */
-export async function answerIntakeRefusals<T>(work: () => Promise<T>): Promise<T> {
+export async function answerIntakeRefusals<T>(
+  work: () => Promise<T>,
+  concealDisabled = false,
+): Promise<T> {
   try {
     return await work();
   } catch (error) {
+    if (error instanceof IntakeAttachmentError) {
+      switch (error.failure) {
+        case 'invalid-draft':
+        case 'unavailable':
+        case 'invalid-transition':
+          throw new ProblemException({ status: 404, code: 'intake-form.not-found' });
+        case 'upload-not-ready':
+          throw new ProblemException({ status: 409, code: 'attachment.upload-not-ready' });
+        case 'disabled':
+          throw new ProblemException(
+            concealDisabled
+              ? { status: 404, code: 'intake-form.not-found' }
+              : { status: 422, code: 'intake-form.attachments-disabled' },
+          );
+        case 'limit-exceeded':
+          throw new ProblemException({
+            status: 422,
+            code: 'intake-form.attachment-limit-exceeded',
+          });
+        case 'file-too-large':
+          throw new ProblemException({ status: 422, code: 'attachment.file-too-large' });
+        case 'idempotency-key-reused':
+          throw new ProblemException({ status: 422, code: 'idempotency.key-reused' });
+        case 'invalid-declaration':
+          throw new ProblemException({ status: 400, code: 'request.invalid' });
+      }
+    }
     if (error instanceof IntakeAccessError) {
       throw new ProblemException({
         status: 403,

@@ -1,5 +1,6 @@
 import { getOrganizationContext, runWithOrganizationContext } from '@cadenway/nest-common';
 import { SystemTransactionRunner, TenantTransactionRunner } from '@cadenway/nest-common/database';
+import { OutboxWriter } from '@cadenway/nest-messaging/outbox';
 import type { FactoryProvider } from '@nestjs/common';
 
 import { FindOrganizationMember } from '../../../../../organization-members/public/membership/find-organization-member.js';
@@ -15,12 +16,8 @@ import { createIntakeStore } from './create-intake-store.provider.js';
 /** Preserves authenticated scope or enters the tenant established by the public-key lookup. */
 function inIntakeTenant<T>(organizationId: string, work: () => Promise<T>): Promise<T> {
   const context = getOrganizationContext();
-  if (context?.organizationId === organizationId) return work();
-  if (
-    context !== undefined &&
-    (context.organizationId?.toLowerCase() === organizationId ||
-      (context.organizationId === null && context.actor.type === 'system'))
-  ) {
+  if (context?.organizationId?.toLowerCase() === organizationId) return work();
+  if (context?.organizationId === null && context.actor.type === 'system') {
     return runWithOrganizationContext({ ...context, organizationId }, work);
   }
   throw new Error('Intake requires a matching organization or an unscoped system actor.');
@@ -36,6 +33,7 @@ export const intakeUnitOfWorkProvider: FactoryProvider<IntakeUnitOfWork> = {
     ResolveIntakePlacement,
     CreateIntakeTask,
     ResolveIntakeContactTask,
+    OutboxWriter,
   ],
   useFactory: (
     system: SystemTransactionRunner,
@@ -44,6 +42,7 @@ export const intakeUnitOfWorkProvider: FactoryProvider<IntakeUnitOfWork> = {
     placement: ResolveIntakePlacement,
     tasks: CreateIntakeTask,
     contactTask: ResolveIntakeContactTask,
+    outbox: OutboxWriter,
   ): IntakeUnitOfWork => {
     const lookup = new IntakePublicationLookup(system);
     const directories = { members, placement, tasks, contactTask };
@@ -58,13 +57,13 @@ export const intakeUnitOfWorkProvider: FactoryProvider<IntakeUnitOfWork> = {
       run<T>(organizationId: string, work: (store: IntakeStore) => Promise<T>): Promise<T> {
         const normalizedId = organizationId.toLowerCase();
         return inIntakeTenant(normalizedId, () =>
-          tenant.run(({ db }) => work(createIntakeStore(db, normalizedId, directories))),
+          tenant.run((scope) => work(createIntakeStore(scope, normalizedId, directories, outbox))),
         );
       },
       read<T>(organizationId: string, work: (store: IntakeStore) => Promise<T>): Promise<T> {
         const normalizedId = organizationId.toLowerCase();
         return inIntakeTenant(normalizedId, () =>
-          tenant.run(({ db }) => work(createIntakeStore(db, normalizedId, directories)), {
+          tenant.run((scope) => work(createIntakeStore(scope, normalizedId, directories, outbox)), {
             readOnly: true,
             isolationLevel: 'repeatable read',
           }),

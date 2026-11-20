@@ -4,6 +4,7 @@ import type { IntakeFormFields } from '../../value-objects/form/intake-form-fiel
 import type { IntakeSubmissionInput } from '../../value-objects/submission/intake-submission-input.value-object.js';
 import type { IntakeSubmissionIssue } from '../../value-objects/submission/intake-submission-issue.value-object.js';
 import type { IntakeSubmission } from '../../value-objects/submission/intake-submission.value-object.js';
+import { normalizeIntakeAttachmentIds } from './normalize-intake-attachment-ids.policy.js';
 
 type IssueReason = IntakeSubmissionIssue['reason'];
 
@@ -56,7 +57,7 @@ export function validateIntakeSubmission(
   const title = input.title.trim();
   const issues: IntakeSubmissionIssue[] = [];
   const check: (
-    field: keyof IntakeFormFields,
+    field: Exclude<keyof IntakeFormFields, 'attachments'>,
     valid: (value: string) => boolean,
     nullable?: boolean,
   ) => void = (field, valid, nullable) => {
@@ -70,7 +71,15 @@ export function validateIntakeSubmission(
   check('priority', isPriority);
   check('dueDate', isCalendarDate);
   check('contactEmail', isEmail);
+  const attachmentMode = form.fields.attachments ?? 'optional';
+  const attachmentCount = input.attachmentIds?.length ?? 0;
+  if (attachmentMode === 'disabled' && attachmentCount > 0) {
+    issues.push({ field: 'attachmentIds', reason: 'disabled' });
+  } else if (attachmentMode === 'required' && attachmentCount === 0) {
+    issues.push({ field: 'attachmentIds', reason: 'required' });
+  }
   if (issues.length > 0) throw new IntakeFormError({ kind: 'invalid-submission', issues });
+  normalizeIntakeAttachmentIds(input.attachmentIds);
 
   return {
     task: {

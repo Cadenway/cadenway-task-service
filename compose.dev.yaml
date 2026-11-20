@@ -135,6 +135,7 @@ configs:
                 allow: [
                   "evt.space.>", "evt.list.>", "evt.task.>", "evt.comment.>", "evt.approval.>",
                   "evt.milestone.>",
+                  "evt.intake.attachment-claimed.v1", "evt.intake.attachment-released.v1",
                   "rebuild.*.space", "rebuild.*.list", "rebuild.*.task", "rebuild.*.comment",
                   "rebuild.*.approval", "rebuild.*.milestone",
                   "$$JS.API.INFO", "$$JS.API.STREAM.NAMES", "$$JS.API.STREAM.INFO.EVENTS",
@@ -157,7 +158,12 @@ configs:
                   "$$JS.API.CONSUMER.CREATE.EVENTS.task-service__decide-notification-delivery-authorization.evt.notification.delivery-authorization-requested.v1",
                   "$$JS.API.CONSUMER.INFO.EVENTS.task-service__decide-notification-delivery-authorization",
                   "$$JS.API.CONSUMER.MSG.NEXT.EVENTS.task-service__decide-notification-delivery-authorization",
-                  "$$JS.ACK.EVENTS.task-service__decide-notification-delivery-authorization.>"
+                  "$$JS.ACK.EVENTS.task-service__decide-notification-delivery-authorization.>",
+
+                  "$$JS.API.CONSUMER.CREATE.EVENTS.task-service__verify-intake-attachment.evt.intake.attachment-verified.v1",
+                  "$$JS.API.CONSUMER.INFO.EVENTS.task-service__verify-intake-attachment",
+                  "$$JS.API.CONSUMER.MSG.NEXT.EVENTS.task-service__verify-intake-attachment",
+                  "$$JS.ACK.EVENTS.task-service__verify-intake-attachment.>"
                 ]
               }
               subscribe: { allow: ["_INBOX.task.>", "rebuild.task.>"] }

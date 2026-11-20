@@ -84,7 +84,11 @@ function checkedState(state: IntakeFormConfiguration): IntakeFormConfiguration {
   if (state.description !== null && Array.from(state.description).length > 500) {
     throw new IntakeFormError({ kind: 'invalid-settings', field: 'description' });
   }
-  if (fields.some((field) => !modes.includes(state.fields[field]))) {
+  const { description, priority, dueDate, contactEmail, attachments } = state.fields;
+  if (
+    fields.some((field) => !modes.includes(state.fields[field])) ||
+    (attachments !== undefined && !modes.includes(attachments))
+  ) {
     throw new IntakeFormError({ kind: 'invalid-settings', field: 'fields' });
   }
   if (!statuses.includes(state.defaultStatus)) {
@@ -99,12 +103,12 @@ function checkedState(state: IntakeFormConfiguration): IntakeFormConfiguration {
   }
   if (state.publicKey !== null) checkKey(state.publicKey);
 
-  const { description, priority, dueDate, contactEmail } = state.fields;
   const formFields: IntakeFormFields = Object.freeze({
     description,
     priority,
     dueDate,
     contactEmail,
+    ...(attachments === undefined ? {} : { attachments }),
   });
   return Object.freeze({
     title: normalizedTitle(state.title),
@@ -123,6 +127,7 @@ function sameSettings(left: IntakeFormConfiguration, right: IntakeFormConfigurat
     left.description === right.description &&
     left.defaultStatus === right.defaultStatus &&
     left.defaultAssigneeId === right.defaultAssigneeId &&
+    (left.fields.attachments ?? 'optional') === (right.fields.attachments ?? 'optional') &&
     fields.every((field) => left.fields[field] === right.fields[field])
   );
 }

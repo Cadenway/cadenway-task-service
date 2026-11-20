@@ -52,9 +52,21 @@ export function intakeVersion(header: string | undefined, required: boolean): nu
 }
 
 /** Fingerprints the parsed submission without retaining contact data in the receipt. */
-export function submissionFingerprint(body: Readonly<Record<string, unknown>>): string {
+export function submissionFingerprint(
+  body: Readonly<Record<string, unknown>>,
+  draftKey?: string,
+): string {
+  const ids = body.attachmentIds;
+  let fingerprintBody = body;
+  if (draftKey !== undefined) {
+    fingerprintBody = {
+      ...body,
+      attachmentIds: Array.isArray(ids) ? ids.map((id: string) => id.toLowerCase()).sort() : [],
+      draftDigest: createHash('sha256').update(draftKey, 'utf8').digest('hex'),
+    };
+  }
   const canonical = Object.fromEntries(
-    Object.entries(body).sort(([left], [right]) => left.localeCompare(right)),
+    Object.entries(fingerprintBody).sort(([left], [right]) => left.localeCompare(right)),
   );
   return createHash('sha256').update(JSON.stringify(canonical), 'utf8').digest('hex');
 }

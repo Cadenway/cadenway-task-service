@@ -14,33 +14,44 @@ and their normal task activity and events. Attachments belong to storage.
 | `public/form/purge-deleted-list-intake`  | spaces    |
 | `public/form/purge-intake-contacts`      | tasks     |
 
-The storage module exports only these lifecycle operations. Each joins the transaction of its
+The intake module exports only these lifecycle operations. Each joins the transaction of its
 resource owner.
 
 ## Owned tables
 
-| Table                 | Responsibility                                                                |
-| --------------------- | ----------------------------------------------------------------------------- |
-| `intake_forms`        | One versioned draft and its active publication per organization and list.     |
-| `intake_publications` | Unique historical publication-key digests and their owning lists.             |
-| `intake_submissions`  | Fingerprints and opaque receipts scoped to a publication and idempotency key. |
-| `intake_contacts`     | An optional contact email keyed by tenant and stable task ID.                 |
+| Table                            | Responsibility                                                                |
+| -------------------------------- | ----------------------------------------------------------------------------- |
+| `intake_forms`                   | One versioned draft and its active publication per organization and list.     |
+| `intake_publications`            | Unique historical publication-key digests and their owning lists.             |
+| `intake_submissions`             | Fingerprints and opaque receipts scoped to a publication and idempotency key. |
+| `intake_contacts`                | An optional contact email keyed by tenant and stable task ID.                 |
+| `intake_attachment_drafts`       | A publication-bound draft lease and its permanent opaque closure marker.      |
+| `intake_attachment_reservations` | Allocations, request fingerprints and time-limited terminal decisions.        |
 
 ## API
 
-The API gateway calls seven internal operations. The list configuration read, patch, publish and
+The API gateway is the sole caller. The list configuration read, patch, publish and
 disable routes and the task contact read require a verified user and organization. The public form
-read and submission require its verified system actor without an organization. The configuration
-routes return an ETag. Anonymous submissions use the publication-scoped idempotency receipt.
+read and submission, along with the attachment allocation, resolution and release routes, require
+the gateway's verified system actor without an organization. The configuration routes return
+an ETag. Anonymous submissions use the publication-scoped idempotency receipt. Storage accepts
+the allocation through its own API. Task stores a fingerprint of the declaration for replay.
 
 ## Events emitted
 
-None. Task creation records its ordinary task facts through the tasks module in the same
-transaction as intake storage.
+`intake.attachment-claimed.v1` and `intake.attachment-released.v1` record mutually exclusive
+terminal decisions for a tenant, publication and attachment. Claims include the permanent task key.
+The outbox rows and terminal reservations share a transaction. Task creation records ordinary
+task facts in that transaction too.
 
 ## Events consumed
 
-None.
+`intake.attachment-verified.v1` moves an exact, pending and unexpired reservation to verified.
+The durable `task-service__verify-intake-attachment` replays retained Storage facts and joins
+their deduplication transaction. Terminal, missing and expired reservations leave no change.
+The messaging kit retries transactional failures. At dead letter, inspect the failure and replay
+the original fact while the reservation is active. An expired reservation follows its normal
+release path.
 
 ## Invariants
 
@@ -59,6 +70,12 @@ lock after their nonblocking claim. Both paths hold membership, placement and fo
 that order. The claim is scoped to the tenant, publication and request key. One write transaction
 covers the ordinary task, its events, the separate contact and the receipt.
 
+Attachment allocation, release, verification, submission and expiry serialize on the same draft
+row before changing a reservation. The submission closes the draft, claims the selected files,
+and releases unused active reservations in the same transaction as the task and outbox. Expiry
+selects at most 100 candidate IDs per page and rechecks the original deadline while locking one
+draft in a tenant transaction. It records all releases with the closure in that transaction.
+
 Logical list and space deletion revoke affected publications while holding the list tombstones.
 Physical list deletion removes the settings and keeps the key reservations. Physical task
 deletion removes the private contacts alongside the tasks.
@@ -73,3 +90,9 @@ expired receipts in batches of at most 500 per transaction. Concurrent rewrites 
 workers skip locked rows for that occurrence. The cleanup leaves active receipts and publication
 key reservations intact. A failed attempt retries, then reaches
 `task.purge-intake-receipts.dead-letter`; the next occurrence retries the remaining expired rows.
+
+The UTC minute schedule `task.expire-intake-attachment-drafts` also deletes at most 500 terminal
+reservations per occurrence once their last transition is at least 24 hours old and their
+draft has closed. It skips locked reservations. The opaque closed draft remains so an expired
+applicant key cannot open a second draft. A late verification of a removed reservation has no
+effect. Claim and release facts follow outbox retention.

@@ -86,6 +86,8 @@ const publicTables = [
   'favorites',
   'goals',
   'idempotency_keys',
+  'intake_attachment_drafts',
+  'intake_attachment_reservations',
   'intake_contacts',
   'intake_forms',
   'intake_publications',
@@ -128,7 +130,7 @@ const publicTables = [
  * deletion of lists and spaces, then the trash root snapshot, collaboration, planning and the
  * task library, P3c-1 capabilities, goals, sprint reporting history, intake and delivery decisions.
  */
-const appliedMigrations = 20;
+const appliedMigrations = 21;
 
 /**
  * Runs `docker compose` on the throwaway project.
@@ -628,6 +630,7 @@ describe('task-service wiring', () => {
     const names = [
       'task.clean-up-removed-member',
       'task.drop-trashed-task-requests',
+      'task.expire-intake-attachment-drafts',
       'task.purge-intake-receipts',
       'task.purge-trash',
       'task.schedule-trash-purge',
@@ -750,6 +753,12 @@ describe('task-service wiring', () => {
       { relname: 'favorites', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'goals', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'idempotency_keys', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'intake_attachment_drafts', relrowsecurity: true, relforcerowsecurity: true },
+      {
+        relname: 'intake_attachment_reservations',
+        relrowsecurity: true,
+        relforcerowsecurity: true,
+      },
       { relname: 'intake_contacts', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'intake_forms', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'intake_publications', relrowsecurity: true, relforcerowsecurity: true },
@@ -800,6 +809,14 @@ describe('task-service wiring', () => {
       { tablename: 'favorites', policyname: 'favorites_organization_isolation' },
       { tablename: 'goals', policyname: 'goals_organization_isolation' },
       { tablename: 'idempotency_keys', policyname: 'idempotency_keys_organization_isolation' },
+      {
+        tablename: 'intake_attachment_drafts',
+        policyname: 'intake_attachment_drafts_organization_isolation',
+      },
+      {
+        tablename: 'intake_attachment_reservations',
+        policyname: 'intake_attachment_reservations_organization_isolation',
+      },
       { tablename: 'intake_contacts', policyname: 'intake_contacts_organization_isolation' },
       { tablename: 'intake_forms', policyname: 'intake_forms_organization_isolation' },
       {
@@ -868,6 +885,39 @@ describe('task-service wiring', () => {
       { tablename: 'tasks', policyname: 'tasks_organization_isolation' },
       { tablename: 'trash_entries', policyname: 'trash_entries_organization_isolation' },
     ]);
+  });
+
+  it('installs partial indexes for draft expiry and terminal reservation cleanup', async () => {
+    const indexes = await migrator.query<{
+      name: string;
+      columns: string[];
+      predicate: string | null;
+    }>(
+      `select index_relation.relname as name,
+              array(select pg_get_indexdef(entry.indexrelid, position, true)
+                      from generate_series(1, entry.indnkeyatts) as position
+                      order by position) as columns,
+              pg_get_expr(entry.indpred, entry.indrelid) as predicate
+         from pg_index as entry
+         join pg_class as index_relation on index_relation.oid = entry.indexrelid
+        where index_relation.relnamespace = 'public'::regnamespace and entry.indisvalid
+          and index_relation.relname in ('intake_attachment_drafts_expiry_index',
+                                         'intake_attachment_reservations_terminal_expiry_index')
+        order by name`,
+    );
+
+    expect(indexes.rows).toMatchObject([
+      {
+        name: 'intake_attachment_drafts_expiry_index',
+        columns: ['expires_at', 'organization_id', 'publication_id', 'draft_digest'],
+      },
+      {
+        name: 'intake_attachment_reservations_terminal_expiry_index',
+        columns: ['updated_at', 'organization_id', 'attachment_id'],
+      },
+    ]);
+    expect(indexes.rows[0]?.predicate).toContain('closed_at IS NULL');
+    expect(indexes.rows[1]?.predicate).toMatch(/\bstatus\b.+\bclaimed\b.+\breleased\b/u);
   });
 
   it('answers the liveness probe without a token', async () => {

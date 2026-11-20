@@ -1,10 +1,19 @@
 import {
+  AllocateIntakeAttachmentInternalBody,
+  AllocateIntakeAttachmentInternalHeader,
+  AllocateIntakeAttachmentInternalParams,
+  AllocateIntakeAttachmentInternalResponse,
   GetIntakeFormConfigurationInternalParams,
   GetIntakeFormConfigurationInternalResponse,
   GetPublicIntakeFormInternalParams,
   GetPublicIntakeFormInternalResponse,
   GetTaskIntakeContactInternalParams,
   GetTaskIntakeContactInternalResponse,
+  ReleaseIntakeAttachmentInternalHeader,
+  ReleaseIntakeAttachmentInternalParams,
+  ResolveIntakeAttachmentInternalHeader,
+  ResolveIntakeAttachmentInternalParams,
+  ResolveIntakeAttachmentInternalResponse,
   SubmitPublicIntakeFormInternalBody,
   SubmitPublicIntakeFormInternalHeader,
   SubmitPublicIntakeFormInternalResponse,
@@ -32,6 +41,8 @@ import {
 import type { Request, Response } from 'express';
 import type { z } from 'zod';
 
+import { AllocateIntakeAttachment } from '../../../../application/use-cases/commands/attachment/allocate-intake-attachment/allocate-intake-attachment.use-case.js';
+import { ReleaseIntakeAttachment } from '../../../../application/use-cases/commands/attachment/release-intake-attachment/release-intake-attachment.use-case.js';
 import { DisableIntakeForm } from '../../../../application/use-cases/commands/form/disable-intake-form/disable-intake-form.use-case.js';
 import { PublishIntakeForm } from '../../../../application/use-cases/commands/form/publish-intake-form/publish-intake-form.use-case.js';
 import { SubmitIntakeForm } from '../../../../application/use-cases/commands/form/submit-intake-form/submit-intake-form.use-case.js';
@@ -39,6 +50,7 @@ import { UpdateIntakeForm } from '../../../../application/use-cases/commands/for
 import { GetIntakeContact } from '../../../../application/use-cases/queries/form/get-intake-contact/get-intake-contact.use-case.js';
 import { GetIntakeForm } from '../../../../application/use-cases/queries/form/get-intake-form/get-intake-form.use-case.js';
 import { GetPublicIntakeForm } from '../../../../application/use-cases/queries/form/get-public-intake-form/get-public-intake-form.use-case.js';
+import { ResolveIntakeAttachment } from '../../../../application/use-cases/queries/attachment/resolve-intake-attachment/resolve-intake-attachment.use-case.js';
 import { answerIntakeRefusals } from '../../errors/form/intake.problem.js';
 import {
   intakeCaller,
@@ -97,6 +109,26 @@ function requireBody(request: Request): void {
   }
 }
 
+/** Parses only the declared applicant headers without including their values in a refusal. */
+function applicantHeaders<T>(schema: z.ZodType<T>, headers: unknown): T {
+  const result = schema.safeParse(headers);
+  if (!result.success) {
+    throw new ProblemException({
+      status: 400,
+      code: 'request.invalid',
+      details: {
+        issues: result.error.issues.map((issue) => ({
+          in: 'header',
+          path: issue.path.join('.'),
+          code: 'invalid',
+          message: 'Expected a valid header.',
+        })),
+      },
+    });
+  }
+  return result.data;
+}
+
 /** Authenticated intake configuration and private contact operations. */
 @Controller('internal/v1')
 @InternalAccess({ issuers: ['api-gateway'], actors: ['user'], organization: 'required' })
@@ -111,6 +143,9 @@ export class IntakeController {
     private readonly getContact: GetIntakeContact,
     private readonly getPublicForm: GetPublicIntakeForm,
     private readonly submitForm: SubmitIntakeForm,
+    private readonly allocateAttachment: AllocateIntakeAttachment,
+    private readonly resolveAttachment: ResolveIntakeAttachment,
+    private readonly releaseAttachment: ReleaseIntakeAttachment,
   ) {}
   // #endregion
 
@@ -222,6 +257,103 @@ export class IntakeController {
     return GetPublicIntakeFormInternalResponse.parse(form);
   }
 
+  /** Allocates a private draft reservation for the verified gateway system actor. */
+  @Post('intake-forms/:publicKey/attachments')
+  @HttpCode(201)
+  @InternalAccess({ actors: ['system'], organization: 'optional' })
+  public async allocate(
+    @Param(new ZodValidationPipe(AllocateIntakeAttachmentInternalParams))
+    path: z.output<typeof AllocateIntakeAttachmentInternalParams>,
+    @Body(new ZodValidationPipe(AllocateIntakeAttachmentInternalBody))
+    body: z.output<typeof AllocateIntakeAttachmentInternalBody>,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<z.output<typeof AllocateIntakeAttachmentInternalResponse>> {
+    response.setHeader('Cache-Control', 'no-store');
+    requireUnscopedApplicant();
+    requireBody(request);
+    const headers = applicantHeaders(AllocateIntakeAttachmentInternalHeader, {
+      'Intake-Draft-Key': request.headers['intake-draft-key'],
+      'Idempotency-Key': request.headers['idempotency-key'],
+    });
+    const allocation = await answerIntakeRefusals(() =>
+      this.allocateAttachment.execute({
+        publicKey: path.publicKey,
+        draftKey: headers['Intake-Draft-Key'],
+        idempotencyKey: headers['Idempotency-Key'],
+        declaration: body,
+      }),
+    );
+    const result = AllocateIntakeAttachmentInternalResponse.parse({
+      organizationId: allocation.organizationId,
+      publicationId: allocation.publicationId,
+      attachmentId: allocation.attachmentId,
+      expiresAt: allocation.expiresAt.toISOString(),
+    });
+    response.setHeader('Location', `attachments/${result.attachmentId}`);
+    return result;
+  }
+
+  /** Resolves the scope of an eligible reservation without exposing its draft credential. */
+  @Get('intake-forms/:publicKey/attachments/:attachmentId')
+  @InternalAccess({ actors: ['system'], organization: 'optional' })
+  public async resolve(
+    @Param(new ZodValidationPipe(ResolveIntakeAttachmentInternalParams))
+    path: z.output<typeof ResolveIntakeAttachmentInternalParams>,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<z.output<typeof ResolveIntakeAttachmentInternalResponse>> {
+    response.setHeader('Cache-Control', 'no-store');
+    requireUnscopedApplicant();
+    // This private authorization proof has no conditional response.
+    delete request.headers['if-none-match'];
+    delete request.headers['if-modified-since'];
+    const headers = applicantHeaders(ResolveIntakeAttachmentInternalHeader, {
+      'Intake-Draft-Key': request.headers['intake-draft-key'],
+    });
+    const allocation = await answerIntakeRefusals(
+      () =>
+        this.resolveAttachment.execute({
+          publicKey: path.publicKey,
+          draftKey: headers['Intake-Draft-Key'],
+          attachmentId: path.attachmentId.toLowerCase(),
+        }),
+      true,
+    );
+    return ResolveIntakeAttachmentInternalResponse.parse({
+      organizationId: allocation.organizationId,
+      publicationId: allocation.publicationId,
+      attachmentId: allocation.attachmentId,
+      expiresAt: allocation.expiresAt.toISOString(),
+    });
+  }
+
+  /** Releases the reservation and its terminal fact in the application transaction. */
+  @Delete('intake-forms/:publicKey/attachments/:attachmentId')
+  @HttpCode(204)
+  @InternalAccess({ actors: ['system'], organization: 'optional' })
+  public async release(
+    @Param(new ZodValidationPipe(ReleaseIntakeAttachmentInternalParams))
+    path: z.output<typeof ReleaseIntakeAttachmentInternalParams>,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<void> {
+    response.setHeader('Cache-Control', 'no-store');
+    requireUnscopedApplicant();
+    const headers = applicantHeaders(ReleaseIntakeAttachmentInternalHeader, {
+      'Intake-Draft-Key': request.headers['intake-draft-key'],
+    });
+    await answerIntakeRefusals(
+      () =>
+        this.releaseAttachment.execute({
+          publicKey: path.publicKey,
+          draftKey: headers['Intake-Draft-Key'],
+          attachmentId: path.attachmentId.toLowerCase(),
+        }),
+      true,
+    );
+  }
+
   /** Creates a request and its scoped idempotency receipt atomically. */
   @Post('intake-forms/:publicKey/submissions')
   @HttpCode(200)
@@ -236,10 +368,27 @@ export class IntakeController {
   ): Promise<z.output<typeof SubmitPublicIntakeFormInternalResponse>> {
     requireUnscopedApplicant();
     requireBody(request);
-    const headers = SubmitPublicIntakeFormInternalHeader.safeParse({
+    const headers = applicantHeaders(SubmitPublicIntakeFormInternalHeader, {
       'Idempotency-Key': idempotencyKey,
+      'Intake-Draft-Key': request.headers['intake-draft-key'],
     });
-    if (!headers.success) {
+    if ((body.attachmentIds?.length ?? 0) > 0 && headers['Intake-Draft-Key'] === undefined) {
+      throw new ProblemException({
+        status: 400,
+        code: 'request.invalid',
+        details: {
+          issues: [
+            {
+              in: 'header',
+              path: 'Intake-Draft-Key',
+              code: 'invalid',
+              message: 'Expected a draft key for attachments.',
+            },
+          ],
+        },
+      });
+    }
+    if (headers['Intake-Draft-Key'] !== undefined && headers['Idempotency-Key'] === undefined) {
       throw new ProblemException({
         status: 400,
         code: 'request.invalid',
@@ -248,8 +397,8 @@ export class IntakeController {
             {
               in: 'header',
               path: 'Idempotency-Key',
-              code: 'invalid',
-              message: 'Expected a valid idempotency key.',
+              code: 'required',
+              message: 'Expected an idempotency key for a draft.',
             },
           ],
         },
@@ -259,10 +408,13 @@ export class IntakeController {
       this.submitForm.execute({
         publicKey: path.publicKey,
         submission: body,
-        fingerprint: submissionFingerprint(body),
-        ...(headers.data['Idempotency-Key'] === undefined
+        fingerprint: submissionFingerprint(body, headers['Intake-Draft-Key']),
+        ...(headers['Intake-Draft-Key'] === undefined
           ? {}
-          : { idempotencyKey: headers.data['Idempotency-Key'] }),
+          : { draftKey: headers['Intake-Draft-Key'] }),
+        ...(headers['Idempotency-Key'] === undefined
+          ? {}
+          : { idempotencyKey: headers['Idempotency-Key'] }),
       }),
     );
     return SubmitPublicIntakeFormInternalResponse.parse(receipt);

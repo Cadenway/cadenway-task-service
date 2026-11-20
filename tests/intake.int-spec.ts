@@ -2,13 +2,16 @@ import { execFileSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 
+import type { IntakeAttachmentVerifiedV1 } from '@cadenway/contracts/events/storage-service';
 import {
   CreateListInternalResponse,
+  AllocateIntakeAttachmentInternalResponse,
   CreateSpaceInternalResponse,
   GetIntakeFormConfigurationInternalResponse,
   GetPublicIntakeFormInternalResponse,
   SubmitPublicIntakeFormInternalResponse,
   GetTaskIntakeContactInternalResponse,
+  ResolveIntakeAttachmentInternalResponse,
   TrashTaskInternalResponse,
   GetTaskInternalResponse,
 } from '@cadenway/contracts/validators/internal/task-service';
@@ -21,7 +24,11 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
-import { PURGE_INTAKE_RECEIPTS_QUEUE } from '../src/config/job-queues.js';
+import {
+  EXPIRE_INTAKE_ATTACHMENT_DRAFTS_QUEUE,
+  PURGE_INTAKE_RECEIPTS_QUEUE,
+} from '../src/config/job-queues.js';
+import { ExpireIntakeAttachmentDraftsHandler } from '../src/modules/intake/presentation/jobs/handlers/attachment/expire-intake-attachment-drafts.handler.js';
 import { PurgeIntakeReceiptsHandler } from '../src/modules/intake/presentation/jobs/handlers/form/purge-intake-receipts.handler.js';
 
 const project = `intake-test-${String(process.pid)}`;
@@ -433,6 +440,425 @@ describe('intake with PostgreSQL and NATS', () => {
           (await send('post', path, options)).body as unknown,
         ),
       ).toEqual(renewed);
+    });
+  });
+
+  describe('anonymous attachment drafts', () => {
+    const draftKey = 'a'.repeat(43);
+    const otherDraftKey = 'b'.repeat(43);
+    const allocationBody = {
+      fileName: 'capture-sso.png',
+      contentType: 'image/png',
+      sizeBytes: 184320,
+    };
+
+    async function allocate(key: string, index: number): Promise<request.Response> {
+      return send('post', `/internal/v1/intake-forms/${publicKey}/attachments`, {
+        system: true,
+        headers: { 'Intake-Draft-Key': key, 'Idempotency-Key': `attachment-${String(index)}` },
+        body: allocationBody,
+      });
+    }
+
+    async function publishStorageVerification(fact: IntakeAttachmentVerifiedV1): Promise<void> {
+      const consumerInfo = (): {
+        delivered: { consumer_seq: number };
+        ack_floor: { consumer_seq: number };
+      } =>
+        JSON.parse(
+          compose(
+            'exec',
+            '-T',
+            'nats-streams',
+            'nats',
+            'consumer',
+            'info',
+            'EVENTS',
+            'task-service__verify-intake-attachment',
+            '--json',
+          ),
+        ) as {
+          delivered: { consumer_seq: number };
+          ack_floor: { consumer_seq: number };
+        };
+      const sequenceBefore = consumerInfo().delivered.consumer_seq;
+      compose(
+        'exec',
+        '-T',
+        'nats-streams',
+        'nats',
+        'pub',
+        '--jetstream',
+        '--header',
+        `Nats-Msg-Id:${randomUUID()}`,
+        'evt.intake.attachment-verified.v1',
+        JSON.stringify(fact),
+      );
+      await vi.waitFor(
+        () => {
+          const info = consumerInfo();
+          expect(info.delivered.consumer_seq).toBeGreaterThan(sequenceBefore);
+          expect(info.ack_floor.consumer_seq).toBe(info.delivered.consumer_seq);
+        },
+        { timeout: 15_000 },
+      );
+    }
+
+    it('binds five replayable reservations to the draft and rejects other draft keys', async () => {
+      const first = await allocate(draftKey, 1);
+      expect(first.status, first.text).toBe(201);
+      expect(first.headers['cache-control']).toBe('no-store');
+      const reservation = AllocateIntakeAttachmentInternalResponse.parse(first.body as unknown);
+      const replay = await allocate(draftKey, 1);
+      expect(replay.status, replay.text).toBe(201);
+      expect(AllocateIntakeAttachmentInternalResponse.parse(replay.body as unknown)).toEqual(
+        reservation,
+      );
+      const changed = await send('post', `/internal/v1/intake-forms/${publicKey}/attachments`, {
+        system: true,
+        headers: { 'Intake-Draft-Key': draftKey, 'Idempotency-Key': 'attachment-1' },
+        body: { ...allocationBody, fileName: 'autre-capture.png' },
+      });
+      expect(changed.status, changed.text).toBe(422);
+      expect(changed.body).toMatchObject({ code: 'idempotency.key-reused' });
+      const proof = await send(
+        'get',
+        `/internal/v1/intake-forms/${publicKey}/attachments/${reservation.attachmentId}`,
+        { system: true, headers: { 'Intake-Draft-Key': draftKey, 'If-None-Match': '*' } },
+      );
+      expect(proof.status, proof.text).toBe(200);
+      expect(proof.headers['cache-control']).toBe('no-store');
+      expect(ResolveIntakeAttachmentInternalResponse.parse(proof.body as unknown)).toEqual(
+        reservation,
+      );
+      const otherDraft = await send(
+        'get',
+        `/internal/v1/intake-forms/${publicKey}/attachments/${reservation.attachmentId}`,
+        { system: true, headers: { 'Intake-Draft-Key': otherDraftKey } },
+      );
+      expect(otherDraft.status, otherDraft.text).toBe(404);
+      for (let index = 2; index <= 5; index += 1) {
+        const allocated = await allocate(draftKey, index);
+        expect(allocated.status, allocated.text).toBe(201);
+      }
+      const overflow = await allocate(draftKey, 6);
+      expect(overflow.status, overflow.text).toBe(422);
+      const digest = createHash('sha256').update(draftKey).digest('hex');
+      expect(
+        await query<{ total: number }>(
+          `select count(*)::int as total from intake_attachment_reservations
+           where organization_id = $1 and draft_digest = $2 and status = 'reserved'`,
+          [organizationId, digest],
+        ),
+      ).toEqual([{ total: 5 }]);
+    });
+
+    it('serializes six simultaneous reservations and admits only five', async () => {
+      const concurrentKey = 'd'.repeat(43);
+      const results = await Promise.all(
+        Array.from({ length: 6 }, (_, index) => allocate(concurrentKey, index + 20)),
+      );
+      expect(results.map((result) => result.status).sort()).toEqual([201, 201, 201, 201, 201, 422]);
+      expect(
+        await query<{ total: number }>(
+          `select count(*)::int as total from intake_attachment_reservations
+           where organization_id = $1 and draft_digest = $2 and status = 'reserved'`,
+          [organizationId, createHash('sha256').update(concurrentKey).digest('hex')],
+        ),
+      ).toEqual([{ total: 5 }]);
+    });
+
+    it('keeps the same draft credential separate between organizations and publications', async () => {
+      const space = await send('post', '/internal/v1/spaces', {
+        org: otherOrganization,
+        body: { name: 'Autre atelier', prefix: 'AUT', visibility: 'private' },
+      });
+      expect(space.status, space.text).toBe(201);
+      const otherList = CreateSpaceInternalResponse.parse(space.body as unknown).firstList.id;
+      const published = await send('post', `/internal/v1/lists/${otherList}/intake-form/publish`, {
+        org: otherOrganization,
+      });
+      expect(published.status, published.text).toBe(200);
+      const otherKey = GetIntakeFormConfigurationInternalResponse.parse(
+        published.body as unknown,
+      ).publicKey;
+      if (otherKey === null) throw new Error('Other publication has no key');
+      const allocated = await send('post', `/internal/v1/intake-forms/${otherKey}/attachments`, {
+        system: true,
+        headers: { 'Intake-Draft-Key': draftKey, 'Idempotency-Key': 'attachment-1' },
+        body: allocationBody,
+      });
+      expect(allocated.status, allocated.text).toBe(201);
+      const other = AllocateIntakeAttachmentInternalResponse.parse(allocated.body as unknown);
+      expect(other.organizationId).toBe(otherOrganization);
+      expect(
+        (
+          await send(
+            'get',
+            `/internal/v1/intake-forms/${publicKey}/attachments/${other.attachmentId}`,
+            { system: true, headers: { 'Intake-Draft-Key': draftKey } },
+          )
+        ).status,
+      ).toBe(404);
+      const draftDigest = createHash('sha256').update(draftKey).digest('hex');
+      expect(
+        await query<{ organization_id: string; total: number }>(
+          `select organization_id, count(*)::int as total from intake_attachment_reservations
+           where draft_digest = $1 group by organization_id order by organization_id`,
+          [draftDigest],
+        ),
+      ).toEqual([
+        { organization_id: otherOrganization, total: 1 },
+        { organization_id: organizationId, total: 5 },
+      ]);
+    });
+
+    it('applies a Storage verification once and atomically claims only the selected file', async () => {
+      const rows = await query<{ attachment_id: string; publication_id: string }>(
+        `select attachment_id, publication_id from intake_attachment_reservations
+         where organization_id = $1 and draft_digest = $2 order by attachment_id`,
+        [organizationId, createHash('sha256').update(draftKey).digest('hex')],
+      );
+      const selected = rows[0];
+      if (selected === undefined) throw new Error('Missing attachment reservation');
+      const fact: IntakeAttachmentVerifiedV1 = {
+        id: randomUUID(),
+        occurredAt: new Date().toISOString(),
+        organizationId: organizationId.toUpperCase(),
+        actor: { type: 'system', id: 'storage-service' },
+        version: 1,
+        publicationId: selected.publication_id.toUpperCase(),
+        attachmentId: selected.attachment_id.toUpperCase(),
+      };
+      for (let delivery = 0; delivery < 2; delivery += 1) {
+        await publishStorageVerification(fact);
+        expect(
+          await query<{ status: string }>(
+            'select status from intake_attachment_reservations where organization_id = $1 and attachment_id = $2',
+            [organizationId, selected.attachment_id],
+          ),
+        ).toEqual([{ status: 'verified' }]);
+      }
+      const path = `/internal/v1/intake-forms/${publicKey}/submissions`;
+      const submission = {
+        title: 'Joindre la capture SSO',
+        contactEmail: 'capture@example.test',
+        attachmentIds: [selected.attachment_id],
+      };
+      const options = {
+        system: true,
+        headers: { 'Idempotency-Key': 'intake-with-attachment', 'Intake-Draft-Key': draftKey },
+        body: submission,
+      };
+      const submitted = await send('post', path, options);
+      expect(submitted.status, submitted.text).toBe(200);
+      const receipt = SubmitPublicIntakeFormInternalResponse.parse(submitted.body as unknown);
+      const replay = await send('post', path, options);
+      expect(replay.status, replay.text).toBe(200);
+      expect(SubmitPublicIntakeFormInternalResponse.parse(replay.body as unknown)).toEqual(receipt);
+      const task = await query<{ id: string; task_key: string }>(
+        `select id, key_prefix || '-' || key_number::text as task_key from tasks
+         where organization_id = $1 and name = $2`,
+        [organizationId, submission.title],
+      );
+      expect(task).toHaveLength(1);
+      expect(
+        await query(
+          'select email from intake_contacts where organization_id = $1 and task_id = $2',
+          [organizationId, task[0]?.id],
+        ),
+      ).toEqual([{ email: submission.contactEmail }]);
+      const decisions = await query<{ status: string; total: number }>(
+        `select status, count(*)::int as total from intake_attachment_reservations
+         where organization_id = $1 and draft_digest = $2 group by status order by status`,
+        [organizationId, createHash('sha256').update(draftKey).digest('hex')],
+      );
+      expect(decisions).toEqual([
+        { status: 'claimed', total: 1 },
+        { status: 'released', total: 4 },
+      ]);
+      const facts = await query<{ event_name: string; total: number }>(
+        `select event_name, count(*)::int as total from outbox_events
+         where organization_id = $1 and event_name in
+         ('intake.attachment-claimed.v1', 'intake.attachment-released.v1')
+         and payload->>'attachmentId' = any($2::text[])
+         group by event_name order by event_name`,
+        [organizationId, rows.map((row) => row.attachment_id)],
+      );
+      expect(facts).toEqual([
+        { event_name: 'intake.attachment-claimed.v1', total: 1 },
+        { event_name: 'intake.attachment-released.v1', total: 4 },
+      ]);
+      expect(
+        await query<{ total: number }>(
+          'select count(*)::int as total from processed_events where event_id = $1 and consumer = $2',
+          [fact.id, 'task-service__verify-intake-attachment'],
+        ),
+      ).toEqual([{ total: 1 }]);
+    });
+
+    it('rolls back the task, contact, receipt and claim if the outbox insert fails', async () => {
+      const rollbackKey = 'c'.repeat(43);
+      const allocated = await allocate(rollbackKey, 8);
+      expect(allocated.status, allocated.text).toBe(201);
+      const { attachmentId } = AllocateIntakeAttachmentInternalResponse.parse(
+        allocated.body as unknown,
+      );
+      await query(
+        `update intake_attachment_reservations set status = 'verified'
+         where organization_id = $1 and attachment_id = $2`,
+        [organizationId, attachmentId],
+      );
+      await query(`create function test_fail_intake_outbox() returns trigger language plpgsql as $$
+        begin
+          if new.event_name = 'intake.attachment-claimed.v1' then
+            raise exception 'test failure while recording attachment claim';
+          end if;
+          return new;
+        end
+        $$`);
+      await query(
+        `create trigger test_fail_intake_outbox before insert on outbox_events
+         for each row execute function test_fail_intake_outbox()`,
+      );
+      const title = 'Demande avec reprise après échec';
+      const options = {
+        system: true,
+        headers: { 'Idempotency-Key': 'intake-rollback', 'Intake-Draft-Key': rollbackKey },
+        body: {
+          title,
+          contactEmail: 'reprise@example.test',
+          attachmentIds: [attachmentId],
+        },
+      };
+      try {
+        const rejected = await send(
+          'post',
+          `/internal/v1/intake-forms/${publicKey}/submissions`,
+          options,
+        );
+        expect(rejected.status, rejected.text).toBe(500);
+        expect(
+          await query<{ total: number }>(
+            'select count(*)::int as total from tasks where organization_id = $1 and name = $2',
+            [organizationId, title],
+          ),
+        ).toEqual([{ total: 0 }]);
+        expect(
+          await query<{ total: number }>(
+            'select count(*)::int as total from intake_contacts where organization_id = $1 and email = $2',
+            [organizationId, options.body.contactEmail],
+          ),
+        ).toEqual([{ total: 0 }]);
+        expect(
+          await query(
+            'select status from intake_attachment_reservations where organization_id = $1 and attachment_id = $2',
+            [organizationId, attachmentId],
+          ),
+        ).toEqual([{ status: 'verified' }]);
+        expect(
+          await query<{ total: number }>(
+            'select count(*)::int as total from intake_submissions where organization_id = $1 and key_digest = $2',
+            [organizationId, createHash('sha256').update('intake-rollback').digest('hex')],
+          ),
+        ).toEqual([{ total: 0 }]);
+      } finally {
+        await query('drop trigger test_fail_intake_outbox on outbox_events');
+        await query('drop function test_fail_intake_outbox()');
+      }
+      const retried = await send(
+        'post',
+        `/internal/v1/intake-forms/${publicKey}/submissions`,
+        options,
+      );
+      expect(retried.status, retried.text).toBe(200);
+      SubmitPublicIntakeFormInternalResponse.parse(retried.body as unknown);
+    });
+
+    it('releases an expired draft once and prunes only reservations beyond retention', async () => {
+      if (app === undefined) throw new Error('Application did not start');
+      const allocated = await allocate(otherDraftKey, 7);
+      expect(allocated.status, allocated.text).toBe(201);
+      const { attachmentId, publicationId } = AllocateIntakeAttachmentInternalResponse.parse(
+        allocated.body as unknown,
+      );
+      const recent = await allocate(otherDraftKey, 9);
+      expect(recent.status, recent.text).toBe(201);
+      const { attachmentId: recentId } = AllocateIntakeAttachmentInternalResponse.parse(
+        recent.body as unknown,
+      );
+      await query(
+        `update intake_attachment_drafts set expires_at = now() - interval '1 minute'
+         where organization_id = $1 and draft_digest = $2`,
+        [organizationId, createHash('sha256').update(otherDraftKey).digest('hex')],
+      );
+      const handler = app.get(ExpireIntakeAttachmentDraftsHandler, { strict: false });
+      const sweep = (): Promise<void> =>
+        handler.handle({
+          id: randomUUID(),
+          queue: EXPIRE_INTAKE_ATTACHMENT_DRAFTS_QUEUE,
+          payload: null,
+          organizationId: null,
+          attempt: 1,
+          signal: new AbortController().signal,
+        });
+      await sweep();
+      await sweep();
+      const initial = await query<{
+        attachment_id: string;
+        status: string;
+        declaration_digest: string;
+      }>(
+        `select attachment_id, status, declaration_digest from intake_attachment_reservations
+         where organization_id = $1 and attachment_id in ($2, $3) order by attachment_id`,
+        [organizationId, attachmentId, recentId],
+      );
+      expect(initial).toMatchObject(
+        [attachmentId, recentId].sort().map((id) => ({ attachment_id: id, status: 'released' })),
+      );
+      for (const row of initial) expect(row.declaration_digest).toMatch(/^[0-9a-f]{64}$/u);
+      expect(
+        await query(
+          `update intake_attachment_reservations set updated_at = now() - interval '25 hours'
+           where organization_id = $1 and attachment_id = $2 returning attachment_id`,
+          [organizationId, attachmentId],
+        ),
+      ).toEqual([{ attachment_id: attachmentId }]);
+      await sweep();
+      const lateFactId = randomUUID();
+      await publishStorageVerification({
+        id: lateFactId,
+        occurredAt: new Date().toISOString(),
+        organizationId,
+        actor: { type: 'system', id: 'storage-service' },
+        version: 1,
+        publicationId,
+        attachmentId,
+      });
+      expect(
+        await query('select event_id from processed_events where event_id = $1 and consumer = $2', [
+          lateFactId,
+          'task-service__verify-intake-attachment',
+        ]),
+      ).toEqual([{ event_id: lateFactId }]);
+      expect(
+        await query(
+          `select attachment_id, status from intake_attachment_reservations
+           where organization_id = $1 and attachment_id in ($2, $3)`,
+          [organizationId, attachmentId, recentId],
+        ),
+      ).toEqual([{ attachment_id: recentId, status: 'released' }]);
+      const reopened = await allocate(otherDraftKey, 7);
+      expect(reopened.status, reopened.text).toBe(404);
+      expect(reopened.body).toMatchObject({ code: 'intake-form.not-found' });
+      expect(
+        await query(
+          `select event_name, count(*)::int as total from outbox_events
+           where organization_id = $1 and payload->>'attachmentId' = $2
+           group by event_name`,
+          [organizationId, attachmentId],
+        ),
+      ).toEqual([{ event_name: 'intake.attachment-released.v1', total: 1 }]);
     });
   });
 

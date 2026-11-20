@@ -1,4 +1,5 @@
-import type { TransactionDatabase } from '@cadenway/nest-common/database';
+import type { TransactionScope } from '@cadenway/nest-common/database';
+import type { OutboxWriter } from '@cadenway/nest-messaging/outbox';
 import { getOrganizationContext } from '@cadenway/nest-common';
 import { randomBytes } from 'node:crypto';
 
@@ -13,7 +14,10 @@ import type { ResolveIntakeContactTask } from '../../../../../tasks/public/intak
 import { IntakeAccessError } from '../../../../application/models/form/intake-access-error.model.js';
 import { IntakeResourceError } from '../../../../application/models/form/intake-resource-error.model.js';
 import type { IntakeStore } from '../../../../application/models/form/intake-store.model.js';
+import type { IntakeAttachmentStore } from '../../../../application/ports/outbound/persistence/attachment/intake-attachment-store.port.js';
 import { IntakeFormError } from '../../../../domain/errors/form/intake-form.error.js';
+import { OutboxIntakeAttachmentDecisions } from '../../../../infrastructure/messaging/outbox/attachment/outbox-intake-attachment-decisions.adapter.js';
+import { DrizzleIntakeAttachments } from '../../../../infrastructure/persistence/drizzle/repositories/attachment/drizzle-intake-attachments.repository.js';
 import { DrizzleIntakeRepository } from '../../../../infrastructure/persistence/drizzle/repositories/form/drizzle-intake.repository.js';
 
 interface IntakeDirectories {
@@ -43,11 +47,14 @@ function allowedStatuses(statuses: ResolveIntakePlacementOutput['statuses']): Re
 
 /** Binds the storage and public module operations to the same tenant database transaction. */
 export function createIntakeStore(
-  db: TransactionDatabase,
+  scope: TransactionScope,
   organizationId: string,
   { members, placement, tasks, contactTask }: IntakeDirectories,
+  outbox: OutboxWriter,
 ): IntakeStore {
-  const forms = new DrizzleIntakeRepository(db, organizationId);
+  const forms = new DrizzleIntakeRepository(scope.db, organizationId);
+  const reservations = new DrizzleIntakeAttachments(scope.db, organizationId);
+  const decisions = new OutboxIntakeAttachmentDecisions(scope, outbox);
 
   async function editorMembership(userId: string, lock: boolean): Promise<IntakeViewer> {
     const actor = await members.execute({ organizationId, userId, lock });
@@ -98,7 +105,52 @@ export function createIntakeStore(
     return eligible;
   }
 
+  const createTask: IntakeAttachmentStore['createTask'] = async (
+    listId,
+    { task, contactEmail },
+  ) => {
+    const { taskId, taskKey } = await tasks
+      .execute({
+        organizationId,
+        listId,
+        name: task.title,
+        description: task.description,
+        status: task.status,
+        priority: task.priority,
+        dueDate: task.dueDate,
+        assigneeId: task.assigneeId?.toLowerCase() ?? null,
+      })
+      .catch((error: unknown) => {
+        const kind = CreateIntakeTask.refusalOf(error);
+        if (kind === undefined) throw error;
+        throw new IntakeFormError({ kind });
+      });
+    if (contactEmail !== null) await forms.saveContact(taskId, contactEmail);
+    return { receipt: randomBytes(32).toString('base64url'), taskKey };
+  };
+
   return {
+    attachments: {
+      loadDraft: reservations.loadDraft.bind(reservations),
+      startDraft: reservations.startDraft.bind(reservations),
+      findReservationClaim: reservations.findReservationClaim.bind(reservations),
+      newAttachmentId: reservations.newAttachmentId.bind(reservations),
+      listReservations: reservations.listReservations.bind(reservations),
+      insertReservation: reservations.insertReservation.bind(reservations),
+      findReservation: reservations.findReservation.bind(reservations),
+      findByIdentity: reservations.findByIdentity.bind(reservations),
+      saveReservation: reservations.saveReservation.bind(reservations),
+      saveDraft: reservations.saveDraft.bind(reservations),
+      async recordDecision(reservation) {
+        const decision = reservation.decision;
+        if (decision === undefined) {
+          throw new Error('An intake attachment terminal transition is required.');
+        }
+        await reservations.saveReservation(reservation);
+        await decisions.append(decision);
+      },
+      createTask,
+    },
     async loadEditor({ organizationId: requested, actorUserId, listId }, lock, proposedAssigneeId) {
       if (requested.toLowerCase() !== organizationId) {
         throw new Error('Intake editor scope does not match the transaction.');
@@ -159,25 +211,8 @@ export function createIntakeStore(
     claimSubmission: forms.claimSubmission.bind(forms),
     completeSubmission: forms.completeSubmission.bind(forms),
 
-    async createTask(listId, { task, contactEmail }) {
-      const { taskId } = await tasks
-        .execute({
-          organizationId,
-          listId,
-          name: task.title,
-          description: task.description,
-          status: task.status,
-          priority: task.priority,
-          dueDate: task.dueDate,
-          assigneeId: task.assigneeId?.toLowerCase() ?? null,
-        })
-        .catch((error: unknown) => {
-          const kind = CreateIntakeTask.refusalOf(error);
-          if (kind === undefined) throw error;
-          throw new IntakeFormError({ kind });
-        });
-      if (contactEmail !== null) await forms.saveContact(taskId, contactEmail);
-      return randomBytes(32).toString('base64url');
+    async createTask(listId, submission) {
+      return (await createTask(listId, submission)).receipt;
     },
 
     async readContact(actorUserId, taskKey) {
