@@ -10,7 +10,7 @@ import { refuseUnstorableValues } from '../../../validation/text/storable-value.
  *
  * @description
  * Query of `GET /internal/v1/lists/{listId}/tasks`: the filters `status`, `priority`, `assignee`
- * (`me`, `none` or an account id), `label`, `search`, `dueFrom` and `dueTo`, the `level` (`roots`
+ * (`me`, `none` or an account id), `label`, `search`, `dueFrom`, `dueTo` and `milestone`, the `level` (`roots`
  * by default), the `sort` (`manual` by default), the opaque `cursor` and the page size `limit`, 1 to
  * 100 and 50 by default. The contract writes the four lists as `style: form, explode: false`
  * (`?status=progress,review`) while the generated schema expects arrays and the kit does not split

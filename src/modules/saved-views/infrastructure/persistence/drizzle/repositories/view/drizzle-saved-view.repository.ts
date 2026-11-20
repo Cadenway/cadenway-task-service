@@ -127,7 +127,7 @@ export class DrizzleSavedViewRepository implements SavedViewRepository {
       .where(and(inList(organizationId, listId), eq(savedViews.id, viewId)));
   }
 
-  /** Removes saved views of the locked parent lists, returning exact removed IDs. */
+  /** Removes saved views of all locked parent lists with a fixed number of SQL parameters. */
   public async removeLists(
     organizationId: string,
     listIds: readonly string[],
@@ -136,7 +136,10 @@ export class DrizzleSavedViewRepository implements SavedViewRepository {
     const removed = await this.db
       .delete(savedViews)
       .where(
-        and(eq(savedViews.organizationId, organizationId), inArray(savedViews.listId, listIds)),
+        and(
+          eq(savedViews.organizationId, organizationId),
+          sql`${savedViews.listId} = any(${sql.param([...listIds])}::uuid[])`,
+        ),
       )
       .returning({ id: savedViews.id });
     return removed.map(({ id }) => id);

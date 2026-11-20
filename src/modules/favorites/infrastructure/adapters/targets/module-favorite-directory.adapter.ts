@@ -116,13 +116,18 @@ export class ModuleFavoriteDirectory implements FavoriteDirectory {
         return space === undefined ? null : { name: space.name };
       }
       case 'list': {
+        const list = { ...viewer, listId: target.targetId };
+        const eligible = await this.findList.execute(list);
+        if (eligible?.list.archivedAt !== null) {
+          return null;
+        }
         await this.holdLists.execute({
           organizationId: owner.organizationId,
           listIds: [target.targetId],
           mode: 'hold',
           viewer: null,
         });
-        const visible = await this.findList.execute({ ...viewer, listId: target.targetId });
+        const visible = await this.findList.execute(list);
         return visible?.list.archivedAt === null ? { name: visible.list.name } : null;
       }
       case 'saved-view': {

@@ -7,6 +7,7 @@ import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/ta
 import { ViewerResolver } from '../../../../services/member/viewer-resolver.service.js';
 import { TaskLocator } from '../../../../services/task/task-locator.service.js';
 import { TaskViewBuilder } from '../../../../services/task/task-view-builder.service.js';
+import { VisibleNextOccurrence } from '../../../../services/task/visible-next-occurrence.service.js';
 import type { GetTaskInput } from './get-task.input.js';
 import type { GetTaskOutput } from './get-task.output.js';
 
@@ -32,6 +33,9 @@ export class GetTask {
 
   /** Builds the view of the task. */
   private readonly views: TaskViewBuilder;
+
+  /** Filters the successor link by visibility. */
+  private readonly successor: VisibleNextOccurrence;
   // #endregion
 
   // #region Constructor
@@ -55,6 +59,7 @@ export class GetTask {
     this.viewers = new ViewerResolver(members);
     this.locator = new TaskLocator(spaces);
     this.views = new TaskViewBuilder();
+    this.successor = new VisibleNextOccurrence(spaces);
   }
   // #endregion
 
@@ -81,7 +86,9 @@ export class GetTask {
         archived: 'allow',
         expectedVersions: null,
       });
-      return this.views.build(store.reader, task);
+      const view = await this.views.build(store.reader, task);
+      const nextOccurrenceKey = await this.successor.keyOf(store, task, viewer);
+      return nextOccurrenceKey === undefined ? view : { ...view, nextOccurrenceKey };
     });
   }
   // #endregion

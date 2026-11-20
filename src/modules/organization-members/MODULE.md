@@ -18,13 +18,14 @@ the removal committed.
 
 ## Public entry points
 
-| Entry point                                  | Consumers                                                                |
-| -------------------------------------------- | ------------------------------------------------------------------------ |
-| `organization-members.module`                | access-requests, favorites, member-lifecycle, saved-views, spaces, tasks |
-| `public/membership/apply-membership-change`  | member-lifecycle                                                         |
-| `public/membership/find-organization-member` | access-requests, favorites, saved-views, spaces, tasks                   |
-| `public/membership/find-organization-owner`  | spaces                                                                   |
-| `public/membership/list-active-members`      | tasks                                                                    |
+| Entry point                                        | Consumers                                                                |
+| -------------------------------------------------- | ------------------------------------------------------------------------ |
+| `organization-members.module`                      | access-requests, favorites, member-lifecycle, saved-views, spaces, tasks |
+| `public/membership/apply-membership-change`        | member-lifecycle                                                         |
+| `public/membership/find-organization-member`       | access-requests, favorites, saved-views, spaces, tasks                   |
+| `public/membership/find-organization-member-roles` | tasks                                                                    |
+| `public/membership/find-organization-owner`        | spaces                                                                   |
+| `public/membership/list-active-members`            | tasks                                                                    |
 
 `OrganizationMembersModule` exports each public provider with its input and output types.
 
@@ -40,8 +41,10 @@ the removal committed.
   answers, and for whether a former member joined again (the clean-up of their requests).
 - `ListActiveMembers` pages only `userId` and `memberId` in user ID order. It selects each
   account's least privileged active membership before applying the list reader audience.
+- `FindOrganizationMemberRoles` applies the same least-privileged rule in a single batch. The
+  task module holds these memberships before locking placement for a list copy.
 
-All run in the tenant transaction of their caller and join it, or open one for the
+These operations join the tenant transaction of their caller or open one for the
 organization of the context; they must not be called from a system transaction (the kit refuses
 to open a tenant transaction inside a system one). The caller passes the organization of its
 verified context or of its event: row-level security hides any other, so another value finds

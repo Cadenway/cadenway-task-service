@@ -1,5 +1,6 @@
 import { InvalidListError } from '../../errors/list/invalid-list.error.js';
 import { SprintDatesInvalidError } from '../../errors/list/sprint-dates-invalid.error.js';
+import { MAX_LIST_NAME_LENGTH } from '../../policies/list/list-name.policy.js';
 import { LIST_ACTOR_TYPES } from '../../value-objects/list/list-actor.value-object.js';
 import type { ListActor } from '../../value-objects/list/list-actor.value-object.js';
 import type { NewTaskList } from '../../value-objects/list/new-task-list.value-object.js';
@@ -71,7 +72,7 @@ function requireId(id: string): string {
 function normalizeName(name: string): string {
   const trimmed: string = name.trim();
   const length: number = lengthOf(trimmed);
-  if (length < 1 || length > 80) {
+  if (length < 1 || length > MAX_LIST_NAME_LENGTH) {
     throw new InvalidListError('the name has 1 to 80 characters once trimmed');
   }
   return trimmed;

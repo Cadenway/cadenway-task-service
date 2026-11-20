@@ -23,7 +23,8 @@ export async function requirePlacement(
 
 /** Requires an editor and a list that is still active. */
 export function requireEditable(placement: SavedViewPlacement): void {
-  if (placement.role !== 'edit') throw new SavedViewError({ reason: 'role-insufficient' });
+  if (placement.role !== 'edit')
+    throw new SavedViewError({ reason: 'role-insufficient', role: placement.role });
   if (placement.archivedAt !== null) throw new SavedViewError({ reason: 'list-archived' });
 }
 

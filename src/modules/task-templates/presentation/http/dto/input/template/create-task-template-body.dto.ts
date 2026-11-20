@@ -3,8 +3,11 @@ import { zodDto } from '@cadenway/nest-common';
 
 /** Published creation body, with text validated for PostgreSQL. */
 export class CreateTaskTemplateBody extends zodDto(
-  CreateTaskTemplateInternalBody.refine(({ name }) => !name?.includes('\u0000'), {
-    path: ['name'],
-    message: 'Expected text without a null character.',
-  }),
+  CreateTaskTemplateInternalBody.refine(
+    ({ name = '' }) => !name.includes('\u0000') && !/[\uD800-\uDFFF]/u.test(name),
+    {
+      path: ['name'],
+      message: 'Expected well-formed Unicode text without a null character.',
+    },
+  ),
 ) {}

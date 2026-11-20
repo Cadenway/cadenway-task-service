@@ -25,9 +25,15 @@ import { FavoritesModule, FavoritesStorageModule } from './modules/favorites/fav
 import { MemberLifecycleModule } from './modules/member-lifecycle/member-lifecycle.module.js';
 import { OrganizationMembersModule } from './modules/organization-members/organization-members.module.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
-import { SavedViewsModule, SavedViewsStorageModule } from './modules/saved-views/saved-views.module.js';
+import {
+  SavedViewsModule,
+  SavedViewsStorageModule,
+} from './modules/saved-views/saved-views.module.js';
 import { SpacesModule } from './modules/spaces/spaces.module.js';
-import { TaskTemplatesModule, TaskTemplatesStorageModule } from './modules/task-templates/task-templates.module.js';
+import {
+  TaskTemplatesModule,
+  TaskTemplatesStorageModule,
+} from './modules/task-templates/task-templates.module.js';
 import { TasksModule } from './modules/tasks/tasks.module.js';
 import { TaskCommentsModule } from './modules/task-comments/task-comments.module.js';
 

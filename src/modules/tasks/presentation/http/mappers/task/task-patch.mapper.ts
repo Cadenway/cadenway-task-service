@@ -41,6 +41,8 @@ export function toTaskChange(body: UpdateTaskBody): TaskChange {
           })),
         }),
     ...(body.status === undefined ? {} : { status: body.status }),
+    ...(body.milestone === undefined ? {} : { milestone: body.milestone }),
+    ...(body.recurrence === undefined ? {} : { recurrence: body.recurrence }),
     ...(body.cancelReason === undefined ? {} : { cancelReason: body.cancelReason }),
     ...(body.cancelNote === undefined ? {} : { cancelNote: body.cancelNote }),
     ...(body.priority === undefined ? {} : { priority: body.priority }),

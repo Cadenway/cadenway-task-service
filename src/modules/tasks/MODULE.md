@@ -8,6 +8,7 @@ The tasks of each organization (P3a, "Tâches") and what hangs from a task:
   and start dates, estimate, list and space, parent;
 - its subtasks (three levels at most), its assignees, its labels and its checklist, which share the
   `version` of the task;
+- directed dependencies between tasks in the same organization, including across spaces;
 - the activity log of the tasks (creation, status, priority, due date, assignment), read by task
   and by list;
 - the unassignment of a member who left the organization from their tasks, one batch per call,
@@ -156,6 +157,7 @@ from a deletion, `task.purge-trash` (`{ traceparent? }`, no key) from "Vider la 
 | `task_labels`            | `(organization_id, task_id, label_key)` | `organization_id`, policy of the kit, enabled and forced |
 | `checklist_items`        | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
 | `activity_entries`       | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
+| `task_dependencies`      | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
 | `trash_entries`          | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
 | `task_watcher_overrides` | `(organization_id, task_id, user_id)`   | `organization_id`, policy of the kit, enabled and forced |
 
@@ -165,6 +167,9 @@ Created by `migrations/0003_tasks.sql`, which forces the five policies by hand;
 live); `migrations/0007_trash.sql` adds the trash (expand only: every existing task stays out of
 it). The collaboration migration adds the watcher override table.
 
+- `task_dependencies`: one oriented blocker-to-blocked pair per organization. Both endpoint
+  foreign keys include the organization and cascade on physical purge. Indexes starting with
+  each endpoint within the organization support directed traversal and incident paging.
 - `task_watcher_overrides`: one explicit follow or unfollow per account and task; the task foreign key
   cascades on purge, and the tenant-first user index supports member cleanup. The watcher policy
   combines the human creator and active assignees with up to 100 explicit overrides. A candidate
@@ -321,44 +326,72 @@ Normal task creation accepts an optional initial checklist. Its items are create
 order with fresh IDs and are unchecked. The items share the new task's version 1 and its
 creation transaction. Subtask creation still uses its separate contract.
 
-`openapi/internal/task-service.yaml` (`@cadenway/contracts` 0.10.0), actor `user`, organization
+Dependency routes under `/internal/v1/tasks/{taskKey}` use the verified API gateway user and
+organization. `GET /dependencies` pages visible dependencies by creation time and id.
+`GET /dependencies/{dependencyId}` requires a readable anchor and a visible, live counterpart.
+`POST /dependencies` and `DELETE /dependencies/{dependencyId}` require edit on both live endpoints
+and use the anchor version for the conditional write and resulting ETag. Creation returns the
+edge location and supports the usual idempotency protocol. `GET /dependency-candidates` searches
+editable live tasks, with the anchor list first and then name and key. Cursors are scoped to the
+anchor and, for candidates, the direction and search.
+
+The two strict-empty duplication routes accept the source version and an idempotency key. A
+single task copy holds the source and its live parent in task-id order, then rechecks access
+under placement locks. A list copy snapshots at most 501 live tasks in one statement, holds
+current assignee memberships in one batch and rechecks the source list and space before writing.
+List creation through `spaces`, the new task forest and its outbox records share the tenant
+transaction. Fresh keys and checklist identities belong to the copy. Conversation, edges,
+recurrence, grants and views stay with the source.
+If inherited access leaves the initiating source editor below `edit`, the new list receives a
+fresh `edit` grant for that editor alone and records the ordinary access-change fact. The source
+organization-access switch is preserved.
+
+The request guard checks body presence before replay for ordinary JSON, including chunked
+requests. Transport bytes can still represent an empty decompressed body because the shared
+parser discards decoded raw bytes. The API gateway sends a literal JSON object.
+
+`openapi/internal/task-service.yaml` (`@cadenway/contracts` 0.11.0), actor `user`, organization
 required; issuer `api-gateway` for every route but the access check, which accepts
 `realtime-gateway` only (`TaskAccessController`, a controller of its own; any other issuer answers
 `403 auth.issuer-not-allowed`):
 
-| Route                                                                  | Operation                     | Success                   |
-| ---------------------------------------------------------------------- | ----------------------------- | ------------------------- |
-| `POST /internal/v1/lists/{listId}/tasks`                               | `createTaskInternal`          | `201`, `Location`, `ETag` |
-| `GET /internal/v1/lists/{listId}/activity`                             | `listListActivityInternal`    | `200`                     |
-| `GET /internal/v1/tasks/{taskKey}`                                     | `getTaskInternal`             | `200`, `ETag`             |
-| `PATCH /internal/v1/tasks/{taskKey}`                                   | `updateTaskInternal`          | `200`, `ETag`             |
-| `GET /internal/v1/tasks/{taskKey}/detail`                              | `getTaskDetailInternal`       | `200`, `ETag`             |
-| `PUT /internal/v1/tasks/{taskKey}/assignees/{userId}`                  | `assignTaskInternal`          | `200`, `ETag`             |
-| `DELETE /internal/v1/tasks/{taskKey}/assignees/{userId}`               | `unassignTaskInternal`        | `204`, `ETag`             |
-| `POST /internal/v1/tasks/{taskKey}/labels/add`                         | `addTaskLabelInternal`        | `200`, `ETag`             |
-| `POST /internal/v1/tasks/{taskKey}/labels/remove`                      | `removeTaskLabelInternal`     | `200`, `ETag`             |
-| `GET /internal/v1/tasks/{taskKey}/subtasks`                            | `listSubtasksInternal`        | `200`                     |
-| `POST /internal/v1/tasks/{taskKey}/subtasks`                           | `createSubtaskInternal`       | `201`, `Location`, `ETag` |
-| `POST /internal/v1/tasks/{taskKey}/checklist-items`                    | `addChecklistItemInternal`    | `201`, `Location`, `ETag` |
-| `PATCH /internal/v1/tasks/{taskKey}/checklist-items/{checklistItemId}` | `updateChecklistItemInternal` | `200`, `ETag`             |
-| `GET /internal/v1/tasks/{taskKey}/activity`                            | `listTaskActivityInternal`    | `200`                     |
-| `GET /internal/v1/lists/{listId}/tasks`                                | `listTasksInternal`           | `200`                     |
-| `GET /internal/v1/lists/{listId}/task-groups`                          | `countTaskGroupsInternal`     | `200`                     |
-| `GET /internal/v1/lists/{listId}/counts`                               | `getListCountsInternal`       | `200`                     |
-| `GET /internal/v1/spaces/{spaceId}/overview`                           | `getSpaceOverviewInternal`    | `200`                     |
-| `GET /internal/v1/labels`                                              | `listLabelsInternal`          | `200`                     |
-| `GET /internal/v1/users/{userId}/tasks`                                | `listMyTasksInternal`         | `200`                     |
-| `GET /internal/v1/users/{userId}/home`                                 | `getHomeInternal`             | `200`                     |
-| `POST /internal/v1/tasks/{taskKey}/archive`                            | `archiveTaskInternal`         | `200`, `ETag`             |
-| `POST /internal/v1/tasks/{taskKey}/unarchive`                          | `unarchiveTaskInternal`       | `200`, `ETag`             |
-| `GET /internal/v1/archives/lists`                                      | `listArchivedListsInternal`   | `200`                     |
-| `GET /internal/v1/archives/tasks`                                      | `listArchivedTasksInternal`   | `200`                     |
-| `POST /internal/v1/tasks/{taskKey}/trash`                              | `trashTaskInternal`           | `200`                     |
-| `GET /internal/v1/trash/entries`                                       | `listTrashInternal`           | `200`                     |
-| `DELETE /internal/v1/trash/entries/{entryId}`                          | `purgeTrashEntryInternal`     | `204`                     |
-| `POST /internal/v1/trash/entries/{entryId}/restore`                    | `restoreTrashEntryInternal`   | `200`                     |
-| `POST /internal/v1/trash/empty`                                        | `emptyTrashInternal`          | `202`                     |
-| `GET /internal/v1/tasks/{taskKey}/access` (`realtime-gateway`)         | `checkTaskAccessInternal`     | `200`                     |
+| Route                                                                  | Operation                       | Success                   |
+| ---------------------------------------------------------------------- | ------------------------------- | ------------------------- |
+| `POST /internal/v1/lists/{listId}/tasks`                               | `createTaskInternal`            | `201`, `Location`, `ETag` |
+| `POST /internal/v1/tasks/bulk-actions`                                 | `executeBulkTaskActionInternal` | `200`                     |
+| `POST /internal/v1/lists/{listId}/duplicate`                           | `duplicateListInternal`         | `201`, `Location`, `ETag` |
+| `POST /internal/v1/tasks/{taskKey}/duplicate`                          | `duplicateTaskInternal`         | `201`, `Location`, `ETag` |
+| `GET /internal/v1/lists/{listId}/activity`                             | `listListActivityInternal`      | `200`                     |
+| `GET /internal/v1/tasks/{taskKey}`                                     | `getTaskInternal`               | `200`, `ETag`             |
+| `PATCH /internal/v1/tasks/{taskKey}`                                   | `updateTaskInternal`            | `200`, `ETag`             |
+| `GET /internal/v1/tasks/{taskKey}/detail`                              | `getTaskDetailInternal`         | `200`, `ETag`             |
+| `PUT /internal/v1/tasks/{taskKey}/assignees/{userId}`                  | `assignTaskInternal`            | `200`, `ETag`             |
+| `DELETE /internal/v1/tasks/{taskKey}/assignees/{userId}`               | `unassignTaskInternal`          | `204`, `ETag`             |
+| `POST /internal/v1/tasks/{taskKey}/labels/add`                         | `addTaskLabelInternal`          | `200`, `ETag`             |
+| `POST /internal/v1/tasks/{taskKey}/labels/remove`                      | `removeTaskLabelInternal`       | `200`, `ETag`             |
+| `GET /internal/v1/tasks/{taskKey}/subtasks`                            | `listSubtasksInternal`          | `200`                     |
+| `POST /internal/v1/tasks/{taskKey}/subtasks`                           | `createSubtaskInternal`         | `201`, `Location`, `ETag` |
+| `POST /internal/v1/tasks/{taskKey}/checklist-items`                    | `addChecklistItemInternal`      | `201`, `Location`, `ETag` |
+| `PATCH /internal/v1/tasks/{taskKey}/checklist-items/{checklistItemId}` | `updateChecklistItemInternal`   | `200`, `ETag`             |
+| `GET /internal/v1/tasks/{taskKey}/activity`                            | `listTaskActivityInternal`      | `200`                     |
+| `GET /internal/v1/lists/{listId}/tasks`                                | `listTasksInternal`             | `200`                     |
+| `GET /internal/v1/lists/{listId}/task-groups`                          | `countTaskGroupsInternal`       | `200`                     |
+| `GET /internal/v1/lists/{listId}/counts`                               | `getListCountsInternal`         | `200`                     |
+| `GET /internal/v1/spaces/{spaceId}/overview`                           | `getSpaceOverviewInternal`      | `200`                     |
+| `GET /internal/v1/spaces/{spaceId}/milestones`                         | `listSpaceMilestonesInternal`   | `200`                     |
+| `GET /internal/v1/labels`                                              | `listLabelsInternal`            | `200`                     |
+| `GET /internal/v1/users/{userId}/tasks`                                | `listMyTasksInternal`           | `200`                     |
+| `GET /internal/v1/users/{userId}/home`                                 | `getHomeInternal`               | `200`                     |
+| `POST /internal/v1/tasks/{taskKey}/archive`                            | `archiveTaskInternal`           | `200`, `ETag`             |
+| `POST /internal/v1/tasks/{taskKey}/unarchive`                          | `unarchiveTaskInternal`         | `200`, `ETag`             |
+| `GET /internal/v1/archives/lists`                                      | `listArchivedListsInternal`     | `200`                     |
+| `GET /internal/v1/archives/tasks`                                      | `listArchivedTasksInternal`     | `200`                     |
+| `POST /internal/v1/tasks/{taskKey}/trash`                              | `trashTaskInternal`             | `200`                     |
+| `GET /internal/v1/trash/entries`                                       | `listTrashInternal`             | `200`                     |
+| `DELETE /internal/v1/trash/entries/{entryId}`                          | `purgeTrashEntryInternal`       | `204`                     |
+| `POST /internal/v1/trash/entries/{entryId}/restore`                    | `restoreTrashEntryInternal`     | `200`                     |
+| `POST /internal/v1/trash/empty`                                        | `emptyTrashInternal`            | `202`                     |
+| `GET /internal/v1/tasks/{taskKey}/access` (`realtime-gateway`)         | `checkTaskAccessInternal`       | `200`                     |
 
 - The access check answers `AccessCheck`: the role of the actor on the list of the task, the
   space, the list and the key. A task the actor has no role on and an unknown key answer
@@ -432,6 +465,10 @@ access.role-insufficient` with `details: { role, requiredRole: 'edit' }` (`role`
 id)` (the `position` of the lists spaces answers), and its cursor carries that position and the
   id: a list restored from the archives goes to the end of its space, and is neither lost nor read
   twice between two pages.
+- The space milestone page reads only live milestones from the caller's visible nonarchived lists.
+  Its cursor orders due dates ascending, undated last, with the task ID breaking ties. An unseen or
+  unknown space gives `404 space.not-found`. For list tasks and task groups, `milestone=true` selects
+  milestones and `false` selects ordinary tasks. Both values bind the cursor to the filter.
 
 - Creation and `PATCH` store structured description mentions as Unicode code-point spans. A description
   or spans patch requires `If-Match`. Changing the description without supplying replacement spans
@@ -467,6 +504,11 @@ and return its ETag. Repeating an override preserves the version.
 
 ## Events emitted
 
+- `task.dependency-added.v1` and `task.dependency-removed.v1` name the edge and both endpoint
+  placements and versions, with the blocker version in the envelope. Explicit writes also append
+  one `task.updated.v1` per endpoint with `dependencies` in `changed`. Endpoint purge removes its
+  edges through the foreign keys and uses the existing purge fact.
+
 `task.description-mentions-changed.v1` is appended in the same transaction when the stored description
 recipient set changes. It carries account IDs and task placement, with no description or span text.
 
@@ -490,6 +532,13 @@ description, the checklist nor, outside `task.status-changed.v1`, the cancel not
   `task.status-changed.v1` when the status changed, then `task.assigned.v1` for each person added.
   A move or an attachment emits one `task.updated.v1` per subtask that follows, with its own version.
   A patch that changes nothing writes, records and emits nothing and answers the same version.
+- The created and updated snapshots report the current milestone flag and recurrence cadence,
+  including `false` or `none` when either feature is switched off.
+- A live existing milestone entering `done` appends `milestone.reached.v1` with the milestone
+  name, completion time, nullable due date and eligible watcher IDs. A recurrence that spawns a
+  successor appends `task.occurrence-created.v1` with both keys, the resulting predecessor
+  version, the successor's due date and the transferred cadence. The task writes and the outbox
+  rows commit together. The existing relay retries publication after commit using the event ID.
 - The unassignment of a removed member emits one `task.updated.v1` (`changed: ['assigneeIds']`)
   per task it changes, by the actor `{ type: 'system', id: 'task-service' }`, in the transaction of
   its batch. A batch runs in the span of the clean-up job, child of the delivery of the removal, so
@@ -542,6 +591,11 @@ of the four queues of the trash and runs the three batches above. `member.role-c
 changes the assignees.
 
 ## Invariants
+
+- A directed dependency is tenant-scoped and cannot form a self-link or a path back to its
+  blocker. The cycle check uses all retained edges. Enforce 100 incident edges per endpoint even
+  when a counterpart is hidden, archived or trashed. An unavailable counterpart and the path of
+  a cycle disclose no identifiers. Archived anchors can read edges to visible live counterparts.
 
 - An actor the copy of the memberships does not hold answers `404 organization.not-found`. A task
   is seen by whoever has a role on its list, any role; what the actor has no role on (a task of a
@@ -819,7 +873,8 @@ access-requests modules follow it and point here), so that no two transactions w
 in a cycle:
 
 1. memberships `FOR SHARE`: the actor, then the people being assigned, mentioned or given access; an access
-   request then takes its advisory lock and its attempts;
+   request then takes its advisory lock and its attempts. Dependency writes take the organization
+   graph advisory lock before the task rows;
 2. trash entry rows `FOR UPDATE` (several in one statement by id, or `SKIP LOCKED` in the purge);
 3. tasks: a writer of a tree (a move, an archive, a restoration, a deletion, an erasure, or a
    job batch) locks its participating tasks in one statement in ascending id; a task write of one task
@@ -827,6 +882,21 @@ in a cycle:
 4. spaces, several in `(created_at, id)` order;
 5. lists, several in one statement in ascending id;
 6. `space_prefixes` (`AllocateTaskKeys`), then the access requests and the outbox.
+
+Dependency writes acquire the graph lock in a separate statement in the read-committed
+transaction. After locking both endpoints in ascending id and their placements in the common
+order, they recheck access, the conditional anchor version and the current retained graph before
+writing. The edge, both task versions and the outbox commit together. Physical purge only removes
+edges. Dependency views and candidate pages share a read-only repeatable snapshot with their
+effective list-role lookup.
+
+Bulk actions authorize all explicitly selected tasks and check their versions again under one
+ordered lock of the affected tasks. They hold every source and destination placement before
+rechecking access and taking any prefix counters in ascending space id. Move and trash apply each
+overlapping subtree once, while the response preserves the selection order. The selection is
+limited to 50 distinct keys and the action to 1,000 affected rows, including copies and recurring
+successors. Changes, activity, outbox and trash cleanup jobs commit together. A changed expansion
+or watcher audience restarts discovery under a fresh savepoint before any write.
 
 The task delete during purge cascades to watcher-override and comment rows; PostgreSQL takes the child-row
 locks during that delete, after the task locks and before the subsequent space and list locks.

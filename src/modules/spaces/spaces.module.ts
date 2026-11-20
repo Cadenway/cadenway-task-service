@@ -19,6 +19,8 @@ import { setListGrantProvider } from './composition/providers/use-cases/access/s
 import { setSpaceGrantProvider } from './composition/providers/use-cases/access/set-space-grant.provider.js';
 import { archiveListProvider } from './composition/providers/use-cases/list/archive-list.provider.js';
 import { createListProvider } from './composition/providers/use-cases/list/create-list.provider.js';
+import { createListCopyProvider } from './composition/providers/use-cases/list/create-list-copy.provider.js';
+import { CreateListCopy } from './public/list/create-list-copy.js';
 import { deleteListProvider } from './composition/providers/use-cases/list/delete-list.provider.js';
 import { findTrashListProvider } from './composition/providers/use-cases/list/find-trash-list.provider.js';
 import { findVisibleListProvider } from './composition/providers/use-cases/list/find-visible-list.provider.js';
@@ -158,6 +160,7 @@ markIdempotent(SpaceListsController.prototype, 'create');
     handOverPrivateSpacesProvider,
     handOverAwaitingSpacesProvider,
     createListProvider,
+    createListCopyProvider,
     listListsProvider,
     getListProvider,
     updateListProvider,
@@ -199,6 +202,7 @@ markIdempotent(SpaceListsController.prototype, 'create');
   exports: [
     ResolveTaskTemplateSpace,
     FindFavoriteSpaces,
+    CreateListCopy,
     HandOverPrivateSpaces,
     HandOverAwaitingSpaces,
     RemoveMemberGrants,

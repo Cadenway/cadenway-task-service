@@ -222,11 +222,14 @@ describe('shared saved-view routes and PostgreSQL storage', () => {
     expect(read.status, read.text).toBe(200);
     expect(GetSavedViewInternalResponse.parse(read.body)).toEqual(view);
     expect(read.headers.etag).toBe('"1"');
-    expectProblem(
-      await send('patch', item, { actorId: commenterId, body: { name: 'Interdit' } }),
-      403,
-      'access.role-insufficient',
-    );
+    const forbidden = await send('patch', item, {
+      actorId: commenterId,
+      body: { name: 'Interdit' },
+    });
+    expectProblem(forbidden, 403, 'access.role-insufficient');
+    expect(forbidden.body as unknown).toMatchObject({
+      details: { role: 'comment', requiredRole: 'edit' },
+    });
     expectProblem(
       await send('get', item, { organization: otherOrganization }),
       404,

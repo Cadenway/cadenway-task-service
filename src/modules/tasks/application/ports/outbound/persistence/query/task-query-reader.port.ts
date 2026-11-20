@@ -1,9 +1,11 @@
 import type { ListedTask } from '../../../../models/query/listed-task.model.js';
+import type { MilestonePosition } from '../../../../models/query/milestone-position.model.js';
 import type { TaskFilter } from '../../../../models/query/task-filter.model.js';
 import type { TaskGrouping } from '../../../../models/query/task-grouping.model.js';
 import type { TaskOrder } from '../../../../models/query/task-order.model.js';
 import type { TaskPosition } from '../../../../models/query/task-position.model.js';
 import type { TaskGroupCountsView } from '../../../../projections/query/task-group-counts.projection.js';
+import type { TaskSummaryView } from '../../../../projections/task/task-summary.projection.js';
 
 /**
  * Interface TaskQueryReader
@@ -16,6 +18,17 @@ import type { TaskGroupCountsView } from '../../../../projections/query/task-gro
  */
 export interface TaskQueryReader {
   // #region Methods
+  /** Reads live milestones in the supplied visible lists by due date ascending, undated last, then ID. */
+  milestones(
+    organizationId: string,
+    listIds: readonly string[],
+    after: MilestonePosition | null,
+    limit: number,
+  ): Promise<readonly TaskSummaryView[]>;
+
+  /** Counts the same live milestones, independently of the cursor. */
+  milestoneTotal(organizationId: string, listIds: readonly string[]): Promise<number>;
+
   /**
    * Method pageOfList
    *

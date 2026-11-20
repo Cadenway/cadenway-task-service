@@ -5,8 +5,9 @@ import type { OutboxWriter } from '@cadenway/nest-messaging/outbox';
 
 import type { EventActor } from '../../../../application/models/actor/event-actor.model.js';
 import type { TaskEvents } from '../../../../application/ports/outbound/messaging/task/task-events.port.js';
-import type { DescriptionMentionChanges } from '../../../../domain/value-objects/mention/description-mention-changes.value-object.js';
 import type { Task } from '../../../../domain/aggregates/task/task.aggregate.js';
+import type { DescriptionMentionChanges } from '../../../../domain/value-objects/mention/description-mention-changes.value-object.js';
+import type { Recurrence } from '../../../../domain/value-objects/task/recurrence.value-object.js';
 import type { StatusKey } from '../../../../domain/value-objects/task/status-key.value-object.js';
 import type { TaskField } from '../../../../domain/value-objects/task/task-field.value-object.js';
 import type { TaskKey } from '../../../../domain/value-objects/task/task-key.value-object.js';
@@ -17,12 +18,10 @@ import type { WatcherOverride } from '../../../../domain/value-objects/watcher/w
  * Type TaskPayload
  *
  * @description
- * The members every `task.*` event of `asyncapi/task-service.yaml` carries, those of
- * `task.created.v1` without the id and the instant PostgreSQL assigns.
- *
- * @type {Omit<TaskCreatedV1, 'id' | 'occurredAt'>}
+ * The common task snapshot members. PostgreSQL assigns the event id and instant. Scheduling
+ * fields are reported only in the created and updated snapshots.
  */
-type TaskPayload = Omit<TaskCreatedV1, 'id' | 'occurredAt'>;
+type TaskPayload = Omit<TaskCreatedV1, 'id' | 'occurredAt' | 'milestone' | 'recurrence'>;
 
 /**
  * Class OutboxTaskEvents
@@ -110,7 +109,7 @@ export class OutboxTaskEvents implements TaskEvents {
       this.transaction,
       eventSchemas,
       'task.created.v1',
-      this.payloadOf(task.snapshot, actor),
+      this.scheduledPayloadOf(task.snapshot, actor),
     );
     this.onAppend();
   }
@@ -136,8 +135,44 @@ export class OutboxTaskEvents implements TaskEvents {
     actor: EventActor,
   ): Promise<void> {
     await this.outbox.append(this.transaction, eventSchemas, 'task.updated.v1', {
-      ...this.payloadOf(task.snapshot, actor),
+      ...this.scheduledPayloadOf(task.snapshot, actor),
       changed: [...changed],
+    });
+    this.onAppend();
+  }
+
+  /**
+   * Appends an edge fact with the blocker as its versioned aggregate.
+   *
+   * @param action - Whether the edge was added or removed.
+   * @param dependencyId - Database id of the affected dependency.
+   * @param blocker - The committed state of the origin task.
+   * @param blocked - The committed state of the destination task.
+   * @param actor - Trusted actor recorded with the fact.
+   */
+  public async dependencyChanged(
+    action: 'added' | 'removed',
+    dependencyId: string,
+    blocker: Task,
+    blocked: Task,
+    actor: EventActor,
+  ): Promise<void> {
+    const origin: TaskState = blocker.snapshot;
+    const destination: TaskState = blocked.snapshot;
+    const event = action === 'added' ? 'task.dependency-added.v1' : 'task.dependency-removed.v1';
+    await this.outbox.append(this.transaction, eventSchemas, event, {
+      organizationId: origin.organizationId,
+      actor: { type: actor.type, id: actor.id },
+      version: origin.version,
+      dependencyId,
+      blockerKey: origin.key.format(),
+      blockerSpaceId: origin.spaceId,
+      blockerListId: origin.listId,
+      blockerVersion: origin.version,
+      blockedKey: destination.key.format(),
+      blockedSpaceId: destination.spaceId,
+      blockedListId: destination.listId,
+      blockedVersion: destination.version,
     });
     this.onAppend();
   }
@@ -389,6 +424,85 @@ export class OutboxTaskEvents implements TaskEvents {
       effectiveFollowing: override.following,
     });
     this.onAppend();
+  }
+
+  /**
+   * Appends the completed milestone and its eligible watcher audience in the task transaction.
+   *
+   * @param task - The completed milestone after the write.
+   * @param watcherIds - The application snapshot of eligible watchers under the held locks.
+   * @param actor - Who completed the milestone.
+   * @throws When the milestone has no completion instant or the contract rejects the payload.
+   */
+  public async milestoneReached(
+    task: Task,
+    watcherIds: readonly string[],
+    actor: EventActor,
+  ): Promise<void> {
+    const state: TaskState = task.snapshot;
+    if (state.completedAt === null) {
+      throw new Error('A milestone reached event requires a completion instant.');
+    }
+    await this.outbox.append(this.transaction, eventSchemas, 'milestone.reached.v1', {
+      organizationId: state.organizationId,
+      actor: { type: actor.type, id: actor.id },
+      version: state.version,
+      key: state.key.format(),
+      spaceId: state.spaceId,
+      listId: state.listId,
+      name: state.name,
+      dueDate: state.dueDate,
+      completedAt: state.completedAt.toISOString(),
+      watcherIds: [...watcherIds],
+    });
+    this.onAppend();
+  }
+
+  /**
+   * Appends a successor creation fact, versioned by the predecessor after completion.
+   *
+   * @param predecessor - The completed task whose cadence was cleared when it spawned the successor.
+   * @param successor - The new task with the due date of its occurrence.
+   * @param cadence - The recurrence cadence transferred from the predecessor.
+   * @param actor - Who completed the predecessor.
+   * @throws When the successor has no due date or the contract rejects the payload.
+   */
+  public async taskOccurrenceCreated(
+    predecessor: Task,
+    successor: Task,
+    cadence: Exclude<Recurrence, 'none'>,
+    actor: EventActor,
+  ): Promise<void> {
+    const source: TaskState = predecessor.snapshot;
+    const occurrence: TaskState = successor.snapshot;
+    if (occurrence.dueDate === null) {
+      throw new Error('A task occurrence event requires a successor due date.');
+    }
+    await this.outbox.append(this.transaction, eventSchemas, 'task.occurrence-created.v1', {
+      organizationId: source.organizationId,
+      actor: { type: actor.type, id: actor.id },
+      version: source.version,
+      predecessorKey: source.key.format(),
+      predecessorVersion: source.version,
+      successorKey: occurrence.key.format(),
+      spaceId: source.spaceId,
+      listId: source.listId,
+      dueDate: occurrence.dueDate,
+      cadence,
+    });
+    this.onAppend();
+  }
+
+  /** Adds explicit scheduling values to the created and updated task snapshots. */
+  private scheduledPayloadOf(
+    state: TaskState,
+    actor: EventActor,
+  ): Omit<TaskCreatedV1, 'id' | 'occurredAt'> {
+    return {
+      ...this.payloadOf(state, actor),
+      milestone: state.milestone ?? false,
+      recurrence: state.recurrence ?? 'none',
+    };
   }
 
   /**

@@ -13,7 +13,11 @@ function refusal(failure: SavedViewFailure): ProblemException {
     case 'missing-view':
       return new ProblemException({ status: 404, code: 'saved-view.not-found' });
     case 'role-insufficient':
-      return new ProblemException({ status: 403, code: 'access.role-insufficient' });
+      return new ProblemException({
+        status: 403,
+        code: 'access.role-insufficient',
+        details: { role: failure.role, requiredRole: 'edit' },
+      });
     case 'list-archived':
       return new ProblemException({ status: 409, code: 'saved-view.list-archived' });
     case 'limit-reached':

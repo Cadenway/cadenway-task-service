@@ -151,6 +151,142 @@ describe('UpdateTask: a patch changes what it names and nothing else', () => {
 });
 
 describe('UpdateTask: the status, the cancellation and the completion', () => {
+  it('holds the effective audience when milestone conversion implicitly changes progress to todo', async () => {
+    const { tasks, useCase } = atelierNord();
+
+    const view = await useCase.execute(patchOf({ milestone: true }));
+
+    expect(view).toMatchObject({ milestone: true, status: 'todo', version: 13 });
+    expect(tasks.events.find((event) => event.kind === 'statusChanged')).toMatchObject({
+      previousStatus: 'progress',
+      watcherIds: [CAMILLE, INES].sort(),
+    });
+    expect(tasks.events.filter((event) => event.kind === 'milestoneReached')).toEqual([]);
+    expect(tasks.trace.indexOf(`members.roleOf:${INES}:lock`)).toBeLessThan(
+      tasks.trace.indexOf('tasks.findByKey:lock'),
+    );
+  });
+
+  it('emits the milestone fact once with the same effective audience as the status fact', async () => {
+    const { tasks, useCase } = atelierNord([
+      taskState({
+        milestone: true,
+        status: 'todo',
+        estimateMinutes: null,
+        dueDate: '2026-11-12',
+        startDate: '2026-11-12',
+      }),
+    ]);
+
+    await useCase.execute(patchOf({ status: 'done' }));
+    await useCase.execute(patchOf({ status: 'done' }));
+
+    expect(tasks.events.filter((event) => event.kind === 'milestoneReached')).toEqual([
+      expect.objectContaining({ key: 'CAD-482', version: 13, watcherIds: [CAMILLE, INES].sort() }),
+    ]);
+    expect(tasks.events.find((event) => event.kind === 'statusChanged')).toMatchObject({
+      watcherIds: [CAMILLE, INES].sort(),
+    });
+  });
+
+  it('completes a recurring task and creates exactly one fresh occurrence', async () => {
+    const { tasks, useCase } = atelierNord([
+      taskState({
+        recurrence: 'weekly',
+        dueDate: '2026-11-12',
+        startDate: '2026-11-10',
+        assigneeIds: [CAMILLE],
+      }),
+    ]);
+
+    const view = await useCase.execute(patchOf({ status: 'done' }));
+
+    expect(view).toMatchObject({
+      status: 'done',
+      version: 13,
+      recurrence: 'none',
+      nextOccurrenceKey: 'CAD-496',
+    });
+    expect(tasks.stored(CAD_482).nextOccurrenceKey?.format()).toBe('CAD-496');
+    expect([...tasks.tasks.values()].find((row) => row.key.format() === 'CAD-496')).toMatchObject({
+      status: 'todo',
+      version: 1,
+      recurrence: 'weekly',
+      dueDate: '2026-11-19',
+      startDate: '2026-11-17',
+      parentId: null,
+      assigneeIds: [CAMILLE],
+    });
+    expect(tasks.events.map((event) => event.kind)).toEqual([
+      'updated',
+      'statusChanged',
+      'created',
+      'assigned',
+      'occurrenceCreated',
+    ]);
+    const next = await useCase.execute(patchOf({ status: 'done' }));
+    expect(next.version).toBe(13);
+    expect(tasks.events.filter((event) => event.kind === 'occurrenceCreated')).toHaveLength(1);
+  });
+
+  it('rolls back the predecessor and successor if appending the occurrence fact fails', async () => {
+    const original = taskState({
+      recurrence: 'weekly',
+      dueDate: '2026-11-12',
+      startDate: null,
+      assigneeIds: [CAMILLE],
+    });
+    const tasks = new InMemoryTasks({ tasks: [original] });
+    const failingWork: TasksUnitOfWork = {
+      run: (operation) =>
+        tasks.run((store) =>
+          operation({
+            ...store,
+            events: {
+              ...store.events,
+              taskOccurrenceCreated: () => Promise.reject(new Error('outbox failed')),
+            },
+          }),
+        ),
+      runReadOnly: (operation, options) => tasks.runReadOnly(operation, options),
+    };
+    const useCase = new UpdateTask(failingWork, atelierNordMembers(), new InMemorySpaceDirectory());
+
+    await expect(useCase.execute(patchOf({ status: 'done' }))).rejects.toThrow('outbox failed');
+    expect(tasks.stored(CAD_482)).toEqual(original);
+    expect(tasks.tasks.size).toBe(1);
+    expect(tasks.activity.size).toBe(0);
+    expect(tasks.events).toEqual([]);
+  });
+
+  it('holds copied assignee memberships before the task lock and skips a guest', async () => {
+    const trace: string[] = [];
+    const tasks = new InMemoryTasks({
+      tasks: [
+        taskState({
+          recurrence: 'weekly',
+          dueDate: '2026-11-12',
+          startDate: null,
+          assigneeIds: [INES, NADIA],
+        }),
+      ],
+      trace,
+    });
+    const useCase = new UpdateTask(
+      tasks,
+      atelierNordMembers([], trace),
+      new InMemorySpaceDirectory({ trace }),
+    );
+
+    await useCase.execute(patchOf({ status: 'done' }));
+    const lockedTask = trace.indexOf('tasks.findByKey:lock');
+    expect(trace.indexOf(`members.roleOf:${INES}:lock`)).toBeLessThan(lockedTask);
+    expect(trace.indexOf(`members.roleOf:${NADIA}:lock`)).toBeLessThan(lockedTask);
+    expect([...tasks.tasks.values()].find((row) => row.key.format() === 'CAD-496')).toMatchObject({
+      assigneeIds: [INES],
+    });
+  });
+
   it('records a status entry and appends task.updated.v1 then task.status-changed.v1', async () => {
     const { tasks, useCase } = atelierNord();
 

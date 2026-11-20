@@ -793,6 +793,7 @@ export class DrizzleTaskRepository implements TaskRepository {
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} rootIds - The roots.
+   * @param {number} [readLimit] - Caps the unordered discovery of one bulk trash root.
    * @returns {Promise<readonly TrashTreeNode[]>} Each task of each tree with its root and depth.
    * @throws {Error} When PostgreSQL detects a cycle of parent links in a tree, which the writers
    * never make: a defect.
@@ -800,12 +801,13 @@ export class DrizzleTaskRepository implements TaskRepository {
   public async trashTrees(
     organizationId: string,
     rootIds: readonly string[],
+    readLimit?: number,
   ): Promise<readonly TrashTreeNode[]> {
     if (rootIds.length === 0) {
       return [];
     }
     const result = await this.db.execute<TrashTreeRow>(
-      trashTreesStatement(organizationId, rootIds),
+      trashTreesStatement(organizationId, rootIds, readLimit),
     );
     const cycle: TrashTreeRow | undefined = result.rows.find(
       (row: TrashTreeRow): boolean => row.isCycle,

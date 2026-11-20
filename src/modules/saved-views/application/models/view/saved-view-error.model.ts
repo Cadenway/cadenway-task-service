@@ -1,7 +1,8 @@
 /** Permission, version, limit, syntax and existence failures exposed by the use cases. */
 export type SavedViewFailure =
   | { reason: 'missing-organization' | 'missing-list' | 'missing-view' }
-  | { reason: 'role-insufficient' | 'list-archived' | 'limit-reached' }
+  | { reason: 'role-insufficient'; role: 'comment' | 'view' }
+  | { reason: 'list-archived' | 'limit-reached' }
   | { reason: 'incomplete-sheet-sort' }
   | { reason: 'version-mismatch'; version: number };
 

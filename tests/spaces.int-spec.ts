@@ -222,7 +222,7 @@ type SpaceBody = z.output<typeof GetSpaceInternalResponse>;
 type ListBody = z.output<typeof GetListInternalResponse>;
 
 /** HTTP verbs the spec uses. */
-type HttpMethod = 'get' | 'post' | 'patch' | 'delete';
+type HttpMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
 
 /** What a call adds to its path. */
 interface SendOptions {
@@ -1712,6 +1712,67 @@ describe('spaces and lists', () => {
         204,
       );
       expect((await send('delete', path, lea)).status).toBe(204);
+    });
+
+    it('serializes an in-flight space favorite against revocation of its only list grant', async () => {
+      const { space, firstList } = await createSpace(camille, {
+        name: 'Espace partagé par liste',
+        prefix: 'FGR',
+        visibility: 'private',
+      });
+      const grant = `/internal/v1/lists/${firstList.id}/grants/${nadia.userId}`;
+      const body = { kind: 'space', targetId: space.id };
+      expectProblem(
+        await send('post', collection, nadia, { body }),
+        404,
+        'favorite.target-not-found',
+      );
+      expect((await send('put', grant, camille, { body: { role: 'view' } })).status).toBe(200);
+
+      const waitForLock = (statement: string): Promise<void> =>
+        vi.waitFor(async () => {
+          const pending = await inTenant(atelierNordId, (client) =>
+            client.query(
+              `select 1 from pg_stat_activity
+               where pid <> pg_backend_pid() and wait_event_type = 'Lock' and query like $1`,
+              [statement],
+            ),
+          );
+          expect(pending.rows).toHaveLength(1);
+        }, waitOptions);
+
+      const blocker = await migrator.connect();
+      let creation: Promise<request.Response> | undefined;
+      let revocation: Promise<request.Response> | undefined;
+      try {
+        await blocker.query('begin');
+        // Favorite reads stay available while the insert waits after the locked visibility check.
+        await blocker.query('lock table favorites in share mode');
+        creation = send('post', collection, nadia, { body });
+        void creation.catch(() => undefined);
+        await waitForLock('insert into "favorites"%');
+
+        revocation = send('delete', grant, camille);
+        void revocation.catch(() => undefined);
+        await waitForLock('select %from "spaces"%for share%');
+
+        await blocker.query('rollback');
+        const created = await creation;
+        expect(created.status).toBe(201);
+        const { id } = conforms(CreateFavoriteInternalResponse, bodyOf(created));
+        expect((await revocation).status).toBe(204);
+        expectProblem(await send('get', `${collection}/${id}`, nadia), 404, 'favorite.not-found');
+        expectProblem(
+          await send('post', collection, nadia, { body }),
+          404,
+          'favorite.target-not-found',
+        );
+        expect(await countRows('favorites', 'id = $2', id)).toBe(1);
+      } finally {
+        await blocker.query('rollback');
+        blocker.release();
+        await Promise.allSettled([creation, revocation]);
+      }
     });
 
     it('purges saved-view favorites for all owners in the transaction deleting the view', async () => {

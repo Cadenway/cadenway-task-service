@@ -13,7 +13,7 @@ export interface FindFavoriteSpacesInput {
   /** Bounded candidates from a favorites collection. */
   readonly spaceIds: readonly string[];
 
-  /** Whether to hold the candidate placements through the caller's write. */
+  /** Whether to hold eligible spaces against space and list grant mutations. */
   readonly lock?: boolean;
   // #endregion
 }

@@ -1,4 +1,5 @@
 import type { Task } from '../../aggregates/task/task.aggregate.js';
+import type { NextOccurrenceSchedule } from './next-occurrence-schedule.value-object.js';
 import type { TaskField } from './task-field.value-object.js';
 
 /**
@@ -34,5 +35,14 @@ export interface TaskUpdate {
    * @readonly
    */
   readonly changed: readonly TaskField[];
+
+  /** A genuine transition of an existing milestone into `done` (P3b-2 decision 12). */
+  readonly milestoneReached?: true;
+
+  /**
+   * Schedule of a successor after a dated completion. When present, the application only
+   * persists the result of the update that receives the allocated successor key.
+   */
+  readonly nextOccurrence?: NextOccurrenceSchedule;
   // #endregion
 }

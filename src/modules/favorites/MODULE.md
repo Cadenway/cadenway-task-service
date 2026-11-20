@@ -55,6 +55,8 @@ owner's advisory lock before locking the active membership and target, and joins
 opened by the idempotency interceptor. Removed-member cleanup takes the same owner lock before
 checking membership, including when there is no active row to lock. Target cleanup joins the
 target owner's transaction, and favorite deletion holds the active membership and target.
+Target writes preflight visibility before holding a placement and recheck it under the lock.
+A held space uses `FOR NO KEY UPDATE` because a list grant can be the user's sole access to the space.
 
 ## Decisions
 

@@ -68,7 +68,12 @@ export class ListVisibleListIds {
         input.organizationId,
         viewer,
       );
-      return { listIds: toListRoles(rows, viewer).map((role): string => role.listId) };
+      const roles = toListRoles(rows, viewer);
+      return {
+        listIds: roles
+          .filter((role): boolean => input.editOnly !== true || role.callerRole === 'edit')
+          .map((role): string => role.listId),
+      };
     });
   }
   // #endregion

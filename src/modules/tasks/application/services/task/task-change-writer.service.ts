@@ -67,6 +67,13 @@ export class TaskChangeWriter {
     if (update.changed.length === 0) {
       return;
     }
+    if (
+      update.nextOccurrence !== undefined &&
+      (update.task.snapshot.nextOccurrenceKey === null ||
+        update.task.snapshot.nextOccurrenceKey === undefined)
+    ) {
+      throw new Error('A planned occurrence needs its allocated successor key before saving.');
+    }
     const actor: TaskActor = { type: 'user', id: actorUserId };
     const eventActor: EventActor = { type: 'user', id: actorUserId };
     await store.tasks.save(before, update.task);
@@ -78,6 +85,9 @@ export class TaskChangeWriter {
     );
     await this.recorder.record(store.activity, entries);
     await this.announcer.changed(store.events, before, update, eventActor, watcherIds);
+    if (update.milestoneReached === true) {
+      await store.events.milestoneReached(update.task, watcherIds, eventActor);
+    }
   }
   // #endregion
 }

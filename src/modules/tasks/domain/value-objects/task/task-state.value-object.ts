@@ -37,6 +37,9 @@ export interface TaskState extends TaskDraft {
    */
   readonly key: TaskKey;
 
+  /** Historical key of a spawned successor. It survives purge and defaults to no successor. */
+  readonly nextOccurrenceKey?: TaskKey | null;
+
   /**
    * Property checklist
    *

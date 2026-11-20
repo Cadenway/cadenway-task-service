@@ -17,7 +17,7 @@ export class FindFavoriteSpaces {
   // #endregion
 
   // #region Methods
-  /** Uses the sidebar visibility filter for reads and rechecks access after locking for writes. */
+  /** Checks normal visibility before taking any lock and rechecks it under the write lock. */
   public async execute(input: FindFavoriteSpacesInput): Promise<FindFavoriteSpacesOutput> {
     const ids = [...new Set(input.spaceIds)];
     if (ids.length === 0) {
@@ -26,14 +26,15 @@ export class FindFavoriteSpaces {
 
     const viewer: Viewer = { userId: input.viewerUserId, role: input.viewerRole };
     return this.unitOfWork.run(async (store): Promise<FindFavoriteSpacesOutput> => {
+      const eligible = await store.spaces.findVisibleByIds(input.organizationId, viewer, ids);
       if (input.lock !== true) {
-        const rows = await store.spaces.findVisibleByIds(input.organizationId, viewer, ids);
-        return rows.map(({ space }) => ({ id: space.snapshot.id, name: space.snapshot.name }));
+        return eligible.map(({ space }) => ({ id: space.snapshot.id, name: space.snapshot.name }));
       }
 
+      // A list grant can be the sole access to a space. List-grant changes hold its space FOR SHARE.
       const held = await store.spaces.lockInOrder(
         input.organizationId,
-        ids.map((id) => ({ id, mode: 'share' })),
+        eligible.map(({ space }) => ({ id: space.snapshot.id, mode: 'update' })),
       );
       const visible: { id: string; name: string }[] = [];
       for (const { snapshot } of held) {

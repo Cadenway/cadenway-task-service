@@ -275,12 +275,18 @@ export interface TaskRepository {
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} rootIds - The roots.
+   * @param {number} [readLimit] - A bound on returned rows for sizing a single root, without
+   * ordering. If the limit is reached the caller treats the expansion as too large.
    * @returns {Promise<readonly TrashTreeNode[]>} Each task of each tree, with its root and depth;
    * none for a root in the trash or gone.
    * @throws {Error} When a tree holds a cycle of parent links, which the writers never make: a
    * defect.
    */
-  trashTrees(organizationId: string, rootIds: readonly string[]): Promise<readonly TrashTreeNode[]>;
+  trashTrees(
+    organizationId: string,
+    rootIds: readonly string[],
+    readLimit?: number,
+  ): Promise<readonly TrashTreeNode[]>;
 
   /**
    * Method lockUntrashedIds

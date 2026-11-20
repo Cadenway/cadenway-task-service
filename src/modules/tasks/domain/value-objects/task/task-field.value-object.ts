@@ -22,13 +22,18 @@ export type TaskField =
   | 'spaceId'
   | 'parentKey'
   | 'checklist'
-  | 'watchers';
+  | 'watchers'
+  | 'dependencies'
+  | 'milestone'
+  | 'recurrence'
+  | 'nextOccurrenceKey';
 
 /**
  * Constant TASK_FIELDS
  *
  * @description
- * The ordered fields changed by the task aggregate. Watcher overrides have their own write path.
+ * The task's own fields in aggregate-update order. Watcher and dependency changes have
+ * separate write paths.
  *
  * @type {readonly TaskField[]}
  */
@@ -49,4 +54,7 @@ export const TASK_FIELDS: readonly TaskField[] = Object.freeze([
   'spaceId',
   'parentKey',
   'checklist',
+  'milestone',
+  'recurrence',
+  'nextOccurrenceKey',
 ]);

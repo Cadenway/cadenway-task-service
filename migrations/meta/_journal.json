@@ -71,6 +71,20 @@
       "when": 1795166510010,
       "tag": "0009_collaboration",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795168550078,
+      "tag": "0010_task_planning",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1795169360324,
+      "tag": "0011_task_library",
+      "breakpoints": true
     }
   ]
 }

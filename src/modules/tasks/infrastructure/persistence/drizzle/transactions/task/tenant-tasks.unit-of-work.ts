@@ -1,4 +1,3 @@
-import { DrizzleWatcherOverrideRepository } from '../../repositories/watcher/drizzle-watcher-override.repository.js';
 import type {
   TenantTransactionRunner,
   TransactionOptions,
@@ -20,8 +19,11 @@ import { DrizzleTaskCounter } from '../../repositories/count/drizzle-task-counte
 import { DrizzleLabelReader } from '../../repositories/label/drizzle-label-reader.repository.js';
 import { DrizzleTaskQueryReader } from '../../repositories/query/drizzle-task-query-reader.repository.js';
 import { DrizzleTaskReader } from '../../repositories/task/drizzle-task-reader.repository.js';
+import { DrizzleTaskCopiesRepository } from '../../repositories/task/drizzle-task-copies.repository.js';
 import { DrizzleTaskRepository } from '../../repositories/task/drizzle-task.repository.js';
 import { DrizzleTrashEntryRepository } from '../../repositories/trash/drizzle-trash-entry.repository.js';
+import { DrizzleWatcherOverrideRepository } from '../../repositories/watcher/drizzle-watcher-override.repository.js';
+import { DrizzleTaskDependencyRepository } from '../../repositories/dependency/drizzle-task-dependency.repository.js';
 
 /** Rolls back only the attempt's work, keeping the caller's outer tenant transaction intact. */
 async function withTaskSavepoint<TResult>(
@@ -193,6 +195,7 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
         work({
           savepoint: (attempt) => withTaskSavepoint(transaction, attempt),
           tasks: new DrizzleTaskRepository(transaction.db),
+          copies: new DrizzleTaskCopiesRepository(transaction.db),
           watcherOverrides: new DrizzleWatcherOverrideRepository(transaction.db),
           reader: new DrizzleTaskReader(transaction.db),
           activity: new DrizzleActivityRepository(transaction.db),
@@ -202,6 +205,7 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
           labels: new DrizzleLabelReader(transaction.db),
           archives: new DrizzleArchiveReader(transaction.db),
           trash: new DrizzleTrashEntryRepository(transaction.db),
+          dependencies: new DrizzleTaskDependencyRepository(transaction.db),
           jobs: new JobsTrashJobs(transaction, this.jobs),
 
           events: new OutboxTaskEvents(transaction, this.outbox, (): void => {
