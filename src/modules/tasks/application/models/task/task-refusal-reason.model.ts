@@ -24,7 +24,8 @@ import type { TaskActor } from '../../../domain/value-objects/task/task-actor.va
  * - `trash-entry-not-found`: no entry with this id that the actor may restore: unknown, handed to
  *   the purge by "Vider la corbeille", or of a list the actor could not change; for a
  *   restoration, also an entry of a deleted list whose deletion job has not moved all its tasks
- *   yet.
+ *   yet when the caller did not request its status.
+ * - `trash-entry-not-restorable-yet`: an otherwise restorable entry awaits list deletion.
  * - `trash-writes-disabled`: the switch of the writes of the trash is off (`TrashWrites`): the
  *   route answers as one the service does not have.
  * - `version-mismatch`: `If-Match` names another version than the stored one.
@@ -57,6 +58,7 @@ export type TaskRefusalReason =
       readonly purgeAt: Date;
     }
   | { readonly reason: 'trash-entry-not-found' }
+  | { readonly reason: 'trash-entry-not-restorable-yet' }
   | { readonly reason: 'trash-writes-disabled' }
   | { readonly reason: 'version-mismatch'; readonly version: number }
   | { readonly reason: 'status-hidden'; readonly status: StatusKey }

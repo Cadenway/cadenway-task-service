@@ -65,6 +65,14 @@ export interface ActivityRepository {
    */
   remove(organizationId: string, entryId: string): Promise<void>;
 
+  /** Updates the excerpt or removes a comment activity while its task is locked. */
+  changeComment(
+    organizationId: string,
+    taskId: string,
+    commentId: string,
+    excerpt: string | null,
+  ): Promise<void>;
+
   /**
    * Method pageOfTask
    *

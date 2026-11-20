@@ -126,9 +126,16 @@ export interface TaskEvents {
    * @param {string} entryId - The entry it came from.
    * @param {TaskKey} rootKey - The key of the root of the entry, the task's own for the root.
    * @param {EventActor} actor - Who restored it.
+   * @param {Task} postRestore - Final state after rearchiving, when applicable.
    * @returns {Promise<void>} Resolves once appended.
    */
-  taskRestored(task: Task, entryId: string, rootKey: TaskKey, actor: EventActor): Promise<void>;
+  taskRestored(
+    task: Task,
+    entryId: string,
+    rootKey: TaskKey,
+    actor: EventActor,
+    postRestore?: Task,
+  ): Promise<void>;
 
   /**
    * Method taskPurged

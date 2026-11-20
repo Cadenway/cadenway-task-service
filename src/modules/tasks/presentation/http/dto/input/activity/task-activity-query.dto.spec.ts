@@ -20,8 +20,8 @@ describe('the query of the activity of a task', () => {
     });
   });
 
-  it('refuses a kind that is not one of the five, an empty item and an empty text, on kind', () => {
-    for (const kind of ['comment', 'status,', ',', '']) {
+  it('refuses a kind that is not one of the six, an empty item and an empty text, on kind', () => {
+    for (const kind of ['unknown', 'status,', ',', '']) {
       const result = TaskActivityQuery.schema.safeParse({ kind });
 
       expect(result.success).toBe(false);

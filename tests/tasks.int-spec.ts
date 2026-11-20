@@ -1,3 +1,4 @@
+import { DrizzleWatcherOverrideRepository } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/watcher/drizzle-watcher-override.repository.js';
 import { execFileSync } from 'node:child_process';
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -16,8 +17,12 @@ import {
   CreateSpaceInternalResponse,
   CreateSubtaskInternalResponse,
   CreateTaskInternalResponse,
+  CreateTaskCommentInternalResponse,
   GetTaskDetailInternalResponse,
   GetTaskInternalResponse,
+  GetTaskCommentInternalResponse,
+  ListTaskCommentsInternalResponse,
+  ListTaskParticipantsInternalResponse,
   ListListActivityInternalResponse,
   ListSubtasksInternalResponse,
   ListTaskActivityInternalResponse,
@@ -38,6 +43,7 @@ import type {
   OrganizationContext,
 } from '@cadenway/nest-common';
 import { TenantTransactionRunner } from '@cadenway/nest-common/database';
+import { OutboxWriter } from '@cadenway/nest-messaging/outbox';
 import type { TransactionClient } from '@cadenway/nest-common/database';
 import { startTelemetry } from '@cadenway/nest-common/telemetry';
 import type { TelemetryHandle } from '@cadenway/nest-common/telemetry';
@@ -48,6 +54,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { z } from 'zod';
 
 import { AppModule } from '../src/app.module.js';
+import { DrizzleCommentRepository } from '../src/modules/task-comments/infrastructure/persistence/drizzle/repositories/comment/drizzle-comment.repository.js';
 import { appConfigSchema } from '../src/config/app-config.js';
 
 // The tasks of the organizations, on a disposable PostgreSQL and NATS: the service as main.ts
@@ -242,6 +249,7 @@ type CountedTable =
   | 'spaces'
   | 'space_prefixes'
   | 'tasks'
+  | 'task_comments'
   | 'task_assignees'
   | 'task_labels'
   | 'checklist_items'
@@ -1747,6 +1755,9 @@ describe('tasks', () => {
       const missingNull = await send('patch', `/internal/v1/tasks/${task.key}`, camille, {
         body: { description: null },
       });
+      const missingMentions = await send('patch', `/internal/v1/tasks/${task.key}`, camille, {
+        body: { descriptionMentions: [] },
+      });
       const star = await patchTask(
         camille,
         task.key,
@@ -1760,7 +1771,7 @@ describe('tasks', () => {
         { 'If-Match': `"${String(star.version)}"` },
       );
 
-      for (const response of [missing, missingNull]) {
+      for (const response of [missing, missingNull, missingMentions]) {
         expectProblem(response, 400, 'request.invalid');
         expect(bodyOf(response)).toMatchObject({
           details: { issues: [{ in: 'header', path: 'If-Match', code: 'invalid_type' }] },
@@ -4065,5 +4076,676 @@ describe('tasks', () => {
       expect(after.versions).toEqual([2]);
       expect(after.events).toBe(1200);
     }, 240_000);
+  });
+  describe('comment repository', () => {
+    it('persists and pages comments in tenant scope, versions edits and keeps tombstones', async () => {
+      const task = await createTask(camille, produitList.id, { name: 'Comment CAD-482' });
+      const otherTask = await createTask(camille, produitList.id, { name: 'Other comment task' });
+      const [taskRow] = await asSystem<{ readonly id: string }>(
+        'select id from tasks where organization_id = $1 and key_prefix = $2 and key_number = $3',
+        [atelierNordId, task.key.split('-')[0], Number(task.key.split('-')[1])],
+      );
+      if (taskRow === undefined) throw new Error('The task was not stored.');
+      const tenant = service().get(TenantTransactionRunner);
+      const inRepository = <TResult>(
+        organizationId: string,
+        work: (repository: DrizzleCommentRepository) => Promise<TResult>,
+      ): Promise<TResult> =>
+        runWithOrganizationContext(contextOf(organizationId), () =>
+          tenant.run((tx) => work(new DrizzleCommentRepository(tx.db))),
+        );
+      const first = await inRepository(atelierNordId, (repository) =>
+        repository.insert({
+          organizationId: atelierNordId,
+          taskId: taskRow.id,
+          actorType: 'user',
+          actorId: camille.userId,
+          body: 'Bonjour',
+          mentions: [],
+          replyToCommentId: null,
+        }),
+      );
+      const second = await inRepository(atelierNordId, (repository) =>
+        repository.insert({
+          organizationId: atelierNordId,
+          taskId: taskRow.id,
+          actorType: 'user',
+          actorId: camille.userId,
+          body: 'Reply',
+          mentions: [],
+          replyToCommentId: first.snapshot.id,
+        }),
+      );
+      expect(first.snapshot.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-/u);
+      expect(first.snapshot.version).toBe(1);
+      const httpPage = await send(
+        'get',
+        `/internal/v1/tasks/${task.key}/comments?limit=1`,
+        camille,
+      );
+      expectStatus(httpPage, 200);
+      const pageBody = conforms(ListTaskCommentsInternalResponse, bodyOf(httpPage));
+      expect(pageBody.total).toBe(2);
+      expect(pageBody.items).toHaveLength(1);
+      expect(pageBody.nextCursor).not.toBeNull();
+      const httpNext = await send(
+        'get',
+        `/internal/v1/tasks/${task.key}/comments?limit=1&cursor=${encodeURIComponent(pageBody.nextCursor ?? '')}`,
+        camille,
+      );
+      expectStatus(httpNext, 200);
+      const nextBody = conforms(ListTaskCommentsInternalResponse, bodyOf(httpNext));
+      expect(nextBody.total).toBe(2);
+      expect(nextBody.nextCursor).toBeNull();
+      expect(nextBody.items[0]?.id).not.toBe(pageBody.items[0]?.id);
+      const httpComment = await send(
+        'get',
+        `/internal/v1/tasks/${task.key}/comments/${first.snapshot.id}`,
+        camille,
+      );
+      expectStatus(httpComment, 200);
+      expect(httpComment.headers.etag).toBe('"1"');
+      expect(conforms(GetTaskCommentInternalResponse, bodyOf(httpComment))).toMatchObject({
+        id: first.snapshot.id,
+        body: 'Bonjour',
+        mentions: [],
+      });
+      expectProblem(
+        await send('get', `/internal/v1/tasks/${task.key}/comments/${randomUUID()}`, camille),
+        404,
+        'comment.not-found',
+      );
+      expectProblem(
+        await send(
+          'get',
+          `/internal/v1/tasks/${otherTask.key}/comments/${first.snapshot.id}`,
+          camille,
+        ),
+        404,
+        'comment.not-found',
+      );
+      expectProblem(
+        await send(
+          'get',
+          `/internal/v1/tasks/${otherTask.key}/comments?cursor=${encodeURIComponent(pageBody.nextCursor ?? '')}`,
+          camille,
+        ),
+        400,
+        'request.invalid',
+      );
+      expectProblem(
+        await send('get', `/internal/v1/tasks/${task.key}/comments`, solene, {
+          organizationId: atelierDeltaId,
+        }),
+        404,
+        'task.not-found',
+      );
+      const privateSpace = await createSpace(hugo, {
+        name: 'Private comment read',
+        prefix: 'CMR',
+        visibility: 'private',
+      });
+      const privateTask = await createTask(hugo, privateSpace.firstList.id, {
+        name: 'Private comment task',
+      });
+      expectProblem(
+        await send('get', `/internal/v1/tasks/${privateTask.key}/comments`, camille),
+        404,
+        'task.not-found',
+      );
+      expectProblem(
+        await send(
+          'get',
+          `/internal/v1/tasks/${privateTask.key}/comments/${first.snapshot.id}`,
+          camille,
+        ),
+        404,
+        'task.not-found',
+      );
+
+      const ordered = [first, second].sort(
+        (a, b) =>
+          a.snapshot.createdAt.getTime() - b.snapshot.createdAt.getTime() ||
+          a.snapshot.id.localeCompare(b.snapshot.id),
+      );
+      const page = await inRepository(atelierNordId, (repository) =>
+        repository.list(atelierNordId, taskRow.id, null, 1),
+      );
+      expect(page.map((comment) => comment.snapshot.id)).toEqual([ordered[0]?.snapshot.id]);
+      const position = page[0]?.snapshot;
+      if (position === undefined) throw new Error('The first page is empty.');
+      expect(
+        (
+          await inRepository(atelierNordId, (repository) =>
+            repository.list(
+              atelierNordId,
+              taskRow.id,
+              { id: position.id, createdAt: position.createdAt },
+              1,
+            ),
+          )
+        ).map((comment) => comment.snapshot.id),
+      ).toEqual([ordered[1]?.snapshot.id]);
+      expect(
+        await inRepository(atelierDeltaId, (repository) =>
+          repository.find(atelierNordId, taskRow.id, first.snapshot.id, true),
+        ),
+      ).toBeNull();
+      expect(
+        await inRepository(atelierDeltaId, (repository) =>
+          repository.count(atelierNordId, taskRow.id),
+        ),
+      ).toBe(0);
+      await expect(
+        inRepository(atelierDeltaId, (repository) =>
+          repository.insert({
+            organizationId: atelierNordId,
+            taskId: taskRow.id,
+            actorType: 'user',
+            actorId: camille.userId,
+            body: 'Denied',
+            mentions: [],
+            replyToCommentId: null,
+          }),
+        ),
+      ).rejects.toThrow();
+      const edited = first.edit('Corrected', new Date('2026-11-08T11:00:00Z'));
+      expect(await inRepository(atelierNordId, (repository) => repository.update(edited, 1))).toBe(
+        true,
+      );
+      expect(await inRepository(atelierNordId, (repository) => repository.update(edited, 1))).toBe(
+        false,
+      );
+      const deleted = edited.delete(new Date('2026-11-08T12:00:00Z'));
+      expect(await inRepository(atelierNordId, (repository) => repository.update(deleted, 2))).toBe(
+        true,
+      );
+      expectProblem(
+        await send('get', `/internal/v1/tasks/${task.key}/comments/${first.snapshot.id}`, camille),
+        404,
+        'comment.not-found',
+      );
+      const afterDelete = await send('get', `/internal/v1/tasks/${task.key}/comments`, camille);
+      expectStatus(afterDelete, 200);
+      expect(conforms(ListTaskCommentsInternalResponse, bodyOf(afterDelete))).toMatchObject({
+        total: 1,
+        items: [{ id: second.snapshot.id, replyToCommentId: first.snapshot.id }],
+      });
+      expect(
+        await inRepository(atelierNordId, (repository) =>
+          repository.find(atelierNordId, taskRow.id, first.snapshot.id, false),
+        ),
+      ).toBeNull();
+      expect(
+        (
+          await inRepository(atelierNordId, (repository) =>
+            repository.find(atelierNordId, taskRow.id, first.snapshot.id, true),
+          )
+        )?.snapshot,
+      ).toMatchObject({ body: null, version: 3 });
+      expect(
+        await inRepository(atelierNordId, (repository) =>
+          repository.count(atelierNordId, taskRow.id),
+        ),
+      ).toBe(1);
+      expect(
+        (
+          await inRepository(atelierNordId, (repository) =>
+            repository.find(atelierNordId, taskRow.id, second.snapshot.id, false),
+          )
+        )?.snapshot.replyToCommentId,
+      ).toBe(first.snapshot.id);
+      await asSystem('delete from activity_entries where organization_id = $1 and task_id = $2', [
+        atelierNordId,
+        taskRow.id,
+      ]);
+      await asSystem('delete from tasks where organization_id = $1 and id = $2', [
+        atelierNordId,
+        taskRow.id,
+      ]);
+      expect(
+        await inRepository(atelierNordId, (repository) =>
+          repository.find(atelierNordId, taskRow.id, second.snapshot.id, true),
+        ),
+      ).toBeNull();
+    });
+
+    it('creates once with idempotency and commits comment activity and outbox together', async () => {
+      const restricted = await createSpace(hugo, {
+        name: 'Comment permissions',
+        prefix: 'CMM',
+        visibility: 'private',
+      });
+      const restrictedTask = await createTask(hugo, restricted.firstList.id, {
+        name: 'Restricted comment',
+      });
+      const granted = await send(
+        'put',
+        `/internal/v1/lists/${restricted.firstList.id}/grants/${camille.userId}`,
+        hugo,
+        { body: { role: 'view' } },
+      );
+      expectStatus(granted, 200);
+      expectProblem(
+        await send('post', `/internal/v1/tasks/${restrictedTask.key}/comments`, camille, {
+          body: {
+            body: '@Nobody',
+            replyToCommentId: randomUUID(),
+            mentions: [{ userId: randomUUID(), start: 0, end: 7 }],
+          },
+        }),
+        403,
+        'access.role-insufficient',
+      );
+      expect((await readTask(hugo, restrictedTask.key)).version).toBe(restrictedTask.version);
+      const ownerCommentResponse = await send(
+        'post',
+        `/internal/v1/tasks/${restrictedTask.key}/comments`,
+        hugo,
+        {
+          body: { body: 'Owner comment' },
+        },
+      );
+      expectStatus(ownerCommentResponse, 201);
+      const ownerComment = conforms(
+        CreateTaskCommentInternalResponse,
+        bodyOf(ownerCommentResponse),
+      );
+      const ownerCommentPath = `/internal/v1/tasks/${restrictedTask.key}/comments/${ownerComment.id}`;
+      expectProblem(
+        await send('patch', ownerCommentPath, camille, {
+          body: { body: 'Unauthorized' },
+          headers: { 'If-Match': '"1"' },
+        }),
+        403,
+        'access.role-insufficient',
+      );
+      expectProblem(
+        await send('delete', ownerCommentPath, camille),
+        403,
+        'access.role-insufficient',
+      );
+      const upgraded = await send(
+        'put',
+        `/internal/v1/lists/${restricted.firstList.id}/grants/${camille.userId}`,
+        hugo,
+        { body: { role: 'comment' } },
+      );
+      expectStatus(upgraded, 200);
+      expectProblem(
+        await send('patch', ownerCommentPath, camille, {
+          body: { body: '@Nobody', mentions: [{ userId: randomUUID(), start: 0, end: 7 }] },
+          headers: { 'If-Match': '"1"' },
+        }),
+        403,
+        'comment.author-required',
+      );
+      expectProblem(
+        await send('post', `/internal/v1/tasks/${restrictedTask.key}/comments`, hugo, {
+          body: { body: '@Lea', mentions: [{ userId: lea.userId, start: 0, end: 4 }] },
+        }),
+        422,
+        'mention.recipient-invalid',
+      );
+      expectStatus(
+        await send('post', `/internal/v1/tasks/${restrictedTask.key}/comments`, camille, {
+          body: { body: 'Allowed' },
+        }),
+        201,
+      );
+      const task = await createTask(camille, produitList.id, { name: 'Comment creation' });
+      const path = `/internal/v1/tasks/${task.key}/comments`;
+      const beforeVersion = task.version;
+      expectProblem(
+        await send('post', path, camille, { body: { body: '   ' } }),
+        400,
+        'request.invalid',
+      );
+      expectProblem(
+        await send('post', path, camille, {
+          body: { body: 'Reply', replyToCommentId: randomUUID() },
+        }),
+        404,
+        'comment.not-found',
+      );
+      expect((await readTask(camille, task.key)).version).toBe(beforeVersion);
+      const body = { body: 'Bonjour'.repeat(45) };
+      const headers = { 'Idempotency-Key': 'comment-create-cad-test' };
+      const first = await send('post', path, camille, { body, headers });
+      expectStatus(first, 201);
+      const created = conforms(CreateTaskCommentInternalResponse, bodyOf(first));
+      expect(first.headers.location).toBe(`${path}/${created.id}`);
+      expect(first.headers.etag).toBe('"1"');
+      const replay = await send('post', path, camille, { body, headers });
+      expectStatus(replay, 201);
+      expect(replay.headers['idempotent-replayed']).toBe('true');
+      expect(replay.headers.location).toBe(first.headers.location);
+      expect(replay.headers.etag).toBe(first.headers.etag);
+      expect(bodyOf(replay)).toEqual(bodyOf(first));
+      expect((await readTask(camille, task.key)).version).toBe(beforeVersion + 1);
+      const activity = await activityOf(camille, task.key, '?kind=comment');
+      expect(activity.total).toBe(1);
+      expect(activity.items[0]).toMatchObject({
+        kind: 'comment',
+        commentId: created.id,
+        commentExcerpt: Array.from(body.body).slice(0, 240).join(''),
+      });
+      const events = await asSystem<{ readonly payload: unknown }>(
+        "select payload from outbox_events where organization_id = $1 and event_name = 'comment.created.v1' and payload ->> 'key' = $2",
+        [atelierNordId, task.key],
+      );
+      expect(events).toHaveLength(1);
+      expect(conforms(taskEventSchemas['comment.created.v1'], events[0]?.payload)).toMatchObject({
+        key: task.key,
+        version: beforeVersion + 1,
+        commentId: created.id,
+        mentionedUserIds: [],
+        watcherIds: [],
+      });
+      const reply = await send('post', path, camille, {
+        body: { body: 'A reply', replyToCommentId: created.id },
+      });
+      expectStatus(reply, 201);
+      const replyBody = conforms(CreateTaskCommentInternalResponse, bodyOf(reply));
+      expect(replyBody.replyToCommentId).toBe(created.id);
+      const replyEvents = await asSystem<{ readonly payload: unknown }>(
+        "select payload from outbox_events where organization_id = $1 and event_name = 'comment.created.v1' and payload ->> 'commentId' = $2",
+        [atelierNordId, replyBody.id],
+      );
+      expect(
+        conforms(taskEventSchemas['comment.created.v1'], replyEvents[0]?.payload),
+      ).toMatchObject({ replyToCommentId: created.id, replyToUserId: camille.userId });
+      const upper = await send(
+        'post',
+        path,
+        { userId: camille.userId.toUpperCase() },
+        {
+          organizationId: atelierNordId.toUpperCase(),
+          body: { body: 'Uppercase tenant' },
+        },
+      );
+      expectStatus(upper, 201);
+    });
+
+    it('rolls back the task, comment and activity when the outbox append fails', async () => {
+      const task = await createTask(camille, produitList.id, { name: 'Comment rollback' });
+      const [taskRow] = await asSystem<{ readonly id: string }>(
+        'select id from tasks where organization_id = $1 and key_prefix = $2 and key_number = $3',
+        [atelierNordId, task.key.split('-')[0], Number(task.key.split('-')[1])],
+      );
+      if (taskRow === undefined) throw new Error('The task was not stored.');
+      const append = vi
+        .spyOn(service().get(OutboxWriter), 'append')
+        .mockRejectedValueOnce(new Error('Injected outbox failure'));
+      try {
+        const response = await send('post', `/internal/v1/tasks/${task.key}/comments`, camille, {
+          body: { body: 'Must roll back' },
+        });
+        expectStatus(response, 500);
+      } finally {
+        append.mockRestore();
+      }
+      expect((await readTask(camille, task.key)).version).toBe(task.version);
+      expect(await countRows('task_comments', 'task_id = $2', taskRow.id)).toBe(0);
+      expect(
+        await countRows('activity_entries', "task_id = $2 and kind = 'comment'", taskRow.id),
+      ).toBe(0);
+      const events = await asSystem<{ readonly id: string }>(
+        "select id from outbox_events where organization_id = $1 and event_name = 'comment.created.v1' and payload ->> 'key' = $2",
+        [atelierNordId, task.key],
+      );
+      expect(events).toEqual([]);
+    });
+    it('edits and tombstones only the author comment with comment-version preconditions', async () => {
+      const task = await createTask(camille, produitList.id, { name: 'Comment changes' });
+      const path = `/internal/v1/tasks/${task.key}/comments`;
+      const createdResponse = await send('post', path, camille, { body: { body: 'Before' } });
+      expectStatus(createdResponse, 201);
+      const created = conforms(CreateTaskCommentInternalResponse, bodyOf(createdResponse));
+      const item = `${path}/${created.id}`;
+      const afterCreate = (await readTask(camille, task.key)).version;
+      expectProblem(
+        await send('patch', item, camille, { body: { body: 'No condition' } }),
+        400,
+        'request.invalid',
+      );
+      expectProblem(
+        await send('patch', item, hugo, {
+          body: { body: 'Not author' },
+          headers: { 'If-Match': '"1"' },
+        }),
+        403,
+        'comment.author-required',
+      );
+      expectProblem(
+        await send('patch', item, camille, {
+          body: { body: 'Stale' },
+          headers: { 'If-Match': '"9"' },
+        }),
+        412,
+        'request.version-mismatch',
+      );
+      expect((await readTask(camille, task.key)).version).toBe(afterCreate);
+      const edited = await send('patch', item, camille, {
+        body: { body: 'After' },
+        headers: { 'If-Match': '"1"' },
+      });
+      expectStatus(edited, 200);
+      expect(edited.headers.etag).toBe('"2"');
+      expect(bodyOf(edited)).toMatchObject({ body: 'After', version: 2 });
+      expect((await activityOf(camille, task.key, '?kind=comment')).items[0]).toMatchObject({
+        commentId: created.id,
+        commentExcerpt: 'After',
+      });
+      expectProblem(
+        await send('delete', item, camille, { headers: { 'If-Match': '"1"' } }),
+        412,
+        'request.version-mismatch',
+      );
+      expectStatus(await send('delete', item, camille), 204);
+      expectProblem(await send('get', item, camille), 404, 'comment.not-found');
+      const page = await send('get', path, camille);
+      expectStatus(page, 200);
+      expect(bodyOf(page)).toMatchObject({ total: 0, items: [] });
+      expect((await activityOf(camille, task.key, '?kind=comment')).total).toBe(0);
+      expect((await readTask(camille, task.key)).version).toBe(afterCreate + 2);
+      const tombstone = await asSystem<{ readonly body: string | null; readonly version: number }>(
+        'select body, version from task_comments where organization_id = $1 and id = $2',
+        [atelierNordId, created.id],
+      );
+      expect(tombstone).toMatchObject([{ body: null, version: 3 }]);
+      for (const kind of ['updated', 'deleted'] as const) {
+        const events = await asSystem<{ readonly payload: unknown }>(
+          "select payload from outbox_events where organization_id = $1 and event_name = $2 and payload ->> 'commentId' = $3",
+          [atelierNordId, `comment.${kind}.v1`, created.id],
+        );
+        expect(events).toHaveLength(1);
+        const payload = conforms(taskEventSchemas[`comment.${kind}.v1`], events[0]?.payload);
+        expect(payload).not.toHaveProperty('body');
+      }
+    });
+    it('rolls back a comment edit and deletion when the outbox append fails', async () => {
+      const task = await createTask(camille, produitList.id, { name: 'Comment change rollback' });
+      const path = `/internal/v1/tasks/${task.key}/comments`;
+      const createdResponse = await send('post', path, camille, { body: { body: 'Unchanged' } });
+      expectStatus(createdResponse, 201);
+      const created = conforms(CreateTaskCommentInternalResponse, bodyOf(createdResponse));
+      const item = `${path}/${created.id}`;
+      const version = (await readTask(camille, task.key)).version;
+      for (const method of ['patch', 'delete'] as const) {
+        const append = vi
+          .spyOn(service().get(OutboxWriter), 'append')
+          .mockRejectedValueOnce(new Error('Injected outbox failure'));
+        try {
+          const response =
+            method === 'patch'
+              ? await send('patch', item, camille, {
+                  body: { body: 'Must roll back' },
+                  headers: { 'If-Match': '"1"' },
+                })
+              : await send('delete', item, camille);
+          expectStatus(response, 500);
+        } finally {
+          append.mockRestore();
+        }
+        expect((await readTask(camille, task.key)).version).toBe(version);
+        const comment = await send('get', item, camille);
+        expectStatus(comment, 200);
+        expect(bodyOf(comment)).toMatchObject({ body: 'Unchanged', version: 1 });
+        expect((await activityOf(camille, task.key, '?kind=comment')).items[0]).toMatchObject({
+          commentExcerpt: 'Unchanged',
+        });
+      }
+    });
+    it('persists code-point mentions and emits recipient set changes', async () => {
+      const task = await createTask(camille, produitList.id, { name: 'Comment mentions' });
+      const path = `/internal/v1/tasks/${task.key}/comments`;
+      const before = task.version;
+      expectProblem(
+        await send('post', path, camille, {
+          body: {
+            body: '@Nobody',
+            mentions: [{ userId: randomUUID(), start: 0, end: 7 }],
+          },
+        }),
+        422,
+        'mention.recipient-invalid',
+      );
+      expectProblem(
+        await send('post', path, camille, {
+          body: {
+            body: '😀 @Hugo',
+            mentions: [{ userId: hugo.userId, start: 1, end: 7 }],
+          },
+        }),
+        400,
+        'request.invalid',
+      );
+      expect((await readTask(camille, task.key)).version).toBe(before);
+      const mentions = [
+        { userId: hugo.userId, start: 2, end: 7 },
+        { userId: camille.userId, start: 8, end: 16 },
+      ];
+      const createdResponse = await send('post', path, camille, {
+        body: { body: '😀 @Hugo @Camille', mentions },
+      });
+      expectStatus(createdResponse, 201);
+      const created = conforms(CreateTaskCommentInternalResponse, bodyOf(createdResponse));
+      expect(created.mentions).toEqual(mentions);
+      const item = `${path}/${created.id}`;
+      const fetched = await send('get', item, camille);
+      expectStatus(fetched, 200);
+      expect(bodyOf(fetched)).toMatchObject({ mentions });
+      const retained = [{ userId: hugo.userId, start: 2, end: 7 }];
+      const patched = await send('patch', item, camille, {
+        body: { mentions: retained },
+        headers: { 'If-Match': '"1"' },
+      });
+      expectStatus(patched, 200);
+      expect(bodyOf(patched)).toMatchObject({ mentions: retained, version: 2 });
+      const emitted = await asSystem<{ readonly event_name: string; readonly payload: unknown }>(
+        "select event_name, payload from outbox_events where organization_id = $1 and payload ->> 'commentId' = $2 and event_name in ('comment.created.v1', 'comment.updated.v1') order by event_name",
+        [atelierNordId, created.id],
+      );
+      expect(emitted).toHaveLength(2);
+      const creation = emitted.find((event) => event.event_name === 'comment.created.v1');
+      const update = emitted.find((event) => event.event_name === 'comment.updated.v1');
+      expect(conforms(taskEventSchemas['comment.created.v1'], creation?.payload)).toMatchObject({
+        mentionedUserIds: [hugo.userId, camille.userId],
+      });
+      expect(conforms(taskEventSchemas['comment.updated.v1'], update?.payload)).toMatchObject({
+        addedMentionUserIds: [],
+        removedMentionUserIds: [camille.userId],
+      });
+      const clear = await send('patch', item, camille, {
+        body: { body: 'No mentions' },
+        headers: { 'If-Match': '"2"' },
+      });
+      expectStatus(clear, 200);
+      expect(bodyOf(clear)).toMatchObject({ mentions: [], version: 3 });
+      expectStatus(await send('delete', item, camille), 204);
+      const [tombstone] = await asSystem<{ readonly mentions: unknown }>(
+        'select mentions from task_comments where organization_id = $1 and id = $2',
+        [atelierNordId, created.id],
+      );
+      expect(tombstone?.mentions).toEqual([]);
+    });
+    it('stores description spans, emits recipient changes and clears spans on replacement', async () => {
+      const mentions = [{ userId: hugo.userId, start: 2, end: 7 }];
+      const task = await createTask(camille, produitList.id, {
+        name: 'Description mentions',
+        description: '😀 @Hugo',
+        descriptionMentions: mentions,
+      });
+      expect(task.descriptionMentions).toEqual(mentions);
+      const path = `/internal/v1/tasks/${task.key}`;
+      expectProblem(
+        await send('patch', path, camille, { body: { descriptionMentions: [] } }),
+        400,
+        'request.invalid',
+      );
+      const edited = await patchTask(
+        camille,
+        task.key,
+        { descriptionMentions: [] },
+        { 'If-Match': `"${String(task.version)}"` },
+      );
+      expect(edited.descriptionMentions).toEqual([]);
+      const restored = await patchTask(
+        camille,
+        task.key,
+        { descriptionMentions: mentions },
+        { 'If-Match': `"${String(edited.version)}"` },
+      );
+      const cleared = await patchTask(
+        camille,
+        task.key,
+        { description: 'No mentions' },
+        { 'If-Match': `"${String(restored.version)}"` },
+      );
+      expect(cleared.descriptionMentions).toEqual([]);
+      const events = await asSystem<{ readonly payload: unknown }>(
+        "select payload from outbox_events where organization_id = $1 and event_name = 'task.description-mentions-changed.v1' and payload ->> 'key' = $2 order by occurred_at",
+        [atelierNordId, task.key],
+      );
+      expect(events).toHaveLength(4);
+      expect(
+        conforms(taskEventSchemas['task.description-mentions-changed.v1'], events[0]?.payload),
+      ).toMatchObject({ addedMentionUserIds: [hugo.userId], removedMentionUserIds: [] });
+      expect(
+        conforms(taskEventSchemas['task.description-mentions-changed.v1'], events[1]?.payload),
+      ).toMatchObject({ addedMentionUserIds: [], removedMentionUserIds: [hugo.userId] });
+    });
+
+    it('lists eligible participants of a task for comment-capable users', async () => {
+      const task = await createTask(camille, produitList.id, { name: 'Participants' });
+      const response = await send('get', `/internal/v1/tasks/${task.key}/participants`, camille);
+      expectStatus(response, 200);
+      const page = conforms(ListTaskParticipantsInternalResponse, bodyOf(response));
+      expect(page.items.map((item) => item.userId)).toContain(camille.userId);
+    });
+    it('reads watcher overrides only within the task tenant', async () => {
+      const task = await createTask(camille, produitList.id, { name: 'Watcher repository' });
+      const [stored] = await asSystem<{ readonly id: string }>(
+        'select id from tasks where organization_id = $1 and key_prefix = $2 and key_number = $3',
+        [atelierNordId, task.key.split('-')[0], Number(task.key.split('-')[1])],
+      );
+      if (stored === undefined) throw new Error('The task was not stored.');
+      await asSystem(
+        'insert into task_watcher_overrides (organization_id, task_id, user_id, following) values ($1, $2, $3, $4)',
+        [atelierNordId, stored.id, hugo.userId, false],
+      );
+      const tenant = service().get(TenantTransactionRunner);
+      const read = async (organizationId: string, requestedOrganization: string) =>
+        runWithOrganizationContext(contextOf(organizationId), () =>
+          tenant.run((tx) =>
+            new DrizzleWatcherOverrideRepository(tx.db).list(requestedOrganization, stored.id),
+          ),
+        );
+      expect(await read(atelierNordId, atelierNordId)).toEqual([
+        { userId: hugo.userId, following: false },
+      ]);
+      expect(await read(atelierDeltaId, atelierNordId)).toEqual([]);
+    });
   });
 });

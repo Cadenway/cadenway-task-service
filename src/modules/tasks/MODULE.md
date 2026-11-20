@@ -51,16 +51,28 @@ the archive and the deletion of a list; this module never writes a list.
 
 ## Public entry points
 
-| Entry point                                           | Consumers                                             |
-| ----------------------------------------------------- | ----------------------------------------------------- |
-| `tasks.module`                                        | member-lifecycle, access-requests, deletion-lifecycle |
-| `public/assignee/unassign-removed-member`             | member-lifecycle                                      |
-| `public/task/find-task-reference`                     | access-requests                                       |
-| `public/task/find-task-references`                    | access-requests                                       |
-| `public/trash/trash-deleted-list-tasks`               | deletion-lifecycle                                    |
-| `public/trash/purge-trash-batch`                      | deletion-lifecycle                                    |
-| `public/trash/list-organizations-with-trash-to-purge` | deletion-lifecycle                                    |
-| `public/trash/list-untrashed-task-ids`                | deletion-lifecycle                                    |
+| Entry point                                           | Consumers                                                            |
+| ----------------------------------------------------- | -------------------------------------------------------------------- |
+| `tasks.module`                                        | member-lifecycle, access-requests, deletion-lifecycle, task-comments |
+| `public/assignee/unassign-removed-member`             | member-lifecycle                                                     |
+| `public/task/record-comment-activity`                 | task-comments                                                        |
+| `public/task/begin-comment`                           | task-comments                                                        |
+| `public/task/resolve-comment-task`                    | task-comments                                                        |
+| `public/task/find-task-reference`                     | access-requests                                                      |
+| `public/task/find-task-references`                    | access-requests                                                      |
+| `public/trash/trash-deleted-list-tasks`               | deletion-lifecycle                                                   |
+| `public/trash/purge-trash-batch`                      | deletion-lifecycle                                                   |
+| `public/trash/list-organizations-with-trash-to-purge` | deletion-lifecycle                                                   |
+| `public/trash/list-untrashed-task-ids`                | deletion-lifecycle                                                   |
+
+`BeginComment` and `RecordCommentActivity` are exported to task-comments for an authorized task
+version advance and comment activity creation, excerpt update or removal inside the caller's transaction.
+For comment writes, `BeginComment` locks supplied recipient memberships after the actor, then the task,
+and holds its space and list before recipient access is checked; access revocations wait for commit. `ResolveCommentTask`
+checks reply-author visibility without taking membership locks after the task lock.
+
+`ResolveCommentTask` is exported to task-comments. It checks task visibility and resolves the
+internal task ID in the read transaction of the caller, without exposing an inaccessible task.
 
 `TasksModule` exports the `FindTaskReference` and `FindTaskReferences` providers, which the
 access-requests module reads the task of a request with: `{ organizationId, taskKey }` to a
@@ -128,21 +140,28 @@ from a deletion, `task.purge-trash` (`{ traceparent? }`, no key) from "Vider la 
 
 ## Owned tables
 
-| Table              | Key                                     | Organization scoping                                     |
-| ------------------ | --------------------------------------- | -------------------------------------------------------- |
-| `tasks`            | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
-| `task_assignees`   | `(organization_id, task_id, user_id)`   | `organization_id`, policy of the kit, enabled and forced |
-| `task_labels`      | `(organization_id, task_id, label_key)` | `organization_id`, policy of the kit, enabled and forced |
-| `checklist_items`  | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
-| `activity_entries` | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
-| `trash_entries`    | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
+| Table                    | Key                                     | Organization scoping                                     |
+| ------------------------ | --------------------------------------- | -------------------------------------------------------- |
+| `tasks`                  | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
+| `task_assignees`         | `(organization_id, task_id, user_id)`   | `organization_id`, policy of the kit, enabled and forced |
+| `task_labels`            | `(organization_id, task_id, label_key)` | `organization_id`, policy of the kit, enabled and forced |
+| `checklist_items`        | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
+| `activity_entries`       | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
+| `trash_entries`          | `(organization_id, id)`                 | `organization_id`, policy of the kit, enabled and forced |
+| `task_watcher_overrides` | `(organization_id, task_id, user_id)`   | `organization_id`, policy of the kit, enabled and forced |
 
 Created by `migrations/0003_tasks.sql`, which forces the five policies by hand;
 `migrations/0004_task_queries.sql` adds the two indexes below, as plain `CREATE INDEX` (see Decisions);
 `migrations/0006_archives.sql` adds the archive of a task (expand only: every existing task stays
 live); `migrations/0007_trash.sql` adds the trash (expand only: every existing task stays out of
-it).
+it). `migrations/0008_collaboration.sql` adds the watcher override table, not yet used by a route.
 
+- `task_watcher_overrides`: one explicit follow or unfollow per account and task; the task foreign key
+  cascades on purge, and the tenant-first user index is intended for member cleanup. The watcher
+  policy computes defaults and overrides. An unfinished `ListWatchers` use case and bounded tenant
+  repository exist, but the use case is not wired to a route. Repository tenant-isolation coverage
+  is written but has not run in this environment.
+  Watcher writes, member cleanup and watcher events are not implemented.
 - `trash_entries`: one row per entry, a task and its subtasks deleted together. `root_task_id` and
   `list_id` carry no foreign key (the entry and its tasks are erased together; the lists belong to
   spaces); `parent_key` is the parent of the root as it read when deleted, `null` for a top-level
@@ -403,7 +422,34 @@ id)` (the `position` of the lists spaces answers), and its cursor carries that p
   id: a list restored from the archives goes to the end of its space, and is neither lost nor read
   twice between two pages.
 
+- `descriptionMentions` is accepted by the installed patch validator and requires `If-Match`, but
+  is mapped but not applied or persisted yet. A patch that supplies it with a valid header silently discards
+  the spans; it must not be relied on until the mention write is implemented.
+
+### Collaboration operations in the installed contract
+
+| Internal operation                                         | Serving file and state                                                       |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `GET /internal/v1/tasks/{taskKey}/comments`                | `task-comments/presentation/http/controllers/comment/comments.controller.ts` |
+| `POST /internal/v1/tasks/{taskKey}/comments`               | `task-comments/presentation/http/controllers/comment/comments.controller.ts` |
+| `GET /internal/v1/tasks/{taskKey}/comments/{commentId}`    | `task-comments/presentation/http/controllers/comment/comments.controller.ts` |
+| `PATCH /internal/v1/tasks/{taskKey}/comments/{commentId}`  | `task-comments/presentation/http/controllers/comment/comments.controller.ts` |
+| `DELETE /internal/v1/tasks/{taskKey}/comments/{commentId}` | `task-comments/presentation/http/controllers/comment/comments.controller.ts` |
+| `GET /internal/v1/tasks/{taskKey}/participants`            | Missing: no controller or use case.                                          |
+| `GET /internal/v1/tasks/{taskKey}/watchers`                | Missing: the read use case is not wired to a controller.                     |
+| `PUT /internal/v1/tasks/{taskKey}/watchers/{userId}`       | Missing: no controller or write use case.                                    |
+| `DELETE /internal/v1/tasks/{taskKey}/watchers/{userId}`    | Missing: no controller or write use case.                                    |
+
+Paths in the table are relative to `src/modules/`. The two new integration cases for description
+mentions and participants express intended behavior; they are not yet satisfied by this service.
+
 ## Events emitted
+
+`task.watcher-changed.v1` and `task.description-mentions-changed.v1` are not emitted yet.
+`task.status-changed.v1` currently omits the optional `watcherIds` audience. The unfinished watcher
+reader checks candidate membership and list visibility one account at a time, up to the 100-override
+limit plus creator and assignees; its query cost and concurrency behavior need review before it is
+exposed.
 
 `task.created.v1`, `task.updated.v1` (with `changed`), `task.status-changed.v1`,
 `task.assigned.v1`, `task.archived.v1`, `task.unarchived.v1`, `task.trashed.v1`,
@@ -454,12 +500,8 @@ description, the checklist nor, outside `task.status-changed.v1`, the cancel not
   order of the entry). A consumer that follows the contract ignores a version it already applied,
   so a second event at the same version would not hide it again; an archive lies wholly inside an
   entry, so every member of an archive changes together.
-- To report to cadenway-api-contracts: `task.restored.v1` has no archive state, and an archived
-  member of a restored entry comes back archived (in its archive). The service keeps one
-  `task.restored.v1` per task, as the contract says, followed by the `task.archived.v1` above (one
-  version on);
-  proposal: an additive nullable `archivedAt` / `archivedBy` on `task.restored.v1`, so a consumer
-  knows the task is not live again without the second event.
+- `task.restored.v1` carries `archivedAt` and `archivedBy` from the final post-restore state,
+  null for a live task and the new archive instant and actor for an archived task.
 - A part of an entry too large for one batch of the purge emits one `task.purged.v1` per task it
   erases, in the order they are erased (the deepest first, then by id), each with the entry, the
   key of its root and its parent as stored before any detachment; the root goes with the last part.
@@ -654,8 +696,8 @@ changes the assignees.
   space at the end of the sidebar (spaces); an archived list stays archived; the entry row is
   deleted. The answer is the root as it reads, archived for an archived root.
 - An entry of a deleted list whose deletion job has not moved every task of the list yet cannot be
-  restored: a list that still holds a task out of the trash answers `404 trash-entry.not-found`
-  (the only refusal the contract declares for a restoration), writing nothing. Those tasks are the
+  restored: a list that still holds a task out of the trash answers `409 trash-entry.not-restorable-yet`
+  when `reportNotReady=true`, otherwise `404 trash-entry.not-found`, writing nothing. Those tasks are the
   pending work of the job (no task enters or leaves a deleted list: creations and moves hold their
   lists, and its tasks are invisible), and the entry is restorable once the job finished, within
   minutes. The check runs twice: under `LockDeletedList` for a list read deleted (an early
@@ -744,7 +786,7 @@ Global lock order: one order for every writer of the service, whatever its modul
 access-requests modules follow it and point here), so that no two transactions wait on each other
 in a cycle:
 
-1. memberships `FOR SHARE`: the actor, then the people being assigned or given access; an access
+1. memberships `FOR SHARE`: the actor, then the people being assigned, mentioned or given access; an access
    request then takes its advisory lock and its attempts;
 2. trash entry rows `FOR UPDATE` (several in one statement by id, or `SKIP LOCKED` in the purge);
 3. tasks: a writer of a tree (a deletion, a restoration, an erasure, the batches of the deletion,
@@ -753,6 +795,15 @@ in a cycle:
 4. spaces, several in `(created_at, id)` order;
 5. lists, several in one statement in ascending id;
 6. `space_prefixes` (`AllocateTaskKeys`), then the access requests and the outbox.
+
+The task delete during purge cascades to watcher-override and comment rows; PostgreSQL takes the child-row
+locks during that delete, after the task locks and before the subsequent space and list locks.
+A comment write holds the acting membership and supplied recipient memberships, then its task,
+then the task's space and list `FOR SHARE`. It subsequently inserts or updates the comment row,
+its activity and outbox. Every comment mutation holds the owning task first, so it cannot conflict
+on a child row with a purge that already holds that task; the purge cascades child rows before it
+locks spaces and lists. There is no watcher override write or cleanup use case yet, so its lock
+order is not verified.
 
 A row is locked in its final mode before the next level: no transaction takes a shared lock and
 strengthens it later (the one strengthening left, the `FOR NO KEY UPDATE` of a deleted space to
@@ -1105,7 +1156,7 @@ member-lifecycle (its MODULE.md).
   consumer dropped it at `task.trashed.v1`, and `task.restored.v1` carries the assignees), so its
   `task.purged.v1` can come more than one version after its `task.trashed.v1` (the contract says
   "one more": to report to cadenway-api-contracts); an entry of a list whose deletion job is still
-  moving its tasks cannot be restored until the job finished (`404 trash-entry.not-found`, the
+  moving its tasks cannot be restored until the job finished (`409 trash-entry.not-restorable-yet` when `reportNotReady=true`, otherwise `404 trash-entry.not-found`, the
   only refusal the contract declares; to report to cadenway-api-contracts: a code of its own would
   be clearer), so a restoration never exposes the tasks the job has not moved (checked under
   `LockDeletedList`, and again under the lock `RestoreDeletedList` holds on a list it brings back,

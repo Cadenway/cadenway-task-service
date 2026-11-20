@@ -54,6 +54,21 @@ describe('toActivityEntry', () => {
     expect(entries[3]?.assignee).toEqual({ userId: HUGO, added: true });
   });
 
+  it('maps comment activity with its ID and excerpt', () => {
+    const entry = toActivityEntry(
+      entryOf({
+        kind: 'comment',
+        commentId: '019a7003-4d5e-7f6a-8b9c-0d1e2f3a4b01',
+        commentExcerpt: 'Bonjour',
+      }),
+    );
+    expect(entry).toMatchObject({
+      kind: 'comment',
+      commentId: '019a7003-4d5e-7f6a-8b9c-0d1e2f3a4b01',
+      commentExcerpt: 'Bonjour',
+    });
+  });
+
   it('maps the actor, the task reference and the instant, and answers what the validator accepts', () => {
     const page = toActivityPage(
       {

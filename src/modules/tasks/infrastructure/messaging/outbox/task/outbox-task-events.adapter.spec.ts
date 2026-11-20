@@ -501,6 +501,20 @@ describe('OutboxTaskEvents: the task.* events on the outbox, as the contract def
         rootKey: 'CAD-483',
         parentKey: null,
         version: 3,
+        archivedAt: null,
+        archivedBy: null,
+      });
+    });
+
+    it('carries the final archive state at the restoration version', async () => {
+      const before = Task.restore(subtaskState({ archive: archiveFrom(CAD_482), version: 3 }));
+      const after = before.rearchive({ type: 'user', id: CAMILLE }, new Date(OCCURRED_AT));
+      await events.taskRestored(before, CAD_482_ENTRY, TaskKey.of('CAD', 482), camille, after);
+
+      expect(parsed(outbox.appends[0], 'task.restored.v1')).toMatchObject({
+        version: 3,
+        archivedAt: OCCURRED_AT,
+        archivedBy: camille,
       });
     });
 

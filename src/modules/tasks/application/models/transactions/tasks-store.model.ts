@@ -1,3 +1,4 @@
+import type { WatcherOverrideRepository } from '../../ports/outbound/persistence/watcher/watcher-override-repository.port.js';
 import type { TrashJobs } from '../../ports/outbound/jobs/trash/trash-jobs.port.js';
 import type { TaskEvents } from '../../ports/outbound/messaging/task/task-events.port.js';
 import type { ActivityRepository } from '../../ports/outbound/persistence/activity/activity-repository.port.js';
@@ -25,6 +26,9 @@ export interface TasksStore {
 
   /** The read side: counts, pages of subtasks and task references. */
   readonly reader: TaskReader;
+
+  /** Explicit watcher subscriptions. */
+  readonly watcherOverrides: WatcherOverrideRepository;
 
   /** The activity entries. */
   readonly activity: ActivityRepository;

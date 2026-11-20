@@ -3172,6 +3172,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
           );
         },
       },
+      watcherOverrides: { list: () => Promise.resolve([]) },
       activity: {
         latestOfKind: (
           organizationId: string,
@@ -3202,6 +3203,29 @@ export class InMemoryTasks implements TasksUnitOfWork {
         },
         remove: (_organizationId: string, entryId: string): Promise<void> => {
           activity.delete(entryId);
+          return Promise.resolve();
+        },
+        changeComment: (
+          organizationId: string,
+          taskId: string,
+          commentId: string,
+          excerpt: string | null,
+        ): Promise<void> => {
+          for (const entry of activity.values()) {
+            if (
+              entry.organizationId === organizationId &&
+              entry.taskId === taskId &&
+              entry.change.kind === 'comment' &&
+              entry.change.commentId === commentId
+            ) {
+              if (excerpt === null) activity.delete(entry.id);
+              else
+                activity.set(entry.id, {
+                  ...entry,
+                  change: { ...entry.change, commentExcerpt: excerpt },
+                });
+            }
+          }
           return Promise.resolve();
         },
         pageOfTask: (

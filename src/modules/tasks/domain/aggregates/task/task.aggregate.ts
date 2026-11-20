@@ -1013,6 +1013,21 @@ export class Task {
   }
 
   /**
+   * Advances the task version for a committed comment creation (P3b-2 decision 24).
+   *
+   * @param at - Transaction instant.
+   * @returns The task at its next version.
+   * @throws {TaskArchivedError} When the task is archived.
+   * @throws {TaskInTrashError} When the task is in the trash.
+   * @throws {InvalidTaskError} When the instant is invalid.
+   */
+  public withCommentChange(at: Date): Task {
+    this.requireChangeable();
+    requireInstant(at);
+    return new Task({ ...this.state, updatedAt: at, version: this.state.version + 1 });
+  }
+
+  /**
    * Method requireChangeable
    *
    * @description

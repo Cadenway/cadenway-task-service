@@ -69,6 +69,8 @@ export const activityEntries = pgTable(
     dueTo: date('due_to', { mode: 'string' }),
     assigneeUserId: uuid('assignee_user_id'),
     assigneeAdded: boolean('assignee_added'),
+    commentId: uuid('comment_id'),
+    commentExcerpt: text('comment_excerpt'),
   },
   (table) => [
     primaryKey({ name: 'activity_entries_pkey', columns: [table.organizationId, table.id] }),

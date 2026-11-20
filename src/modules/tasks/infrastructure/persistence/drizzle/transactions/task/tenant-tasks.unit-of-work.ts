@@ -1,3 +1,4 @@
+import { DrizzleWatcherOverrideRepository } from '../../repositories/watcher/drizzle-watcher-override.repository.js';
 import type {
   TenantTransactionRunner,
   TransactionOptions,
@@ -174,6 +175,7 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
       (transaction: TransactionScope): Promise<TResult> =>
         work({
           tasks: new DrizzleTaskRepository(transaction.db),
+          watcherOverrides: new DrizzleWatcherOverrideRepository(transaction.db),
           reader: new DrizzleTaskReader(transaction.db),
           activity: new DrizzleActivityRepository(transaction.db),
           queries: new DrizzleTaskQueryReader(transaction.db),

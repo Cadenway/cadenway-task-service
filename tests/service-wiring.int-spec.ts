@@ -82,7 +82,9 @@ const publicTables = [
   'space_prefixes',
   'spaces',
   'task_assignees',
+  'task_comments',
   'task_labels',
+  'task_watcher_overrides',
   'tasks',
   'trash_entries',
 ] as const;
@@ -93,7 +95,7 @@ const publicTables = [
  * the lists and the access requests, then the archives of lists and tasks, then the trash and the
  * deletion of lists and spaces.
  */
-const appliedMigrations = 8;
+const appliedMigrations = 9;
 
 /**
  * Runs `docker compose` on the throwaway project.
@@ -498,7 +500,9 @@ describe('task-service wiring', () => {
       { relname: 'space_prefixes', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'spaces', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_assignees', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'task_comments', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_labels', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'task_watcher_overrides', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'tasks', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'trash_entries', relrowsecurity: true, relforcerowsecurity: true },
     ]);
@@ -523,7 +527,12 @@ describe('task-service wiring', () => {
       { tablename: 'space_prefixes', policyname: 'space_prefixes_organization_isolation' },
       { tablename: 'spaces', policyname: 'spaces_organization_isolation' },
       { tablename: 'task_assignees', policyname: 'task_assignees_organization_isolation' },
+      { tablename: 'task_comments', policyname: 'task_comments_organization_isolation' },
       { tablename: 'task_labels', policyname: 'task_labels_organization_isolation' },
+      {
+        tablename: 'task_watcher_overrides',
+        policyname: 'task_watcher_overrides_organization_isolation',
+      },
       { tablename: 'tasks', policyname: 'tasks_organization_isolation' },
       { tablename: 'trash_entries', policyname: 'trash_entries_organization_isolation' },
     ]);

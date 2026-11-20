@@ -23,6 +23,9 @@ four job queues and one daily schedule:
   `task.purge-trash` per organization with an entry due or handed over
   (`ListOrganizationsWithTrashToPurge` of tasks).
 
+A task purge cascades to watcher-override and comment rows through their task foreign keys. This
+removes live comments and tombstones; no separate comment cleanup job is registered.
+
 It owns no data, no route, no event and no rule of the trash: the entries, the erasure and the
 retention belong to tasks, the tombstones of the lists and spaces to spaces, the requests to
 access-requests. A module of its own, like member-lifecycle: access-requests depends on spaces and

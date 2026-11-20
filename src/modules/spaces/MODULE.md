@@ -326,12 +326,11 @@ Appended to the outbox in the transaction of the change (`asyncapi/task-service.
   then `list.restored.v1` (the whole list with `organizationAccess`) when `RestoreDeletedList`
   brings them back, by the member who restores the entry, before the task events of its caller,
   each followed at the version it took by the republish of who reaches it:
-  `space.access-changed.v1` with every grant of the space (`changedUserIds` every person who holds
+  `space.access-republished.v1` with every grant of the space (`changedUserIds` every person who holds
   one), `list.access-changed.v1` with the switch and every grant of the list
   (`changed: ['grants', 'organizationAccess']`, `changedUserIds: []`); the order is
-  `space.restored.v1`, `space.access-changed.v1`, `list.restored.v1`, `list.access-changed.v1`.
-  `space.access-changed.v1` requires one person in `changedUserIds`: a restored space without a
-  grant appends none (to report to cadenway-api-contracts).
+  `space.restored.v1`, `space.access-republished.v1`, `list.restored.v1`, `list.access-changed.v1`.
+  The space snapshot is emitted even when its grants and `changedUserIds` are empty. List restore also emits its access snapshot when `changedUserIds` is empty.
   An erasure emits nothing. The handover of a deleted space changes its owner and its version
   without `space.updated.v1` until it comes back (the whole space, which would bring it back in a
   consumer that dropped it at `space.deleted.v1`); the clean-up of a member who left appends the
@@ -604,8 +603,7 @@ list_grants join lists` by `list_grants_user_index`, which `list_grants.space_id
   space or list (owner, grants, versions) but appends no `space.updated.v1` for them until they
   come back, as a task in the trash emits nothing; it still appends the access events of the
   grants it removes there: a restored space whose last grant went while it was deleted
-  republishes none (`changedUserIds` names one person at least), so without them a consumer would
-  keep a removed member able to reach it; a restoration of an entry whose list is
+  republishes an empty snapshot; a restoration of an entry whose list is
   archived and not deleted leaves the list archived; a list archived, then deleted, comes back
   live, its archive cleared ("a deleted list comes back with it, at the end of its space" of
   `openapi/public/trash.yaml`); the archived tasks of its entries come back archived (tasks

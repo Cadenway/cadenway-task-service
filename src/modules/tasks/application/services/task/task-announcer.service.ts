@@ -159,7 +159,7 @@ export class TaskAnnouncer {
    * is followed at once by its `task.archived.v1` at the next version, archived again as of the
    * restoration (the instant and the actor of the restoration, the key of the root of its archive),
    * so a consumer that follows the contract, which ignores a version it already applied, hides it
-   * again (`task.restored.v1` carries no archive state). The `space.restored.v1` and
+   * again; `task.restored.v1` also carries the final archive state. The `space.restored.v1` and
    * `list.restored.v1` of what came back with them are appended before, by the spaces module.
    *
    * @param {TaskEvents} events - The outbox of the transaction.
@@ -186,7 +186,13 @@ export class TaskAnnouncer {
     archiveRootKeys: ReadonlyMap<string, TaskKey>,
   ): Promise<void> {
     for (const member of this.treeOrder(root, members, true)) {
-      await events.taskRestored(member, entryId, root.snapshot.key, actor);
+      await events.taskRestored(
+        member,
+        entryId,
+        root.snapshot.key,
+        actor,
+        rearchived.get(member.snapshot.id),
+      );
       const again: Task | undefined = rearchived.get(member.snapshot.id);
       const archive = again?.snapshot.archive ?? null;
       if (again !== undefined && archive !== null) {

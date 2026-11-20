@@ -1,3 +1,4 @@
+import { DrizzleWatcherOverrideRepository } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/watcher/drizzle-watcher-override.repository.js';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -2606,6 +2607,7 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
       };
       const store = (): TasksStore => ({
         tasks: new DrizzleTaskRepository(db),
+        watcherOverrides: new DrizzleWatcherOverrideRepository(db),
         reader: new DrizzleTaskReader(db),
         activity: new DrizzleActivityRepository(db),
         queries: new DrizzleTaskQueryReader(db),

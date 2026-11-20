@@ -103,6 +103,8 @@ function shapeOf(refusal: TaskRefusalReason): ProblemShape {
           purgeAt: refusal.purgeAt.toISOString(),
         },
       };
+    case 'trash-entry-not-restorable-yet':
+      return { status: 409, code: 'trash-entry.not-restorable-yet' };
     case 'trash-entry-not-found':
       return { status: 404, code: 'trash-entry.not-found' };
     case 'trash-writes-disabled':

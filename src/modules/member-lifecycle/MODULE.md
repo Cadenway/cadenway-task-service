@@ -18,6 +18,8 @@ tenant transaction:
 - for a join or a role change that gives the role `owner`, hands the spaces awaiting an owner to
   that owner (`HandOverAwaitingSpaces` of spaces).
 
+The job does not yet remove watcher overrides; that cleanup has not been implemented.
+
 It owns no data, no route and no event of its own, and one job queue,
 `task.clean-up-removed-member`, with its dead-letter queue (`src/config/job-queues.ts`). A module of its own rather than a part of
 organization-members: the spaces, tasks and access-requests modules read the copy, so the copy

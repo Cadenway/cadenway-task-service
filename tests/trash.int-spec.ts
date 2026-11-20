@@ -15,6 +15,7 @@ import {
   CreateListInternalResponse,
   CreateSpaceInternalResponse,
   CreateSubtaskInternalResponse,
+  CreateTaskCommentInternalResponse,
   CreateTaskInternalResponse,
   EmptyTrashInternalResponse,
   GetHomeInternalResponse,
@@ -2921,13 +2922,13 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       const since = (await outboxOf('spaceId', space.space.id)).slice(eventsBefore);
       expect(since.map((row) => row.event_name)).toEqual([
         'space.restored.v1',
-        'space.access-changed.v1',
+        'space.access-republished.v1',
         'list.restored.v1',
         'list.access-changed.v1',
         'task.restored.v1',
       ]);
       expect(
-        conforms(taskEventSchemas['space.access-changed.v1'], since[1]?.payload),
+        conforms(taskEventSchemas['space.access-republished.v1'], since[1]?.payload),
       ).toMatchObject({
         actor: { type: 'user', id: camille.userId },
         version: (deleted[0]?.version ?? 0) + 1,
@@ -2993,6 +2994,17 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
         body: { text: 'Archiver les maquettes' },
       });
       expect(item.status, item.text).toBe(201);
+      const comment = await send('post', `/internal/v1/tasks/${root.key}/comments`, camille, {
+        body: { body: 'Removed with the task' },
+      });
+      expect(comment.status, comment.text).toBe(201);
+      const commentId = conforms(CreateTaskCommentInternalResponse, bodyOf(comment)).id;
+      const deletedComment = await send(
+        'delete',
+        `/internal/v1/tasks/${root.key}/comments/${commentId}`,
+        camille,
+      );
+      expect(deletedComment.status, deletedComment.text).toBe(204);
       const sibling = await createSubtask(root.key, { name: 'Écran de fin' });
       const siblingEntry = await trashTask(sibling.key);
       const siblingVersion = (await storedTask(sibling.key))?.version;
@@ -3009,6 +3021,7 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
         'task_labels',
         'checklist_items',
         'activity_entries',
+        'task_comments',
       ]) {
         expect(await rowsOf(table), table).toBeGreaterThan(0);
       }
@@ -3021,6 +3034,7 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
         'task_labels',
         'checklist_items',
         'activity_entries',
+        'task_comments',
       ]) {
         expect(await rowsOf(table), table).toBe(0);
       }
@@ -4493,8 +4507,22 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
         const total = await outboxTotal();
         const refused = await restoreRequest(earlyEntry.id);
         const unknown = await restoreRequest(randomUUID());
+        const reported = await send(
+          'post',
+          `/internal/v1/trash/entries/${earlyEntry.id}/restore?reportNotReady=true`,
+          camille,
+          { body: {} },
+        );
+        const hidden = await send(
+          'post',
+          `/internal/v1/trash/entries/${randomUUID()}/restore?reportNotReady=true`,
+          camille,
+          { body: {} },
+        );
         return {
           refused,
+          reported,
+          hidden,
           unknown,
           appended: (await outboxTotal()) - total,
           list: (await storedLists([list.id])).get(list.id),
@@ -4507,6 +4535,8 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       });
 
       expectProblem(during.refused, 404, 'trash-entry.not-found');
+      expectProblem(during.reported, 409, 'trash-entry.not-restorable-yet');
+      expectProblem(during.hidden, 404, 'trash-entry.not-found');
       expect(problemOf(during.refused)).toEqual(problemOf(during.unknown));
       expect(during.appended).toBe(0);
       expect(during.list?.deleted_at).not.toBeNull();
@@ -4529,7 +4559,7 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
   });
 
   describe('a restored space and list republish who reaches them', () => {
-    it('appends space.access-changed.v1 and list.access-changed.v1 with the grants as they stand, between the restored events, and leaves a member removed meanwhile out of every snapshot', async () => {
+    it('appends space.access-republished.v1 and list.access-changed.v1 with the grants as they stand, between the restored events, and leaves a member removed meanwhile out of every snapshot', async () => {
       const space = await createSpace(camille, {
         name: 'Atelier de service',
         prefix: 'ATS',
@@ -4599,7 +4629,7 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       const events = await eventsAfter(marker);
       expect(events.map((row) => row.event_name)).toEqual([
         'space.restored.v1',
-        'space.access-changed.v1',
+        'space.access-republished.v1',
         'list.restored.v1',
         'list.access-changed.v1',
         'task.restored.v1',
@@ -4607,7 +4637,7 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       const [spaceRestored, spaceAccess, listRestored, listAccess] = events;
       const spaceEvent = conforms(taskEventSchemas['space.restored.v1'], spaceRestored?.payload);
       const spaceGrants = conforms(
-        taskEventSchemas['space.access-changed.v1'],
+        taskEventSchemas['space.access-republished.v1'],
         spaceAccess?.payload,
       );
       const listEvent = conforms(taskEventSchemas['list.restored.v1'], listRestored?.payload);
@@ -5387,6 +5417,10 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       expect(
         conforms(taskEventSchemas['task.restored.v1'], restoredEvent?.payload).parentKey,
       ).toBeNull();
+      expect(conforms(taskEventSchemas['task.restored.v1'], restoredEvent?.payload)).toMatchObject({
+        archivedAt: restored.task.archivedAt,
+        archivedBy: restored.task.archivedBy,
+      });
     });
   });
 

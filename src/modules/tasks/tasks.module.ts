@@ -1,3 +1,9 @@
+import { recordCommentActivityProvider } from './composition/providers/use-cases/task/record-comment-activity.provider.js';
+import { RecordCommentActivity } from './public/task/record-comment-activity.js';
+import { beginCommentProvider } from './composition/providers/use-cases/task/begin-comment.provider.js';
+import { BeginComment } from './public/task/begin-comment.js';
+import { resolveCommentTaskProvider } from './composition/providers/use-cases/task/resolve-comment-task.provider.js';
+import { ResolveCommentTask } from './public/task/resolve-comment-task.js';
 import { Idempotent } from '@cadenway/nest-common/database';
 import { Module } from '@nestjs/common';
 
@@ -178,6 +184,9 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
     listMyTasksProvider,
     getHomeProvider,
     checkTaskAccessProvider,
+    resolveCommentTaskProvider,
+    beginCommentProvider,
+    recordCommentActivityProvider,
     findTaskReferenceProvider,
     findTaskReferencesProvider,
     archiveTaskProvider,
@@ -198,6 +207,9 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
   exports: [
     UnassignRemovedMember,
     FindTaskReference,
+    ResolveCommentTask,
+    BeginComment,
+    RecordCommentActivity,
     FindTaskReferences,
     TrashDeletedListTasks,
     PurgeTrashBatch,

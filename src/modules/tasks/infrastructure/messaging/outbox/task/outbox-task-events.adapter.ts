@@ -291,9 +291,12 @@ export class OutboxTaskEvents implements TaskEvents {
     entryId: string,
     rootKey: TaskKey,
     actor: EventActor,
+    postRestore?: Task,
   ): Promise<void> {
     await this.outbox.append(this.transaction, eventSchemas, 'task.restored.v1', {
       ...this.payloadOf(task.snapshot, actor),
+      archivedAt: (postRestore ?? task).snapshot.archive?.at.toISOString() ?? null,
+      archivedBy: (postRestore ?? task).snapshot.archive?.by ?? null,
       entryId,
       rootKey: rootKey.format(),
     });
