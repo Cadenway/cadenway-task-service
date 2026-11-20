@@ -52,22 +52,25 @@ the archive and the deletion of a list; this module never writes a list.
 
 ## Public entry points
 
-| Entry point                                           | Consumers                                                                                   |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `tasks.module`                                        | access-requests, deletion-lifecycle, goals, member-lifecycle, task-comments, task-templates |
-| `public/assignee/unassign-removed-member`             | member-lifecycle                                                                            |
-| `public/watcher/remove-member-watcher-overrides`      | member-lifecycle                                                                            |
-| `public/task/record-comment-activity`                 | task-comments                                                                               |
-| `public/task/begin-comment`                           | task-comments                                                                               |
-| `public/task/resolve-comment-task`                    | task-comments                                                                               |
-| `public/task/find-task-reference`                     | access-requests                                                                             |
-| `public/task/find-task-references`                    | access-requests                                                                             |
-| `public/trash/trash-deleted-list-tasks`               | deletion-lifecycle                                                                          |
-| `public/trash/purge-trash-batch`                      | deletion-lifecycle                                                                          |
-| `public/trash/list-organizations-with-trash-to-purge` | deletion-lifecycle                                                                          |
-| `public/trash/list-untrashed-task-ids`                | deletion-lifecycle                                                                          |
-| `public/task/read-task-template-source`               | task-templates                                                                              |
-| `public/goal/measure-goal-targets`                    | goals                                                                                       |
+| Entry point                                           | Consumers                                                                                                               |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `tasks.module`                                        | access-requests, deletion-lifecycle, goals, member-lifecycle, onboarding, task-approvals, task-comments, task-templates |
+| `public/goal/measure-goal-targets`                    | goals                                                                                                                   |
+| `public/onboarding/create-onboarding-example`         | onboarding                                                                                                              |
+| `public/approval/change-task-approval`                | task-approvals                                                                                                          |
+| `public/approval/read-task-approval`                  | task-approvals                                                                                                          |
+| `public/assignee/unassign-removed-member`             | member-lifecycle                                                                                                        |
+| `public/watcher/remove-member-watcher-overrides`      | member-lifecycle                                                                                                        |
+| `public/task/record-comment-activity`                 | task-comments                                                                                                           |
+| `public/task/begin-comment`                           | task-comments                                                                                                           |
+| `public/task/resolve-comment-task`                    | task-comments                                                                                                           |
+| `public/task/find-task-reference`                     | access-requests                                                                                                         |
+| `public/task/find-task-references`                    | access-requests                                                                                                         |
+| `public/trash/trash-deleted-list-tasks`               | deletion-lifecycle                                                                                                      |
+| `public/trash/purge-trash-batch`                      | deletion-lifecycle                                                                                                      |
+| `public/trash/list-organizations-with-trash-to-purge` | deletion-lifecycle                                                                                                      |
+| `public/trash/list-untrashed-task-ids`                | deletion-lifecycle                                                                                                      |
+| `public/task/read-task-template-source`               | task-templates                                                                                                          |
 
 `MeasureGoalTargets` projects readable list progress and milestone completion in the goal
 transaction. It uses current list visibility, including readable archives, and skips deleted
@@ -81,6 +84,15 @@ checks reply-author visibility without taking membership locks after the task lo
 
 `ResolveCommentTask` is exported to task-comments. It checks task visibility and resolves the
 internal task ID in the read transaction of the caller, without exposing an inaccessible task.
+
+`CreateOnboardingExample` creates one preset example with the ordinary task policies and outbox,
+joining the provisioning transaction. Normal task creation updates the verified actor's first-task
+checklist marker in that transaction. Examples, subtasks, copies and recurrence do not advance it.
+
+`ReadTaskApproval` exposes an authorized task and eligible reviewers within one task snapshot.
+`ChangeTaskApproval` holds reviewed memberships, the task and its placement, checks the task
+version and uses the ordinary status, recurrence and watcher policies. It calls the approval
+module's decision and finalization inside the same transaction as the task write and outbox.
 
 `TasksModule` exports the `FindTaskReference` and `FindTaskReferences` providers, which the
 access-requests module reads the task of a request with: `{ organizationId, taskKey }` to a

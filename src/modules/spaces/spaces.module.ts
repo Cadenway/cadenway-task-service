@@ -46,6 +46,8 @@ import { unarchiveListProvider } from './composition/providers/use-cases/list/un
 import { updateListProvider } from './composition/providers/use-cases/list/update-list.provider.js';
 import { allocateTaskKeysProvider } from './composition/providers/use-cases/space/allocate-task-keys.provider.js';
 import { createSpaceProvider } from './composition/providers/use-cases/space/create-space.provider.js';
+import { provisionOnboardingSpaceProvider } from './composition/providers/use-cases/space/provision-onboarding-space.provider.js';
+import { ProvisionOnboardingSpace } from './public/space/provision-onboarding-space.js';
 import { deleteSpaceProvider } from './composition/providers/use-cases/space/delete-space.provider.js';
 import { findFavoriteSpacesProvider } from './composition/providers/use-cases/space/find-favorite-spaces.provider.js';
 import { resolveGoalSpacesProvider } from './composition/providers/use-cases/goal/resolve-goal-spaces.provider.js';
@@ -156,6 +158,7 @@ markIdempotent(SpaceListsController.prototype, 'create');
     memberDirectoryProvider,
     trashWritesProvider,
     createSpaceProvider,
+    provisionOnboardingSpaceProvider,
     listSpacesProvider,
     getSpaceProvider,
     updateSpaceProvider,
@@ -206,6 +209,7 @@ markIdempotent(SpaceListsController.prototype, 'create');
     removeMemberGrantsProvider,
   ],
   exports: [
+    ProvisionOnboardingSpace,
     ResolveTaskTemplateSpace,
     ResolveCustomFieldSpace,
     FindFavoriteSpaces,
