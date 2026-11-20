@@ -108,7 +108,26 @@ export class DrizzleActivityRepository implements ActivityRepository {
     if (drafts.length === 0) {
       return;
     }
-    await this.db.insert(activityEntries).values(drafts.map(toActivityEntryInsert));
+    await this.db.insert(activityEntries).values(
+      drafts.map((draft) => ({
+        ...toActivityEntryInsert(draft),
+        // The task lock serializes its status changes. The transaction clock may predate that
+        // lock after a wait, so stamp a status after the latest known boundary under the lock.
+        occurredAt:
+          draft.change.kind === 'status'
+            ? sql`greatest(
+                date_trunc('milliseconds', clock_timestamp()),
+                coalesce((
+                  select max(previous.occurred_at) + interval '1 millisecond'
+                  from activity_entries previous
+                  where previous.organization_id = ${draft.organizationId}::uuid
+                    and previous.task_id = ${draft.taskId}::uuid
+                    and previous.kind in ('create', 'status')
+                ), '-infinity'::timestamptz)
+              )`
+            : draft.occurredAt,
+      })),
+    );
   }
 
   /**

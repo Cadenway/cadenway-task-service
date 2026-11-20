@@ -96,6 +96,9 @@ export function toActivityEntry(row: ActivityEntryRow): ActivityEntryState {
     actor: { type: toActorType(row.actorType, `activity entry ${row.id}`), id: row.actorId },
     occurredAt: row.occurredAt,
     change: toActivityChange(row),
+    ...(row.initialStatus === null
+      ? {}
+      : { initialStatus: toStatusKey(row.initialStatus, `activity entry ${row.id}`) }),
   }).snapshot;
 }
 
@@ -160,6 +163,7 @@ export function toActivityEntryInsert(
     actorType: draft.actor.type,
     actorId: draft.actor.id,
     occurredAt: draft.occurredAt,
+    initialStatus: draft.initialStatus ?? null,
     ...toActivityDetail(draft.change),
   };
 }

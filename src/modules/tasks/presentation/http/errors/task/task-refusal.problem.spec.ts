@@ -15,6 +15,8 @@ describe('answerRefusals', () => {
     [{ reason: 'space-not-found' }, 404, 'space.not-found', undefined],
     [{ reason: 'user-not-found' }, 404, 'user.not-found', undefined],
     [{ reason: 'checklist-item-not-found' }, 404, 'checklist-item.not-found', undefined],
+    [{ reason: 'time-entry-not-found' }, 404, 'time-entry.not-found', undefined],
+    [{ reason: 'time-entry-author-required' }, 403, 'time-entry.author-required', undefined],
     [
       { reason: 'role-insufficient', role: 'view' },
       403,
@@ -89,8 +91,8 @@ describe('answerRefusals', () => {
     [{ reason: 'subtask-limit-reached' }, 422, 'task.subtask-limit-reached', undefined],
   ];
 
-  it('covers the twenty-five reasons of a refusal', () => {
-    expect(new Set(answers.map(([refusal]) => refusal.reason)).size).toBe(25);
+  it('defines one expectation per mapped reason, including distinct role details', () => {
+    expect(new Set(answers.map(([refusal]) => refusal.reason)).size).toBe(27);
   });
 
   it('answers a write of the trash while its switch is off exactly as a route the service lacks', async () => {
