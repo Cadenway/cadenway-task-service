@@ -55,6 +55,7 @@ import { findTaskReferenceProvider } from './composition/providers/use-cases/tas
 import { findTaskReferencesProvider } from './composition/providers/use-cases/task/find-task-references.provider.js';
 import { getTaskDetailProvider } from './composition/providers/use-cases/task/get-task-detail.provider.js';
 import { readTaskTemplateSourceProvider } from './composition/providers/use-cases/task/read-task-template-source.provider.js';
+import { measureGoalTargetsProvider } from './composition/providers/use-cases/goal/measure-goal-targets.provider.js';
 import { getTaskProvider } from './composition/providers/use-cases/task/get-task.provider.js';
 import { listTaskParticipantsProvider } from './composition/providers/use-cases/task/list-task-participants.provider.js';
 import { updateTaskProvider } from './composition/providers/use-cases/task/update-task.provider.js';
@@ -91,6 +92,7 @@ import { SpaceCustomFieldsController } from './presentation/http/controllers/cus
 import { TaskLabelsController } from './presentation/http/controllers/label/task-labels.controller.js';
 import { SubtasksController } from './presentation/http/controllers/subtask/subtasks.controller.js';
 import { ReadTaskTemplateSource } from './public/task/read-task-template-source.js';
+import { MeasureGoalTargets } from './public/goal/measure-goal-targets.js';
 import { ListTasksController } from './presentation/http/controllers/task/list-tasks.controller.js';
 import { TaskParticipantsController } from './presentation/http/controllers/task/task-participants.controller.js';
 import { TasksController } from './presentation/http/controllers/task/tasks.controller.js';
@@ -216,6 +218,7 @@ markIdempotent(TaskTimeController.prototype, 'create');
     getTaskProvider,
     getTaskDetailProvider,
     readTaskTemplateSourceProvider,
+    measureGoalTargetsProvider,
     listTaskParticipantsProvider,
     createSubtaskProvider,
     listSubtasksProvider,
@@ -264,6 +267,7 @@ markIdempotent(TaskTimeController.prototype, 'create');
   ],
   exports: [
     ReadTaskTemplateSource,
+    MeasureGoalTargets,
     UnassignRemovedMember,
     RemoveMemberWatcherOverrides,
     FindTaskReference,
