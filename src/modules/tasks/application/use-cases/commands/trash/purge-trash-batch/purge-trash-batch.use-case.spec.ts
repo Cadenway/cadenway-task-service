@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import type { TaskState } from '../../../../../domain/value-objects/task/task-state.value-object.js';
+import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
+import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
 import {
   ATELIER_NORD,
   BUGS,
@@ -75,9 +77,13 @@ function atelierNord(
  * and CAD-490 alone in the entry of Bugs, due after it.
  *
  * @param entry - What replaces the entry of CAD-482.
+ * @param taskCount - Number of tasks to keep in the due entry.
  * @returns The fake store and the tasks of the entry with their depth under the root.
  */
-function bigEntry(entry: Partial<StoredTrashEntry> = {}): {
+function bigEntry(
+  entry: Partial<StoredTrashEntry> = {},
+  taskCount: number = 526,
+): {
   readonly large: InMemoryTasks;
   readonly tree: readonly { readonly task: TaskState; readonly depth: number }[];
 } {
@@ -103,13 +109,18 @@ function bigEntry(entry: Partial<StoredTrashEntry> = {}): {
       });
     }
   }
+  const entryTree = tree.slice(0, taskCount);
   const large = new InMemoryTasks({
     tasks: [
-      ...tree.map(({ task }) => task),
+      ...entryTree.map(({ task }) => task),
       cad490State({ listId: BUGS, trash: trashIn(BUGS_ENTRY), version: 2 }),
     ],
     trashEntries: [
-      storedEntry({ taskCount: 526, trashedAt: new Date(DUE.getTime() - 1), ...entry }),
+      storedEntry({
+        taskCount: entryTree.length,
+        trashedAt: new Date(DUE.getTime() - 1),
+        ...entry,
+      }),
       storedEntry({
         id: BUGS_ENTRY,
         rootTaskId: CAD_490,
@@ -119,7 +130,7 @@ function bigEntry(entry: Partial<StoredTrashEntry> = {}): {
       }),
     ],
   });
-  return { large, tree };
+  return { large, tree: entryTree };
 }
 
 describe('PurgeTrashBatch: one batch of the erasure of the trash of an organization', () => {
@@ -223,7 +234,7 @@ describe('PurgeTrashBatch: one batch of the erasure of the trash of an organizat
     expect(spaces.purgeCalls).toEqual([BUGS]);
   });
 
-  it('locks 20 entries at most and stops once it holds 500 tasks or more', async () => {
+  it('locks 20 entries at most', async () => {
     const stored: TaskState[] = [];
     const entries: StoredTrashEntry[] = [];
     for (let index = 0; index < 25; index += 1) {
@@ -249,20 +260,52 @@ describe('PurgeTrashBatch: one batch of the erasure of the trash of an organizat
     expect(tasks.trashEntries.size).toBe(5);
   });
 
-  it('erases an entry of more than 500 tasks that comes first alone and whole in one batch, task.purged.v1 root first, then by depth and id', async () => {
+  it('leaves a whole entry for the next batch when it would exceed the task budget', async () => {
+    const { large } = bigEntry({}, 499);
+    const bugsRoot: TaskState = large.stored(CAD_490);
+    const bugsChild: TaskState = queryTask(600, {
+      listId: BUGS,
+      parentId: bugsRoot.id,
+      parentKey: bugsRoot.key,
+      trash: trashIn(BUGS_ENTRY),
+    });
+    large.tasks.set(bugsChild.id, bugsChild);
+    large.trashEntries.set(
+      BUGS_ENTRY,
+      storedEntry({
+        id: BUGS_ENTRY,
+        rootTaskId: bugsRoot.id,
+        listId: BUGS,
+        taskCount: 2,
+        trashedAt: DUE,
+      }),
+    );
+    const batch = new PurgeTrashBatch(large, new InMemorySpaceDirectory());
+
+    expect(await batch.execute({ organizationId: ATELIER_NORD })).toMatchObject({
+      entries: 1,
+      tasks: 499,
+    });
+    expect(large.trashEntries.has(BUGS_ENTRY)).toBe(true);
+    expect(await batch.execute({ organizationId: ATELIER_NORD })).toMatchObject({
+      entries: 1,
+      tasks: 2,
+    });
+  });
+
+  it('erases and announces an oversized entry root first in batches', async () => {
     const { large, tree } = bigEntry();
     const batch = new PurgeTrashBatch(large, new InMemorySpaceDirectory());
 
     expect(await batch.execute({ organizationId: ATELIER_NORD })).toEqual({
       outcome: 'purged',
-      entries: 1,
-      tasks: 526,
+      entries: 0,
+      tasks: 500,
       listsPurged: 0,
       spacesPurged: 0,
     });
+    expect(large.trashEntries.get(CAD_482_ENTRY)?.taskCount).toBe(26);
     expect(large.tasks.has(CAD_482)).toBe(false);
-    expect([...large.tasks.keys()]).toEqual([CAD_490]);
-    expect(large.trashEntries.has(CAD_482_ENTRY)).toBe(false);
     expect(large.events.map((event) => event.key)).toEqual(
       [...tree]
         .sort(
@@ -270,6 +313,7 @@ describe('PurgeTrashBatch: one batch of the erasure of the trash of an organizat
             left.depth - right.depth ||
             (left.task.id < right.task.id ? -1 : left.task.id > right.task.id ? 1 : 0),
         )
+        .slice(0, 500)
         .map(({ task }) => task.key.format()),
     );
     expect(large.events[0]).toMatchObject({ kind: 'purged', key: 'CAD-482' });
@@ -281,14 +325,20 @@ describe('PurgeTrashBatch: one batch of the erasure of the trash of an organizat
           event.actor.id === 'task-service',
       ),
     ).toBe(true);
-    expect(large.trace).toContain('trash.erase');
-    expect(large.trace).not.toContain('trash.erasePart');
+    expect(await batch.execute({ organizationId: ATELIER_NORD })).toMatchObject({
+      entries: 1,
+      tasks: 26,
+    });
+    expect(large.trashEntries.has(CAD_482_ENTRY)).toBe(false);
+    expect(large.events).toHaveLength(526);
+    expect([...large.tasks.keys()]).toEqual([CAD_490]);
   });
 
   it('leaves the entries after an entry of more than 500 tasks for the next batch', async () => {
     const { large } = bigEntry();
     const batch = new PurgeTrashBatch(large, new InMemorySpaceDirectory());
 
+    await batch.execute({ organizationId: ATELIER_NORD });
     await batch.execute({ organizationId: ATELIER_NORD });
 
     expect(large.trashEntries.has(BUGS_ENTRY)).toBe(true);
@@ -303,10 +353,51 @@ describe('PurgeTrashBatch: one batch of the erasure of the trash of an organizat
     expect(large.trashEntries.size).toBe(0);
   });
 
+  it('rolls back a failed first batch and emits each event once on retry', async () => {
+    const { large } = bigEntry();
+    let fail = true;
+    const work: TasksUnitOfWork = {
+      run: <TResult>(operation: (store: TasksStore) => Promise<TResult>): Promise<TResult> =>
+        large.run((store) =>
+          operation({
+            ...store,
+            trash: {
+              ...store.trash,
+              erasePart: (organizationId, entry, ids, at, by) => {
+                if (fail) {
+                  fail = false;
+                  return Promise.reject(new Error('purge batch failed'));
+                }
+                return store.trash.erasePart(organizationId, entry, ids, at, by);
+              },
+            },
+          }),
+        ),
+      runReadOnly: (operation, options) => large.runReadOnly(operation, options),
+    };
+    const batch = new PurgeTrashBatch(work, new InMemorySpaceDirectory());
+
+    await expect(batch.execute({ organizationId: ATELIER_NORD })).rejects.toThrow(
+      'purge batch failed',
+    );
+    expect(large.trashEntries.get(CAD_482_ENTRY)?.taskCount).toBe(526);
+    expect(large.events).toHaveLength(0);
+    expect(await batch.execute({ organizationId: ATELIER_NORD })).toMatchObject({
+      entries: 0,
+      tasks: 500,
+    });
+    expect(await batch.execute({ organizationId: ATELIER_NORD })).toMatchObject({
+      entries: 1,
+      tasks: 26,
+    });
+    expect(large.events).toHaveLength(526);
+  });
+
   it('erases a large entry handed over with the requester of "Vider la corbeille" for every task', async () => {
     const { large } = bigEntry({ purgeRequest: { at: NOW, by: camille } });
     const batch = new PurgeTrashBatch(large, new InMemorySpaceDirectory());
 
+    await batch.execute({ organizationId: ATELIER_NORD });
     await batch.execute({ organizationId: ATELIER_NORD });
 
     expect(large.trashEntries.has(CAD_482_ENTRY)).toBe(false);

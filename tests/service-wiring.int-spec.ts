@@ -93,7 +93,7 @@ const publicTables = [
  * the lists and the access requests, then the archives of lists and tasks, then the trash and the
  * deletion of lists and spaces.
  */
-const appliedMigrations = 8;
+const appliedMigrations = 9;
 
 /**
  * Runs `docker compose` on the throwaway project.

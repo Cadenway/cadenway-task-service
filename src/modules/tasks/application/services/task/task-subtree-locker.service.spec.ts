@@ -33,6 +33,47 @@ async function lockCad482(
 }
 
 describe('TaskSubtreeLocker: the live descendants of a task, locked in id order', () => {
+  it('locks the root, live descendants and another task together without archived descendants', async () => {
+    const tasks = new InMemoryTasks({
+      tasks: [
+        taskState(),
+        subtaskState(),
+        subtaskState({
+          id: CAD_484,
+          key: TaskKey.of('CAD', 484),
+          archive: archiveFrom(CAD_484),
+          version: 2,
+        }),
+        cad490State(),
+      ],
+    });
+    const acquisitions: string[][] = [];
+
+    const locked = await tasks.run((store: TasksStore): Promise<LockedSubtree> =>
+      new TaskSubtreeLocker().lock(
+        {
+          ...store,
+          tasks: {
+            ...store.tasks,
+            lockByIds: (organizationId, ids, withChecklists) => {
+              acquisitions.push([...ids]);
+              return store.tasks.lockByIds(organizationId, ids, withChecklists);
+            },
+          },
+        },
+        Task.restore(taskState()),
+        [CAD_490],
+        false,
+        true,
+      ),
+    );
+
+    expect(acquisitions).toHaveLength(1);
+    expect(acquisitions[0]?.sort()).toEqual([taskState().id, CAD_483, CAD_490].sort());
+    expect(locked.tasks.map((task) => task.snapshot.id)).not.toContain(CAD_484);
+    expect(locked.tasks.every((task) => task.snapshot.checklist.length === 0)).toBe(true);
+  });
+
   it('locks the live descendants at every level and the other tasks asked for', async () => {
     const tasks = new InMemoryTasks({
       tasks: [

@@ -1,5 +1,5 @@
 import type { TransactionDatabase } from '@cadenway/nest-common/database';
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 
 import type { SpaceWithGrants } from '../../../../../application/models/access/space-with-grants.model.js';
@@ -251,7 +251,12 @@ export class DrizzleSpaceRepository implements SpaceRepository {
     const ordered: { id: string }[] = await this.db
       .select({ id: spaces.id })
       .from(spaces)
-      .where(and(eq(spaces.organizationId, organizationId), inArray(spaces.id, [...modes.keys()])))
+      .where(
+        and(
+          eq(spaces.organizationId, organizationId),
+          sql`${spaces.id} = any(${sql.param([...modes.keys()])}::uuid[])`,
+        ),
+      )
       .orderBy(asc(spaces.createdAt), asc(spaces.id));
     const locked: Space[] = [];
     for (const { id } of ordered) {

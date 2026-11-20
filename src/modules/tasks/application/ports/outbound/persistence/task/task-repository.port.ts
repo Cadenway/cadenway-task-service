@@ -174,7 +174,8 @@ export interface TaskRepository {
    * Method lockArchive
    *
    * @description
-   * Locks every member of an archive in one statement, `ORDER BY id FOR NO KEY UPDATE`, and reads
+   * Locks the root's whole untrashed tree, every archive member and the root's parent in one
+   * statement, `ORDER BY id FOR NO KEY UPDATE`, and reads
    * them after the lock: the tasks out of the trash whose archive was made from the root, the root
    * included (an archive in the trash is out of the archives). A task restored, or moved to the
    * trash, by another transaction while the lock waited is not returned. The members carry
@@ -183,8 +184,7 @@ export interface TaskRepository {
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} rootId - The root of the archive.
-   * @returns {Promise<readonly Task[]>} The members, in ascending id order; none when the archive
-   * was restored meanwhile.
+   * @returns {Promise<readonly Task[]>} The tree, members and any parent, in ascending id order.
    */
   lockArchive(organizationId: string, rootId: string): Promise<readonly Task[]>;
 

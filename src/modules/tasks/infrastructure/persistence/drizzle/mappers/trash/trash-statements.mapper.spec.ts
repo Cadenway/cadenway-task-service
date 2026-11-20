@@ -41,11 +41,14 @@ const COLUMNS: string =
   '"entry"."trashed_by_type" as "trashedByType", "entry"."trashed_by_id" as "trashedById", ' +
   `to_char("entry"."purge_requested_at" at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "purgeRequestedAt", ` +
   '"entry"."purge_requested_by_type" as "purgeRequestedByType", "entry"."purge_requested_by_id" as "purgeRequestedById", ' +
-  '"root"."key_prefix" as "rootKeyPrefix", "root"."key_number" as "rootKeyNumber", "root"."name" as "rootName", "root"."status" as "rootStatus"';
+  '("entry"."purge_root_key" is not null or "root"."id" is null) as "rootErased", ' +
+  `coalesce(split_part("entry"."purge_root_key", '-', 1), "root"."key_prefix") as "rootKeyPrefix", ` +
+  `coalesce(nullif(split_part("entry"."purge_root_key", '-', 2), '')::int, "root"."key_number") as "rootKeyNumber", ` +
+  'coalesce("entry"."purge_root_name", "root"."name") as "rootName", coalesce("entry"."purge_root_status", "root"."status") as "rootStatus"';
 
 /** The join of an entry with its root by the primary key of `tasks`. */
 const FROM: string =
-  'from "trash_entries" as "entry" join "tasks" as "root" on "root"."organization_id" = "entry"."organization_id" and "root"."id" = "entry"."root_task_id"';
+  'from "trash_entries" as "entry" left join "tasks" as "root" on "root"."organization_id" = "entry"."organization_id" and "root"."id" = "entry"."root_task_id"';
 
 /** The entries of the lists still in the trash, the predicate of the partial index. */
 const IN_TRASH: string =
@@ -154,7 +157,7 @@ describe('insertEntriesStatement: new entries in one statement, returned with th
     expect(rendered.sql).toBe(
       'with "entry" as (insert into "trash_entries" (organization_id, root_task_id, list_id, parent_key, task_count, trashed_at, trashed_by_type, trashed_by_id) ' +
         'select * from unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::text[], $5::int[], $6::timestamptz[], $7::text[], $8::text[]) returning *) ' +
-        `select ${COLUMNS} from "entry" join "tasks" as "root" on "root"."organization_id" = "entry"."organization_id" and "root"."id" = "entry"."root_task_id"`,
+        `select ${COLUMNS} from "entry" left join "tasks" as "root" on "root"."organization_id" = "entry"."organization_id" and "root"."id" = "entry"."root_task_id"`,
     );
     expect(rendered.params).toEqual([
       ['org'],
