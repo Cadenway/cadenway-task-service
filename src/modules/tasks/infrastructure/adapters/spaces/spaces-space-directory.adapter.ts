@@ -21,7 +21,7 @@ import type {
 } from '../../../../spaces/public/list/list-archived-lists.js';
 import type { HoldList } from '../../../../spaces/public/list/hold-list.js';
 import type { LockDeletedList } from '../../../../spaces/public/list/lock-deleted-list.js';
-import type { LockDeletedLists } from '../../../../spaces/public/list/lock-deleted-lists.js';
+import type { LockTrashLists } from '../../../../spaces/public/list/lock-trash-lists.js';
 import type {
   ListCurrentSprints,
   ListCurrentSprintsOutput,
@@ -44,7 +44,7 @@ import type {
 import type { RestoreDeletedList } from '../../../../spaces/public/list/restore-deleted-list.js';
 import type { ArchivePosition } from '../../../application/models/archive/archive-position.model.js';
 import type { ArchivedLists } from '../../../application/models/placement/archived-lists.model.js';
-import type { DeletedListLock } from '../../../application/models/placement/deleted-list-lock.model.js';
+import type { TrashListLock } from '../../../application/models/placement/trash-list-lock.model.js';
 import type { DeletedListPurge } from '../../../application/models/placement/deleted-list-purge.model.js';
 import type { DeletedListRestoration } from '../../../application/models/placement/deleted-list-restoration.model.js';
 import type { HeldList } from '../../../application/models/placement/held-list.model.js';
@@ -130,14 +130,14 @@ type SpacesHeldList = Awaited<ReturnType<HoldList['execute']>>;
 type SpacesLockedDeletedList = Awaited<ReturnType<LockDeletedList['execute']>>;
 
 /**
- * Type SpacesDeletedListLock
+ * Type SpacesTrashListLock
  *
  * @description
- * What `LockDeletedLists` of the spaces module answers for one list.
+ * What `LockTrashLists` of the spaces module answers for one list.
  *
- * @type {Awaited<ReturnType<LockDeletedLists['execute']>>['lists'][number]}
+ * @type {Awaited<ReturnType<LockTrashLists['execute']>>['lists'][number]}
  */
-type SpacesDeletedListLock = Awaited<ReturnType<LockDeletedLists['execute']>>['lists'][number];
+type SpacesTrashListLock = Awaited<ReturnType<LockTrashLists['execute']>>['lists'][number];
 
 /**
  * Class SpacesSpaceDirectory
@@ -147,7 +147,7 @@ type SpacesDeletedListLock = Awaited<ReturnType<LockDeletedLists['execute']>>['l
  * `FindVisibleSpaceLists`, `ListCurrentSprints`, `ListSidebarLists`, `AllocateTaskKeys`,
  * `RestoreArchivedList`, `ListArchivedLists` and `FindVisibleLists` of the spaces module, and the
  * seven of the trash (`ListTrashLists`, `FindTrashList`, `RestoreDeletedList`, `PurgeDeletedList`,
- * `HoldList`, `LockDeletedList`, `LockDeletedLists`), which join the tenant transaction of the
+ * `HoldList`, `LockDeletedList`, `LockTrashLists`), which join the tenant transaction of the
  * calling use case and
  * decide every role
  * of the viewer. The projections of the spaces module are copied member by member to the models of
@@ -323,15 +323,15 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
   private readonly lockDeletedListOperation: LockDeletedList;
 
   /**
-   * Property lockDeletedListsOperation
+   * Property lockTrashListsOperation
    *
    * @description
    * The lock of several deleted lists in one global order, until the commit.
    *
-   * @type {LockDeletedLists}
+   * @type {LockTrashLists}
    * @readonly
    */
-  private readonly lockDeletedListsOperation: LockDeletedLists;
+  private readonly lockTrashListsOperation: LockTrashLists;
   // #endregion
 
   // #region Constructor
@@ -356,7 +356,7 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
    * @param {PurgeDeletedList} purgeDeletedList - The erasure of a deleted list.
    * @param {HoldList} holdList - The hold of a list.
    * @param {LockDeletedList} lockDeletedList - The lock of a deleted list.
-   * @param {LockDeletedLists} lockDeletedLists - The lock of several deleted lists.
+   * @param {LockTrashLists} lockTrashLists - The lock of several deleted lists.
    * @constructor
    */
   public constructor(
@@ -375,7 +375,7 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
     purgeDeletedList: PurgeDeletedList,
     holdList: HoldList,
     lockDeletedList: LockDeletedList,
-    lockDeletedLists: LockDeletedLists,
+    lockTrashLists: LockTrashLists,
   ) {
     this.findVisibleListOperation = findVisibleList;
     this.listVisibleListIds = listVisibleListIds;
@@ -392,7 +392,7 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
     this.purgeDeletedListOperation = purgeDeletedList;
     this.holdListOperation = holdList;
     this.lockDeletedListOperation = lockDeletedList;
-    this.lockDeletedListsOperation = lockDeletedLists;
+    this.lockTrashListsOperation = lockTrashLists;
   }
   // #endregion
 
@@ -837,26 +837,33 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
   }
 
   /**
-   * Method lockDeletedLists
+   * Method lockTrashLists
    *
    * @description
-   * Runs `LockDeletedLists` and maps the outcome of each list.
+   * Runs `LockTrashLists` and maps the outcome and the role of each list.
    *
    * @param {string} organizationId - The organization of the transaction.
-   * @param {readonly string[]} listIds - The lists, 100 at most.
-   * @returns {Promise<readonly DeletedListLock[]>} What the lock found for each list.
+   * @param {readonly string[]} listIds - The lists.
+   * @param {'hold' | 'erase'} mode - How the caller holds them.
+   * @param {Viewer | null} viewer - The member whose role is read again, `null` for the service.
+   * @returns {Promise<readonly TrashListLock[]>} What the lock found for each list.
    */
-  public async lockDeletedLists(
+  public async lockTrashLists(
     organizationId: string,
     listIds: readonly string[],
-  ): Promise<readonly DeletedListLock[]> {
-    const output = await this.lockDeletedListsOperation.execute({
+    mode: 'hold' | 'erase',
+    viewer: Viewer | null,
+  ): Promise<readonly TrashListLock[]> {
+    const output = await this.lockTrashListsOperation.execute({
       organizationId,
       listIds: [...listIds],
+      mode,
+      viewer: viewer === null ? null : { userId: viewer.userId, role: viewer.role },
     });
-    return output.lists.map((lock: SpacesDeletedListLock): DeletedListLock => ({
+    return output.lists.map((lock: SpacesTrashListLock): TrashListLock => ({
       listId: lock.listId,
       outcome: lock.outcome,
+      role: lock.role,
     }));
   }
 

@@ -21,9 +21,12 @@ import { CheckedLocker } from '../access/checked-locker.service.js';
  * role on without `edit` `role-insufficient` with that role; an `If-Match` that does not name the
  * stored version `version-mismatch` with it. The list and its space are read without lock and the
  * role is computed first, so a list the actor does not see, or may not change, answers at once
- * whatever another transaction holds; then the list is locked `FOR NO KEY UPDATE`, so two changes
- * of one list apply one after the other, and the role is computed again on the locked row when it
- * changed meanwhile (`CheckedLocker`). A deleted list, or a list of a deleted space, answers
+ * whatever another transaction holds; then its space is locked `FOR SHARE` and the list
+ * `FOR NO KEY UPDATE` (spaces before lists), so two changes of one list apply one after the other
+ * and neither the space (its visibility, owner and grants) nor the list can change before the
+ * commit, and the role is computed again on the locked rows when one of them changed meanwhile
+ * (`CheckedLocker`): a space made private, or a grant revoked, while a deletion waited for its
+ * locks refuses the deletion. A deleted list, or a list of a deleted space, answers
  * `list-not-found`. `find` answers the refusals of the access, for a caller that maps them to
  * outcomes of its own; `lock` throws them and checks `If-Match` last.
  */
@@ -80,7 +83,6 @@ export class EditableListLocator {
       store,
       organizationId,
       listId,
-      'none',
       async (
         space: Space,
         list: TaskList,

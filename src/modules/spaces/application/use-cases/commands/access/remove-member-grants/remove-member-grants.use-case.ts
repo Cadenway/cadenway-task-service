@@ -141,7 +141,8 @@ export class RemoveMemberGrants {
    * @returns {Promise<RemoveMemberGrantsOutput>} What the batch did.
    * @throws {Error} When the database fails, a lock or statement timeout included: the batch rolls
    * back alone, and the job retries it; or when a grant names a space or a list the batch did not
-   * lock, a defect the foreign keys rule out.
+   * lock while grants of it remain, a defect the foreign keys rule out (a space or a list erased
+   * with its grants while the batch waited is skipped).
    */
   public async execute(input: RemoveMemberGrantsInput): Promise<RemoveMemberGrantsOutput> {
     return this.unitOfWork.run(async (store: SpacesStore): Promise<RemoveMemberGrantsOutput> => {
@@ -191,10 +192,14 @@ export class RemoveMemberGrants {
       }
       let removed: number = 0;
       for (const resource of batch) {
-        const space: Space = this.lockedOf(spaces, resource.spaceId, 'space');
-        const list: TaskList | null =
-          resource.kind === 'list' ? this.lockedOf(lists, resource.listId, 'list') : null;
+        const space: Space | undefined = spaces.get(resource.spaceId);
+        const list: TaskList | null | undefined =
+          resource.kind === 'list' ? lists.get(resource.listId) : null;
         const stored: StoredGrant[] = await store.grants.listOf(input.organizationId, resource);
+        if (space === undefined || list === undefined) {
+          this.requireErased(resource, stored);
+          continue;
+        }
         const update: GrantsUpdate = this.keeper
           .restore(resource, space.snapshot.ownerUserId, stored)
           .revoke(input.userId);
@@ -235,28 +240,23 @@ export class RemoveMemberGrants {
   }
 
   /**
-   * Method lockedOf
+   * Method requireErased
    *
    * @description
-   * The locked row of a space or a list a grant of the batch names.
+   * Accepts a grant whose space or list the batch did not lock only when that row was erased with
+   * its grants while the batch waited for its lock (an erasure of a tombstone of the trash, which
+   * locks the space, then the list, then erases their grants and rows): the grants read after the
+   * locks are then gone, so there is nothing left to remove.
    *
-   * @param {ReadonlyMap<string, TRow>} locked - The rows the batch locked, by id.
-   * @param {string} id - The id the grant names.
-   * @param {'space' | 'list'} kind - What it names, for the message.
-   * @returns {TRow} The locked row.
-   * @throws {Error} When it was not locked: a defect, since the foreign keys of the grant tables
+   * @param {GrantedResource} resource - The space or the list the grant named.
+   * @param {readonly StoredGrant[]} stored - Its grants, read after the locks.
+   * @throws {Error} When grants of it remain: a defect, since the foreign keys of the grant tables
    * keep every grant on an existing space and list; the batch rolls back.
    */
-  private lockedOf<TRow>(
-    locked: ReadonlyMap<string, TRow>,
-    id: string,
-    kind: 'space' | 'list',
-  ): TRow {
-    const row: TRow | undefined = locked.get(id);
-    if (row === undefined) {
-      throw new Error(`A grant of the batch names a ${kind} the batch did not lock.`);
+  private requireErased(resource: GrantedResource, stored: readonly StoredGrant[]): void {
+    if (stored.length > 0) {
+      throw new Error(`A grant of the batch names a ${resource.kind} the batch did not lock.`);
     }
-    return row;
   }
   // #endregion
 }

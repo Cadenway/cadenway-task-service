@@ -145,7 +145,6 @@ export class GrantGuard {
       store,
       organizationId,
       listId,
-      'share',
       async (space: Space, list: TaskList): Promise<SpaceRefusalReason | null> => {
         const access: ViewerAccess = await this.access.resolve(
           store.grants,

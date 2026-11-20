@@ -56,10 +56,10 @@ interface ResolvedTarget {
  *    eleventh (`429 access-request.limit-reached`, rolled back, so the refused attempt counts for
  *    nothing); otherwise the attempts that left the hour are deleted and this one is recorded,
  *    stored or not;
- * 4. the target, read under a `FOR SHARE` lock held until the commit: a space through the spaces
- *    module (the space), a list through the spaces module (the list; its space is read without a
- *    lock), a task through the tasks module (the task), then its list through the spaces module
- *    (the list, its space read without a lock);
+ * 4. the target, read under a `FOR SHARE SKIP LOCKED` lock held until the commit: a space through
+ *    the spaces module (the space), a list through the spaces module (the list; its space is read
+ *    without a lock), a task through the tasks module (the task), then its list through the spaces
+ *    module (the list, its space read without a lock);
  * 5. one insert statement, always: it stores the request only when `isRequestStored` says so,
  *    once per requester and target while pending; a stored request appends its
  *    `…access-requested.v1`.
@@ -68,19 +68,24 @@ interface ResolvedTarget {
  * the statements of steps 1 to 5, their locks included, are the same for every outcome (an unknown
  * target is read as one no row has), so neither the answer nor the statements tell whether the
  * target exists, is deleted, is in the trash, is seen already or is asked for already. The one
- * difference left is the outbox append of a stored request.
+ * difference left is the outbox append of a stored request. Nothing of step 4 waits on the target:
+ * a row another transaction holds `FOR NO KEY UPDATE` or `FOR UPDATE` at that instant (a change, a
+ * trash or a deletion of the target under way) is skipped and reads as unknown, so the request is
+ * not stored and answers at once, as for a target that does not exist; the time of the answer
+ * does not tell an existing target from an unknown one, even under contention. Accepted: a request
+ * that meets a write of its target is dropped silently (it still counts for the hourly limit), and
+ * the requester may ask again.
  *
- * The locks of step 4 make a deletion or a trash of the target running meanwhile either commit
- * first, so the request reads the target deleted or in the trash and stores nothing, or wait for
- * the request, whose pending row the job of that deletion or trash then drops. The lock of the
- * list suffices for a list or a task: a deletion of its space writes the list rows too (it marks
- * them deleted), so it conflicts with that lock as a deletion of the list does. Lock order: the
- * membership, the advisory lock, the attempts, the task, then the space (a space target) or the
- * list, then the insert. It cannot deadlock with a batch of a deletion job (tasks `FOR NO KEY
- * UPDATE`, then the list `FOR SHARE`, then the access requests), a trash (tasks, then the list), a
- * deletion of a list or a space (the space, then its lists) or a restoration (tasks, then the
- * space, then the list): the request holds one row of the space or the list only, after its task,
- * and takes the access requests last, so no two wait for each other in opposite orders.
+ * The locks of step 4 make a deletion or a trash of the target either commit first, so the request
+ * reads the target deleted or in the trash and stores nothing, or, when it starts after the read,
+ * wait for the request, whose pending row the job of that deletion or trash then drops; a deletion
+ * or a trash under way during the read makes the request skip the target and store nothing. So no
+ * stored request outlives the clean-up of a deletion. The lock of the list suffices for a list or a
+ * task: a deletion of its space writes the list rows too (it marks them deleted), so it conflicts
+ * with that lock as a deletion of the list does. Lock order (the global order of
+ * `src/modules/tasks/MODULE.md`): the membership, the advisory lock, the attempts, the task, then
+ * the space (a space target) or the list, then the insert. It cannot deadlock: it never waits for
+ * a row of its target, and it takes the access requests last.
  */
 export class CreateAccessRequest {
   // #region Properties
@@ -255,7 +260,7 @@ export class CreateAccessRequest {
             actorUserId,
             role,
             { kind: 'space', spaceId: input.target.spaceId },
-            'share',
+            'share-unless-locked',
           ),
           task: null,
         };
@@ -266,7 +271,7 @@ export class CreateAccessRequest {
             actorUserId,
             role,
             { kind: 'list', listId: input.target.listId },
-            'share',
+            'share-unless-locked',
           ),
           task: null,
         };
@@ -274,14 +279,14 @@ export class CreateAccessRequest {
         const task: TaskReference | null = await this.tasks.findByKey(
           organizationId,
           input.target.taskKey,
-          'share',
+          'share-unless-locked',
         );
         const target: TargetAccess | null = await this.targets.find(
           organizationId,
           actorUserId,
           role,
           { kind: 'list', listId: task === null ? NO_LIST : task.listId },
-          'share',
+          'share-unless-locked',
         );
         return { target: task === null ? null : target, task };
       }

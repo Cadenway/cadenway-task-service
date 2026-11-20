@@ -191,7 +191,6 @@ export class GrantRequestedAccess {
         store,
         input.organizationId,
         target.listId,
-        'share',
         async (
           seenSpace: Space,
           seenList: TaskList,

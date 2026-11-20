@@ -28,7 +28,6 @@ import { toTask, toTaskInsert, toTaskUpdate } from '../../mappers/task/task.mapp
 import type { TaskRow } from '../../mappers/task/task.mapper.js';
 import { toTaskLocation } from '../../mappers/task/task-summary.mapper.js';
 import {
-  entryTreeStatement,
   listsWithTasksStatement,
   trashCandidateRootsStatement,
   trashTreesStatement,
@@ -58,7 +57,7 @@ interface TrashTreeRow extends Record<string, unknown> {
   // #endregion
 }
 
-/** The row of `shareLocationByKey`: a location and whether the task is in the trash. */
+/** The row of `shareLocationUnlessLocked`: a location and whether the task is in the trash. */
 interface SharedLocationRow extends Pick<
   TaskRow,
   'id' | 'keyPrefix' | 'keyNumber' | 'name' | 'status' | 'listId' | 'spaceId'
@@ -878,19 +877,20 @@ export class DrizzleTaskRepository implements TaskRepository {
   }
 
   /**
-   * Method shareLocationByKey
+   * Method shareLocationUnlessLocked
    *
    * @description
-   * Locks the task of a key `FOR SHARE` and reads where it is, in one statement through
-   * `tasks_key_unique` whatever the outcome; a task in the trash is locked and answers `null`.
+   * Locks the task of a key `FOR SHARE SKIP LOCKED` and reads where it is, in one statement
+   * through `tasks_key_unique` whatever the outcome; a task in the trash is locked and answers
+   * `null`, and a task a writer holds is left out at once and answers `null`.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {TaskKey} key - The key.
-   * @returns {Promise<TaskLocation | null>} The task, or `null` when the organization has none or
-   * it is in the trash.
+   * @returns {Promise<TaskLocation | null>} The task, or `null` when the organization has none, it
+   * is in the trash or a writer holds it.
    * @throws {Error} When the stored status is outside the status keys.
    */
-  public async shareLocationByKey(
+  public async shareLocationUnlessLocked(
     organizationId: string,
     key: TaskKey,
   ): Promise<TaskLocation | null> {
@@ -914,80 +914,9 @@ export class DrizzleTaskRepository implements TaskRepository {
         ),
       )
       .limit(1)
-      .for('share');
+      .for('share', { skipLocked: true });
     const row: SharedLocationRow | undefined = rows[0];
     return row === undefined || row.inTrash ? null : toTaskLocation(row);
-  }
-
-  /**
-   * Method entryTree
-   *
-   * @description
-   * Reads the tasks of one trash entry from their parent links in one recursive statement
-   * (`entryTreeStatement`), at any depth, without a lock.
-   *
-   * @param {string} organizationId - The organization of the transaction.
-   * @param {string} entryId - The entry.
-   * @param {string} rootTaskId - Its root.
-   * @returns {Promise<readonly TrashTreeNode[]>} The tasks, by depth and id.
-   * @throws {Error} When PostgreSQL detects a cycle of parent links, a defect.
-   */
-  public async entryTree(
-    organizationId: string,
-    entryId: string,
-    rootTaskId: string,
-  ): Promise<readonly TrashTreeNode[]> {
-    const result = await this.db.execute<TrashTreeRow>(
-      entryTreeStatement(organizationId, entryId, rootTaskId),
-    );
-    const cycle: TrashTreeRow | undefined = result.rows.find(
-      (row: TrashTreeRow): boolean => row.isCycle,
-    );
-    if (cycle !== undefined) {
-      throw new Error(
-        `The trash entry ${entryId} meets the task ${cycle.id} again on its own path: a cycle of parent links.`,
-      );
-    }
-    return result.rows.map((row: TrashTreeRow): TrashTreeNode => ({
-      id: row.id,
-      rootId: row.rootId,
-      depth: row.depth,
-    }));
-  }
-
-  /**
-   * Method lockEntryTasks
-   *
-   * @description
-   * Locks some tasks of one entry `FOR UPDATE` in one statement ordered by id (by primary key,
-   * guarded by the entry) and assembles them without their checklists.
-   *
-   * @param {string} organizationId - The organization of the transaction.
-   * @param {string} entryId - The entry.
-   * @param {readonly string[]} taskIds - The tasks.
-   * @returns {Promise<readonly Task[]>} Those still in the entry, in ascending id order.
-   */
-  public async lockEntryTasks(
-    organizationId: string,
-    entryId: string,
-    taskIds: readonly string[],
-  ): Promise<readonly Task[]> {
-    if (taskIds.length === 0) {
-      return [];
-    }
-    const rows: TaskRow[] = await this.db
-      .select()
-      .from(tasks)
-      .where(
-        and(
-          eq(tasks.organizationId, organizationId),
-          eq(tasks.trashEntryId, entryId),
-          anyOf(tasks.id, taskIds, 'uuid'),
-        ),
-      )
-      .orderBy(asc(tasks.id))
-      .for('update');
-    return this.collections.assemble(organizationId, rows, false);
   }
 
   /**

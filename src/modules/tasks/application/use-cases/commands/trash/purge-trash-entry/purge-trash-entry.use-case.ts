@@ -18,15 +18,21 @@ import type { PurgeTrashEntryInput } from './purge-trash-entry.input.js';
  * of `openapi/public/trash.yaml`): its root and every task of it, their checklists, assignees,
  * labels and activity. An entry the actor may not restore (unknown, handed to the purge by "Vider
  * la corbeille", or of a list on which they would not have `edit` as if not deleted) answers
- * `trash-entry-not-found`. Locks: the membership of the actor `FOR SHARE`, the entry `FOR UPDATE`
- * (checked again on the locked row, so a restoration or an erasure that committed first leaves it
- * gone), then its tasks `FOR UPDATE` in one statement ordered by id (`lockTrashEntries`): 651
- * live tasks at most, plus the archived subtasks under them. The eraser emits one
- * `task.purged.v1` per task (its version plus one, the entry, the key of its root, its list, its
- * space and its parent as stored, the actor), erases the rows, detaches the tasks outside the
- * entry that hung from one of its tasks (tasks of other entries, and archived tasks left in
- * another list when their parent moved away), and hands a list left without a task to the spaces
- * module, which erases it when it is deleted, then its deleted space with its last list.
+ * `trash-entry-not-found`. The role is read once without a lock, so that an entry the actor may not
+ * restore answers at once whatever another transaction holds, and again under the locks of its
+ * list. Locks, in the global lock order: the membership of the actor `FOR SHARE`, the entry
+ * `FOR UPDATE` (checked again on the locked row, so a restoration or an erasure that committed
+ * first leaves it gone), then its tasks `FOR UPDATE` in one statement ordered by id
+ * (`lockTrashEntries`): 651 live tasks at most, plus the archived subtasks under them; then, once
+ * the tasks are written, the space of its list and the list (`LockTrashLists` in `erase`), under
+ * which the eraser reads the role of the actor again: a grant revoked or a space made private
+ * while the erasure waited for a lock answers `trash-entry-not-found` and rolls everything back.
+ * The eraser emits one `task.purged.v1` per task (its version plus one, the entry, the key of its
+ * root, its list, its space and its parent as stored, the actor), root first, erases the rows,
+ * detaches the tasks outside the entry that hung from one of its tasks (tasks of other entries,
+ * and archived tasks left in another list when their parent moved away), and hands a deleted list
+ * left without a task to the spaces module, which erases it, then its deleted space with its last
+ * list.
  */
 export class PurgeTrashEntry {
   // #region Properties
@@ -94,9 +100,12 @@ export class PurgeTrashEntry {
         [entry.id],
         true,
       );
-      await this.eraser.erase(store, organizationId, [
-        { entry, tasks, actor: { type: 'user', id: input.actorUserId } },
-      ]);
+      await this.eraser.erase(
+        store,
+        organizationId,
+        [{ entry, tasks, actor: { type: 'user', id: input.actorUserId } }],
+        viewer,
+      );
     });
   }
   // #endregion

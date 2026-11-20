@@ -59,14 +59,15 @@ export interface FindAccessTargetInput {
    * Property lock
    *
    * @description
-   * `share` to read the row of the target (the space for a space, the list for a list)
-   * `FOR SHARE` until the end of the transaction of the caller, so that a deletion of it, which
-   * locks it `FOR NO KEY UPDATE`, either committed first (the target reads unknown) or waits for
-   * the caller; `none` (the default) to read it without lock.
+   * `share-unless-locked` to read the row of the target (the space for a space, the list for a
+   * list) `FOR SHARE SKIP LOCKED` until the end of the transaction of the caller, so that a
+   * deletion of it, which locks it `FOR NO KEY UPDATE`, either committed first (the target reads
+   * unknown) or waits for the caller, and a row a writer holds reads unknown at once, without
+   * waiting; `none` (the default) to read it without lock.
    *
-   * @type {'none' | 'share' | undefined}
+   * @type {'none' | 'share-unless-locked' | undefined}
    * @readonly
    */
-  readonly lock?: 'none' | 'share';
+  readonly lock?: 'none' | 'share-unless-locked';
   // #endregion
 }

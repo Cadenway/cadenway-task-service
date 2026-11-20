@@ -83,22 +83,41 @@ export interface TaskListRepository {
   lockShared(organizationId: string, id: string): Promise<TaskList | null>;
 
   /**
+   * Method lockSharedUnlessLocked
+   *
+   * @description
+   * Loads a list by its id and locks it `FOR SHARE SKIP LOCKED` until the end of the
+   * transaction, unless it is deleted: a row another transaction holds `FOR NO KEY UPDATE` or
+   * `FOR UPDATE` (a change or a deletion of it under way) is left out at once, without waiting,
+   * so that the time of the answer does not tell whether the list exists. A deletion of it
+   * that starts after the lock waits for the caller.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} id - The id of the list.
+   * @returns {Promise<TaskList | null>} The list, or `null` when unknown, deleted or locked by a
+   * writer.
+   */
+  lockSharedUnlessLocked(organizationId: string, id: string): Promise<TaskList | null>;
+
+  /**
    * Method lockMany
    *
    * @description
    * Loads and locks some lists until the end of the transaction, in ascending id, so that two
    * lockers never wait on each other; deleted ones are locked like any other: `FOR NO KEY UPDATE`
-   * before a change (`update`, the default), `FOR UPDATE` before an erasure (`delete`).
+   * before a change (`update`, the default), `FOR UPDATE` before an erasure (`delete`),
+   * `FOR SHARE` to hold them unchanged until the commit (`share`).
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} ids - The ids of the lists.
-   * @param {'update' | 'delete'} [mode] - How the caller writes them next, `update` by default.
+   * @param {'update' | 'delete' | 'share'} [mode] - How the caller writes or holds them next,
+   * `update` by default.
    * @returns {Promise<TaskList[]>} The lists that exist, by id.
    */
   lockMany(
     organizationId: string,
     ids: readonly string[],
-    mode?: 'update' | 'delete',
+    mode?: 'update' | 'delete' | 'share',
   ): Promise<TaskList[]>;
 
   /**

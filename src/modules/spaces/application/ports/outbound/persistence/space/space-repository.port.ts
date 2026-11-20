@@ -70,6 +70,23 @@ export interface SpaceRepository {
   lockShared(organizationId: string, id: string): Promise<Space | null>;
 
   /**
+   * Method lockSharedUnlessLocked
+   *
+   * @description
+   * Loads a space by its id and locks it `FOR SHARE SKIP LOCKED` until the end of the
+   * transaction, unless it is deleted: a row another transaction holds `FOR NO KEY UPDATE` or
+   * `FOR UPDATE` (a change or a deletion of it under way) is left out at once, without waiting,
+   * so that the time of the answer does not tell whether the space exists. A deletion of it
+   * that starts after the lock waits for the caller.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} id - The id of the space.
+   * @returns {Promise<Space | null>} The space, or `null` when unknown, deleted or locked by a
+   * writer.
+   */
+  lockSharedUnlessLocked(organizationId: string, id: string): Promise<Space | null>;
+
+  /**
    * Method lockInOrder
    *
    * @description

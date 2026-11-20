@@ -2,6 +2,7 @@ import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
 import type { TaskActor } from '../../../../../domain/value-objects/task/task-actor.value-object.js';
 import type { LocatedTask } from '../../../../models/task/located-task.model.js';
+import type { LocateRequest } from '../../../../models/task/locate-request.model.js';
 import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
 import type { LockedTrashTrees } from '../../../../models/trash/locked-trash-trees.model.js';
 import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
@@ -29,14 +30,21 @@ import type { TrashTaskOutput } from './trash-task.output.js';
  * `task-not-found`, `task-trashed` (the
  * task is in the trash already, with its entry when the actor may restore it), `role-insufficient`,
  * `task-archived` (an archived task "is deleted once restored"), `version-mismatch` (`If-Match` on
- * the task). Locks follow the order of the module: the membership of the actor `FOR SHARE`, the
- * task by key `FOR NO KEY UPDATE`, then its tree (`TrashTreeLocker`: every descendant of it in its
- * list out of the trash, live or archived, read in one recursive statement and locked in one
- * statement by id, without their checklists, until the tree read under the locks holds nothing
- * unlocked). An archived subtask goes with it and keeps its archive, out of the archives while in
- * the trash; a subtask deleted before keeps its own entry, and a subtask in another list (an
- * archived task whose parent moved away) stays. An entry holds at most 651 live tasks and the
- * archived subtasks under them, which the product does not limit.
+ * the task), checked first on the task read without a lock, so that a task the actor does not see
+ * or may not change answers at once whatever another transaction holds. Locks follow the global
+ * lock order: the membership of the actor `FOR SHARE`, then the task with its tree
+ * (`TrashTreeLocker`: the task and every descendant of it in its list out of the trash, live or
+ * archived, read in one recursive statement and locked in one statement in ascending id, without
+ * their checklists, until the tree read under the locks holds nothing unlocked), the same order as
+ * a batch of the deletion job, which locks whole trees in one statement by id: the task is not
+ * locked by key first, so an older subtask under a newer parent cannot make the two wait for each
+ * other. Every refusal is then checked again on the task as locked (`TaskLocator.confirm`): in the
+ * trash meanwhile, moved to a list the actor does not see or may not change, archived meanwhile,
+ * `If-Match` on the locked version; a task trashed meanwhile, which the tree leaves out, answers
+ * as the unlocked read then does. An archived subtask goes with it and keeps its archive, out of
+ * the archives while in the trash; a subtask deleted before keeps its own entry, and a subtask in
+ * another list (an archived task whose parent moved away) stays. An entry holds at most 651 live
+ * tasks and the archived subtasks under them, which the product does not limit.
  *
  * The entry gets the transaction instant, the actor and the parent the root reads with, and every
  * task its entry, its next version and `updatedAt`, in one statement (`TrashWriter`); then one
@@ -121,22 +129,30 @@ export class TrashTask {
     return this.unitOfWork.run(async (store: TasksStore): Promise<TrashTaskOutput> => {
       const { organizationId } = input;
       const viewer: Viewer = await this.viewers.resolve(organizationId, input.actorUserId, true);
-      const { task, placement }: LocatedTask = await this.locator.locate(store, {
+      const request: LocateRequest = {
         organizationId,
         viewer,
         taskKey: input.taskKey,
         edit: true,
-        lock: true,
+        lock: false,
         archived: 'refuse',
         expectedVersions: input.expectedVersions,
-      });
+      };
+      const located: LocatedTask = await this.locator.locate(store, request);
       const locked: LockedTrashTrees = await this.trees.lock(
         store,
         organizationId,
-        [task.snapshot.id],
-        [task],
+        [located.task.snapshot.id],
+        [],
         Number.POSITIVE_INFINITY,
       );
+      const root: Task | undefined = locked.trees[0]?.root;
+      if (root === undefined) {
+        // In the trash or erased meanwhile: answered as a read of it now answers.
+        await this.locator.locate(store, request);
+        throw new Error(`The task ${input.taskKey} left its tree while it was locked.`);
+      }
+      const { placement }: LocatedTask = await this.locator.confirm(store, request, located, root);
       const now: Date = await store.clock.now();
       const by: TaskActor = { type: 'user', id: input.actorUserId };
       const [tree] = await this.writer.trash(store, organizationId, locked.trees, by, now);

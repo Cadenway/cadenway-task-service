@@ -188,22 +188,28 @@ relay once a run that appended events resolved.
   so its clean-up job sees it), then `pg_advisory_xact_lock` on the organization and the account,
   which serializes the requests of one requester (the count, the insert and the uniqueness see each
   other), then the clock, the attempts of the hour (at most 10 rows), and, when allowed, the pruning
-  and the new attempt, then the target under a `FOR SHARE` lock held until the commit (a space
-  through `FindAccessTarget`, which locks the space; a list through `FindAccessTarget`, which locks
-  the list and reads its space without a lock; a task through `FindTaskReference`, which locks the
-  task, then its list through `FindAccessTarget`, which locks the list), in the same statements and
-  locks for every outcome (an unknown target is read as the nil UUID), then one
-  insert, always (`INSERT ... SELECT ... WHERE $stored ON CONFLICT ... DO NOTHING`), and, for a
-  stored request, one outbox append. A deletion or a trash of the target running meanwhile either
-  commits first, and the request reads its target deleted or in the trash and stores nothing, or
-  waits for the request, whose pending row its job then drops. The lock of the list suffices for a
-  list or a task: a deletion of its space writes the list rows too (it marks them deleted), so it
-  conflicts with that lock as a deletion of the list does. Lock order: the membership, the advisory
-  lock, the attempts, the task, then the space (a space target) or the list, then the insert. It
-  cannot deadlock with a batch of a deletion job (tasks `FOR NO KEY UPDATE`, the list `FOR SHARE`,
-  then the access requests), a trash (tasks, then the list), a deletion of a list or a space (the
-  space, then its lists) or a restoration (tasks, the space, the list): the request holds one row
-  of the space or the list only, after its task, and takes the access requests last.
+  and the new attempt, then the target under a `FOR SHARE SKIP LOCKED` lock held until the commit
+  (a space through `FindAccessTarget`, which locks the space; a list through `FindAccessTarget`,
+  which locks the list and reads its space without a lock; a task through `FindTaskReference`,
+  which locks the task, then its list through `FindAccessTarget`, which locks the list; each with
+  `lock: 'share-unless-locked'`), in the same statements and locks for every outcome (an unknown
+  target is read as the nil UUID), then one insert, always (`INSERT ... SELECT ... WHERE $stored ON
+CONFLICT ... DO NOTHING`), and, for a stored request, one outbox append. No statement of the
+  request waits on a row of its target: a target row another transaction holds `FOR NO KEY UPDATE`
+  or `FOR UPDATE` at that instant (a change, a trash or a deletion under way) is skipped and reads
+  as unknown, so the request stores nothing and answers `202` at once, exactly as for a target
+  that does not exist; the time of the answer does not tell an existing private target from an
+  unknown one, even under lock contention. Accepted: a request that meets a write of its target is
+  dropped silently (it counts for the hourly limit), and the requester may ask again. A deletion or
+  a trash of the target either commits first, and the request reads its target deleted or in the
+  trash and stores nothing, or is under way during the read, and the request skips the target and
+  stores nothing, or starts after the read and waits for the request, whose pending row its job
+  then drops: no stored request outlives the clean-up of a deletion. The lock of the list suffices
+  for a list or a task: a deletion of its space writes the list rows too (it marks them deleted),
+  so it conflicts with that lock as a deletion of the list does. Lock order (the global lock order
+  of `src/modules/tasks/MODULE.md`): the membership, the advisory lock, the attempts, the task, then
+  the space (a space target) or the list, then the insert. It cannot deadlock: it never waits for a
+  row of its target, and takes the access requests last.
 - The listing runs in `runReadOnly`: the role, `ListManagedAccessTargets`, then, when the actor has
   `edit` on some list, the distinct tasks of the pending task requests of the organization (one
   statement) located with `FindTaskReferences` in chunks of 100, then the page (one statement,

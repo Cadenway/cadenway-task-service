@@ -69,24 +69,27 @@ export class CheckedLocker {
    *
    * @description
    * Reads a list and its space without lock and checks the actor on them, then locks the space
-   * `FOR SHARE` (`share`, its owner cannot change meanwhile) or leaves it unlocked (`none`), then
-   * the list `FOR NO KEY UPDATE`, and checks again when one of them changed meanwhile (the space
-   * read again when it is not locked). A list never changes space.
+   * `FOR SHARE` and the list `FOR NO KEY UPDATE`, spaces before lists, and checks again on the
+   * locked rows when one of them changed meanwhile. Under the two locks every input of the role
+   * of the actor is held: the membership by the caller, the space and its grants by the lock of
+   * the space (a change of its visibility, its owner or its grants locks it `FOR NO KEY UPDATE`
+   * and takes its next version), the list and its grants by the lock of the list (the same). So
+   * two equal versions under the locks give the role checked before them, and a revocation
+   * committed while a lock waited shows as a new version, which the check reads again. A list
+   * never changes space.
    *
    * @param {SpacesStore} store - The store of the transaction.
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} listId - The list.
-   * @param {'none' | 'share'} spaceMode - The lock of the space of the list.
    * @param {(space: Space, list: TaskList) => Promise<TRefusal | null>} refusalOf - The check of
    * the caller: the refusal of the actor on the list, or `null` to accept.
    * @returns {Promise<CheckedLock<{ readonly space: Space; readonly list: TaskList }, TRefusal>>}
-   * The space and the locked list, the refusal, or `unknown`.
+   * The locked space and list, the refusal, or `unknown`.
    */
   public async list<TRefusal>(
     store: SpacesStore,
     organizationId: string,
     listId: string,
-    spaceMode: 'none' | 'share',
     refusalOf: (space: Space, list: TaskList) => Promise<TRefusal | null>,
   ): Promise<CheckedLock<{ readonly space: Space; readonly list: TaskList }, TRefusal>> {
     const seenList: TaskList | null = await store.lists.find(organizationId, listId);
@@ -99,30 +102,22 @@ export class CheckedLocker {
     if (before !== null) {
       return { outcome: 'refused', refusal: before };
     }
-    const lockedSpace: Space | null =
-      spaceMode === 'share'
-        ? await store.spaces.lockShared(organizationId, seenSpace.snapshot.id)
-        : seenSpace;
+    const space: Space | null = await store.spaces.lockShared(
+      organizationId,
+      seenSpace.snapshot.id,
+    );
     const list: TaskList | null = await store.lists.lock(organizationId, listId);
-    if (lockedSpace === null || list === null) {
+    if (space === null || list === null) {
       return { outcome: 'unknown' };
     }
     if (
-      list.snapshot.version === seenList.snapshot.version &&
-      lockedSpace.snapshot.version === seenSpace.snapshot.version
+      list.snapshot.version !== seenList.snapshot.version ||
+      space.snapshot.version !== seenSpace.snapshot.version
     ) {
-      return { outcome: 'locked', locked: { space: lockedSpace, list } };
-    }
-    const space: Space | null =
-      spaceMode === 'share'
-        ? lockedSpace
-        : await store.spaces.find(organizationId, seenSpace.snapshot.id);
-    if (space === null) {
-      return { outcome: 'unknown' };
-    }
-    const after: TRefusal | null = await refusalOf(space, list);
-    if (after !== null) {
-      return { outcome: 'refused', refusal: after };
+      const after: TRefusal | null = await refusalOf(space, list);
+      if (after !== null) {
+        return { outcome: 'refused', refusal: after };
+      }
     }
     return { outcome: 'locked', locked: { space, list } };
   }

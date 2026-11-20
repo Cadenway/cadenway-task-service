@@ -43,8 +43,9 @@ restoration of a task restores its archived list through `RestoreArchivedList`, 
 of the restoration. The trash reads the lists through `ListTrashLists` and `FindTrashList` (the
 role as if the list and its space were not deleted, every role: the module keeps the lists on
 which its own `canWriteTasksOf` accepts it), holds a list with `HoldList`, locks a deleted list
-with `LockDeletedList` (a restoration decides under it) and several with `LockDeletedLists` (an
-erasure decides under it), brings a deleted list and
+with `LockDeletedList` (a restoration and the deletion job decide under it), locks the lists of
+trash entries, live or deleted, with `LockTrashLists` (an erasure and "Vider la corbeille" decide
+under it, the role read again there), brings a deleted list and
 space back with `RestoreDeletedList` and erases a tombstone with `PurgeDeletedList`. Spaces owns
 the archive and the deletion of a list; this module never writes a list.
 
@@ -69,13 +70,15 @@ key, and `{ organizationId, taskIds }` (100 ids at most, more is a defect that t
 trash is not found by either (`null`, left out), so the requests of its tasks are hidden at once.
 Neither checks any visibility: the caller decides what the actor may learn. Both join the transaction of the
 caller (`TasksUnitOfWork.run`, read-only or not), read one statement without the collections of
-the task, take no lock and write nothing. `FindTaskReference` also takes `lock: 'none' | 'share'`
-(`none` by default): with `share`, the caller's transaction must be able to lock, and the task of
-the key is locked `FOR SHARE` until its commit, in the same statement whatever the outcome
-(unknown, in the trash or found; a task in the trash is still `null`), so a concurrent deletion of
-the task ("Supprimer la tâche" or a deletion batch, `FOR NO KEY UPDATE`) either committed first
-and the request finds nothing, or waits for the request, whose clean-up then drops it. A
-malformed key reads nothing in either mode.
+the task, take no lock and write nothing. `FindTaskReference` also takes
+`lock: 'none' | 'share-unless-locked'` (`none` by default): with `share-unless-locked`, the
+caller's transaction must be able to lock, and the task of the key is locked
+`FOR SHARE SKIP LOCKED` until its commit, in the same statement whatever the outcome (unknown, in
+the trash or found; a task in the trash is still `null`), so a deletion of the task ("Supprimer la
+tâche" or a deletion batch, `FOR NO KEY UPDATE`) either committed first and the request finds
+nothing, or starts after and waits for the request, whose clean-up then drops it; a task a writer
+holds at that instant answers `null` at once, without waiting, so the time of the answer tells
+nothing of a task the caller may not see. A malformed key reads nothing in either mode.
 
 `TasksModule` also exports the `UnassignRemovedMember` provider
 (`{ organizationId, userId, afterTaskId }` to `{ outcome: 'none-left' }`,
@@ -620,15 +623,12 @@ changes the assignees.
   (`CYCLE id SET is_cycle USING path`), a defect that throws. A batch of the deletion job still
   stops adding roots once it holds 500 tasks or more. A batch of the purge erases whole entries of
   500 tasks or fewer while it holds fewer than 500 tasks (999 at most), and an entry larger than
-  that, when it comes first, in parts of exactly 500 tasks, the deepest first (children before
-  parents, from the stored parent links read by one recursive statement with cycle detection):
-  the entry row stays with its `task_count` lowered and is handed to the purge from the first part
-  on (as task-service for an entry due; a hand-over keeps its requester), so it no longer lists,
-  restores or erases by a person and its remaining tasks answer `404 task.not-found`; a later
-  batch goes on with it and erases it whole once 500 tasks or fewer are left. Known limit, to
-  report: "Supprimer la tâche", a deletion batch, "Supprimer définitivement" by a person and a
-  restoration still move or erase an entry in one transaction, whatever the archived subtasks it
-  holds.
+  that, when it comes first, alone and whole: an entry is always erased in one transaction, so its
+  `task.purged.v1` commit with its erasure, the root first as `asyncapi/task-service.yaml` says,
+  or not at all. Known limit, to report: "Supprimer la tâche", a deletion batch, "Supprimer
+  définitivement", a batch of the purge and a restoration move or erase an entry in one
+  transaction, whatever the archived subtasks it holds (an erasure costs what the trash of the
+  entry cost, in one transaction too).
 - A task in the trash is left out of every collection and count, the subtask reads included,
   through `liveTask` (`archived_at is null and trash_entry_id is null`) and the subtask rule
   (`sameArchiveAsParent` also leaves out the subtasks in the trash); `FindTaskReference(s)` and
@@ -666,15 +666,21 @@ changes the assignees.
   entries and the entries, and detaches (no version, no event) the tasks outside them that hung
   from one of their tasks: tasks of other entries, and archived tasks out of the trash left in
   another list when their live parent moved away (a deletion takes every subtask of its list, so
-  none is left in the list of the entry); a list no task row references any more is handed to
-  spaces, which erases a deleted one and its deleted space with its last list, decided under the
-  locks of the lists (`LockDeletedLists`, one call for the lists of the erased entries, taken
-  after the tasks are deleted, the spaces in `(created_at, id)` order, then the lists in ascending id), so the last two
-  erasures of one list serialize on it and the second erases the tombstone. "Vider la corbeille"
-  hands every entry the actor may restore to the purge job at once: they no longer list, restore
-  or erase by a person, and their tasks answer
-  `task.not-found`. The daily purge erases the entries due (`trashed_at` at or before the
-  transaction instant less 30 days) and the entries handed over.
+  none is left in the list of the entry); a deleted list no task row references any more is handed
+  to spaces, which erases it and its deleted space with its last list, decided under the locks of
+  the lists (`LockTrashLists` in `erase`, one call for the lists of the erased entries, live or
+  deleted, taken after the tasks are deleted: the spaces in `(created_at, id)` order, then the
+  lists in ascending id). So the last two erasures of one list serialize on it and the second
+  erases the tombstone, and an erasure of the last entry of a list and a deletion of that list
+  serialize on it too: the deletion committed before the lock (the erasure reads the list deleted
+  and erases its tombstone when nothing is left) or waits for the erasure (its job reads the
+  erased tasks gone); no tombstone is left without a trigger. A person's erasure reads their role
+  again under those locks and is refused (`404 trash-entry.not-found`, nothing erased) when a
+  grant was revoked or the space made private while it waited. "Vider la corbeille" hands every
+  entry the actor may restore to the purge job at once (the role read again under the locks of the
+  lists, `LockTrashLists` in `hold`, after the entries): they no longer list, restore or erase by
+  a person, and their tasks answer `task.not-found`. The daily purge erases the entries due
+  (`trashed_at` at or before the transaction instant less 30 days) and the entries handed over.
 - The page of the trash lists the entries the actor may restore still in the trash, the most
   recently deleted first (`trashed_at desc, id desc`), each with its root as it reads now, its
   stored parent, its subtasks, its list (`active`, `archived` or `deleted`) and `purgeAt`. An actor
@@ -730,7 +736,34 @@ runs in `runReadOnly` too. `FindTaskReference` and `FindTaskReferences` run in `
 or a decision, and the kit refuses a read-only join over a read-write transaction; they write
 nothing all the same.
 
-Lock order, the same for every writer:
+Global lock order: one order for every writer of the service, whatever its module (the spaces and
+access-requests modules follow it and point here), so that no two transactions wait on each other
+in a cycle:
+
+1. memberships `FOR SHARE`: the actor, then the people being assigned or given access; an access
+   request then takes its advisory lock and its attempts;
+2. trash entry rows `FOR UPDATE` (several in one statement by id, or `SKIP LOCKED` in the purge);
+3. tasks: a writer of a tree (a deletion, a restoration, an erasure, the batches of the deletion,
+   purge and clean-up jobs) locks it in one statement in ascending id; a task write of one task
+   locks it by key, then the others it involves by id (below);
+4. spaces, several in `(created_at, id)` order;
+5. lists, several in one statement in ascending id;
+6. `space_prefixes` (`AllocateTaskKeys`), then the access requests and the outbox.
+
+A row is locked in its final mode before the next level: no transaction takes a shared lock and
+strengthens it later (the one strengthening left, the `FOR NO KEY UPDATE` of a deleted space to
+the `FOR UPDATE` of its erasure, waits for no other writer). A level may be skipped, never taken
+again after a later one: an erasure finishes every write of its tasks (the detachment included)
+before it locks a list. A write that needs a role on a list checks it on rows read without a
+lock first (a target the actor may not see answers at once, whatever another transaction holds),
+then holds the space and the list and reads the role again under those locks when it erases or
+deletes (`DeleteList`, "Supprimer définitivement", "Vider la corbeille"): a revocation committed
+while it waited is seen. A read that must not wait on a row the actor may not see (an access
+request) takes `FOR SHARE SKIP LOCKED` instead. The known exceptions, answered `500` (`40P01`) by
+PostgreSQL aborting one transaction, are listed below: nested trees whose writers take a task by
+key first (an archive, a move) or lock a tree that changed in a second pass.
+
+Lock order of a task write:
 
 1. the memberships `FOR SHARE`: the actor, then the people being assigned;
 2. the tasks `FOR NO KEY UPDATE`: the task by key, then, when a patch involves several, the others
@@ -779,15 +812,19 @@ meanwhile) also reads the task again, so the role is checked on its list as it i
 root) or waits and takes the restored root with it. The same bound and single update hold for a
 restoration, whose answer reads the root again by key, with its checklist, after the write.
 
-The trash keeps the global order memberships `FOR SHARE`, trash entry rows, tasks, spaces, lists,
-`space_prefixes`:
+The trash follows the global lock order above:
 
-- A deletion locks the membership, the task by key, then its tree (`TrashTreeLocker`: the tree
-  read in one recursive statement, its tasks locked in one statement ordered by id
-  `FOR NO KEY UPDATE` without checklists, the tree read again under the locks until it holds
-  nothing unlocked, 5 passes at most), inserts the entry, writes every task in one
-  `UPDATE ... FROM unnest(...)` guarded by the versions (row count checked, a failure naming the
-  entry) and enqueues its job, with one outbox row per task.
+- A deletion locks the membership, then the task with its tree in one ordered pass
+  (`TrashTreeLocker`: the tree read in one recursive statement from the task, the task and its
+  descendants locked in one statement ordered by id `FOR NO KEY UPDATE` without checklists, the
+  tree read again under the locks until it holds nothing unlocked, 5 passes at most), the order of
+  a batch of the deletion job; it does not lock the task by key first. Its refusals are checked on
+  the task read without a lock, then again on the task as locked (`TaskLocator.confirm`). It
+  inserts the entry, writes every task in one `UPDATE ... FROM unnest(...)` guarded by the
+  versions (row count checked, a failure naming the entry) and enqueues its job, with one outbox
+  row per task. It holds no list (a task write takes none): a deletion of its list that
+  commits while it waits for the tree leaves it to trash the tree itself, by the person, and the
+  job of the deletion then finds nothing left of it (accepted: one entry, the same end state).
 - A restoration locks the membership, the entry `FOR UPDATE` (checked again: there, not handed
   over, same list), every task of the entry `FOR NO KEY UPDATE` in one statement ordered by id
   (`tasks_trash_entry_index`, no checklists), then reads the parent of the root without a lock and
@@ -805,19 +842,26 @@ The trash keeps the global order memberships `FOR SHARE`, trash entry rows, task
   never a parent in the trash; an erasure locks its entry's tasks, then (by its detachment,
   `parent_id = null where parent_id = any(...)`) the children outside it, a condition PostgreSQL
   checks again on a row it waited for, so a root restored and detached meanwhile is not touched
-  again. Neither waits for the other in a cycle.
-- An erasure of one entry by a person locks the entry `FOR UPDATE` and its tasks `FOR UPDATE`
-  ordered by id in one statement, then runs seven set-based statements whatever its size (four for
-  the collections and the activity, the detachment, the tasks, the entry), the outbox rows and,
-  once the tasks are deleted, one `LockDeletedLists` for the lists of its entries (the spaces of
-  the deleted ones `FOR NO KEY UPDATE` in `(created_at, id)` order, then those lists `FOR UPDATE` in
-  ascending list id; nothing for a live or erased list), one new read of the task rows left in the
-  lists still deleted and, for each left without a task, `PurgeDeletedList`. Two erasures of the last
-  two entries of one list serialize on its row; the second reads the first one's deletes and
-  erases the tombstone. Two deletion batches that both find the list empty may both call
-  `PurgeDeletedList`, which answers `not-found` to the second (idempotent).
-- "Vider la corbeille" updates the entry rows of the caller in one statement (O(entries they may
-  restore)) and no task, and enqueues one `task.purge-trash`.
+  again. Neither waits for the other in a cycle: the erasure holds no list while it detaches.
+- An erasure of one entry by a person reads the entry and the role of the person without a lock
+  (an entry they may not restore answers at once), then locks the entry `FOR UPDATE` and its tasks
+  `FOR UPDATE` ordered by id in one statement, then runs seven set-based statements whatever its
+  size (four for the collections and the activity, the detachment, the tasks, the entry) and the
+  outbox rows, the root first; once every task is written, one `LockTrashLists` in `erase` for the
+  lists of its entries, live or deleted (their spaces `FOR NO KEY UPDATE` in `(created_at, id)`
+  order, then the lists `FOR UPDATE` in ascending list id), under which the role of the person is
+  read again (a revocation or a space made private while the erasure waited refuses it and rolls
+  it back), then one new read of the task rows left in the lists deleted under the locks and, for
+  each left without a task, `PurgeDeletedList` (which takes no stronger list lock). Two erasures
+  of the last two entries of one list serialize on its row; the second reads the first one's
+  deletes and erases the tombstone. An erasure and a deletion of its list serialize on the list
+  too. Two deletion batches that both find the list empty serialize on it; the second reads it
+  erased (`list-gone`).
+- "Vider la corbeille" reads the lists the caller may edit without a lock, locks the entries of
+  those lists still in the trash `FOR UPDATE` in one statement by id, then their lists and spaces
+  `FOR SHARE` (`LockTrashLists` in `hold`), reads the role of the caller again under them, and
+  hands over, in one statement by entry id, the entries of the lists still editable
+  (O(entries they may restore)); no task; one `task.purge-trash` enqueued.
 - A batch of the deletion job (`TrashDeletedListTasks`) reads up to 50 candidate roots in a range
   of `tasks_list_created_index`, reads the trees of all of them in one recursive statement, takes
   the roots in their order until their trees hold 500 tasks or more, locks every task of those
@@ -826,27 +870,28 @@ The trash keeps the global order memberships `FOR SHARE`, trash entry rows, task
   again (in the list, out of the trash, read as top-level), then holds the list `FOR SHARE` (tasks,
   then lists): a list no longer deleted writes nothing (`list-live`, or `list-gone` for an erased
   one); a restoration of an entry of the list waits for the job to finish, so only a list restored
-  after its job is seen live. With no candidate left, the batch locks no task: it holds the list
-  `FOR SHARE` first and answers `list-live` or `list-gone` unless it is still deleted, `rescan`
-  when the list still holds a task out of the trash, so the checks of the tasks left and the
-  erasure of the tombstone (`PurgeDeletedList`, the list then its space `FOR UPDATE`) run under
-  that lock. A batch of the purge (`PurgeTrashBatch`) locks up to 20 entries
-  `FOR UPDATE SKIP LOCKED` (handed over first, else due, oldest first), takes whole entries of 500
-  tasks or fewer in that order while their stored `task_count` stays under 500, and locks the
-  tasks of all the entries taken in one statement
-  (`trash_entry_id = any($entries) order by id for update`); the entries it locked and did not
-  take wait for the next batch. An entry of more than 500 tasks that comes first is erased alone,
-  by parts: one recursive read of its tree, the 500 deepest tasks locked `FOR UPDATE` in one
-  statement by id, the erasure statements scoped to them, and one update of the entry row (its
-  count, its hand-over). Fewer statements per batch, one lock order inside a batch. A creation or
-  a move holds its target list after its task locks and before the key counter, so a deletion of
-  the list either committed first or waits for it and its job moves the new task too; a move to
-  another list holds the list it leaves and the target in ascending list id, and an attachment to
-  a parent in another list holds the list it leaves (`HoldList`), so a deletion of that list
-  either committed first (`task-not-found`) or waits; a
-  new subtask and an attachment lock their parent, which the job locks too.
-- Like a move, a deletion and the batches lock their trees in an order that is not global, so two
-  writers on nested trees can deadlock: PostgreSQL aborts one (`40P01`), the request answers `500`
+  after its job is seen live. With no candidate left, the batch locks no task: it locks the list
+  first in the modes of the erasure of its tombstone (`LockDeletedList`: its space
+  `FOR NO KEY UPDATE`, then the list `FOR UPDATE`, never a shared lock it would strengthen later)
+  and answers `list-live` or `list-gone` unless it is still deleted, `rescan` when the list still
+  holds a task out of the trash, so the checks of the tasks left and the erasure of the tombstone
+  (`PurgeDeletedList`) run under those locks. A batch of the purge (`PurgeTrashBatch`) locks up to
+  20 entries `FOR UPDATE SKIP LOCKED` (handed over first, else due, oldest first), takes whole
+  entries of 500 tasks or fewer in that order while their stored `task_count` stays under 500, or
+  an entry of more than 500 tasks alone when it comes first, and locks the tasks of all the entries
+  taken in one statement (`trash_entry_id = any($entries) order by id for update`); the entries it
+  locked and did not take wait for the next batch. Then it erases them as a person's erasure does,
+  without a role (`LockTrashLists` in `erase` with no viewer). A creation or a move holds its target
+  list after its task locks and before the key counter, so a deletion of the list either committed
+  first or waits for it and its job moves the new task too; a move to another list holds the list
+  it leaves and the target in ascending list id, and an attachment to a parent in another list holds
+  the list it leaves (`HoldList`), so a deletion of that list either committed first
+  (`task-not-found`) or waits; a new subtask and an attachment lock their parent, which the job
+  locks too.
+- A deletion and the batches lock each tree in one statement by id, so they do not wait on each
+  other in a cycle on their first pass; a tree that changes while it is locked takes one more
+  statement, whose order is not global, and a move holds its task by key first: two writers on
+  nested trees can then still deadlock, PostgreSQL aborts one (`40P01`), the request answers `500`
   or the batch is retried.
 
 Neither the archive nor a move is free of deadlocks: their order (the task by key, then the others
