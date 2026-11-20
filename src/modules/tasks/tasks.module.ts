@@ -20,6 +20,9 @@ import { RequiredDuplicateBodyGuard } from './presentation/http/guards/duplicate
 import { tasksUnitOfWorkProvider } from './composition/providers/adapters/task/tasks-unit-of-work.provider.js';
 import { trashSystemUnitOfWorkProvider } from './composition/providers/adapters/trash/trash-system-unit-of-work.provider.js';
 import { listListActivityProvider } from './composition/providers/use-cases/activity/list-list-activity.provider.js';
+import { taskApprovalProviders } from './composition/providers/use-cases/approval/task-approval.provider.js';
+import { ChangeTaskApproval } from './public/approval/change-task-approval.js';
+import { ReadTaskApproval } from './public/approval/read-task-approval.js';
 import { listTaskActivityProvider } from './composition/providers/use-cases/activity/list-task-activity.provider.js';
 import { archiveTaskProvider } from './composition/providers/use-cases/archive/archive-task.provider.js';
 import { listArchivedListsProvider } from './composition/providers/use-cases/archive/list-archived-lists.provider.js';
@@ -188,6 +191,7 @@ markIdempotent(BulkTaskActionsController.prototype, 'execute');
     TaskParticipantsController,
   ],
   providers: [
+    ...taskApprovalProviders,
     RequiredDuplicateBodyGuard,
     tasksUnitOfWorkProvider,
     memberDirectoryProvider,
@@ -247,6 +251,8 @@ markIdempotent(BulkTaskActionsController.prototype, 'execute');
     listUntrashedTaskIdsProvider,
   ],
   exports: [
+    ChangeTaskApproval,
+    ReadTaskApproval,
     ReadTaskTemplateSource,
     UnassignRemovedMember,
     RemoveMemberWatcherOverrides,

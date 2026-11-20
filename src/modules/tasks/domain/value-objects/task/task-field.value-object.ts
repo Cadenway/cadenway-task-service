@@ -24,6 +24,7 @@ export type TaskField =
   | 'checklist'
   | 'watchers'
   | 'dependencies'
+  | 'approvals'
   | 'milestone'
   | 'recurrence'
   | 'nextOccurrenceKey';

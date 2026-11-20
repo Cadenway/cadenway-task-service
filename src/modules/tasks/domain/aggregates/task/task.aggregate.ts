@@ -1179,6 +1179,14 @@ export class Task {
     return this.withCollaborationChange(at);
   }
 
+  /** Includes an effective approval change in one task update and advances its version once. */
+  public markApprovalChanged(update: TaskUpdate, at: Date): TaskUpdate {
+    if (update.changed.length === 0) {
+      return { ...update, task: this.withCollaborationChange(at), changed: ['approvals'] };
+    }
+    return { ...update, changed: [...update.changed, 'approvals'] };
+  }
+
   /** Advances the task version for a write to a separately stored collaboration resource. */
   private withCollaborationChange(at: Date): Task {
     this.requireChangeable();

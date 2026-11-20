@@ -2,6 +2,8 @@ import { OutboxRelay, OutboxWriter } from '@cadenway/nest-messaging/outbox';
 import { BeginComment } from '../tasks/public/task/begin-comment.js';
 import { RecordCommentActivity } from '../tasks/public/task/record-comment-activity.js';
 import { ChangeComment } from './application/use-cases/commands/comment/change-comment/change-comment.use-case.js';
+import { AllocateApprovalCommentId } from './public/comment/allocate-approval-comment-id.js';
+import { CreateApprovalComment } from './public/comment/create-approval-comment.js';
 import { CreateComment } from './application/use-cases/commands/comment/create-comment/create-comment.use-case.js';
 import { TasksCommentWriter } from './infrastructure/adapters/tasks/tasks-comment-writer.adapter.js';
 import { Idempotent, TenantTransactionRunner } from '@cadenway/nest-common/database';
@@ -26,7 +28,37 @@ markCreateIdempotent();
 @Module({
   imports: [TasksModule],
   controllers: [CommentsController],
+  exports: [AllocateApprovalCommentId, CreateApprovalComment],
   providers: [
+    {
+      provide: AllocateApprovalCommentId,
+      inject: [TenantTransactionRunner],
+      useFactory: (runner: TenantTransactionRunner): AllocateApprovalCommentId =>
+        new AllocateApprovalCommentId({
+          allocate: () =>
+            runner.run(async (tx) => {
+              const result = await tx.client.query('select uuidv7()::text as id');
+              const row = result.rows[0];
+              if (
+                typeof row !== 'object' ||
+                row === null ||
+                !('id' in row) ||
+                typeof row.id !== 'string'
+              ) {
+                throw new Error('Could not allocate an approval comment ID.');
+              }
+              return row.id;
+            }),
+        }),
+    },
+    {
+      provide: CreateApprovalComment,
+      inject: [TenantCommentUnitOfWork, TasksCommentWriter],
+      useFactory: (
+        unit: TenantCommentUnitOfWork,
+        tasks: TasksCommentWriter,
+      ): CreateApprovalComment => new CreateApprovalComment(unit, tasks),
+    },
     {
       provide: ChangeComment,
       inject: [TenantCommentUnitOfWork, TasksCommentWriter],
