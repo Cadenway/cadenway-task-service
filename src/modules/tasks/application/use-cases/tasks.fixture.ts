@@ -2574,18 +2574,13 @@ export class InMemoryTasks implements TasksUnitOfWork {
     // An entry with its root as the statements join it; an entry whose root is gone is not read.
     const recordOf = (entry: StoredTrashEntry): TrashEntryRecord[] => {
       const root: TaskState | undefined = tasks.get(entry.rootTaskId);
-      return root?.organizationId !== entry.organizationId && entry.rootSnapshot === null
-        ? []
-        : [
-            {
-              ...entry,
-              root:
-                root === undefined
-                  ? (entry.rootSnapshot as TrashEntryRecord['root'])
-                  : { key: root.key.format(), name: root.name, status: root.status },
-              rootErased: root === undefined,
-            },
-          ];
+      const liveRoot: TaskState | undefined =
+        root?.organizationId === entry.organizationId ? root : undefined;
+      const shown: TrashEntryRecord['root'] | null =
+        liveRoot === undefined
+          ? entry.rootSnapshot
+          : { key: liveRoot.key.format(), name: liveRoot.name, status: liveRoot.status };
+      return shown === null ? [] : [{ ...entry, root: shown, rootErased: root === undefined }];
     };
     const entriesOf = (organizationId: string): StoredTrashEntry[] =>
       [...entries.values()].filter(
