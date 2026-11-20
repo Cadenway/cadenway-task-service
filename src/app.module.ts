@@ -22,6 +22,7 @@ import { jobQueues } from './config/job-queues.js';
 import { AccessRequestsModule } from './modules/access-requests/access-requests.module.js';
 import { DeletionLifecycleModule } from './modules/deletion-lifecycle/deletion-lifecycle.module.js';
 import { FavoritesModule, FavoritesStorageModule } from './modules/favorites/favorites.module.js';
+import { GoalsModule } from './modules/goals/goals.module.js';
 import { MemberLifecycleModule } from './modules/member-lifecycle/member-lifecycle.module.js';
 import { OrganizationMembersModule } from './modules/organization-members/organization-members.module.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
@@ -36,6 +37,8 @@ import {
 } from './modules/task-templates/task-templates.module.js';
 import { TasksModule } from './modules/tasks/tasks.module.js';
 import { TaskCommentsModule } from './modules/task-comments/task-comments.module.js';
+import { OnboardingModule, OnboardingStateModule } from './modules/onboarding/onboarding.module.js';
+import { TaskApprovalsModule } from './modules/task-approvals/task-approvals.module.js';
 
 /**
  * Function runJobInOrganization
@@ -211,12 +214,16 @@ function runJobInOrganization(
     SpacesModule,
     TasksModule,
     TaskCommentsModule,
+    OnboardingModule,
+    OnboardingStateModule,
+    TaskApprovalsModule,
     AccessRequestsModule,
     MemberLifecycleModule,
     DeletionLifecycleModule,
     TaskTemplatesModule,
     SavedViewsModule,
     FavoritesModule,
+    GoalsModule,
   ],
 })
 export class AppModule {}

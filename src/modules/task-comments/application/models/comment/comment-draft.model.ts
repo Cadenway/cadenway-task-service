@@ -4,4 +4,4 @@ import type { CommentState } from '../../../domain/value-objects/comment/comment
 export type CommentDraft = Pick<
   CommentState,
   'organizationId' | 'taskId' | 'actorType' | 'actorId' | 'replyToCommentId' | 'mentions'
-> & { readonly body: string };
+> & { readonly body: string; readonly id?: string };

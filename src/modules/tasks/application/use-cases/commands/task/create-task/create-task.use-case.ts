@@ -27,6 +27,7 @@ import { TaskRuleGuard } from '../../../../services/task/task-rule-guard.service
 import { TaskViewBuilder } from '../../../../services/task/task-view-builder.service.js';
 import type { CreateTaskInput } from './create-task.input.js';
 import type { CreateTaskOutput } from './create-task.output.js';
+import type { FirstOnboardingTask } from '../../../../ports/outbound/onboarding/checklist/first-onboarding-task.port.js';
 
 /**
  * Class CreateTask
@@ -82,6 +83,9 @@ export class CreateTask {
 
   /** Builds the view of the task. */
   private readonly views: TaskViewBuilder;
+
+  /** The personal checklist update, joined to the task transaction. */
+  private readonly onboarding: FirstOnboardingTask | undefined;
   // #endregion
 
   // #region Constructor
@@ -100,9 +104,11 @@ export class CreateTask {
     unitOfWork: TasksUnitOfWork,
     members: MemberDirectory,
     spaces: SpaceDirectory,
+    onboarding?: FirstOnboardingTask,
   ) {
     this.unitOfWork = unitOfWork;
     this.spaces = spaces;
+    this.onboarding = onboarding;
     this.viewers = new ViewerResolver(members);
     this.assignees = new AssigneeChecker(members);
     this.rules = new TaskRuleGuard();
@@ -129,6 +135,18 @@ export class CreateTask {
    * `assignee-invalid`.
    */
   public async execute(input: CreateTaskInput): Promise<CreateTaskOutput> {
+    return this.create(input, true);
+  }
+
+  /** Creates a preset example through the same task rules without advancing the checklist. */
+  public async executeExample(input: CreateTaskInput): Promise<CreateTaskOutput> {
+    return this.create(input, false);
+  }
+
+  private async create(
+    input: CreateTaskInput,
+    recordFirstTask: boolean,
+  ): Promise<CreateTaskOutput> {
     return this.unitOfWork.run(async (store: TasksStore): Promise<CreateTaskOutput> => {
       const viewer: Viewer = await this.viewers.resolve(
         input.organizationId,
@@ -265,6 +283,9 @@ export class CreateTask {
         await this.announcer.created(store.events, made, actor);
       }
       await appendDescriptionMentionChange(store.events, [], task, actor);
+      if (recordFirstTask && this.onboarding !== undefined) {
+        await this.onboarding.record(input.organizationId, input.actorUserId, placement.space.id);
+      }
       return this.views.build(store.reader, task);
     });
   }

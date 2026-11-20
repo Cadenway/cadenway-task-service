@@ -99,6 +99,27 @@
       "when": 1795174564485,
       "tag": "0013_task_custom_fields",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1795176586098,
+      "tag": "0014_task_approval_rounds",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1795177731051,
+      "tag": "0015_onboarding_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1795179758446,
+      "tag": "0016_goals",
+      "breakpoints": true
     }
   ]
 }
