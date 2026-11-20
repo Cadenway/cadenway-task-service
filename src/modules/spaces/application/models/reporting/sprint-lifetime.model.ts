@@ -9,6 +9,7 @@ export interface SprintLifetime {
   readonly name: string;
   readonly startDate: string;
   readonly endDate: string;
+
   /** Active intervals and intervals with unavailable history. */
   readonly intervals: readonly SprintLifetimeInterval[];
   readonly unknown: readonly SprintLifetimeInterval[];
