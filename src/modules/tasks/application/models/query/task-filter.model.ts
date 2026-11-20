@@ -39,6 +39,9 @@ export interface TaskFilter {
   /** Keep the tasks due on or before this date; a task without a due date is left out. */
   readonly dueTo: string | null;
 
+  /** Keep only milestones or ordinary tasks when supplied. */
+  readonly milestone?: boolean | null;
+
   /** `true` for the top-level tasks only (`level=roots`), `false` for the subtasks too. */
   readonly rootsOnly: boolean;
   // #endregion

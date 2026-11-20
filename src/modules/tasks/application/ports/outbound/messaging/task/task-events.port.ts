@@ -2,6 +2,7 @@ import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.
 import type { StatusKey } from '../../../../../domain/value-objects/task/status-key.value-object.js';
 import type { TaskField } from '../../../../../domain/value-objects/task/task-field.value-object.js';
 import type { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
+import type { Recurrence } from '../../../../../domain/value-objects/task/recurrence.value-object.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
 
 /**
@@ -39,6 +40,24 @@ export interface TaskEvents {
    * @returns {Promise<void>} Resolves once appended.
    */
   taskUpdated(task: Task, changed: readonly TaskField[], actor: EventActor): Promise<void>;
+
+  /**
+   * Appends the fact of adding or removing a directed dependency at both committed versions.
+   *
+   * @param action - Whether the stored edge was added or removed.
+   * @param dependencyId - Id of the affected edge.
+   * @param blocker - The origin task at its resulting version.
+   * @param blocked - The destination task at its resulting version.
+   * @param actor - The verified editor who changed the graph.
+   * @returns Resolves after the outbox insertion.
+   */
+  dependencyChanged(
+    action: 'added' | 'removed',
+    dependencyId: string,
+    blocker: Task,
+    blocked: Task,
+    actor: EventActor,
+  ): Promise<void>;
 
   /**
    * Method taskStatusChanged
@@ -145,5 +164,31 @@ export interface TaskEvents {
    * @returns {Promise<void>} Resolves once appended.
    */
   taskPurged(task: Task, entryId: string, rootKey: TaskKey, actor: EventActor): Promise<void>;
+
+  /**
+   * Appends `milestone.reached.v1` for a genuine transition into done.
+   *
+   * @param task - The committed milestone state.
+   * @param watcherIds - Effective eligible watchers under the task and membership locks.
+   * @param actor - The actor who completed the task.
+   * @returns Resolves after the event enters the transaction's outbox.
+   */
+  milestoneReached(task: Task, watcherIds: readonly string[], actor: EventActor): Promise<void>;
+
+  /**
+   * Appends `task.occurrence-created.v1` for a successor created in this transaction.
+   *
+   * @param predecessor - The completed source, at its resulting version.
+   * @param successor - The newly stored task at version one.
+   * @param cadence - The cadence transferred from the source.
+   * @param actor - The actor who completed the source.
+   * @returns Resolves after the event enters the transaction's outbox.
+   */
+  taskOccurrenceCreated(
+    predecessor: Task,
+    successor: Task,
+    cadence: Exclude<Recurrence, 'none'>,
+    actor: EventActor,
+  ): Promise<void>;
   // #endregion
 }

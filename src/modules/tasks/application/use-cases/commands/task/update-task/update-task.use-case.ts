@@ -1,19 +1,24 @@
 import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
+import type { AssigneeCandidate } from '../../../../../domain/value-objects/member/assignee-candidate.value-object.js';
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
 import type { TaskState } from '../../../../../domain/value-objects/task/task-state.value-object.js';
 import type { TaskUpdate } from '../../../../../domain/value-objects/task/task-update.value-object.js';
 import type { PlannedChange } from '../../../../models/placement/planned-change.model.js';
 import type { LocatedTask } from '../../../../models/task/located-task.model.js';
+import type { ScheduledTaskUpdate } from '../../../../models/task/scheduled-task-update.model.js';
 import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
 import { ViewerResolver } from '../../../../services/member/viewer-resolver.service.js';
+import { AssigneeChecker } from '../../../../services/member/assignee-checker.service.js';
 import { TaskChangeWriter } from '../../../../services/task/task-change-writer.service.js';
 import { TaskLocator } from '../../../../services/task/task-locator.service.js';
 import { TaskMovePlanner } from '../../../../services/task/task-move-planner.service.js';
+import { TaskOccurrenceScheduler } from '../../../../services/task/task-occurrence-scheduler.service.js';
 import { TaskRuleGuard } from '../../../../services/task/task-rule-guard.service.js';
 import { TaskViewBuilder } from '../../../../services/task/task-view-builder.service.js';
+import { VisibleNextOccurrence } from '../../../../services/task/visible-next-occurrence.service.js';
 import type { UpdateTaskInput } from './update-task.input.js';
 import type { UpdateTaskOutput } from './update-task.output.js';
 
@@ -42,6 +47,9 @@ export class UpdateTask {
   /** Resolves the acting member. */
   private readonly viewers: ViewerResolver;
 
+  /** Holds the memberships of the assignees copied to a successor. */
+  private readonly assignees: AssigneeChecker;
+
   /** Finds the task. */
   private readonly locator: TaskLocator;
 
@@ -54,8 +62,14 @@ export class UpdateTask {
   /** Writes the changes. */
   private readonly writer: TaskChangeWriter;
 
+  /** Validates and creates an occurrence within this unit of work. */
+  private readonly recurrence: TaskOccurrenceScheduler;
+
   /** Builds the view of the task. */
   private readonly views: TaskViewBuilder;
+
+  /** Filters successor keys against the requester's current access. */
+  private readonly successor: VisibleNextOccurrence;
   // #endregion
 
   // #region Constructor
@@ -77,11 +91,14 @@ export class UpdateTask {
   ) {
     this.unitOfWork = unitOfWork;
     this.viewers = new ViewerResolver(members);
+    this.assignees = new AssigneeChecker(members);
     this.locator = new TaskLocator(spaces);
     this.planner = new TaskMovePlanner(spaces);
     this.rules = new TaskRuleGuard();
     this.writer = new TaskChangeWriter();
+    this.recurrence = new TaskOccurrenceScheduler(spaces);
     this.views = new TaskViewBuilder();
+    this.successor = new VisibleNextOccurrence(spaces);
   }
   // #endregion
 
@@ -109,6 +126,23 @@ export class UpdateTask {
         input.actorUserId,
         true,
       );
+      let candidates: readonly AssigneeCandidate[] = [];
+      if (input.patch.status === 'done') {
+        const preview: LocatedTask = await this.locator.locate(store, {
+          organizationId: input.organizationId,
+          viewer,
+          taskKey: input.taskKey,
+          edit: true,
+          lock: false,
+          archived: 'refuse',
+          expectedVersions: null,
+        });
+        candidates = await this.assignees.candidates(
+          input.organizationId,
+          preview.task.snapshot.assigneeIds,
+          true,
+        );
+      }
       const located: LocatedTask = await this.locator.locate(store, {
         organizationId: input.organizationId,
         viewer,
@@ -121,16 +155,42 @@ export class UpdateTask {
       const { task } = located;
       const plan: PlannedChange = await this.planner.plan(store, viewer, located, input.patch);
       const now: Date = await store.clock.now();
-      const update: TaskUpdate = this.rules.apply((): TaskUpdate =>
-        task.update(plan.patch, plan.statuses, now),
+      const preview = this.rules.apply(() => task.update(plan.patch, plan.statuses, now));
+      if (
+        preview.nextOccurrence !== undefined &&
+        task.snapshot.assigneeIds.some(
+          (id: string): boolean => !candidates.some((candidate) => candidate.userId === id),
+        )
+      ) {
+        throw new Error('The assignees changed while their memberships were being held.');
+      }
+      const scheduled: ScheduledTaskUpdate = await this.recurrence.prepare(
+        task,
+        plan.patch,
+        plan.statuses,
+        now,
       );
+      const update: TaskUpdate = scheduled.update;
+      if (update.milestoneReached === true) {
+        throw new Error('Milestone completion requires the P3b-2 watcher audience preflight.');
+      }
       if (update.changed.length > 0) {
         await this.writer.commit(store, task, update, input.actorUserId, now);
         if (update.changed.includes('listId') || update.changed.includes('spaceId')) {
           await this.moveDescendants(store, plan.descendants, update.task, input, now);
         }
+        await this.recurrence.createSuccessor(
+          store,
+          scheduled,
+          plan.statuses,
+          candidates,
+          { type: 'user', id: input.actorUserId },
+          now,
+        );
       }
-      return this.views.build(store.reader, update.task);
+      const view = await this.views.build(store.reader, update.task);
+      const nextOccurrenceKey = await this.successor.keyOf(store, update.task, viewer);
+      return nextOccurrenceKey === undefined ? view : { ...view, nextOccurrenceKey };
     });
   }
 

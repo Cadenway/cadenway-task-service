@@ -79,4 +79,18 @@ describe('CalendarDate arithmetic: whole days, no time zone', () => {
   it('refuses a number of days that is not an integer', () => {
     expect(() => CalendarDate.parse('2026-11-12').plusDays(1.5)).toThrow(InvalidTaskError);
   });
+
+  it('identifies weekends before and after the epoch', () => {
+    expect(CalendarDate.parse('1969-12-27').isWeekend()).toBe(true);
+    expect(CalendarDate.parse('1969-12-29').isWeekend()).toBe(false);
+    expect(CalendarDate.parse('2026-11-22').isWeekend()).toBe(true);
+    expect(CalendarDate.parse('2026-11-23').isWeekend()).toBe(false);
+  });
+
+  it('moves the month across a year boundary without changing the anchor', () => {
+    expect(CalendarDate.parse('2026-12-31').nextMonthOnDay(31)?.format()).toBe('2027-01-31');
+    expect(CalendarDate.parse('0001-01-31').nextMonthOnDay(31)?.format()).toBe('0001-02-28');
+    expect(CalendarDate.parse('9999-12-01').nextMonthOnDay(31)).toBeNull();
+    expect(() => CalendarDate.parse('2026-11-12').nextMonthOnDay(0)).toThrow(InvalidTaskError);
+  });
 });

@@ -17,6 +17,7 @@ import {
 
 import { CANCEL_REASONS } from '../../../../../domain/value-objects/task/cancel-reason.value-object.js';
 import { PRIORITY_KEYS } from '../../../../../domain/value-objects/task/priority-key.value-object.js';
+import { RECURRENCES } from '../../../../../domain/value-objects/task/recurrence.value-object.js';
 import { STATUS_KEYS } from '../../../../../domain/value-objects/task/status-key.value-object.js';
 import { ACTOR_TYPES } from '../../../../../domain/value-objects/task/task-actor.value-object.js';
 import {
@@ -103,6 +104,10 @@ export const tasks = pgTable(
     dueDate: date('due_date', { mode: 'string' }),
     startDate: date('start_date', { mode: 'string' }),
     estimateMinutes: integer('estimate_minutes'),
+    milestone: boolean('milestone').notNull().default(false),
+    recurrence: text('recurrence').notNull().default('none'),
+    monthlyAnchorDay: integer('monthly_anchor_day'),
+    nextOccurrenceKey: text('next_occurrence_key'),
     completedAt: timestamp('completed_at', { withTimezone: true, precision: 3 }),
     createdAt: timestamp('created_at', { withTimezone: true, precision: 3 }).notNull().defaultNow(),
     createdByType: text('created_by_type').notNull(),
@@ -149,6 +154,18 @@ export const tasks = pgTable(
     ),
     check('tasks_status_check', sql`${table.status} in (${sql.raw(toSqlList(STATUS_KEYS))})`),
     check('tasks_priority_check', sql`${table.priority} in (${sql.raw(toSqlList(PRIORITY_KEYS))})`),
+    check(
+      'tasks_recurrence_check',
+      sql`${table.recurrence} in (${sql.raw(toSqlList(RECURRENCES))})`,
+    ),
+    check(
+      'tasks_monthly_anchor_day_check',
+      sql`${table.monthlyAnchorDay} is null or ${table.monthlyAnchorDay} between 1 and 31`,
+    ),
+    check(
+      'tasks_next_occurrence_key_check',
+      sql`${table.nextOccurrenceKey} is null or ${table.nextOccurrenceKey} ~ '^[A-Z]{2,5}-[1-9][0-9]{0,8}$'`,
+    ),
     check(
       'tasks_cancel_reason_check',
       sql`${table.cancelReason} is null or ${table.cancelReason} in (${sql.raw(toSqlList(CANCEL_REASONS))})`,

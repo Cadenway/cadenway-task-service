@@ -119,6 +119,8 @@ export class TaskViewBuilder {
       dueDate: state.dueDate,
       startDate: state.startDate,
       estimateMinutes: state.estimateMinutes,
+      ...(state.milestone === undefined ? {} : { milestone: state.milestone }),
+      ...(state.recurrence === undefined ? {} : { recurrence: state.recurrence }),
       labels: state.labels,
       parentKey,
       listId: state.listId,

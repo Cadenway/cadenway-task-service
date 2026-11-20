@@ -1,5 +1,6 @@
 import type { TransactionDatabase } from '@cadenway/nest-common/database';
 import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 
 import type { MembershipRepository } from '../../../../../application/ports/outbound/persistence/membership/membership-repository.port.js';
 import type { Membership } from '../../../../../domain/aggregates/membership/membership.aggregate.js';
@@ -18,6 +19,12 @@ import { organizationMembers } from '../../schemas/membership/organization-membe
  * @type {number}
  */
 const activeMembershipsCap: number = 10;
+
+/** The distinct assignees of the largest copied task forest. */
+const batchUsersCap: number = 10_000;
+
+/** Alias for the bounded memberships of an account. */
+const activeCandidates = alias(organizationMembers, 'active_membership_candidate');
 
 /**
  * Class DrizzleMembershipRepository
@@ -158,6 +165,54 @@ export class DrizzleMembershipRepository implements MembershipRepository {
       )
       .orderBy(desc(organizationMembers.createdAt), desc(organizationMembers.id))
       .limit(activeMembershipsCap);
+    const rows: OrganizationMemberRow[] = lock ? await query.for('share') : await query;
+    return rows.map(toMembership);
+  }
+
+  /**
+   * Reads the active memberships of a bounded set of accounts in stable account order.
+   * The same latest-ten cap applies to every account as in `listActiveByUser`; the use case
+   * then applies the same least-privileged membership policy to each returned group.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {readonly string[]} userIds - Accounts whose current memberships are requested.
+   * @param {boolean} lock - Hold the selected memberships `FOR SHARE` through commit.
+   * @returns {Promise<Membership[]>} Active memberships, sorted by user and then newest first.
+   * @throws {Error} When the number of distinct accounts exceeds the maximum copy size.
+   */
+  public async listActiveByUsers(
+    organizationId: string,
+    userIds: readonly string[],
+    lock: boolean,
+  ): Promise<Membership[]> {
+    const users = [...new Set(userIds)].sort();
+    if (users.length === 0) return [];
+    if (users.length > batchUsersCap) {
+      throw new Error(`A membership batch accepts at most ${String(batchUsersCap)} accounts.`);
+    }
+    const query = this.db
+      .select()
+      .from(organizationMembers)
+      .where(
+        and(
+          eq(organizationMembers.organizationId, organizationId),
+          sql`${organizationMembers.userId} = any(${sql.param(users)}::uuid[])`,
+          isNull(organizationMembers.removedAt),
+          sql`${organizationMembers.id} in (
+            select ${activeCandidates.id} from ${organizationMembers} as "active_membership_candidate"
+            where ${activeCandidates.organizationId} = ${organizationMembers.organizationId}
+              and ${activeCandidates.userId} = ${organizationMembers.userId}
+              and ${activeCandidates.removedAt} is null
+            order by ${activeCandidates.createdAt} desc, ${activeCandidates.id} desc
+            limit ${activeMembershipsCap}
+          )`,
+        ),
+      )
+      .orderBy(
+        asc(organizationMembers.userId),
+        desc(organizationMembers.createdAt),
+        desc(organizationMembers.id),
+      );
     const rows: OrganizationMemberRow[] = lock ? await query.for('share') : await query;
     return rows.map(toMembership);
   }

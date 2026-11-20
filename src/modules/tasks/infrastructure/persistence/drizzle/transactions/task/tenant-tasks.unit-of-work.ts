@@ -19,8 +19,10 @@ import { DrizzleTaskCounter } from '../../repositories/count/drizzle-task-counte
 import { DrizzleLabelReader } from '../../repositories/label/drizzle-label-reader.repository.js';
 import { DrizzleTaskQueryReader } from '../../repositories/query/drizzle-task-query-reader.repository.js';
 import { DrizzleTaskReader } from '../../repositories/task/drizzle-task-reader.repository.js';
+import { DrizzleTaskCopiesRepository } from '../../repositories/task/drizzle-task-copies.repository.js';
 import { DrizzleTaskRepository } from '../../repositories/task/drizzle-task.repository.js';
 import { DrizzleTrashEntryRepository } from '../../repositories/trash/drizzle-trash-entry.repository.js';
+import { DrizzleTaskDependencyRepository } from '../../repositories/dependency/drizzle-task-dependency.repository.js';
 
 /**
  * Class TenantTasksUnitOfWork
@@ -174,6 +176,7 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
       (transaction: TransactionScope): Promise<TResult> =>
         work({
           tasks: new DrizzleTaskRepository(transaction.db),
+          copies: new DrizzleTaskCopiesRepository(transaction.db),
           reader: new DrizzleTaskReader(transaction.db),
           activity: new DrizzleActivityRepository(transaction.db),
           queries: new DrizzleTaskQueryReader(transaction.db),
@@ -182,6 +185,7 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
           labels: new DrizzleLabelReader(transaction.db),
           archives: new DrizzleArchiveReader(transaction.db),
           trash: new DrizzleTrashEntryRepository(transaction.db),
+          dependencies: new DrizzleTaskDependencyRepository(transaction.db),
           jobs: new JobsTrashJobs(transaction, this.jobs),
 
           events: new OutboxTaskEvents(transaction, this.outbox, (): void => {

@@ -21,6 +21,15 @@ const LABELS: string =
   'select 1 from "task_labels" where "task_labels"."organization_id" = "tasks"."organization_id" and "task_labels"."task_id" = "tasks"."id"';
 
 describe('taskFilterCondition: the where of the tasks of one list', () => {
+  it('filters both milestone values while leaving an absent filter unset', () => {
+    for (const milestone of [true, false]) {
+      const rendered = renderSql(taskFilterCondition('org', 'list', { ...NONE, milestone }));
+      expect(rendered.sql).toContain('"tasks"."milestone" = $3');
+      expect(rendered.params).toEqual(['org', 'list', milestone]);
+    }
+    expect(renderSql(taskFilterCondition('org', 'list', NONE)).sql).not.toContain('"milestone"');
+  });
+
   it('names the organization and the list when no filter is set', () => {
     expect(renderSql(taskFilterCondition('org', 'list', NONE))).toEqual({
       sql: '("tasks"."organization_id" = $1 and "tasks"."list_id" = $2 and ("tasks"."archived_at" is null and "tasks"."trash_entry_id" is null))',

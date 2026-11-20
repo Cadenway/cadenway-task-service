@@ -16,6 +16,29 @@ const CALLER: Caller = {
 };
 
 describe('toCreateTaskInput', () => {
+  it('keeps an omitted milestone start date distinct from an explicit null', () => {
+    const fields = {
+      name: 'Dated milestone',
+      milestone: true,
+      dueDate: '2026-11-20',
+      recurrence: 'monthly',
+    };
+    const implicit = toCreateTaskInput(CALLER, LIST, CreateTaskBody.schema.parse(fields));
+    const explicit = toCreateTaskInput(
+      CALLER,
+      LIST,
+      CreateTaskBody.schema.parse({ ...fields, startDate: null }),
+    );
+
+    expect(implicit).toMatchObject({
+      milestone: true,
+      recurrence: 'monthly',
+      dueDate: '2026-11-20',
+    });
+    expect(implicit).not.toHaveProperty('startDate');
+    expect(explicit.startDate).toBeNull();
+  });
+
   it('applies the defaults of the contract and gives the members left out as null', () => {
     const body = CreateTaskBody.schema.parse({ name: 'Ajouter la connexion par lien magique' });
 

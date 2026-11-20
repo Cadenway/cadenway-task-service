@@ -6,7 +6,13 @@ import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value
 import type { TaskState } from '../../../../../domain/value-objects/task/task-state.value-object.js';
 import type { TaskTrash } from '../../../../../domain/value-objects/task/task-trash.value-object.js';
 import type { tasks } from '../../schemas/task/task.schema.js';
-import { toActorType, toCancelReason, toPriorityKey, toStatusKey } from './task-values.mapper.js';
+import {
+  toActorType,
+  toCancelReason,
+  toPriorityKey,
+  toRecurrence,
+  toStatusKey,
+} from './task-values.mapper.js';
 
 /**
  * Type TaskRow
@@ -114,6 +120,10 @@ export function toTask(
     dueDate: row.dueDate,
     startDate: row.startDate,
     estimateMinutes: row.estimateMinutes,
+    milestone: row.milestone,
+    recurrence: toRecurrence(row.recurrence, subject),
+    monthlyAnchorDay: row.monthlyAnchorDay,
+    nextOccurrenceKey: row.nextOccurrenceKey === null ? null : TaskKey.parse(row.nextOccurrenceKey),
     completedAt: row.completedAt,
     createdBy: { type: toActorType(row.createdByType, subject), id: row.createdById },
     checklist,
@@ -154,6 +164,9 @@ export function toTaskInsert(draft: TaskDraft, key: TaskKey): typeof tasks.$infe
     dueDate: draft.dueDate,
     startDate: draft.startDate,
     estimateMinutes: draft.estimateMinutes,
+    milestone: draft.milestone ?? false,
+    recurrence: draft.recurrence ?? 'none',
+    monthlyAnchorDay: draft.monthlyAnchorDay ?? null,
     completedAt: draft.completedAt,
     createdByType: draft.createdBy.type,
     createdById: draft.createdBy.id,
@@ -189,6 +202,10 @@ export function toTaskUpdate(task: Task): Partial<typeof tasks.$inferInsert> {
     dueDate: state.dueDate,
     startDate: state.startDate,
     estimateMinutes: state.estimateMinutes,
+    milestone: state.milestone ?? false,
+    recurrence: state.recurrence ?? 'none',
+    monthlyAnchorDay: state.monthlyAnchorDay ?? null,
+    nextOccurrenceKey: state.nextOccurrenceKey?.format() ?? null,
     completedAt: state.completedAt,
     updatedAt: state.updatedAt,
     version: state.version,

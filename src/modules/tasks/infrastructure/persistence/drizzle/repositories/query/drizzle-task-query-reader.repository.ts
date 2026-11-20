@@ -1,6 +1,7 @@
 import type { TransactionDatabase } from '@cadenway/nest-common/database';
 
 import type { ListedTask } from '../../../../../application/models/query/listed-task.model.js';
+import type { MilestonePosition } from '../../../../../application/models/query/milestone-position.model.js';
 import type { TaskFilter } from '../../../../../application/models/query/task-filter.model.js';
 import type { TaskGrouping } from '../../../../../application/models/query/task-grouping.model.js';
 import type { TaskOrder } from '../../../../../application/models/query/task-order.model.js';
@@ -8,6 +9,11 @@ import type { TaskPosition } from '../../../../../application/models/query/task-
 import type { TaskQueryReader } from '../../../../../application/ports/outbound/persistence/query/task-query-reader.port.js';
 import type { TaskGroupCountsView } from '../../../../../application/projections/query/task-group-counts.projection.js';
 import type { TaskGroupView } from '../../../../../application/projections/query/task-group.projection.js';
+import type { TaskSummaryView } from '../../../../../application/projections/task/task-summary.projection.js';
+import {
+  milestoneTotalStatement,
+  milestonesStatement,
+} from '../../mappers/query/milestone-statements.mapper.js';
 import {
   countStatement,
   groupStatement,
@@ -66,6 +72,44 @@ export class DrizzleTaskQueryReader implements TaskQueryReader {
   // #endregion
 
   // #region Methods
+  /**
+   * Reads a page of visible milestones from active lists in due-date order.
+   *
+   * @param {string} organizationId - The organization of the request.
+   * @param {readonly string[]} listIds - Visible, active lists.
+   * @param {MilestonePosition | null} after - The preceding task.
+   * @param {number} limit - Maximum page size.
+   * @returns {Promise<readonly TaskSummaryView[]>} The milestones.
+   */
+  public async milestones(
+    organizationId: string,
+    listIds: readonly string[],
+    after: MilestonePosition | null,
+    limit: number,
+  ): Promise<readonly TaskSummaryView[]> {
+    if (listIds.length === 0) return [];
+    const page = await this.pages.load(
+      organizationId,
+      milestonesStatement(organizationId, listIds, after, limit),
+    );
+    return page.map((entry: ListedTask): TaskSummaryView => entry.task);
+  }
+
+  /**
+   * Counts visible milestones in active lists.
+   *
+   * @param {string} organizationId - The organization of the request.
+   * @param {readonly string[]} listIds - Visible, active lists.
+   * @returns {Promise<number>} The count.
+   */
+  public async milestoneTotal(organizationId: string, listIds: readonly string[]): Promise<number> {
+    if (listIds.length === 0) return 0;
+    const result = await this.db.execute<{ total: number }>(
+      milestoneTotalStatement(organizationId, listIds),
+    );
+    return result.rows[0]?.total ?? 0;
+  }
+
   /**
    * Method pageOfList
    *

@@ -34,6 +34,7 @@ access-requests module.
 | `public/space/hand-over-awaiting-spaces`    | member-lifecycle                                             |
 | `public/space/allocate-task-keys`           | tasks                                                        |
 | `public/list/find-visible-list`             | tasks                                                        |
+| `public/list/create-list-copy`              | tasks                                                        |
 | `public/list/find-visible-lists`            | tasks                                                        |
 | `public/list/find-visible-space-lists`      | tasks                                                        |
 | `public/list/list-current-sprints`          | tasks                                                        |
@@ -87,7 +88,7 @@ copy of the memberships.
   viewer does not see the space.
 - `ListCurrentSprints` (`{ …, today, limit }`) and `ListSidebarLists` (`{ …, limit }`): the live
   sprints under way and the first live lists in sidebar order the viewer has a role on.
-- `ListVisibleListIds` (`{ organizationId, viewerUserId, viewerRole }` to `{ listIds }`): every list
+- `ListVisibleListIds` (`{ organizationId, viewerUserId, viewerRole, editOnly? }` to `{ listIds }`): every list
   of the organization the viewer has a role on, archived ones included, in sidebar order (spaces by
   their position in the sidebar, then the lists of each by their position). It replaces
   `ListVisibleSpaceIds`, removed.

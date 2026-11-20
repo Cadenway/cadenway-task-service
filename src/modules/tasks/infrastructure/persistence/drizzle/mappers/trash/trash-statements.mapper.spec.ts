@@ -291,6 +291,14 @@ describe('trashTreesStatement: the trees of the roots of entries in one statemen
       params: ['org', [CAD_482, CAD_483], 'org'],
     });
   });
+
+  it('limits bulk discovery without sorting the recursive result', () => {
+    const statement = renderSql(trashTreesStatement('org', [CAD_482], 1001));
+
+    expect(statement.sql).toMatch(/from tree limit \$4$/);
+    expect(statement.sql).not.toContain('order by');
+    expect(statement.params).toEqual(['org', [CAD_482], 'org', 1001]);
+  });
 });
 
 describe('untrashedIdsLockStatement: the tasks of the drop of requests, locked for share', () => {

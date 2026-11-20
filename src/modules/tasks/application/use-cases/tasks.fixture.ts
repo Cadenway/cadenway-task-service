@@ -47,6 +47,7 @@ import type { LabelPosition } from '../models/label/label-position.model.js';
 import type { ListedLabel } from '../models/label/listed-label.model.js';
 import type { PagePosition } from '../models/page/page-position.model.js';
 import type { ListedTask } from '../models/query/listed-task.model.js';
+import type { MilestonePosition } from '../models/query/milestone-position.model.js';
 import { SORT_KEY_PREFIX_LENGTH } from '../models/query/sort-key-prefix-length.model.js';
 import type { TaskFilter } from '../models/query/task-filter.model.js';
 import type { TaskGrouping } from '../models/query/task-grouping.model.js';
@@ -155,6 +156,31 @@ export type RecordedEvent =
       readonly kind: 'created';
       readonly key: string;
       readonly version: number;
+      readonly actor: EventActor;
+    }
+  | {
+      readonly kind: 'dependencyChanged';
+      readonly action: 'added' | 'removed';
+      readonly dependencyId: string;
+      readonly key: string;
+      readonly version: number;
+      readonly blockedKey: string;
+      readonly blockedVersion: number;
+      readonly actor: EventActor;
+    }
+  | {
+      readonly kind: 'milestoneReached';
+      readonly key: string;
+      readonly version: number;
+      readonly watcherIds: readonly string[];
+      readonly actor: EventActor;
+    }
+  | {
+      readonly kind: 'occurrenceCreated';
+      readonly key: string;
+      readonly version: number;
+      readonly successorKey: string;
+      readonly cadence: string;
       readonly actor: EventActor;
     }
   | {
@@ -650,10 +676,16 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
    * @param {Viewer} viewer - The acting member.
    * @returns {Promise<readonly string[]>} Their ids.
    */
-  public visibleListIds(organizationId: string, viewer: Viewer): Promise<readonly string[]> {
+  public visibleListIds(
+    organizationId: string,
+    viewer: Viewer,
+    editOnly: boolean = false,
+  ): Promise<readonly string[]> {
     this.trace.push('spaces.visibleListIds');
     return Promise.resolve(
-      this.visibleLists(organizationId, viewer).map((list: PlacedList): string => list.id),
+      this.visibleLists(organizationId, viewer)
+        .filter((list: PlacedList): boolean => !editOnly || list.callerRole === 'edit')
+        .map((list: PlacedList): string => list.id),
     );
   }
 
@@ -1464,6 +1496,23 @@ export function atelierNordMembers(
   );
 }
 
+/** Fails when a spec reaches the graph without a dependency fixture. */
+function dependencyFixtureMissing(): never {
+  throw new Error('The dependency test fixture was not provided.');
+}
+
+/** Fixtures of unrelated task operations do not use the graph. */
+const unavailableDependencies: TasksStore['dependencies'] = {
+  lockGraph: dependencyFixtureMissing,
+  findEdge: dependencyFixtureMissing,
+  inspect: dependencyFixtureMissing,
+  insert: dependencyFixtureMissing,
+  remove: dependencyFixtureMissing,
+  get: dependencyFixtureMissing,
+  page: dependencyFixtureMissing,
+  candidates: dependencyFixtureMissing,
+};
+
 /** What a spec seeds in the fake store. */
 export interface InMemoryTasksSeed {
   // #region Properties
@@ -1481,6 +1530,9 @@ export interface InMemoryTasksSeed {
 
   /** The calls of every fake, in order. */
   readonly trace?: string[];
+
+  /** Graph adapter supplied only by dependency specs. */
+  readonly dependencies?: TasksStore['dependencies'];
   // #endregion
 }
 
@@ -1508,6 +1560,8 @@ export function summaryOf(
     dueDate: state.dueDate,
     startDate: state.startDate,
     estimateMinutes: state.estimateMinutes,
+    ...(state.milestone === undefined ? {} : { milestone: state.milestone }),
+    ...(state.recurrence === undefined ? {} : { recurrence: state.recurrence }),
     labels: state.labels,
     parentKey,
     listId: state.listId,
@@ -1668,6 +1722,41 @@ export class InMemoryTaskReads
   // #endregion
 
   // #region Methods
+  /** Returns the eligible milestone page in the same order as persistence. */
+  public milestones(
+    organizationId: string,
+    listIds: readonly string[],
+    after: MilestonePosition | null,
+    limit: number,
+  ): Promise<readonly TaskSummaryView[]> {
+    const key = (position: MilestonePosition): string =>
+      `${position.dueDate ?? 'undated'}:${position.id}`;
+    const rows = this.matchingMilestones(organizationId, listIds);
+    return Promise.resolve(
+      rows
+        .filter((row) => after === null || key(row) > key(after))
+        .sort((left, right) => compareText(key(left), key(right)))
+        .slice(0, limit)
+        .map(this.summarize),
+    );
+  }
+
+  /** Counts the live milestones in the allowed lists. */
+  public milestoneTotal(organizationId: string, listIds: readonly string[]): Promise<number> {
+    return Promise.resolve(this.matchingMilestones(organizationId, listIds).length);
+  }
+
+  /** Applies the tenant, list, lifecycle and milestone restrictions shared by the readers. */
+  private matchingMilestones(organizationId: string, listIds: readonly string[]): TaskState[] {
+    return this.rows().filter(
+      (row) =>
+        row.organizationId === organizationId &&
+        listIds.includes(row.listId) &&
+        row.milestone === true &&
+        isLiveState(row),
+    );
+  }
+
   /**
    * Method pageOfList
    *
@@ -2216,6 +2305,9 @@ export class InMemoryTasks implements TasksUnitOfWork {
   /** The calls of every fake, in order. */
   public readonly trace: string[];
 
+  /** The graph adapter, when this fixture is used by dependency specs. */
+  private readonly dependencies: TasksStore['dependencies'];
+
   /**
    * The ids of the tasks another transaction holds `FOR NO KEY UPDATE` or `FOR UPDATE` (a change
    * or a deletion under way): `shareLocationUnlessLocked` leaves them out, as
@@ -2249,6 +2341,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
     );
     this.now = seed.now ?? NOW;
     this.trace = seed.trace ?? [];
+    this.dependencies = seed.dependencies ?? unavailableDependencies;
     this.trashEntries = new Map(
       (seed.trashEntries ?? []).map((row: StoredTrashEntry): [string, StoredTrashEntry] => [
         row.id,
@@ -2756,6 +2849,32 @@ export class InMemoryTasks implements TasksUnitOfWork {
     return {
       archives,
       trash,
+      dependencies: this.dependencies,
+      copies: {
+        listSources: (organizationId: string, listId: string, limit: number): Promise<readonly Task[]> => {
+          this.trace.push('copies.listSources');
+          return Promise.resolve(
+            inOrganization(organizationId)
+              .filter((row: TaskState): boolean => row.listId === listId && isLiveState(row))
+              .sort(byCreation)
+              .slice(0, limit)
+              .map((state: TaskState): Task => Task.restore(state)),
+          );
+        },
+        insertChecklist: (task: Task, source: readonly ChecklistItemState[]): Promise<Task> => {
+          this.trace.push('copies.insertChecklist');
+          const state: TaskState = {
+            ...task.snapshot,
+            checklist: source.map((item: ChecklistItemState, index: number): ChecklistItemState => ({
+              ...item,
+              id: this.nextId('019a7300'),
+              position: index + 1,
+            })),
+          };
+          tasks.set(state.id, state);
+          return Promise.resolve(Task.restore(state));
+        },
+      },
       jobs: {
         dropTrashedTaskRequests: (entryId: string, taskIds: readonly string[]): Promise<void> => {
           this.trace.push('jobs.dropTrashedTaskRequests');
@@ -3005,6 +3124,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
         trashTrees: (
           organizationId: string,
           rootIds: readonly string[],
+          readLimit?: number,
         ): Promise<readonly TrashTreeNode[]> => {
           this.trace.push('tasks.trashTrees');
           const nodes: TrashTreeNode[] = [];
@@ -3038,7 +3158,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
                 compareText(left.rootId, right.rootId) ||
                 left.depth - right.depth ||
                 compareText(left.id, right.id),
-            ),
+            ).slice(0, readLimit),
           );
         },
         lockUntrashedIds: (
@@ -3250,6 +3370,25 @@ export class InMemoryTasks implements TasksUnitOfWork {
       assigned: reads,
       labels: reads,
       events: {
+        dependencyChanged: (
+          action: 'added' | 'removed',
+          dependencyId: string,
+          blocker: Task,
+          blocked: Task,
+          actor: EventActor,
+        ): Promise<void> => {
+          events.push({
+            kind: 'dependencyChanged',
+            action,
+            dependencyId,
+            key: blocker.snapshot.key.format(),
+            version: blocker.snapshot.version,
+            blockedKey: blocked.snapshot.key.format(),
+            blockedVersion: blocked.snapshot.version,
+            actor,
+          });
+          return Promise.resolve();
+        },
         taskCreated: (task: Task, actor: EventActor): Promise<void> => {
           this.trace.push('events.created');
           events.push({
@@ -3377,6 +3516,27 @@ export class InMemoryTasks implements TasksUnitOfWork {
             rootKey: rootKey.format(),
             parentKey: task.snapshot.parentKey?.format() ?? null,
             purgeAt: null,
+            actor,
+          });
+          return Promise.resolve();
+        },
+        milestoneReached: (task, watcherIds, actor): Promise<void> => {
+          events.push({
+            kind: 'milestoneReached',
+            key: task.snapshot.key.format(),
+            version: task.snapshot.version,
+            watcherIds,
+            actor,
+          });
+          return Promise.resolve();
+        },
+        taskOccurrenceCreated: (predecessor, successor, cadence, actor): Promise<void> => {
+          events.push({
+            kind: 'occurrenceCreated',
+            key: predecessor.snapshot.key.format(),
+            version: predecessor.snapshot.version,
+            successorKey: successor.snapshot.key.format(),
+            cadence,
             actor,
           });
           return Promise.resolve();

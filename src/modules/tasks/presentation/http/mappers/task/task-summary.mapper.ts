@@ -24,6 +24,8 @@ export function toTaskSummary(view: TaskSummaryView): TaskSummary {
     dueDate: view.dueDate,
     startDate: view.startDate,
     estimateMinutes: view.estimateMinutes,
+    ...(view.milestone === undefined ? {} : { milestone: view.milestone }),
+    ...(view.recurrence === undefined ? {} : { recurrence: view.recurrence }),
     labels: [...view.labels],
     parentKey: view.parentKey,
     listId: view.listId,

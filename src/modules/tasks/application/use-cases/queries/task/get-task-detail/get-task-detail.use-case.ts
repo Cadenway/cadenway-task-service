@@ -12,6 +12,7 @@ import type { TaskSummaryView } from '../../../../projections/task/task-summary.
 import { ViewerResolver } from '../../../../services/member/viewer-resolver.service.js';
 import { TaskLocator } from '../../../../services/task/task-locator.service.js';
 import { TaskViewBuilder } from '../../../../services/task/task-view-builder.service.js';
+import { VisibleNextOccurrence } from '../../../../services/task/visible-next-occurrence.service.js';
 import type { GetTaskDetailInput } from './get-task-detail.input.js';
 import type { GetTaskDetailOutput } from './get-task-detail.output.js';
 
@@ -44,6 +45,9 @@ export class GetTaskDetail {
 
   /** Builds the view of the task. */
   private readonly views: TaskViewBuilder;
+
+  /** Filters the successor link by visibility. */
+  private readonly successor: VisibleNextOccurrence;
   // #endregion
 
   // #region Constructor
@@ -67,6 +71,7 @@ export class GetTaskDetail {
     this.viewers = new ViewerResolver(members);
     this.locator = new TaskLocator(spaces);
     this.views = new TaskViewBuilder();
+    this.successor = new VisibleNextOccurrence(spaces);
   }
   // #endregion
 
@@ -111,8 +116,10 @@ export class GetTaskDetail {
           null,
           MAX_DIRECT_SUBTASKS,
         );
+        const view = await this.views.build(store.reader, task, reference);
+        const nextOccurrenceKey = await this.successor.keyOf(store, task, viewer);
         return {
-          task: await this.views.build(store.reader, task, reference),
+          task: nextOccurrenceKey === undefined ? view : { ...view, nextOccurrenceKey },
           space: placement.space,
           list: placement.list,
           parent,

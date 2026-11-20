@@ -12,6 +12,17 @@ import {
   normalizeCancelNote,
   resolveCancellation,
 } from '../../policies/task/cancellation.policy.js';
+import {
+  hasReachedMilestone,
+  requireValidMilestone,
+  resolveMilestone,
+} from '../../policies/task/milestone.policy.js';
+import {
+  planNextOccurrence,
+  recordOccurrence,
+  requireValidRecurrence,
+  resolveRecurrence,
+} from '../../policies/task/recurrence.policy.js';
 import { isScheduleValid, resolveSchedule } from '../../policies/task/schedule.policy.js';
 import { checkStatusAvailable } from '../../policies/task/status-availability.policy.js';
 import type { AssigneeCandidate } from '../../value-objects/member/assignee-candidate.value-object.js';
@@ -20,6 +31,8 @@ import { CANCEL_REASONS } from '../../value-objects/task/cancel-reason.value-obj
 import type { ChecklistItemDraft } from '../../value-objects/task/checklist-item-draft.value-object.js';
 import type { ChecklistItemState } from '../../value-objects/task/checklist-item-state.value-object.js';
 import { labelKey, normalizeLabelName } from '../../value-objects/task/label-name.value-object.js';
+import type { MilestoneFields } from '../../value-objects/task/milestone-fields.value-object.js';
+import type { NextOccurrenceSchedule } from '../../value-objects/task/next-occurrence-schedule.value-object.js';
 import type { NewTask } from '../../value-objects/task/new-task.value-object.js';
 import { PRIORITY_KEYS } from '../../value-objects/task/priority-key.value-object.js';
 import type { PriorityKey } from '../../value-objects/task/priority-key.value-object.js';
@@ -44,6 +57,7 @@ import {
 } from '../../value-objects/task/task-limits.value-object.js';
 import type { TaskPatch } from '../../value-objects/task/task-patch.value-object.js';
 import type { TaskPlacement } from '../../value-objects/task/task-placement.value-object.js';
+import type { TaskRecurrence } from '../../value-objects/task/task-recurrence.value-object.js';
 import type { TaskState } from '../../value-objects/task/task-state.value-object.js';
 import type { TaskTrash } from '../../value-objects/task/task-trash.value-object.js';
 import type { TaskUpdate } from '../../value-objects/task/task-update.value-object.js';
@@ -313,6 +327,15 @@ function checkStoredCollections(state: TaskState): void {
   }
 }
 
+/** Applies recurrence defaults to tasks restored from before the planning fields existed. */
+function recurrenceOf(state: TaskState): TaskRecurrence {
+  return {
+    recurrence: state.recurrence ?? 'none',
+    monthlyAnchorDay: state.monthlyAnchorDay ?? null,
+    nextOccurrenceKey: state.nextOccurrenceKey ?? null,
+  };
+}
+
 /**
  * Function checkStoredState
  *
@@ -339,6 +362,17 @@ function checkStoredState(state: TaskState): void {
   checkPriority(state.priority);
   checkEstimate(state.estimateMinutes);
   checkActor(state.createdBy);
+  if (state.milestone === true) {
+    requireValidMilestone({ ...state, milestone: true });
+  }
+  const recurrence: TaskRecurrence = recurrenceOf(state);
+  requireValidRecurrence(recurrence);
+  if (recurrence.nextOccurrenceKey !== null) {
+    TaskKey.of(recurrence.nextOccurrenceKey.prefix, recurrence.nextOccurrenceKey.number);
+    if (recurrence.nextOccurrenceKey.equals(state.key)) {
+      throw new InvalidTaskError('a task is not its own occurrence');
+    }
+  }
   const cancelled: boolean = state.status === 'cancelled';
   if (
     cancelled !== (state.cancelReason !== null) ||
@@ -531,6 +565,7 @@ export class Task {
    * @throws {CancelReasonRequiredError} When the task is created `cancelled` without a reason.
    * @throws {CancelReasonUnexpectedError} When a reason or a note comes with another status.
    * @throws {StartDateInvalidError} When the start is without a due date or after it.
+   * @throws {MilestoneStatusInvalidError | MilestoneDatesInvalidError} When a milestone's explicit fields conflict.
    * @throws {AssigneeInvalidError} With every account that is not a current member other than a
    * guest.
    */
@@ -543,7 +578,8 @@ export class Task {
     const name: string = normalizeName(input.name);
     const description: string | null = checkDescription(input.description);
     const priority: PriorityKey = checkPriority(input.priority);
-    const estimateMinutes: number | null = checkEstimate(input.estimateMinutes);
+    const estimateMinutes: number | null =
+      input.milestone === true ? null : checkEstimate(input.estimateMinutes);
     const labels: readonly string[] = normalizeLabels(input.labels);
     const assignees: readonly AssigneeCandidate[] = distinctAssignees(input.assignees);
 
@@ -554,16 +590,21 @@ export class Task {
         throw new InvalidTaskError('a subtask is in the list of its parent');
       }
     }
-    checkStatusAvailable(input.status, null, statuses);
+    const milestone: MilestoneFields | null = resolveMilestone(null, input);
+    const status: StatusKey = milestone?.status ?? input.status;
+    checkStatusAvailable(status, null, statuses);
     const cancellation: Pick<TaskState, 'cancelReason' | 'cancelNote'> = resolveCancellation(
       null,
-      input.status,
+      status,
       { cancelReason: input.cancelReason, cancelNote: input.cancelNote },
     );
-    const schedule: Pick<TaskState, 'dueDate' | 'startDate'> = resolveSchedule(null, {
-      dueDate: input.dueDate,
-      startDate: input.startDate,
-    });
+    const { dueDate, startDate } = milestone ?? resolveSchedule(null, input);
+    const recurrence: TaskRecurrence = {
+      recurrence: input.recurrence ?? 'none',
+      monthlyAnchorDay: input.monthlyAnchorDay ?? null,
+      nextOccurrenceKey: null,
+    };
+    requireValidRecurrence(recurrence);
     refuseUnassignable(assignees);
 
     return {
@@ -574,7 +615,7 @@ export class Task {
       parentKey: parent === null ? null : parent.key,
       name,
       description,
-      status: input.status,
+      status,
       cancelReason: cancellation.cancelReason,
       cancelNote: cancellation.cancelNote,
       priority,
@@ -582,10 +623,15 @@ export class Task {
         assignees.map((candidate: AssigneeCandidate): string => candidate.userId),
       ),
       labels,
-      dueDate: schedule.dueDate,
-      startDate: schedule.startDate,
+      dueDate,
+      startDate,
       estimateMinutes,
-      completedAt: input.status === 'done' ? now : null,
+      ...(input.milestone === undefined ? {} : { milestone: input.milestone }),
+      ...(input.recurrence === undefined ? {} : { recurrence: recurrence.recurrence }),
+      ...(recurrence.monthlyAnchorDay === null
+        ? {}
+        : { monthlyAnchorDay: recurrence.monthlyAnchorDay }),
+      completedAt: status === 'done' ? now : null,
       createdBy,
     };
   }
@@ -646,6 +692,9 @@ export class Task {
    *   patch; a move keeps the current status even when that space hides it;
    * - cancellation, completion and dates as the policies say: entering `done` sets `completedAt` =
    *   `now`, `done` to `done` keeps it, leaving clears it; a new due date moves the start.
+   * - milestone conversion and recurrence follow P3b-2 decisions 11–14. When the resulting
+   *   task spawns an occurrence, the caller previews this update to allocate a fresh key, then
+   *   calls it again on this same source with that key. Only the linked result is persisted.
    *
    * `changed` lists the members whose value differs, in the contract order: leaving `cancelled`
    * names `cancelReason` and, when there was one, `cancelNote`; a shifted start names `startDate`;
@@ -655,6 +704,7 @@ export class Task {
    * @param {SpaceStatusUse} statuses - The statuses of the space the task is in after the patch:
    * the space of `parent`, else of `list`, else the current one.
    * @param {Date} now - The transaction instant.
+   * @param {TaskKey} [successorKey] - The allocated key of the occurrence this update will create.
    * @returns {TaskUpdate} The task at the next version and what changed, or this same task and
    * `changed: []` when nothing changes.
    * @throws {InvalidTaskError} When a member breaks an invariant the request bounds already refuse.
@@ -669,9 +719,17 @@ export class Task {
    * `cancelled` after the patch.
    * @throws {StartDateInvalidError} When the start is without a due date or after it, or a shift
    * would move it before 0001-01-01.
+   * @throws {MilestoneStatusInvalidError | MilestoneDatesInvalidError} When the resulting milestone is invalid.
+   * @throws {RecurrenceAlreadySpawnedError} When the patch rearms a predecessor that already spawned.
+   * @throws {RecurrenceDateOutOfRangeError} When the successor dates cannot be represented.
    * @throws {TaskArchivedError} When the task is archived.
    */
-  public update(patch: TaskPatch, statuses: SpaceStatusUse, now: Date): TaskUpdate {
+  public update(
+    patch: TaskPatch,
+    statuses: SpaceStatusUse,
+    now: Date,
+    successorKey?: TaskKey,
+  ): TaskUpdate {
     this.requireChangeable();
     requireInstant(now);
     const current: TaskState = this.state;
@@ -680,24 +738,45 @@ export class Task {
       patch.description === undefined ? current.description : checkDescription(patch.description);
     const priority: PriorityKey =
       patch.priority === undefined ? current.priority : checkPriority(patch.priority);
-    const estimateMinutes: number | null =
-      patch.estimateMinutes === undefined
-        ? current.estimateMinutes
-        : checkEstimate(patch.estimateMinutes);
+    const isMilestone: boolean = patch.milestone ?? current.milestone ?? false;
+    let estimateMinutes: number | null = null;
+    if (!isMilestone) {
+      estimateMinutes =
+        patch.estimateMinutes === undefined
+          ? current.estimateMinutes
+          : checkEstimate(patch.estimateMinutes);
+    }
 
     const placement: Pick<TaskState, 'listId' | 'spaceId' | 'parentId' | 'parentKey'> =
       this.place(patch);
 
-    const status: StatusKey = patch.status ?? current.status;
-    if (patch.status !== undefined) {
-      checkStatusAvailable(patch.status, current.status, statuses);
+    const milestone: MilestoneFields | null = isMilestone
+      ? resolveMilestone({ ...current, milestone: current.milestone ?? false }, patch)
+      : null;
+    const status: StatusKey = milestone?.status ?? patch.status ?? current.status;
+    if (patch.status !== undefined || status !== current.status) {
+      checkStatusAvailable(status, current.status, statuses);
     }
     const cancellation: Pick<TaskState, 'cancelReason' | 'cancelNote'> = resolveCancellation(
       current,
       status,
       patch,
     );
-    const schedule: Pick<TaskState, 'dueDate' | 'startDate'> = resolveSchedule(current, patch);
+    const { dueDate, startDate } = milestone ?? resolveSchedule(current, patch);
+    const previousRecurrence: TaskRecurrence = recurrenceOf(current);
+    let recurrence: TaskRecurrence = resolveRecurrence(previousRecurrence, patch.recurrence);
+    const nextOccurrence: NextOccurrenceSchedule | null = planNextOccurrence(current.status, {
+      ...recurrence,
+      status,
+      dueDate,
+      startDate,
+    });
+    if (successorKey !== undefined) {
+      if (nextOccurrence === null || successorKey.equals(current.key)) {
+        throw new InvalidTaskError('a successor key is fresh and belongs to a planned occurrence');
+      }
+      recurrence = recordOccurrence(recurrence, successorKey);
+    }
     let completedAt: Date | null = null;
     if (status === 'done') {
       completedAt = current.status === 'done' ? current.completedAt : now;
@@ -715,27 +794,52 @@ export class Task {
     mark('cancelReason', cancellation.cancelReason !== current.cancelReason);
     mark('cancelNote', cancellation.cancelNote !== current.cancelNote);
     mark('priority', priority !== current.priority);
-    mark('dueDate', schedule.dueDate !== current.dueDate);
-    mark('startDate', schedule.startDate !== current.startDate);
+    mark('dueDate', dueDate !== current.dueDate);
+    mark('startDate', startDate !== current.startDate);
     mark('estimateMinutes', estimateMinutes !== current.estimateMinutes);
     mark('listId', placement.listId !== current.listId);
     mark('spaceId', placement.spaceId !== current.spaceId);
     mark('parentKey', placement.parentId !== current.parentId);
-    return this.next(
+    mark('milestone', isMilestone !== (current.milestone ?? false));
+    mark(
+      'recurrence',
+      recurrence.recurrence !== previousRecurrence.recurrence ||
+        recurrence.monthlyAnchorDay !== previousRecurrence.monthlyAnchorDay,
+    );
+    mark(
+      'nextOccurrenceKey',
+      recurrence.nextOccurrenceKey !== previousRecurrence.nextOccurrenceKey,
+    );
+    const update: TaskUpdate = this.next(
       {
         name,
         description,
         status,
         ...cancellation,
         priority,
-        ...schedule,
+        dueDate,
+        startDate,
         estimateMinutes,
+        ...(changed.has('milestone') ? { milestone: isMilestone } : {}),
+        ...(changed.has('recurrence')
+          ? { recurrence: recurrence.recurrence, monthlyAnchorDay: recurrence.monthlyAnchorDay }
+          : {}),
+        ...(changed.has('nextOccurrenceKey')
+          ? { nextOccurrenceKey: recurrence.nextOccurrenceKey }
+          : {}),
         ...placement,
         completedAt,
       },
       changed,
       now,
     );
+    return {
+      ...update,
+      ...(hasReachedMilestone(current.status, { milestone: isMilestone, status })
+        ? { milestoneReached: true }
+        : {}),
+      ...(nextOccurrence === null ? {} : { nextOccurrence }),
+    };
   }
 
   /**
@@ -1010,6 +1114,18 @@ export class Task {
       new Set<TaskField>(['checklist']),
       now,
     );
+  }
+
+  /**
+   * Advances the version when one of the task's incident dependency edges changes.
+   *
+   * @param at - The transaction instant.
+   * @returns The changed task with the same content and placement.
+   */
+  public withDependencyChange(at: Date): Task {
+    this.requireChangeable();
+    requireInstant(at);
+    return new Task({ ...this.state, updatedAt: at, version: this.state.version + 1 });
   }
 
   /**

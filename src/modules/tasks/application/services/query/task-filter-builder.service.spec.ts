@@ -44,6 +44,12 @@ describe('TaskFilterBuilder: the filters of the route become what the repository
     expect(builder.build(input({ level: 'all' }), CAMILLE).rootsOnly).toBe(false);
   });
 
+  it('passes each explicit milestone filter without altering the unfiltered query', () => {
+    expect(builder.build(input({ milestone: true }), CAMILLE).milestone).toBe(true);
+    expect(builder.build(input({ milestone: false }), CAMILLE).milestone).toBe(false);
+    expect(builder.build(input(), CAMILLE).milestone).toBeUndefined();
+  });
+
   it('resolves me to the actor and none to the flag', () => {
     expect(builder.build(input({ assignees: ['me', 'none', INES] }), CAMILLE).assignees).toEqual({
       userIds: [CAMILLE, INES],

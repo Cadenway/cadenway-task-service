@@ -2,6 +2,7 @@ import type { AssigneeCandidate } from '../member/assignee-candidate.value-objec
 import type { SubtaskParent } from '../subtask/subtask-parent.value-object.js';
 import type { CancelReason } from './cancel-reason.value-object.js';
 import type { PriorityKey } from './priority-key.value-object.js';
+import type { Recurrence } from './recurrence.value-object.js';
 import type { StatusKey } from './status-key.value-object.js';
 import type { TaskActor } from './task-actor.value-object.js';
 import type { TaskPlacement } from './task-placement.value-object.js';
@@ -148,12 +149,13 @@ export interface NewTask {
    * Property startDate
    *
    * @description
-   * First day of the work; needs a due date, on or before it; `null` for none.
+   * First day of the work; needs a due date, on or before it. A milestone takes its due date
+   * as the start when omitted, and an explicit start must agree with the due date.
    *
-   * @type {string | null}
+   * @type {string | null | undefined}
    * @readonly
    */
-  readonly startDate: string | null;
+  readonly startDate?: string | null;
 
   /**
    * Property estimateMinutes
@@ -165,6 +167,15 @@ export interface NewTask {
    * @readonly
    */
   readonly estimateMinutes: number | null;
+
+  /** When true, apply the milestone workflow and schedule (P3b-2 decision 11). */
+  readonly milestone?: boolean;
+
+  /** The cadence of the new task, defaulting to `none` (P3b-2 decision 13). */
+  readonly recurrence?: Recurrence;
+
+  /** Internal calendar anchor carried from a predecessor onto its monthly successor. */
+  readonly monthlyAnchorDay?: number | null;
 
   /**
    * Property labels

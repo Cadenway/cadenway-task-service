@@ -46,14 +46,22 @@ function toKey(key: string): TaskOrder['key'] {
  * the labels ("without regard to case") belong to `TaskFilterBuilder`, which is the one place that
  * normalizes them; the fingerprint of a cursor normalizes its own copy.
  *
- * @param {Pick<ListTasksQuery, 'status' | 'priority' | 'assignee' | 'label' | 'search' | 'dueFrom' | 'dueTo' | 'level'>} query
+ * @param {Pick<ListTasksQuery, 'status' | 'priority' | 'assignee' | 'label' | 'search' | 'dueFrom' | 'dueTo' | 'level' | 'milestone'>} query
  * The validated query.
  * @returns {TaskFilterInput} The filters of the route.
  */
 export function toTaskFilterInput(
   query: Pick<
     ListTasksQuery,
-    'status' | 'priority' | 'assignee' | 'label' | 'search' | 'dueFrom' | 'dueTo' | 'level'
+    | 'status'
+    | 'priority'
+    | 'assignee'
+    | 'label'
+    | 'search'
+    | 'dueFrom'
+    | 'dueTo'
+    | 'level'
+    | 'milestone'
   >,
 ): TaskFilterInput {
   return {
@@ -65,6 +73,7 @@ export function toTaskFilterInput(
     dueFrom: query.dueFrom ?? null,
     dueTo: query.dueTo ?? null,
     level: query.level,
+    ...(query.milestone === undefined ? {} : { milestone: query.milestone }),
   };
 }
 
@@ -88,6 +97,7 @@ export function taskFilterFingerprint(filter: TaskFilterInput): {
   readonly dueFrom: string | null;
   readonly dueTo: string | null;
   readonly level: 'roots' | 'all';
+  readonly milestone?: boolean;
 } {
   return {
     status: sortedDistinct(filter.statuses),
@@ -102,6 +112,7 @@ export function taskFilterFingerprint(filter: TaskFilterInput): {
     dueFrom: filter.dueFrom,
     dueTo: filter.dueTo,
     level: filter.level,
+    ...(typeof filter.milestone === 'boolean' ? { milestone: filter.milestone } : {}),
   };
 }
 

@@ -26,6 +26,8 @@ const SELECTED: string = [
   '"tasks"."due_date"::text as "dueDate"',
   '"tasks"."start_date"::text as "startDate"',
   '"tasks"."estimate_minutes" as "estimateMinutes"',
+  '"tasks"."milestone" as "milestone"',
+  '"tasks"."recurrence" as "recurrence"',
   `to_char("tasks"."completed_at" at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "completedAt"`,
   `to_char("tasks"."created_at" at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt"`,
   '"tasks"."list_id" as "listId"',

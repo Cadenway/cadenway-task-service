@@ -1,5 +1,6 @@
 import type { CancelReason } from './cancel-reason.value-object.js';
 import type { PriorityKey } from './priority-key.value-object.js';
+import type { Recurrence } from './recurrence.value-object.js';
 import type { StatusKey } from './status-key.value-object.js';
 import type { TaskActor } from './task-actor.value-object.js';
 import type { TaskKey } from './task-key.value-object.js';
@@ -193,6 +194,15 @@ export interface TaskDraft {
    * @readonly
    */
   readonly estimateMinutes: number | null;
+
+  /** Whether the task is a milestone. Old rows and ordinary drafts default to false. */
+  readonly milestone?: boolean;
+
+  /** Current recurrence cadence, defaulting to `none` on old rows and ordinary drafts. */
+  readonly recurrence?: Recurrence;
+
+  /** Calendar anchor of an inherited monthly chain. The first occurrence derives it if absent. */
+  readonly monthlyAnchorDay?: number | null;
 
   /**
    * Property completedAt

@@ -83,6 +83,12 @@ function isLeapYear(year: number): boolean {
   return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
 }
 
+/** Number of days in a month of the proleptic Gregorian calendar. */
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) return isLeapYear(year) ? 29 : 28;
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
+}
+
 /**
  * Class CalendarDate
  *
@@ -146,10 +152,7 @@ export class CalendarDate {
     if (year < 1 || month < 1 || month > 12 || day < 1) {
       return false;
     }
-    if (month === 2) {
-      return day <= (isLeapYear(year) ? 29 : 28);
-    }
-    return day <= ([4, 6, 9, 11].includes(month) ? 30 : 31);
+    return day <= daysInMonth(year, month);
   }
 
   /**
@@ -204,6 +207,38 @@ export class CalendarDate {
    */
   public daysUntil(other: CalendarDate): number {
     return other.day - this.day;
+  }
+
+  /** Day of the month to carry when starting a monthly chain (P3b-2 decision 13). */
+  public dayOfMonth(): number {
+    return Number(this.format().slice(8, 10));
+  }
+
+  /** Whether the date falls on Saturday or Sunday (P3b-2 decision 13). */
+  public isWeekend(): boolean {
+    // Epoch day zero (1970-01-01) was Thursday, index three in a Monday-based week.
+    const weekday: number = (((this.day + 3) % 7) + 7) % 7;
+    return weekday >= 5;
+  }
+
+  /**
+   * Moves to the requested day in the next month, clamped to that month's last day
+   * (P3b-2 decision 13). Returns `null` beyond year 9999.
+   *
+   * @throws {InvalidTaskError} When the anchor is not a day from 1 to 31.
+   */
+  public nextMonthOnDay(anchor: number): CalendarDate | null {
+    if (!Number.isInteger(anchor) || anchor < 1 || anchor > 31) {
+      throw new InvalidTaskError('a monthly anchor is an integer from 1 to 31');
+    }
+    const date: string = this.format();
+    const month: number = Number(date.slice(5, 7));
+    const year: number = Number(date.slice(0, 4)) + (month === 12 ? 1 : 0);
+    if (year > 9999) return null;
+    const nextMonth: number = (month % 12) + 1;
+    return new CalendarDate(
+      daysFromCivil(year, nextMonth, Math.min(anchor, daysInMonth(year, nextMonth))),
+    );
   }
 
   /**

@@ -41,5 +41,8 @@ export interface ListVisibleListIdsInput {
    * @readonly
    */
   readonly viewerRole: 'owner' | 'admin' | 'member' | 'guest';
+
+  /** Limits the returned ids to lists the viewer may edit. */
+  readonly editOnly?: boolean;
   // #endregion
 }

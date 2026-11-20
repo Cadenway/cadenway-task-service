@@ -75,12 +75,22 @@ function shapeOf(refusal: TaskRefusalReason): ProblemShape {
       return { status: 404, code: 'task.not-found' };
     case 'list-not-found':
       return { status: 404, code: 'list.not-found' };
+    case 'list-duplicate-limit-reached':
+      return { status: 422, code: 'list.duplicate-limit-reached' };
     case 'space-not-found':
       return { status: 404, code: 'space.not-found' };
     case 'user-not-found':
       return { status: 404, code: 'user.not-found' };
     case 'checklist-item-not-found':
       return { status: 404, code: 'checklist-item.not-found' };
+    case 'dependency-not-found':
+      return { status: 404, code: 'dependency.not-found' };
+    case 'dependency-cycle':
+      return { status: 422, code: 'dependency.cycle' };
+    case 'dependency-already-exists':
+      return { status: 409, code: 'dependency.already-exists' };
+    case 'dependency-limit-reached':
+      return { status: 422, code: 'dependency.limit-reached' };
     case 'role-insufficient':
       return {
         status: 403,
@@ -132,6 +142,14 @@ function shapeOf(refusal: TaskRefusalReason): ProblemShape {
       return { status: 422, code: 'task.label-limit-reached' };
     case 'checklist-limit-reached':
       return { status: 422, code: 'task.checklist-limit-reached' };
+    case 'milestone-status-invalid':
+      return { status: 422, code: 'milestone.status-invalid' };
+    case 'milestone-dates-invalid':
+      return { status: 422, code: 'milestone.dates-invalid' };
+    case 'recurrence-already-spawned':
+      return { status: 409, code: 'recurrence.already-spawned' };
+    case 'recurrence-date-out-of-range':
+      return { status: 422, code: 'recurrence.date-out-of-range' };
     case 'start-date-invalid':
       return { status: 422, code: 'task.start-date-invalid' };
     case 'list-invalid':

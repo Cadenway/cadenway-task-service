@@ -1,5 +1,6 @@
 import type { CancelReason } from '../../../../../domain/value-objects/task/cancel-reason.value-object.js';
 import type { PriorityKey } from '../../../../../domain/value-objects/task/priority-key.value-object.js';
+import type { Recurrence } from '../../../../../domain/value-objects/task/recurrence.value-object.js';
 import type { StatusKey } from '../../../../../domain/value-objects/task/status-key.value-object.js';
 
 /**
@@ -45,10 +46,16 @@ export interface CreateTaskInput {
   readonly dueDate: string | null;
 
   /** Start date, a calendar date; needs a due date. */
-  readonly startDate: string | null;
+  readonly startDate?: string | null;
 
   /** Estimate in whole minutes. */
   readonly estimateMinutes: number | null;
+
+  /** Whether the new task is a milestone. */
+  readonly milestone?: boolean;
+
+  /** Recurrence cadence, defaulting to none. */
+  readonly recurrence?: Recurrence;
 
   /** The labels. */
   readonly labels: readonly string[];

@@ -278,6 +278,20 @@ export class InMemoryMemberships implements MembershipsUnitOfWork {
         );
         return Promise.resolve(state === undefined ? null : Membership.restore(state));
       },
+      listActiveByUsers: (
+        organizationId: string,
+        userIds: readonly string[],
+      ): Promise<Membership[]> =>
+        Promise.resolve(
+          [...rows.values()]
+            .filter(
+              (row: MembershipState): boolean =>
+                row.organizationId === organizationId &&
+                userIds.includes(row.userId) &&
+                row.removedAt === null,
+            )
+            .map((row: MembershipState): Membership => Membership.restore(row)),
+        ),
     };
     const result: TResult = await work(repository);
     this.rows = rows;

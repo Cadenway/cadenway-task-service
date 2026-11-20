@@ -49,6 +49,17 @@ const CAD_482: TaskView = {
 };
 
 describe('toTask', () => {
+  it('carries scheduling fields and a visible successor supplied by the projection', () => {
+    const scheduled = { ...CAD_482, milestone: false, recurrence: 'none' as const };
+    expect(toTask(scheduled)).toMatchObject({ milestone: false, recurrence: 'none' });
+    expect(toTask(scheduled)).not.toHaveProperty('nextOccurrenceKey');
+    expect(toTask({ ...scheduled, nextOccurrenceKey: 'CAD-483' })).toHaveProperty(
+      'nextOccurrenceKey',
+      'CAD-483',
+    );
+    expect(toTaskSummary(scheduled)).toMatchObject({ milestone: false, recurrence: 'none' });
+  });
+
   it('answers a task the response validator of the contract accepts', () => {
     expect(() => CreateTaskInternalResponse.parse(toTask(CAD_482))).not.toThrow();
   });

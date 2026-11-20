@@ -60,6 +60,13 @@ export interface MembershipRepository {
    */
   listActiveByUser(organizationId: string, userId: string, lock: boolean): Promise<Membership[]>;
 
+  /** Reads active memberships for several users, optionally holding them in stable user order. */
+  listActiveByUsers(
+    organizationId: string,
+    userIds: readonly string[],
+    lock: boolean,
+  ): Promise<Membership[]>;
+
   /**
    * Method findActiveOwner
    *

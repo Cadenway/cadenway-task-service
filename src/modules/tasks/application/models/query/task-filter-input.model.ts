@@ -33,6 +33,9 @@ export interface TaskFilterInput {
   /** Keep the tasks due on or before this date. */
   readonly dueTo: string | null;
 
+  /** Keep only milestones or ordinary tasks when supplied. */
+  readonly milestone?: boolean | null;
+
   /** `roots` for the top-level tasks, `all` for the subtasks too. */
   readonly level: 'roots' | 'all';
   // #endregion

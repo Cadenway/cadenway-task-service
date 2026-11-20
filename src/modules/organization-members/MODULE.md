@@ -18,15 +18,16 @@ the removal committed.
 
 ## Public entry points
 
-| Entry point                                  | Consumers                                        |
-| -------------------------------------------- | ------------------------------------------------ |
-| `organization-members.module`                | spaces, member-lifecycle, tasks, access-requests |
-| `public/membership/apply-membership-change`  | member-lifecycle                                 |
-| `public/membership/find-organization-member` | spaces, tasks, access-requests                   |
-| `public/membership/find-organization-owner`  | spaces                                           |
+| Entry point                                        | Consumers                                        |
+| -------------------------------------------------- | ------------------------------------------------ |
+| `organization-members.module`                      | spaces, member-lifecycle, tasks, access-requests |
+| `public/membership/apply-membership-change`        | member-lifecycle                                 |
+| `public/membership/find-organization-member`       | spaces, tasks, access-requests                   |
+| `public/membership/find-organization-member-roles` | tasks                                            |
+| `public/membership/find-organization-owner`        | spaces                                           |
 
-`OrganizationMembersModule` exports the `ApplyMembershipChange`, `FindOrganizationMember` and
-`FindOrganizationOwner` providers, each with its input type and, for the two readings, its output type.
+`OrganizationMembersModule` exports `ApplyMembershipChange`, `FindOrganizationMember`,
+`FindOrganizationMemberRoles` and `FindOrganizationOwner` with their inputs and outputs.
 
 - `ApplyMembershipChange` applies one member event to the copy; the handler of the
   member-lifecycle module calls it in the tenant transaction the deduplicator of the kit opened
@@ -39,7 +40,10 @@ the removal committed.
   assigns; the access-requests module reads it for the role of the requester or of the person who
   answers, and for whether a former member joined again (the clean-up of their requests).
 
-All three run in the tenant transaction of their caller and join it, or open one for the
+- `FindOrganizationMemberRoles` applies the same least-privileged rule in a single batch. The
+  task module holds these memberships before locking placement for a list copy.
+
+These operations join the tenant transaction of their caller or open one for the
 organization of the context; they must not be called from a system transaction (the kit refuses
 to open a tenant transaction inside a system one). The caller passes the organization of its
 verified context or of its event: row-level security hides any other, so another value finds

@@ -14,6 +14,13 @@ function parse(patch: unknown): UpdateTaskBody {
 }
 
 describe('toTaskChange', () => {
+  it('retains disabling a milestone and a recurrence together', () => {
+    expect(toTaskChange(parse({ milestone: false, recurrence: 'none' }))).toStrictEqual({
+      milestone: false,
+      recurrence: 'none',
+    });
+  });
+
   it('keeps a member left out absent', () => {
     expect(toTaskChange(parse({}))).toStrictEqual({});
     expect(toTaskChange(parse({ priority: 'haute' }))).toStrictEqual({ priority: 'haute' });

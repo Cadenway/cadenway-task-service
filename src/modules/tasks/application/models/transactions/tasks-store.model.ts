@@ -4,9 +4,11 @@ import type { ActivityRepository } from '../../ports/outbound/persistence/activi
 import type { ArchiveReader } from '../../ports/outbound/persistence/archive/archive-reader.port.js';
 import type { AssignedTaskReader } from '../../ports/outbound/persistence/assignee/assigned-task-reader.port.js';
 import type { TaskCounter } from '../../ports/outbound/persistence/count/task-counter.port.js';
+import type { TaskDependencyRepository } from '../../ports/outbound/persistence/dependency/task-dependency-repository.port.js';
 import type { LabelReader } from '../../ports/outbound/persistence/label/label-reader.port.js';
 import type { TaskQueryReader } from '../../ports/outbound/persistence/query/task-query-reader.port.js';
 import type { TaskReader } from '../../ports/outbound/persistence/task/task-reader.port.js';
+import type { TaskCopies } from '../../ports/outbound/persistence/task/task-copies.port.js';
 import type { TaskRepository } from '../../ports/outbound/persistence/task/task-repository.port.js';
 import type { TrashEntryRepository } from '../../ports/outbound/persistence/trash/trash-entry-repository.port.js';
 import type { TransactionClock } from '../../ports/outbound/time/transaction/transaction-clock.port.js';
@@ -23,6 +25,9 @@ export interface TasksStore {
   /** The tasks with their assignees, labels and checklist. */
   readonly tasks: TaskRepository;
 
+  /** The bounded source snapshots and initial checklists of task copies. */
+  readonly copies: TaskCopies;
+
   /** The read side: counts, pages of subtasks and task references. */
   readonly reader: TaskReader;
 
@@ -34,6 +39,9 @@ export interface TasksStore {
 
   /** The counters of the lists and of the tasks of an account. */
   readonly counter: TaskCounter;
+
+  /** Directed links between tasks in this tenant. */
+  readonly dependencies: TaskDependencyRepository;
 
   /** The tasks assigned to an account. */
   readonly assigned: AssignedTaskReader;

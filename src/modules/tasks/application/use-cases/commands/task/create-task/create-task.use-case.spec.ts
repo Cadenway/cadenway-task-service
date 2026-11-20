@@ -132,6 +132,47 @@ describe('CreateTask: a member creates a task in a list they see', () => {
     expect(view.completedAt).toEqual(NOW);
   });
 
+  it('creates a dated recurring milestone with an omitted start aligned to its due date', async () => {
+    const { tasks, useCase } = atelierNord();
+    const view = await useCase.execute(
+      createTask({
+        milestone: true,
+        recurrence: 'monthly',
+        dueDate: '2026-11-30',
+        startDate: undefined,
+      }),
+    );
+
+    expect(view).toMatchObject({
+      milestone: true,
+      recurrence: 'monthly',
+      startDate: '2026-11-30',
+      dueDate: '2026-11-30',
+      estimateMinutes: null,
+      version: 1,
+    });
+    expect(tasks.events.some((event) => event.kind === 'milestoneReached')).toBe(false);
+    expect(tasks.events.some((event) => event.kind === 'occurrenceCreated')).toBe(false);
+  });
+
+  it('refuses explicitly inconsistent milestone dates before reserving a key', async () => {
+    const { tasks, useCase } = atelierNord();
+    await expect(
+      refusalOf(
+        useCase.execute(
+          createTask({
+            milestone: true,
+            dueDate: '2026-11-30',
+            startDate: null,
+          }),
+        ),
+      ),
+    ).resolves.toEqual({ reason: 'milestone-dates-invalid' });
+    expect(tasks.trace).not.toContain('spaces.allocateKeys');
+    expect(tasks.tasks.size).toBe(0);
+    expect(tasks.events).toEqual([]);
+  });
+
   it('locks the actor, then the assignees, holds the list and allocates the keys last', async () => {
     const { tasks, useCase } = atelierNord();
 

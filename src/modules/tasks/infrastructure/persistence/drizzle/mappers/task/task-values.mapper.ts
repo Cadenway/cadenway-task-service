@@ -2,10 +2,30 @@ import { CANCEL_REASONS } from '../../../../../domain/value-objects/task/cancel-
 import type { CancelReason } from '../../../../../domain/value-objects/task/cancel-reason.value-object.js';
 import { PRIORITY_KEYS } from '../../../../../domain/value-objects/task/priority-key.value-object.js';
 import type { PriorityKey } from '../../../../../domain/value-objects/task/priority-key.value-object.js';
+import { RECURRENCES } from '../../../../../domain/value-objects/task/recurrence.value-object.js';
+import type { Recurrence } from '../../../../../domain/value-objects/task/recurrence.value-object.js';
 import { STATUS_KEYS } from '../../../../../domain/value-objects/task/status-key.value-object.js';
 import type { StatusKey } from '../../../../../domain/value-objects/task/status-key.value-object.js';
 import { ACTOR_TYPES } from '../../../../../domain/value-objects/task/task-actor.value-object.js';
 import type { TaskActor } from '../../../../../domain/value-objects/task/task-actor.value-object.js';
+
+/**
+ * Narrows a stored recurrence cadence to the published set.
+ *
+ * @param {string} value - The stored cadence.
+ * @param {string} subject - The row identifier.
+ * @returns {Recurrence} The cadence.
+ * @throws {Error} When the stored cadence is outside its set.
+ */
+export function toRecurrence(value: string, subject: string): Recurrence {
+  const recurrence: Recurrence | undefined = RECURRENCES.find(
+    (candidate: Recurrence): boolean => candidate === value,
+  );
+  if (recurrence === undefined) {
+    throw new Error(`A stored recurrence is outside the recurrence keys (${subject}).`);
+  }
+  return recurrence;
+}
 
 /**
  * Function toStatusKey
