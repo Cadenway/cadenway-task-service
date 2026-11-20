@@ -2579,6 +2579,17 @@ export class InMemoryTasks implements TasksUnitOfWork {
       tasks.set(state.id, state);
       return state;
     };
+    const insertInitialChecklist = (task: Task, items: readonly ChecklistItemState[]): Task => {
+      const state: TaskState = {
+        ...task.snapshot,
+        checklist: items.map((item: ChecklistItemState): ChecklistItemState => ({
+          ...item,
+          id: this.nextId('019a7300'),
+        })),
+      };
+      tasks.set(state.id, state);
+      return Task.restore(state);
+    };
     // The roots of the archives of some lists, the most recently archived first.
     const rootsOf = (organizationId: string, listIds: readonly string[]): TaskState[] =>
       inOrganization(organizationId)
@@ -2934,18 +2945,18 @@ export class InMemoryTasks implements TasksUnitOfWork {
         },
         insertChecklist: (task: Task, source: readonly ChecklistItemState[]): Promise<Task> => {
           this.trace.push('copies.insertChecklist');
-          const state: TaskState = {
-            ...task.snapshot,
-            checklist: source.map(
-              (item: ChecklistItemState, index: number): ChecklistItemState => ({
-                ...item,
-                id: this.nextId('019a7300'),
-                position: index + 1,
-              }),
+          return Promise.resolve(insertInitialChecklist(task, source));
+        },
+        insertChecklists: (inserted, sources): Promise<readonly Task[]> => {
+          this.trace.push('copies.insertChecklists');
+          if (inserted.length !== sources.length) {
+            return Promise.reject(new Error('Every copied task needs one source checklist.'));
+          }
+          return Promise.resolve(
+            inserted.map((task: Task, index: number): Task =>
+              insertInitialChecklist(task, sources[index] ?? []),
             ),
-          };
-          tasks.set(state.id, state);
-          return Promise.resolve(Task.restore(state));
+          );
         },
       },
       jobs: {

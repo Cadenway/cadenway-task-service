@@ -62,6 +62,11 @@ interface PreparedUpdate {
   // #endregion
 }
 
+/** A milestone conversion can implicitly change an incompatible status to todo. */
+function mayChangeStatus(input: UpdateTaskInput): boolean {
+  return input.patch.status !== undefined || input.patch.milestone === true;
+}
+
 /** Releases task locks before retrying a changed moving tree. */
 class RetryMoveTree extends Error {}
 
@@ -188,10 +193,9 @@ export class UpdateTask {
   /** Writes the prepared change, activity and events while the preflight's locks remain held. */
   private async apply(store: TasksStore, input: UpdateTaskInput): Promise<UpdateTaskOutput> {
     const prepare = (): Promise<PreparedUpdate> => this.prepare(store, input);
-    const { task, descendants, plan, now, watcherIds, viewer, candidates } =
-      input.patch.status === undefined
-        ? await prepare()
-        : await withWatcherAudienceRetry(store, prepare);
+    const { task, descendants, plan, now, watcherIds, viewer, candidates } = mayChangeStatus(input)
+      ? await withWatcherAudienceRetry(store, prepare)
+      : await prepare();
     const scheduled: ScheduledTaskUpdate = await this.recurrence.prepare(
       task,
       plan.patch,
@@ -338,17 +342,16 @@ export class UpdateTask {
       archived: 'refuse',
       expectedVersions: input.expectedVersions,
     };
-    const candidateTask =
-      input.patch.status === undefined
-        ? null
-        : (
-            await this.locator.locate(store, {
-              ...request,
-              lock: false,
-              archived: 'allow',
-              expectedVersions: null,
-            })
-          ).task;
+    const candidateTask = !mayChangeStatus(input)
+      ? null
+      : (
+          await this.locator.locate(store, {
+            ...request,
+            lock: false,
+            archived: 'allow',
+            expectedVersions: null,
+          })
+        ).task;
     const heldRoles =
       candidateTask === null
         ? new Map<string, MemberRole | null>()

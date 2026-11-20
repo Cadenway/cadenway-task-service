@@ -83,6 +83,16 @@ describe('duplication routes with PostgreSQL and NATS', () => {
     return call;
   }
 
+  async function fillSource(id: string, offset: number, count: number): Promise<void> {
+    await query(
+      `insert into tasks
+         (organization_id,key_prefix,key_number,space_id,list_id,name,status,priority,created_by_type,created_by_id)
+       select $1,'CPY',$5+n,$2,$3,'Bulk ' || n,'todo','moyenne','user',$4
+         from generate_series(1,$6) n`,
+      [org, spaceId, id, actor, offset, count],
+    );
+  }
+
   beforeAll(async () => {
     compose(
       'up',
@@ -306,6 +316,7 @@ describe('duplication routes with PostgreSQL and NATS', () => {
     expect(created.status).toBe(201);
     const id = CreateListInternalResponse.parse(created.body as unknown).id;
     expect((await post(`/internal/v1/lists/${id}/tasks`, { name: 'First copy' })).status).toBe(201);
+    await fillSource(id, 20_000, 498);
     expect(
       (await post(`/internal/v1/lists/${id}/tasks`, { name: 'Reject copied fact' })).status,
     ).toBe(201);
@@ -315,6 +326,7 @@ describe('duplication routes with PostgreSQL and NATS', () => {
         `select
           (select count(*)::int from lists where organization_id=$1) as lists,
           (select count(*)::int from tasks where organization_id=$1) as tasks,
+          (select count(*)::int from activity_entries where organization_id=$1) as activity,
           (select last_number from space_prefixes where organization_id=$1 and prefix='CPY') as last_number,
           (select count(*)::int from outbox_events where organization_id=$1) as facts`,
         [org],
@@ -340,14 +352,31 @@ describe('duplication routes with PostgreSQL and NATS', () => {
     }
   });
 
+  it('copies the full 500-task limit with one creation activity and fact per new task', async () => {
+    const created = await post(`/internal/v1/spaces/${spaceId}/lists`, { name: 'At limit' });
+    expect(created.status).toBe(201);
+    const source = CreateListInternalResponse.parse(created.body as unknown).id;
+    await fillSource(source, 30_000, 500);
+    const response = await post(`/internal/v1/lists/${source}/duplicate`, {});
+    expect(response.status).toBe(201);
+    const { list, taskCount } = DuplicateListInternalResponse.parse(response.body);
+    expect(taskCount).toBe(500);
+    expect(
+      await query(
+        `select
+        (select count(*)::int from tasks where organization_id=$1 and list_id=$2 and version=1) as tasks,
+        (select count(*)::int from activity_entries where organization_id=$1 and list_id=$2 and kind='create') as activity,
+        (select count(*)::int from outbox_events where organization_id=$1 and payload->>'listId'=$2::text and event_name='task.created.v1') as facts`,
+        [org, list.id],
+      ),
+    ).toEqual([{ tasks: 500, activity: 500, facts: 500 }]);
+  });
+
   it('refuses more than 500 live tasks without creating any list or outbox events', async () => {
     const created = await post(`/internal/v1/spaces/${spaceId}/lists`, { name: 'Over limit' });
     expect(created.status).toBe(201);
     const id = CreateListInternalResponse.parse(created.body as unknown).id;
-    await query(
-      `insert into tasks (organization_id,key_prefix,key_number,space_id,list_id,name,status,priority,created_by_type,created_by_id) select $1,'CPY',10000+n,$2,$3,'Bulk ' || n,'todo','moyenne','user',$4 from generate_series(1,501) n`,
-      [org, spaceId, id, actor],
-    );
+    await fillSource(id, 10_000, 501);
     const before = await query<{ lists: number; events: number }>(
       `select (select count(*)::int from lists where organization_id=$1) lists, (select count(*)::int from outbox_events) events`,
       [org],

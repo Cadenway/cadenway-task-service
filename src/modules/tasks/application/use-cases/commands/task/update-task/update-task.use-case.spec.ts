@@ -151,6 +151,22 @@ describe('UpdateTask: a patch changes what it names and nothing else', () => {
 });
 
 describe('UpdateTask: the status, the cancellation and the completion', () => {
+  it('holds the effective audience when milestone conversion implicitly changes progress to todo', async () => {
+    const { tasks, useCase } = atelierNord();
+
+    const view = await useCase.execute(patchOf({ milestone: true }));
+
+    expect(view).toMatchObject({ milestone: true, status: 'todo', version: 13 });
+    expect(tasks.events.find((event) => event.kind === 'statusChanged')).toMatchObject({
+      previousStatus: 'progress',
+      watcherIds: [CAMILLE, INES].sort(),
+    });
+    expect(tasks.events.filter((event) => event.kind === 'milestoneReached')).toEqual([]);
+    expect(tasks.trace.indexOf(`members.roleOf:${INES}:lock`)).toBeLessThan(
+      tasks.trace.indexOf('tasks.findByKey:lock'),
+    );
+  });
+
   it('emits the milestone fact once with the same effective audience as the status fact', async () => {
     const { tasks, useCase } = atelierNord([
       taskState({

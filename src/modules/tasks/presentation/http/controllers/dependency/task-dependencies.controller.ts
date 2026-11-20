@@ -74,17 +74,19 @@ export class TaskDependenciesController {
     @Param() path: TaskPath,
     @Query() query: ListDependenciesQuery,
   ): Promise<DependencyPage> {
+    const caller = toCaller();
+    const scope = { organizationId: caller.organizationId, taskKey: path.taskKey };
     const page = await answerRefusals(() =>
       this.listDependencies.execute({
-        ...toCaller(),
+        ...caller,
         taskKey: path.taskKey,
-        after: toDependencyPosition(query.cursor, path.taskKey),
+        after: toDependencyPosition(query.cursor, scope),
         limit: query.limit,
       }),
     );
     return {
       items: page.items.map(toDependency),
-      nextCursor: toDependencyCursor(page.next, path.taskKey),
+      nextCursor: toDependencyCursor(page.next, scope),
     };
   }
 
@@ -152,20 +154,22 @@ export class TaskDependenciesController {
     @Param() path: TaskPath,
     @Query() query: ListDependencyCandidatesQuery,
   ): Promise<TaskSummaryPage> {
+    const caller = toCaller();
+    const scope = { organizationId: caller.organizationId, taskKey: path.taskKey };
     const search: string | null = query.search ?? null;
     const page = await answerRefusals(() =>
       this.listCandidates.execute({
-        ...toCaller(),
+        ...caller,
         taskKey: path.taskKey,
         direction: query.direction,
         search,
-        after: toCandidatePosition(query.cursor, path.taskKey, query.direction, search),
+        after: toCandidatePosition(query.cursor, scope, query.direction, search),
         limit: query.limit,
       }),
     );
     return {
       items: page.items.map(toTaskSummary),
-      nextCursor: toCandidateCursor(page.next, path.taskKey, query.direction, search),
+      nextCursor: toCandidateCursor(page.next, scope, query.direction, search),
       total: page.total,
     };
   }

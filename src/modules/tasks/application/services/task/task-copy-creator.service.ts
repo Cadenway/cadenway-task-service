@@ -26,6 +26,18 @@ export class TaskCopyCreator {
   // #region Methods
   /** Inserts a version-one task and records its activity and outbox facts. */
   public async create(store: TasksStore, input: TaskCopyInput): Promise<Task> {
+    const inserted: Task = await store.tasks.insert(this.draft(input), input.key);
+    const { actor, now, source } = input;
+    const task: Task =
+      source.snapshot.checklist.length === 0
+        ? inserted
+        : await store.copies.insertChecklist(inserted, source.snapshot.checklist);
+    await this.recordCreated(store, [task], actor, now);
+    return task;
+  }
+
+  /** Drafts one copy with the shared copy fields and normal creation rules. */
+  public draft(input: Omit<TaskCopyInput, 'key'>): TaskDraft {
     const source: TaskState = input.source.snapshot;
     const { actor, now, placement } = input;
     const assignees: ReadonlyMap<string, AssigneeCandidate> = new Map(
@@ -43,7 +55,7 @@ export class TaskCopyCreator {
       input.keepNameAndStatus === true
         ? { ...placement.space.statuses, [source.status]: { hidden: false } }
         : placement.space.statuses;
-    const draft: TaskDraft = this.rules.apply(() =>
+    return this.rules.apply(() =>
       Task.create(
         {
           organizationId: source.organizationId,
@@ -71,16 +83,22 @@ export class TaskCopyCreator {
         now,
       ),
     );
-    const inserted: Task = await store.tasks.insert(draft, input.key);
-    const task: Task =
-      source.checklist.length === 0
-        ? inserted
-        : await store.copies.insertChecklist(inserted, source.checklist);
-    await this.activity.record(store.activity, [
-      ActivityEntry.forCreation(task.snapshot, actor, now),
-    ]);
-    await this.announcer.created(store.events, task, actor);
-    return task;
+  }
+
+  /** Inserts all creation activity together, then appends the ordinary facts in task order. */
+  public async recordCreated(
+    store: TasksStore,
+    tasks: readonly Task[],
+    actor: TaskCopyInput['actor'],
+    now: Date,
+  ): Promise<void> {
+    await this.activity.record(
+      store.activity,
+      tasks.map((task: Task) => ActivityEntry.forCreation(task.snapshot, actor, now)),
+    );
+    for (const task of tasks) {
+      await this.announcer.created(store.events, task, actor);
+    }
   }
   // #endregion
 }

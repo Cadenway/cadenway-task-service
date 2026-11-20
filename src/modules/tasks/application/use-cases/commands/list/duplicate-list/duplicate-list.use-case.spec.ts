@@ -65,6 +65,7 @@ function fixture(sources: readonly TaskState[], actorUserId: string = CAMILLE) {
     destination,
     roster,
     copied,
+    trace,
   };
 }
 
@@ -77,7 +78,7 @@ describe('DuplicateList', () => {
     const archived: TaskState = { ...missing, archive: archiveFrom(missing.id) };
     const detached: TaskState = queryTask(3, { parentId: missing.id, parentKey: missing.key });
     const trashed: TaskState = queryTask(4, { trash: trashIn() });
-    const { useCase, tasks, input, roster, destination, copied } = fixture([
+    const { useCase, tasks, input, roster, destination, copied, trace } = fixture([
       grandchild,
       archived,
       detached,
@@ -107,6 +108,22 @@ describe('DuplicateList', () => {
       [grandchild.name, 'CAD-498', COPY_LIST],
     ]);
     expect(clones[0]?.snapshot.status).toBe('testing');
+    expect(clones[0]?.snapshot.checklist.map(({ text, done }) => ({ text, done }))).toEqual(
+      root.checklist.map(({ text, done }) => ({ text, done })),
+    );
+    expect(clones[0]?.snapshot.checklist.map(({ id }) => id)).not.toEqual(
+      root.checklist.map(({ id }) => id),
+    );
+    expect(
+      trace.filter((call: string): boolean =>
+        ['tasks.insertMany', 'copies.insertChecklists'].includes(call),
+      ),
+    ).toEqual([
+      'tasks.insertMany',
+      'tasks.insertMany',
+      'tasks.insertMany',
+      'copies.insertChecklists',
+    ]);
     expect(tasks.events.filter(({ kind }) => kind === 'created')).toHaveLength(4);
   });
 
@@ -124,7 +141,7 @@ describe('DuplicateList', () => {
   });
 
   it('copies exactly 500 tasks with consecutive keys in the allocator’s supported batches', async () => {
-    const { useCase, tasks, input, copied, spaces } = fixture(
+    const { useCase, tasks, input, copied, spaces, trace } = fixture(
       Array.from({ length: 500 }, (_, index: number): TaskState => queryTask(index)),
     );
     await expect(useCase.execute(input)).resolves.toEqual({ list: copied, taskCount: 500 });
@@ -132,6 +149,9 @@ describe('DuplicateList', () => {
       ...Array<number>(19).fill(26),
       6,
     ]);
+    expect(
+      trace.filter((call: string): boolean => ['tasks.insert', 'tasks.insertMany'].includes(call)),
+    ).toEqual(['tasks.insertMany']);
     expect(tasks.events.filter(({ kind }) => kind === 'created').map(({ key }) => key)).toEqual(
       Array.from({ length: 500 }, (_, index: number): string => `CAD-${String(496 + index)}`),
     );

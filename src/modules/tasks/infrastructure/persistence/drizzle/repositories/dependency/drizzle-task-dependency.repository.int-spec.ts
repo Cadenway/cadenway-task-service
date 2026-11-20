@@ -295,4 +295,51 @@ describe('DrizzleTaskDependencyRepository', () => {
       A,
     ]);
   });
+
+  it('bulk copies more than one checklist batch in task order with fresh identities', async () => {
+    await pool.query(
+      `insert into tasks (organization_id,id,key_prefix,key_number,space_id,list_id,name,status,priority,created_by_type,created_by_id)
+       select $1, md5(('bulk-copy-' || n)::text)::uuid, 'BULK', n, $2, $3,
+         'Copy ' || n, 'todo', 'moyenne', 'user', 'fixture'
+       from generate_series(1, 11) n`,
+      [ORG, SPACE, OTHER_LIST],
+    );
+    let inserts = 0;
+    const copies = new DrizzleTaskCopiesRepository(
+      drizzle(pool, {
+        logger: {
+          logQuery(query: string): void {
+            if (query.startsWith('insert into "checklist_items"')) inserts += 1;
+          },
+        },
+      }),
+    );
+    const targets = (await copies.listSources(ORG, OTHER_LIST, 20)).filter((task) =>
+      task.snapshot.name.startsWith('Copy '),
+    );
+    const sources = targets.map(() =>
+      Array.from({ length: 100 }, (_, position) => ({
+        id: A,
+        text: `Item ${String(position)}`,
+        done: position % 2 === 0,
+        position,
+      })),
+    );
+    expect(targets).toHaveLength(11);
+    await expect(copies.insertChecklists(targets, [])).rejects.toThrow();
+    const copied = await copies.insertChecklists(targets, sources);
+    expect(inserts).toBe(2);
+    expect(copied.map((task) => task.snapshot.id)).toEqual(targets.map((task) => task.snapshot.id));
+    expect(copied.every((task) => task.snapshot.version === 1)).toBe(true);
+    const allItems = copied.flatMap((task) => task.snapshot.checklist);
+    expect(allItems).toHaveLength(1100);
+    expect(new Set(allItems.map((item) => item.id)).size).toBe(1100);
+    expect(allItems.every((item) => item.id !== A)).toBe(true);
+    expect(
+      copied[0]?.snapshot.checklist.map(({ text, done, position }) => ({ text, done, position })),
+    ).toEqual(sources[0]?.map(({ text, done, position }) => ({ text, done, position })));
+    expect(
+      copied[10]?.snapshot.checklist.map(({ text, done, position }) => ({ text, done, position })),
+    ).toEqual(sources[10]?.map(({ text, done, position }) => ({ text, done, position })));
+  });
 });

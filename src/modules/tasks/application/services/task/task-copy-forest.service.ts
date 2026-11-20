@@ -1,10 +1,12 @@
 import type { Task } from '../../../domain/aggregates/task/task.aggregate.js';
 import type { AssigneeCandidate } from '../../../domain/value-objects/member/assignee-candidate.value-object.js';
-import type { SubtaskParent } from '../../../domain/value-objects/subtask/subtask-parent.value-object.js';
+import type { ChecklistItemState } from '../../../domain/value-objects/task/checklist-item-state.value-object.js';
+import type { TaskDraft } from '../../../domain/value-objects/task/task-draft.value-object.js';
 import { TaskKey } from '../../../domain/value-objects/task/task-key.value-object.js';
 import type { EventActor } from '../../models/actor/event-actor.model.js';
 import type { KeyAllocation } from '../../models/placement/key-allocation.model.js';
 import type { ListPlacement } from '../../models/placement/list-placement.model.js';
+import type { TaskCopyInput } from '../../models/task/task-copy-input.model.js';
 import type { TasksStore } from '../../models/transactions/tasks-store.model.js';
 import type { SpaceDirectory } from '../../ports/outbound/spaces/space/space-directory.port.js';
 import { TaskCopyCreator } from './task-copy-creator.service.js';
@@ -55,24 +57,18 @@ export class TaskCopyForest {
       placement.space.id,
       sources.length,
     );
-    const branches: {
+    const copied: Task[] = [];
+    const checklists: (readonly ChecklistItemState[])[] = [];
+    let branches: {
       readonly tasks: readonly Task[];
       readonly parent: Task | null;
-      readonly level: number;
-    }[] = [{ tasks: children.get(null) ?? [], parent: null, level: 1 }];
-    let index = 0;
-    for (const { tasks, parent, level } of branches) {
-      for (const [position, source] of tasks.entries()) {
-        const key: TaskKey | undefined = keys[index];
-        if (key === undefined) {
-          throw new Error('The list copy did not allocate enough task keys.');
-        }
-        const attachment: SubtaskParent | null = parent?.asParent(level - 1, position) ?? null;
-        const task: Task = await this.creator.create(store, {
+    }[] = [{ tasks: children.get(null) ?? [], parent: null }];
+    for (let depth = 1; branches.length > 0; depth += 1) {
+      const level: readonly Omit<TaskCopyInput, 'key'>[] = branches.flatMap(({ tasks, parent }) =>
+        tasks.map((source: Task, position: number) => ({
           source,
           placement,
-          parent: attachment,
-          key,
+          parent: parent?.asParent(depth - 1, position) ?? null,
           assignees: source.snapshot.assigneeIds.flatMap(
             (userId: string): readonly AssigneeCandidate[] => {
               const candidate: AssigneeCandidate | undefined = candidates.get(userId);
@@ -82,17 +78,33 @@ export class TaskCopyForest {
           actor,
           now,
           keepNameAndStatus: true,
-        });
-        index += 1;
+        })),
+      );
+      const stored: readonly Task[] = await store.tasks.insertMany(
+        level.map((input): TaskDraft => this.creator.draft(input)),
+        keys.slice(copied.length, copied.length + level.length),
+      );
+      if (stored.length !== level.length) {
+        throw new Error('The list copy did not store all tasks of a level.');
+      }
+      copied.push(...stored);
+      checklists.push(
+        ...level.map(({ source }): readonly ChecklistItemState[] => source.snapshot.checklist),
+      );
+      branches = [];
+      for (const [index, { source }] of level.entries()) {
         const descendants: readonly Task[] | undefined = children.get(source.snapshot.id);
-        if (descendants !== undefined) {
-          branches.push({ tasks: descendants, parent: task, level: level + 1 });
-        }
+        if (descendants === undefined) continue;
+        const parent: Task | undefined = stored[index];
+        if (parent === undefined) throw new Error('The list copy did not store a required parent.');
+        branches.push({ tasks: descendants, parent });
       }
     }
-    if (index !== sources.length) {
+    if (copied.length !== sources.length) {
       throw new Error('The source list does not have an acyclic task forest.');
     }
+    const complete: readonly Task[] = await store.copies.insertChecklists(copied, checklists);
+    await this.creator.recordCreated(store, complete, actor, now);
   }
 
   private async allocate(

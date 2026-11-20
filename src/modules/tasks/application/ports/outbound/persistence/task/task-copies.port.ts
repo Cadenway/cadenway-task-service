@@ -9,5 +9,11 @@ export interface TaskCopies {
 
   /** Adds a freshly created task's initial checklist with new identities and existing ticks. */
   insertChecklist(task: Task, source: readonly ChecklistItemState[]): Promise<Task>;
+
+  /** Inserts several initial checklists and returns the tasks in the supplied order. */
+  insertChecklists(
+    tasks: readonly Task[],
+    sources: readonly (readonly ChecklistItemState[])[],
+  ): Promise<readonly Task[]>;
   // #endregion
 }

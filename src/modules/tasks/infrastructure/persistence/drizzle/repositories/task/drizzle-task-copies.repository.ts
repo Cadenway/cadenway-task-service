@@ -18,6 +18,9 @@ import { tasks } from '../../schemas/task/task.schema.js';
 /** Parent rows supply the keys retained by the source snapshot. */
 const parentTasks = alias(tasks, 'copy_source_parent');
 
+/** Five parameters per row: a batch stays well below PostgreSQL's parameter limit. */
+const CHECKLIST_BATCH_SIZE = 1000;
+
 /**
  * A source list snapshot and the checklist of a newly copied task, bound to the caller's tenant
  * transaction. Each source read is one bounded SQL statement so task fields and collections share
@@ -112,29 +115,71 @@ export class DrizzleTaskCopiesRepository implements TaskCopies {
    * @returns {Promise<Task>} The task with its newly stored checklist.
    */
   public async insertChecklist(task: Task, source: readonly ChecklistItemState[]): Promise<Task> {
-    if (source.length === 0) return task;
-    const state = task.snapshot;
-    const rows: ChecklistItemRow[] = await this.db
-      .insert(checklistItems)
-      .values(
-        source.map((item: ChecklistItemState) => ({
+    const [copied] = await this.insertChecklists([task], [source]);
+    if (copied === undefined) throw new Error('The copied task is missing.');
+    return copied;
+  }
+
+  /**
+   * Inserts initial checklists in bounded batches and restores tasks in their original order.
+   *
+   * @param {readonly Task[]} tasksToCopy - Newly inserted tasks.
+   * @param {readonly (readonly ChecklistItemState[])[]} sources - Corresponding source items.
+   * @returns {Promise<readonly Task[]>} Tasks with newly stored checklist identities.
+   */
+  public async insertChecklists(
+    tasksToCopy: readonly Task[],
+    sources: readonly (readonly ChecklistItemState[])[],
+  ): Promise<readonly Task[]> {
+    if (tasksToCopy.length !== sources.length) {
+      throw new Error('Each copied task must have a corresponding source checklist.');
+    }
+    const seen = new Set<string>();
+    const values: (typeof checklistItems.$inferInsert)[] = [];
+    for (const [index, task] of tasksToCopy.entries()) {
+      const state = task.snapshot;
+      const key = `${state.organizationId}:${state.id}`;
+      if (seen.has(key)) throw new Error('A task cannot be copied more than once in a batch.');
+      seen.add(key);
+      for (const item of sources[index] ?? []) {
+        values.push({
           organizationId: state.organizationId,
           taskId: state.id,
           text: item.text,
           done: item.done,
           position: item.position,
-        })),
-      )
-      .returning();
-    if (rows.length !== source.length) {
-      throw new Error(`The checklist of task ${state.id} was not fully copied.`);
+        });
+      }
     }
-    const checklist = rows
-      .map(toChecklistItem)
-      .sort(
-        (left: ChecklistItemState, right: ChecklistItemState) => left.position - right.position,
-      );
-    return Task.restore({ ...state, checklist });
+
+    const byTask = new Map<string, ChecklistItemRow[]>();
+    for (let offset = 0; offset < values.length; offset += CHECKLIST_BATCH_SIZE) {
+      const rows: ChecklistItemRow[] = await this.db
+        .insert(checklistItems)
+        .values(values.slice(offset, offset + CHECKLIST_BATCH_SIZE))
+        .returning();
+      if (rows.length !== Math.min(CHECKLIST_BATCH_SIZE, values.length - offset)) {
+        throw new Error('The initial checklists were not fully copied.');
+      }
+      for (const row of rows) {
+        const key = `${row.organizationId}:${row.taskId}`;
+        const group = byTask.get(key) ?? [];
+        group.push(row);
+        byTask.set(key, group);
+      }
+    }
+
+    return tasksToCopy.map((task: Task): Task => {
+      const state = task.snapshot;
+      const rows = byTask.get(`${state.organizationId}:${state.id}`);
+      if (rows === undefined) return task;
+      const checklist = rows
+        .map(toChecklistItem)
+        .sort(
+          (left: ChecklistItemState, right: ChecklistItemState) => left.position - right.position,
+        );
+      return Task.restore({ ...state, checklist });
+    });
   }
   // #endregion
 }
