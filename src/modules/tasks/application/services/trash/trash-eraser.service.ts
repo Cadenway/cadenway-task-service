@@ -19,8 +19,8 @@ import { TaskAnnouncer } from '../task/task-announcer.service.js';
  * its entries. Nothing comes back from it."), the shared step of "Supprimer définitivement" and of
  * the purge job. Each task of each entry emits one `task.purged.v1` at the version of its erasure
  * (`Task.purge`), with the actor of its entry, the root first, then by depth and id, and every
- * entry goes whole in one transaction, so the events of an entry commit with its erasure, root
- * first, or not at all. Then the entries go in set-based statements (`TrashEntryRepository.erase`),
+ * entry normally goes whole in one transaction. For a resumable purge the events have already
+ * committed and the last remaining tasks are erased without repeating them. Then the entries go in set-based statements (`TrashEntryRepository.erase`),
  * every write of the tasks done; only then are the lists of the entries locked through the spaces
  * module, in one call, whether live or deleted (`LockTrashLists` in `erase`: their spaces
  * `FOR NO KEY UPDATE` in `(created_at, id)` order, then the lists `FOR UPDATE` in ascending id,
@@ -75,6 +75,7 @@ export class TrashEraser {
    * @param {readonly TrashEntryErasure[]} erasures - The entries, each locked with its tasks.
    * @param {Viewer | null} editor - The person who erases, who needs `edit` on every list of the
    * entries under its lock, or `null` for the purge job, which needs no role.
+   * @param {boolean} announced - Whether the entry's events were already committed.
    * @returns {Promise<TrashErasureCounts>} The tasks, lists and spaces erased.
    * @throws {TaskRefusal} `trash-entry-not-found` when the person no longer has `edit` on a list
    * under its lock.
@@ -86,21 +87,12 @@ export class TrashEraser {
     organizationId: string,
     erasures: readonly TrashEntryErasure[],
     editor: Viewer | null,
+    announced: boolean = false,
   ): Promise<TrashErasureCounts> {
     if (erasures.length === 0) {
       return { tasks: 0, listsPurged: 0, spacesPurged: 0 };
     }
-    const now: Date = await store.clock.now();
-    for (const { entry, tasks, actor } of erasures) {
-      const purged: readonly Task[] = tasks.map((task: Task): Task => task.purge(now));
-      const root: Task | undefined = purged.find(
-        (task: Task): boolean => task.snapshot.id === entry.rootTaskId,
-      );
-      if (root === undefined) {
-        throw new Error(`The trash entry ${entry.id} has no root ${entry.rootTaskId}.`);
-      }
-      await this.announcer.purged(store.events, root, purged, actor);
-    }
+    if (!announced) await this.announce(store, erasures);
     await store.trash.erase(
       organizationId,
       erasures.map(({ entry }: TrashEntryErasure): string => entry.id),
@@ -139,6 +131,21 @@ export class TrashEraser {
       listsPurged,
       spacesPurged,
     };
+  }
+
+  /** Appends every event of locked entries in root-first order. */
+  public async announce(store: TasksStore, erasures: readonly TrashEntryErasure[]): Promise<void> {
+    const now: Date = await store.clock.now();
+    for (const { entry, tasks, actor } of erasures) {
+      const purged: readonly Task[] = tasks.map((task: Task): Task => task.purge(now));
+      const root: Task | undefined = purged.find(
+        (task: Task): boolean => task.snapshot.id === entry.rootTaskId,
+      );
+      if (root === undefined) {
+        throw new Error(`The trash entry ${entry.id} has no root ${entry.rootTaskId}.`);
+      }
+      await this.announcer.purged(store.events, root, purged, actor);
+    }
   }
 
   /**

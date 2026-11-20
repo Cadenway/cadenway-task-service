@@ -53,7 +53,7 @@ const rootRows: ReturnType<typeof alias<typeof tasks, 'root'>> = alias(tasks, 'r
  * @returns {SQL} The select list.
  */
 function entryColumns(): SQL {
-  return sql`${entryRows.id} as "id", ${entryRows.organizationId} as "organizationId", ${entryRows.rootTaskId} as "rootTaskId", ${entryRows.listId} as "listId", ${entryRows.parentKey} as "parentKey", ${entryRows.taskCount} as "taskCount", ${instantText(entryRows.trashedAt)} as "trashedAt", ${entryRows.trashedByType} as "trashedByType", ${entryRows.trashedById} as "trashedById", ${instantText(entryRows.purgeRequestedAt)} as "purgeRequestedAt", ${entryRows.purgeRequestedByType} as "purgeRequestedByType", ${entryRows.purgeRequestedById} as "purgeRequestedById", ${rootRows.keyPrefix} as "rootKeyPrefix", ${rootRows.keyNumber} as "rootKeyNumber", ${rootRows.name} as "rootName", ${rootRows.status} as "rootStatus"`;
+  return sql`${entryRows.id} as "id", ${entryRows.organizationId} as "organizationId", ${entryRows.rootTaskId} as "rootTaskId", ${entryRows.listId} as "listId", ${entryRows.parentKey} as "parentKey", ${entryRows.taskCount} as "taskCount", ${instantText(entryRows.trashedAt)} as "trashedAt", ${entryRows.trashedByType} as "trashedByType", ${entryRows.trashedById} as "trashedById", ${instantText(entryRows.purgeRequestedAt)} as "purgeRequestedAt", ${entryRows.purgeRequestedByType} as "purgeRequestedByType", ${entryRows.purgeRequestedById} as "purgeRequestedById", ${entryRows.purgeStarted} as "purgeStarted", ${rootRows.keyPrefix} as "rootKeyPrefix", ${rootRows.keyNumber} as "rootKeyNumber", ${rootRows.name} as "rootName", ${rootRows.status} as "rootStatus"`;
 }
 
 /**

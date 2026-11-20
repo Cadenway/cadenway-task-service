@@ -1,9 +1,12 @@
 import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
+import { canWriteTasksOf } from '../../../../../domain/policies/task/task-write.policy.js';
 import type { TaskActor } from '../../../../../domain/value-objects/task/task-actor.value-object.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
 import type { LocatedTask } from '../../../../models/task/located-task.model.js';
-import type { LockedSubtree } from '../../../../models/task/locked-subtree.model.js';
+import type { LocateRequest } from '../../../../models/task/locate-request.model.js';
+import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
+import type { TrashTree } from '../../../../models/trash/trash-tree.model.js';
 import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
@@ -12,10 +15,13 @@ import { ViewerResolver } from '../../../../services/member/viewer-resolver.serv
 import { TaskAnnouncer } from '../../../../services/task/task-announcer.service.js';
 import { TaskLocator } from '../../../../services/task/task-locator.service.js';
 import { TaskRuleGuard } from '../../../../services/task/task-rule-guard.service.js';
-import { TaskSubtreeLocker } from '../../../../services/task/task-subtree-locker.service.js';
+import { TrashTreeLocker } from '../../../../services/trash/trash-tree-locker.service.js';
 import { TaskViewBuilder } from '../../../../services/task/task-view-builder.service.js';
 import type { ArchiveTaskInput } from './archive-task.input.js';
 import type { ArchiveTaskOutput } from './archive-task.output.js';
+
+/** Releases the tree locks before retrying a changed tree. */
+class RetryArchiveTree extends Error {}
 
 /**
  * Class ArchiveTask
@@ -27,9 +33,9 @@ import type { ArchiveTaskOutput } from './archive-task.output.js';
  * `role-insufficient`, `version-mismatch` (`If-Match` on the task); a task archived already then
  * answers its stored version and writes and emits nothing, and a subtask archived before keeps its
  * own archive (it is not live, so it is not taken). Locks follow the order of the module: the
- * membership of the actor, the task by key `FOR NO KEY UPDATE`, then its live descendants in
- * ordered statements until the live subtree holds nothing unlocked (`TaskSubtreeLocker`, 651 tasks
- * and 5 passes at most), without their checklists, which an archive never writes or emits. Every
+ * membership of the actor, the whole tree in ascending id (`TrashTreeLocker`), then its space
+ * and list, under which the role is checked again. The live members are archived without their
+ * checklists, which an archive never writes or emits. Every
  * task taken gets the same archive (the transaction instant, the actor, the root), its next
  * version and `updatedAt`, written in one statement; then one `task.archived.v1` per task, the
  * root first, then by depth and id, with the key of the root. An archive is not recorded in the
@@ -48,7 +54,10 @@ export class ArchiveTask {
   private readonly locator: TaskLocator;
 
   /** Locks the live descendants. */
-  private readonly subtrees: TaskSubtreeLocker;
+  private readonly subtrees: TrashTreeLocker;
+
+  /** Locks the placement and checks the current role. */
+  private readonly spaces: SpaceDirectory;
 
   /** Maps the refusals of the domain. */
   private readonly rules: TaskRuleGuard;
@@ -80,7 +89,8 @@ export class ArchiveTask {
     this.unitOfWork = unitOfWork;
     this.viewers = new ViewerResolver(members);
     this.locator = new TaskLocator(spaces);
-    this.subtrees = new TaskSubtreeLocker();
+    this.subtrees = new TrashTreeLocker();
+    this.spaces = spaces;
     this.rules = new TaskRuleGuard();
     this.announcer = new TaskAnnouncer();
     this.views = new TaskViewBuilder();
@@ -102,37 +112,87 @@ export class ArchiveTask {
    * locked, or a task vanished or changed version under its lock: defects.
    */
   public async execute(input: ArchiveTaskInput): Promise<ArchiveTaskOutput> {
-    return this.unitOfWork.run(async (store: TasksStore): Promise<ArchiveTaskOutput> => {
-      const { organizationId } = input;
-      const viewer: Viewer = await this.viewers.resolve(organizationId, input.actorUserId, true);
-      const { task }: LocatedTask = await this.locator.locate(store, {
-        organizationId,
-        viewer,
-        taskKey: input.taskKey,
-        edit: true,
-        lock: true,
-        archived: 'allow',
-        expectedVersions: input.expectedVersions,
-      });
-      if (!task.isLive) {
-        return this.views.build(store.reader, task);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.unitOfWork.run(async (store: TasksStore): Promise<ArchiveTaskOutput> => {
+          const { organizationId } = input;
+          const viewer: Viewer = await this.viewers.resolve(
+            organizationId,
+            input.actorUserId,
+            true,
+          );
+          const request: LocateRequest = {
+            organizationId,
+            viewer,
+            taskKey: input.taskKey,
+            edit: true,
+            lock: false,
+            archived: 'allow',
+            expectedVersions: input.expectedVersions,
+          };
+          const located: LocatedTask = await this.locator.locate(store, request);
+          const trees = await this.subtrees.lock(
+            store,
+            organizationId,
+            [located.task.snapshot.id],
+            [],
+            Infinity,
+          );
+          const tree: TrashTree | undefined = trees.trees[0];
+          if (tree === undefined) {
+            await this.locator.locate(store, request);
+            throw new RetryArchiveTree();
+          }
+          const [list] = await this.spaces.lockTrashLists(
+            organizationId,
+            [tree.root.snapshot.listId],
+            'hold',
+            viewer,
+          );
+          if (list?.outcome !== 'live' || list.role === null) {
+            throw new TaskRefusal({ reason: 'task-not-found' });
+          }
+          if (!canWriteTasksOf(list.role)) {
+            throw new TaskRefusal({ reason: 'role-insufficient', role: list.role });
+          }
+          const { task }: LocatedTask = await this.locator.confirm(store, request, tree.root);
+          if (!task.isLive) {
+            const withChecklist: LocatedTask = await this.locator.locate(store, request);
+            return this.views.build(store.reader, withChecklist.task);
+          }
+          const subtree = await store.tasks.subtreeOf(organizationId, task.snapshot.id);
+          const now: Date = await store.clock.now();
+          const by: TaskActor = { type: 'user', id: input.actorUserId };
+          const rootId: string = task.snapshot.id;
+          const archived: readonly Task[] = tree.members
+            .filter(
+              (member: Task): boolean =>
+                member.snapshot.id === task.snapshot.id ||
+                subtree.descendantIds.includes(member.snapshot.id),
+            )
+            .map((member: Task): Task =>
+              this.rules.apply((): Task => member.archive(rootId, by, now)),
+            );
+          const [root] = archived;
+          if (root === undefined) {
+            throw new Error(`The archive of the task ${rootId} lost its root.`);
+          }
+          await store.tasks.writeArchives(organizationId, rootId, archived);
+          const actor: EventActor = { type: 'user', id: input.actorUserId };
+          await this.announcer.archived(store.events, root, archived, actor);
+          const answer: LocatedTask = await this.locator.locate(store, {
+            ...request,
+            expectedVersions: null,
+          });
+          return this.views.build(store.reader, answer.task);
+        });
+      } catch (error: unknown) {
+        if (!(error instanceof RetryArchiveTree)) {
+          throw error;
+        }
       }
-      const subtree: LockedSubtree = await this.subtrees.lock(store, task, [], false);
-      const now: Date = await store.clock.now();
-      const by: TaskActor = { type: 'user', id: input.actorUserId };
-      const rootId: string = task.snapshot.id;
-      const archived: readonly Task[] = [task, ...subtree.tasks].map((member: Task): Task =>
-        this.rules.apply((): Task => member.archive(rootId, by, now)),
-      );
-      const [root] = archived;
-      if (root === undefined) {
-        throw new Error(`The archive of the task ${rootId} lost its root.`);
-      }
-      await store.tasks.writeArchives(organizationId, rootId, archived);
-      const actor: EventActor = { type: 'user', id: input.actorUserId };
-      await this.announcer.archived(store.events, root, archived, actor);
-      return this.views.build(store.reader, root);
-    });
+    }
+    throw new Error(`The task ${input.taskKey} kept leaving its tree while it was locked.`);
   }
   // #endregion
 }

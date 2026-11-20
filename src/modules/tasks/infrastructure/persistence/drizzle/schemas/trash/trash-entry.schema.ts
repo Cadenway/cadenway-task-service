@@ -2,6 +2,7 @@ import { organizationPolicy } from '@cadenway/nest-common/database';
 import { sql } from 'drizzle-orm';
 import {
   check,
+  boolean,
   index,
   integer,
   pgTable,
@@ -72,6 +73,7 @@ export const trashEntries = pgTable(
     purgeRequestedAt: timestamp('purge_requested_at', { withTimezone: true, precision: 3 }),
     purgeRequestedByType: text('purge_requested_by_type'),
     purgeRequestedById: text('purge_requested_by_id'),
+    purgeStarted: boolean('purge_started').notNull().default(false),
   },
   (table) => [
     primaryKey({ name: 'trash_entries_pkey', columns: [table.organizationId, table.id] }),

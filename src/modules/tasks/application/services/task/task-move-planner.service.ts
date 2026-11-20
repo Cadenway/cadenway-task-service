@@ -30,8 +30,8 @@ import { TaskSubtreeLocker } from './task-subtree-locker.service.js';
  * was checked by `TaskLocator`. An unseen target stays a `422`, a seen one without `edit` is a `403`, both after
  * `If-Match`. An archived parent answers `task-archived` with its key after its `422` and `403`
  * and before the rules of the tree ("Tasks" of `openapi/public/archives.yaml`). The tasks that
- * move with the task (its live descendants, and the new parent) are locked by `TaskSubtreeLocker`
- * in ordered statements after the task itself, until every live descendant of the task is locked
+ * move with the task (its live descendants, and the new parent) have already been locked by the
+ * caller in one ordered tree acquisition. `TaskSubtreeLocker` checks the live shape under those locks
  * (a descendant that left the subtree while the locks were taken is not kept); an archived
  * subtask stays in its list with its parent link. A parent in the trash is unseen
  * (`parent-invalid`), read before the locks or under them. A move to another list holds the list

@@ -29,7 +29,7 @@ const MAX_ENTRIES: number = 20;
  * @description
  * The budget of a batch, in tasks: it takes whole entries of 500 tasks or fewer while the entries
  * taken hold fewer than 500 tasks, so a batch erases 999 tasks at most (499, then one entry of
- * 500); an entry larger than this, when it comes first, is erased alone and whole.
+ * 500); a larger entry is announced once, then erased in parts of at most 500.
  *
  * @type {number}
  */
@@ -49,14 +49,13 @@ const MAX_TASKS: number = 500;
  * instant less 30 days, `purgeDueBefore`, the oldest first), 20 at most, `FOR UPDATE SKIP LOCKED`,
  * so two jobs of one organization share them.
  *
- * - When the first entry holds more than 500 tasks (`task_count`; its archived subtasks are not
- *   limited), the batch erases it alone and whole, as "Supprimer définitivement" does and as one
- *   transaction moved it to the trash (a deletion and a batch of the deletion job trash an entry
- *   whole): every `task.purged.v1` of an entry commits with its erasure, the root first as
- *   `asyncapi/task-service.yaml` requires, and a failure leaves the whole entry, no event of it.
+ * - When the first entry holds more than 500 tasks, one transaction appends all its events root
+ *   first and marks it purging, hiding it from restoration. Later transactions erase its deepest
+ *   tasks in parts of 500; the final transaction erases the remaining tasks and entry without
+ *   emitting the events again. The marker and each progress count commit with their own work.
  * - Otherwise it takes the entries in their order while the entries taken hold fewer than 500
  *   tasks, each of 500 tasks or fewer (it stops at an entry larger than that, which a later batch
- *   erases alone when it comes first), so it erases 999 tasks at most; the entries locked and
+ *   starts when it comes first), so it erases 999 tasks at most; the entries locked and
  *   not taken wait for the next batch.
  *
  * It locks the tasks of all the entries taken `FOR UPDATE` in one statement ordered by id
@@ -113,6 +112,32 @@ export class PurgeTrashBatch {
       if (first === undefined) {
         return { outcome: 'none-left' };
       }
+      if (first.taskCount > MAX_TASKS && !first.purgeStarted) {
+        const tasks: readonly Task[] = await store.tasks.lockTrashEntries(
+          organizationId,
+          [first.id],
+          true,
+        );
+        if (tasks.length !== first.taskCount)
+          throw new Error(`The task count of ${first.id} changed.`);
+        await this.eraser.announce(store, [{ entry: first, tasks, actor: this.actorOf(first) }]);
+        await store.trash.startPurge(
+          organizationId,
+          first.id,
+          await store.clock.now(),
+          erasureActorOf(first.purgeRequest),
+        );
+        return { outcome: 'purged', entries: 0, tasks: 0, listsPurged: 0, spacesPurged: 0 };
+      }
+      if (first.purgeStarted && first.taskCount > MAX_TASKS) {
+        const tasks = await store.trash.erasePart(
+          organizationId,
+          first.id,
+          first.rootTaskId,
+          MAX_TASKS,
+        );
+        return { outcome: 'purged', entries: 0, tasks, listsPurged: 0, spacesPurged: 0 };
+      }
       const taken: readonly TrashEntryRecord[] = this.take(entries);
       const tasks: readonly Task[] = await store.tasks.lockTrashEntries(
         organizationId,
@@ -131,6 +156,7 @@ export class PurgeTrashBatch {
         organizationId,
         erasures,
         null,
+        first.purgeStarted,
       );
       return {
         outcome: 'purged',
@@ -180,13 +206,13 @@ export class PurgeTrashBatch {
    */
   private take(entries: readonly TrashEntryRecord[]): readonly TrashEntryRecord[] {
     const [first] = entries;
-    if (first !== undefined && first.taskCount > MAX_TASKS) {
+    if (first !== undefined && (first.taskCount > MAX_TASKS || first.purgeStarted)) {
       return [first];
     }
     const taken: TrashEntryRecord[] = [];
     let held: number = 0;
     for (const entry of entries) {
-      if (held >= MAX_TASKS || entry.taskCount > MAX_TASKS) {
+      if (held >= MAX_TASKS || entry.taskCount > MAX_TASKS || entry.purgeStarted) {
         break;
       }
       taken.push(entry);

@@ -274,7 +274,7 @@ describe('UnarchiveTask: the parent of the root takes it back, or the root is de
     expect((await useCase.execute(unarchive({ taskKey: 'CAD-483' }))).parentKey).toBe('CAD-482');
   });
 
-  it('locks the parent after the members, reading only its archive and its list', async () => {
+  it('locks the parent together with the members before restoring the archive', async () => {
     const { tasks, useCase } = atelierNord(archivedSubtree());
 
     await useCase.execute(unarchive({ taskKey: 'CAD-483' }));
@@ -282,7 +282,8 @@ describe('UnarchiveTask: the parent of the root takes it back, or the root is de
     const calls: string[] = tasks.trace.filter((call: string): boolean =>
       call.startsWith('tasks.'),
     );
-    expect(calls.indexOf('tasks.lockArchive')).toBeLessThan(calls.indexOf('tasks.lockStanding'));
+    expect(calls).toContain('tasks.lockArchive');
+    expect(calls).not.toContain('tasks.lockStanding');
     expect(calls).not.toContain('tasks.lockByIds');
   });
 });

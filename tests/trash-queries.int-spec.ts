@@ -2872,17 +2872,18 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
           new PurgeTrashBatch(unitOfWork, spaces).execute({ organizationId: atelierNordId }),
       );
       const due = await batch(
-        'purge batch | Atelier Delta, the entry of 651 tasks first (erased whole, alone)',
+        'purge batch | Atelier Delta, announce the entry of 651 tasks',
         atelierDeltaId,
         (unitOfWork, spaces) =>
           new PurgeTrashBatch(unitOfWork, spaces).execute({ organizationId: atelierDeltaId }),
       );
       const chunks = await batch(
-        'purge batch | Atelier Delta, the entry of 651 tasks, then the next batch, in one transaction',
+        'purge batch | Atelier Delta, announcement and both bounded erasure batches',
         atelierDeltaId,
         async (unitOfWork, spaces) => {
           const purge = new PurgeTrashBatch(unitOfWork, spaces);
           return [
+            await purge.execute({ organizationId: atelierDeltaId }),
             await purge.execute({ organizationId: atelierDeltaId }),
             await purge.execute({ organizationId: atelierDeltaId }),
           ];
@@ -2895,12 +2896,12 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
       expect(keyset.result).toMatchObject({ outcome: 'trashed' });
       expect(large.result).toMatchObject({ outcome: 'trashed' });
       expect(handedOver.result).toMatchObject({ outcome: 'purged' });
-      // An entry larger than the budget of 500 tasks that comes first is taken alone and erased
-      // whole by one batch, its 651 tasks with it; the next batch takes the entries after it.
-      expect(due.result).toMatchObject({ outcome: 'purged', entries: 1, tasks: 651 });
+      // The announcement commits the root-first events; a later batch erases 500 tasks.
+      expect(due.result).toMatchObject({ outcome: 'purged', entries: 0, tasks: 0 });
       expect(chunks.result).toMatchObject([
-        { outcome: 'purged', entries: 1, tasks: 651 },
-        { outcome: 'purged' },
+        { outcome: 'purged', entries: 0, tasks: 0 },
+        { outcome: 'purged', entries: 0, tasks: 500 },
+        { outcome: 'purged', entries: 1, tasks: 151 },
       ]);
       for (const entry of [first, keyset, large, handedOver, due, chunks]) {
         expect(entry.milliseconds, entry.line).toBeLessThan(5_000);

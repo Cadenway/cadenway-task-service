@@ -68,6 +68,7 @@ import {
   TRASH_DELETED_TASKS_QUEUE,
 } from '../src/config/job-queues.js';
 import { PurgeTrashEntry } from '../src/modules/tasks/application/use-cases/commands/trash/purge-trash-entry/purge-trash-entry.use-case.js';
+import { TrashTreeLocker } from '../src/modules/tasks/application/services/trash/trash-tree-locker.service.js';
 import { PurgeTrashBatch } from '../src/modules/tasks/public/trash/purge-trash-batch.js';
 import { TrashDeletedListTasks } from '../src/modules/tasks/public/trash/trash-deleted-list-tasks.js';
 import { ScheduleTrashPurgeHandler } from '../src/modules/deletion-lifecycle/presentation/jobs/handlers/trash/schedule-trash-purge.handler.js';
@@ -4630,8 +4631,8 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
     });
   });
 
-  describe('the purge erases an oversized entry whole, alone in its batch, root first', () => {
-    it('erases an entry of more than 500 tasks, archived subtasks included, alone and whole in one batch committed at once, with task.purged.v1 root first then by depth then by id, and the younger due entry in the next batch', async () => {
+  describe('the purge resumes oversized entries in bounded batches', () => {
+    it('announces 1,200 tasks root first once and resumes bounded erasure after a failed transaction', async () => {
       const list = await createList(camille, produit.space.id, { name: 'Gros dossier' });
       const root = await createTask(camille, list.id, {
         name: 'Dossier de reprise',
@@ -4657,6 +4658,23 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       }
       const big = await trashTask(root.key);
       expect(big.subtaskCount).toBe(525);
+      const synthetic = await asSystem<{ readonly key: string }>(
+        `with generated as (select uuidv7() as id, 800000000 + n as number from generate_series(1, 674) as n)
+         insert into tasks (organization_id, id, key_prefix, key_number, space_id, list_id, parent_id,
+           name, status, priority, created_by_type, created_by_id, archived_at, archived_by_type,
+           archived_by_id, archive_root_id, archive_root, trash_entry_id, version)
+         select root.organization_id, generated.id, root.key_prefix, generated.number, root.space_id,
+           root.list_id, root.id, 'Archived task', 'todo', 'basse', 'user', $3, now(), 'user', $3,
+           generated.id, true, $2::uuid, 3
+         from tasks as root cross join generated where root.organization_id = $1 and root.id = $4
+         returning key_prefix || '-' || key_number as key`,
+        [atelierNordId, big.id, camille.userId, await taskIdOf(root.key)],
+      );
+      for (const row of synthetic) parents.set(row.key, root.key);
+      await asSystem(
+        'update trash_entries set task_count = 1200 where organization_id = $1 and id = $2',
+        [atelierNordId, big.id],
+      );
       const small = await createTask(camille, list.id, {
         name: 'Petit dossier',
         subtasks: [{ name: 'Un' }, { name: 'Deux' }],
@@ -4677,7 +4695,7 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
           where organization_id = $1 and trash_entry_id = $2`,
         [atelierNordId, big.id],
       );
-      expect(members).toHaveLength(526);
+      expect(members).toHaveLength(1200);
       const depthOf = (key: string): number => {
         const parent = parents.get(key);
         return parent === undefined ? 0 : 1 + depthOf(parent);
@@ -4700,8 +4718,7 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       const lastLeaf = [...parents.keys()].at(-1) ?? '';
       const waits = await lockWaits();
 
-      // The batch needs a leaf another transaction holds: it waits with nothing of the entry
-      // erased or announced, since the whole entry commits at once.
+      // The announcement waits for a leaf lock; its events and marker commit together.
       const during = await whileHeld([taskLock(await taskIdOf(lastLeaf))], async () => {
         const first = run();
         await waitForLockWait(waits);
@@ -4709,15 +4726,30 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       });
       const first = await during.first;
 
-      expect(during.remaining).toBe(526);
+      expect(during.remaining).toBe(1200);
       expect(during.purged).toBe(0);
       expect(first).toEqual({
         outcome: 'purged',
-        entries: 1,
-        tasks: 526,
+        entries: 0,
+        tasks: 0,
         listsPurged: 0,
         spacesPurged: 0,
       });
+      expect(await remaining()).toBe(1200);
+      expect((await purgedOf(big.id)).map((event) => event.key)).toEqual(treeOrder);
+      expect(await run()).toMatchObject({ outcome: 'purged', entries: 0, tasks: 500 });
+      expect(await remaining()).toBe(700);
+      await expect(
+        inTenant(atelierNordId, async () => {
+          await batch.execute({ organizationId: atelierNordId });
+          throw new Error('abort purge batch');
+        }),
+      ).rejects.toThrow('abort purge batch');
+      expect(await remaining()).toBe(700);
+      expect(await purgedOf(big.id)).toHaveLength(1200);
+      expect(await run()).toMatchObject({ outcome: 'purged', entries: 0, tasks: 500 });
+      expect(await remaining()).toBe(200);
+      expect(await run()).toMatchObject({ outcome: 'purged', entries: 1, tasks: 200 });
       expect(await remaining()).toBe(0);
       expect(
         await countOf('select count(*)::int as total from trash_entries where id = $1', [big.id]),
@@ -5520,9 +5552,8 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
 
         expect(removed.status, `${order}: ${removed.text}`).toBe(204);
         if (order === 'deletion first') {
-          // The target list is a tombstone: the move reads it as a list it does not see.
-          expect(moved.status, `${order}: ${moved.text}`).toBe(422);
-          expect(bodyOf(moved)).toMatchObject({ code: 'task.list-invalid' });
+          // The deleted space hides the source as well as the target; source refusal comes first.
+          expectProblem(moved, 404, 'task.not-found');
         } else {
           expect(moved.status, `${order}: ${moved.text}`).toBe(200);
         }
@@ -5845,6 +5876,32 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       expect(await eventsOf('list.deleted.v1', 'listId', lowered.id)).toEqual([]);
     });
 
+    it('refuses trash when a list grant is revoked or lowered while the task lock waits', async () => {
+      const revoked = await createList(camille, produit.space.id, { name: 'Trash grant revoked' });
+      const lowered = await createList(camille, produit.space.id, { name: 'Trash grant lowered' });
+      await grant(camille, 'lists', revoked.id, nadia.userId, 'edit');
+      await grant(camille, 'lists', lowered.id, rose.userId, 'edit');
+      const first = await createTask(camille, revoked.id, { name: 'Revoked task' });
+      const second = await createTask(camille, lowered.id, { name: 'Lowered task' });
+
+      const notFound = await revokedWhileQueued(
+        [taskLock(await taskIdOf(first.key)), ...listGrantChanged(revoked.id, nadia.userId, null)],
+        () => trashRequest(first.key, nadia),
+      );
+      const insufficient = await revokedWhileQueued(
+        [
+          taskLock(await taskIdOf(second.key)),
+          ...listGrantChanged(lowered.id, rose.userId, 'view'),
+        ],
+        () => trashRequest(second.key, rose),
+      );
+
+      expectProblem(notFound, 404, 'task.not-found');
+      expectProblem(insufficient, 403, 'access.role-insufficient');
+      expect((await storedTask(first.key))?.trash_entry_id).toBeNull();
+      expect((await storedTask(second.key))?.trash_entry_id).toBeNull();
+    });
+
     it('refuses "Supprimer définitivement" with 404 trash-entry.not-found when the space of the entry was made private, or the list grant of a guest revoked, while the erasure waited for the entry, and erases nothing', async () => {
       const open = await createSpace(camille, {
         name: 'Corbeille bientôt privée',
@@ -6152,7 +6209,95 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
   });
 
   describe('a deletion of a task and the job of its deleted list lock its tree in one order', () => {
-    it('trashes a parent created after its subtask while the job of its deleted list waits for the same tree, without a deadlock: a deletion that read the list live and queued first moves the tree, and one started after the list was deleted answers 404 task.not-found at once', async () => {
+    it('retries when the task is restored between the tree query and fallback lookup', async () => {
+      const list = await createList(camille, produit.space.id, { name: 'Retry restored task' });
+      const task = await createTask(camille, list.id, { name: 'Restored between reads' });
+      let entered: () => void = () => undefined;
+      let queryEmpty: () => void = () => undefined;
+      let continueTree: () => void = () => undefined;
+      let continueFallback: () => void = () => undefined;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const empty = new Promise<void>((resolve) => {
+        queryEmpty = resolve;
+      });
+      const treeGate = new Promise<void>((resolve) => {
+        continueTree = resolve;
+      });
+      const fallbackGate = new Promise<void>((resolve) => {
+        continueFallback = resolve;
+      });
+      const locker = new TrashTreeLocker();
+      const original = locker.lock.bind(locker);
+      let calls = 0;
+      const spy = vi.spyOn(TrashTreeLocker.prototype, 'lock').mockImplementation(async function (
+        ...args
+      ) {
+        calls += 1;
+        if (calls !== 1) return original(...args);
+        entered();
+        await treeGate;
+        const result = await original(...args);
+        expect(result.trees).toHaveLength(0);
+        queryEmpty();
+        await fallbackGate;
+        return result;
+      });
+      try {
+        const waiting = trashRequest(task.key);
+        await started;
+        const waits = await lockWaits();
+        const concurrent = await whileHeld([taskLock(await taskIdOf(task.key))], async () => {
+          const pending = trashRequest(task.key);
+          await waitForLockWait(waits);
+          return { pending };
+        });
+        const entry = entryAnswer(await concurrent.pending);
+        continueTree();
+        await empty;
+        await restoreEntry(entry.id);
+        continueFallback();
+        entryAnswer(await waiting);
+        expect(calls).toBeGreaterThan(2);
+      } finally {
+        continueTree();
+        continueFallback();
+        spy.mockRestore();
+      }
+    });
+
+    it('serializes trash and archive of an older child under a newer parent in both orders', async () => {
+      for (const order of ['trash first', 'archive first'] as const) {
+        const list = await createList(camille, produit.space.id, { name: `Archive race ${order}` });
+        const child = await createTask(camille, list.id, { name: 'Older child' });
+        const parent = await createTask(camille, list.id, { name: 'Newer parent' });
+        await patchTask(child.key, { parentKey: parent.key });
+        const childId = await taskIdOf(child.key);
+        const parentId = await taskIdOf(parent.key);
+        expect(childId < parentId).toBe(true);
+        const waits = await lockWaits();
+        const raced = await whileHeld([taskLock(parentId)], async () => {
+          const first =
+            order === 'trash first'
+              ? trashRequest(parent.key)
+              : send('post', `/internal/v1/tasks/${parent.key}/archive`, camille, { body: {} });
+          await waitForLockWait(waits);
+          const second =
+            order === 'trash first'
+              ? send('post', `/internal/v1/tasks/${parent.key}/archive`, camille, { body: {} })
+              : trashRequest(parent.key);
+          await waitForLockWait(waits + 1);
+          return { first, second };
+        });
+        const [first, second] = await Promise.all([raced.first, raced.second]);
+        expect(first.status, first.text).toBe(200);
+        if (order === 'trash first') expectProblem(second, 404, 'task.trashed');
+        else expectProblem(second, 409, 'task.archived');
+      }
+    });
+
+    it('trashes a parent created after its subtask while the task deletion and list job contend without a deadlock', async () => {
       for (const order of ['task deletion first', 'job first'] as const) {
         const list = await createList(camille, produit.space.id, {
           name: `Arbre inversé, ${order}`,
@@ -6198,13 +6343,8 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
         const entryId = stored.get(parent.key)?.trash_entry_id ?? null;
         expect(entryId, order).not.toBeNull();
         expect(stored.get(child.key)?.trash_entry_id, order).toBe(entryId);
-        if (order === 'task deletion first') {
-          expect(entryAnswer(trashed)).toMatchObject({ id: entryId, subtaskCount: 1 });
-          expect(moved, order).toMatchObject({ outcome: 'trashed', entries: 0 });
-        } else {
-          expectProblem(trashed, 404, 'task.not-found');
-          expect(moved, order).toMatchObject({ outcome: 'trashed', entries: 1 });
-        }
+        expectProblem(trashed, 404, 'task.not-found');
+        expect(moved, order).toMatchObject({ outcome: 'trashed', entries: 1 });
         expect(
           (await trashedOf(entryId ?? '')).map((event) => event.key),
           order,

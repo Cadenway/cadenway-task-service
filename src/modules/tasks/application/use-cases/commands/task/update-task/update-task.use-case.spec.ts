@@ -483,13 +483,22 @@ describe('UpdateTask: attaching and detaching a subtask', () => {
     ]);
   });
 
-  it('locks the task before the parent and the descendants', async () => {
-    const { tasks, useCase } = atelierNord([taskState(), cad490State()]);
+  it('locks the task and parent together before locking placements', async () => {
+    const acquisitions: string[][] = [];
+    const { tasks, useCase } = racing([taskState(), cad490State()], (repository) => ({
+      ...repository,
+      lockByIds: async (organizationId, ids, withChecklists) => {
+        acquisitions.push([...ids]);
+        return repository.lockByIds(organizationId, ids, withChecklists);
+      },
+    }));
 
     await useCase.execute(patchOf({ parentKey: 'CAD-482' }, { taskKey: 'CAD-490' }));
 
-    expect(tasks.trace.indexOf('tasks.findByKey:lock')).toBeLessThan(
-      tasks.trace.indexOf('tasks.lockByIds'),
+    expect(tasks.trace).not.toContain('tasks.findByKey:lock');
+    expect(acquisitions[0]?.sort()).toEqual([CAD_482, CAD_490].sort());
+    expect(tasks.trace.indexOf('tasks.lockByIds')).toBeLessThan(
+      tasks.trace.indexOf('spaces.lockTrashLists'),
     );
   });
 

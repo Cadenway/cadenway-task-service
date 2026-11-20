@@ -28,6 +28,7 @@ export function toTrashEntryRecord(raw: RawTrashEntryRow): TrashEntryRecord {
     listId: raw.listId,
     parentKey: raw.parentKey,
     taskCount: raw.taskCount,
+    purgeStarted: raw.purgeStarted,
     trashedAt: new Date(raw.trashedAt),
     trashedBy: { type: toActorType(raw.trashedByType, subject), id: raw.trashedById },
     root: {

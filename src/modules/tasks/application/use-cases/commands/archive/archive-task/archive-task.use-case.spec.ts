@@ -15,6 +15,7 @@ import {
   InMemoryTasks,
   LEA,
   NOW,
+  SPRINT_14,
   archiveFrom,
   atelierNordMembers,
   cad490State,
@@ -88,6 +89,16 @@ function atelierNord(
 const camille = { type: 'user', id: CAMILLE } as const;
 
 describe('ArchiveTask: an archive takes the task and its live subtasks at every level', () => {
+  it('refuses an edit grant revoked while the tree was being locked', async () => {
+    const spaces = new InMemorySpaceDirectory();
+    spaces.revokedUnderLock.add(SPRINT_14);
+    const { tasks, useCase } = atelierNord(tree(), spaces);
+
+    expect(await refusalOf(useCase.execute(archive()))).toEqual({ reason: 'task-not-found' });
+    expect(tasks.stored(CAD_482).archive).toBeNull();
+    expect(tasks.events).toEqual([]);
+  });
+
   it('archives the root and its descendants with one archive, each at its next version', async () => {
     const { tasks, useCase } = atelierNord();
 
@@ -167,7 +178,7 @@ describe('ArchiveTask: an archive takes the task and its live subtasks at every 
     });
   });
 
-  it('locks the actor, the task, then its live subtree, and writes the archive in one statement', async () => {
+  it('locks the tree in id order before the placement and writes the archive in one statement', async () => {
     const { tasks, useCase } = atelierNord();
 
     await useCase.execute(archive());
@@ -175,12 +186,14 @@ describe('ArchiveTask: an archive takes the task and its live subtasks at every 
     expect(tasks.trace.filter((call: string): boolean => !call.startsWith('spaces.'))).toEqual([
       `members.roleOf:${CAMILLE}:lock`,
       'tasks.findByKey:read',
-      'tasks.findByKey:lock',
+      'tasks.trashTrees',
       'tasks.lockByIds',
+      'tasks.trashTrees',
       'tasks.writeArchives',
       'events.archived',
       'events.archived',
       'events.archived',
+      'tasks.findByKey:read',
     ]);
   });
 

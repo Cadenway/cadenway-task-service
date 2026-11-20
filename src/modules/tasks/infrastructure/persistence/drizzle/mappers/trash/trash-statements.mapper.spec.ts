@@ -40,7 +40,7 @@ const COLUMNS: string =
   `to_char("entry"."trashed_at" at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "trashedAt", ` +
   '"entry"."trashed_by_type" as "trashedByType", "entry"."trashed_by_id" as "trashedById", ' +
   `to_char("entry"."purge_requested_at" at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "purgeRequestedAt", ` +
-  '"entry"."purge_requested_by_type" as "purgeRequestedByType", "entry"."purge_requested_by_id" as "purgeRequestedById", ' +
+  '"entry"."purge_requested_by_type" as "purgeRequestedByType", "entry"."purge_requested_by_id" as "purgeRequestedById", "entry"."purge_started" as "purgeStarted", ' +
   '"root"."key_prefix" as "rootKeyPrefix", "root"."key_number" as "rootKeyNumber", "root"."name" as "rootName", "root"."status" as "rootStatus"';
 
 /** The join of an entry with its root by the primary key of `tasks`. */

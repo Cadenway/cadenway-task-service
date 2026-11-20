@@ -396,6 +396,50 @@ describe('TrashTask: a deletion moves the task and its subtasks at every level t
 });
 
 describe('TrashTask: the refusals are checked again on the task as locked, the same as before the lock', () => {
+  it('refuses a role revoked while acquiring the tree', async () => {
+    const spaces = new InMemorySpaceDirectory();
+    spaces.revokedUnderLock.add(SPRINT_14);
+    const tasks = new InMemoryTasks({ tasks: liveTree() });
+    const useCase = new TrashTask(TRASH_WRITES_ON, tasks, atelierNordMembers([]), spaces);
+
+    expect(await refusalOf(useCase.execute(trash()))).toEqual({ reason: 'task-not-found' });
+    expect(tasks.trashEntries.size).toBe(0);
+    expect(tasks.events).toEqual([]);
+  });
+
+  it('retries when the tree disappears but the fallback finds a live task', async () => {
+    const tasks = new InMemoryTasks({ tasks: liveTree() });
+    let reads = 0;
+    const unitOfWork: TasksUnitOfWork = {
+      run: <TResult>(work: (store: TasksStore) => Promise<TResult>): Promise<TResult> =>
+        tasks.run((store: TasksStore): Promise<TResult> =>
+          work({
+            ...store,
+            tasks: {
+              ...store.tasks,
+              trashTrees: async (organizationId: string, rootIds: readonly string[]) => {
+                reads += 1;
+                return reads === 1 ? [] : store.tasks.trashTrees(organizationId, rootIds);
+              },
+            },
+          }),
+        ),
+      runReadOnly: <TResult>(work: (store: TasksStore) => Promise<TResult>): Promise<TResult> =>
+        tasks.runReadOnly(work),
+    };
+    const useCase = new TrashTask(
+      TRASH_WRITES_ON,
+      unitOfWork,
+      atelierNordMembers([]),
+      new InMemorySpaceDirectory(),
+    );
+
+    await useCase.execute(trash());
+
+    expect(reads).toBeGreaterThan(1);
+    expect(tasks.stored(CAD_482).trash).not.toBeNull();
+  });
+
   it('refuses a task moved meanwhile to a list the actor does not see as task-not-found', async () => {
     const tasks = new InMemoryTasks({ tasks: liveTree() });
     const useCase = new TrashTask(

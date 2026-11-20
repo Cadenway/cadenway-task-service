@@ -1,4 +1,5 @@
 import type { TransactionDatabase } from '@cadenway/nest-common/database';
+import { sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 
 import type { TrashEntryDraft } from '../../../../../application/models/trash/trash-entry-draft.model.js';
@@ -8,6 +9,12 @@ import type { TrashEntryRepository } from '../../../../../application/ports/outb
 import type { TaskActor } from '../../../../../domain/value-objects/task/task-actor.value-object.js';
 import type { RawTrashEntryRow } from '../../mappers/trash/raw-trash-entry-row.mapper.js';
 import { toTrashEntryRecord } from '../../mappers/trash/trash-entry.mapper.js';
+import { trashEntries } from '../../schemas/trash/trash-entry.schema.js';
+import { tasks } from '../../schemas/task/task.schema.js';
+import { activityEntries } from '../../schemas/activity/activity-entry.schema.js';
+import { checklistItems } from '../../schemas/checklist/checklist-item.schema.js';
+import { taskAssignees } from '../../schemas/task/task-assignee.schema.js';
+import { taskLabels } from '../../schemas/task/task-label.schema.js';
 import {
   dueEntriesStatement,
   eraseEntriesStatements,
@@ -259,6 +266,59 @@ export class DrizzleTrashEntryRepository implements TrashEntryRepository {
     limit: number,
   ): Promise<readonly TrashEntryRecord[]> {
     return this.many(dueEntriesStatement(organizationId, dueBefore, limit));
+  }
+
+  /** Records the event phase and hides an entry until the remaining rows are erased. */
+  public async startPurge(
+    organizationId: string,
+    entryId: string,
+    at: Date,
+    by: TaskActor,
+  ): Promise<void> {
+    const result = await this.db.execute(sql`update ${trashEntries} set purge_started = true,
+      purge_requested_at = coalesce(purge_requested_at, ${at.toISOString()}::timestamptz),
+      purge_requested_by_type = coalesce(purge_requested_by_type, ${by.type}),
+      purge_requested_by_id = coalesce(purge_requested_by_id, ${by.id})
+      where organization_id = ${organizationId}::uuid and id = ${entryId}::uuid and not purge_started`);
+    if (result.rowCount !== 1) throw new Error(`The purge of ${entryId} could not be started.`);
+  }
+
+  /** Deletes a bounded deepest-first part, retaining the entry and its root. */
+  public async erasePart(
+    organizationId: string,
+    entryId: string,
+    rootId: string,
+    limit: number,
+  ): Promise<number> {
+    const selected = await this.db.execute<{ id: string }>(sql`with recursive tree (id, depth) as (
+      select id, 0 from ${tasks} where organization_id = ${organizationId}::uuid and id = ${rootId}::uuid and trash_entry_id = ${entryId}::uuid
+      union all select child.id, tree.depth + 1 from ${tasks} as child join tree on child.parent_id = tree.id
+      where child.organization_id = ${organizationId}::uuid and child.trash_entry_id = ${entryId}::uuid
+    ) cycle id set is_cycle using path
+    select ${tasks.id} as id from ${tasks} join (select id from tree where not is_cycle order by depth desc, id limit ${limit}) as selected on selected.id = ${tasks.id}
+    where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.trashEntryId} = ${entryId}::uuid order by ${tasks.id} for update of ${tasks}`);
+    const ids: string[] = selected.rows.map((row) => row.id);
+    if (ids.length !== limit || ids.includes(rootId))
+      throw new Error(`The tree of ${entryId} cannot supply a bounded purge batch.`);
+    const array: SQL = sql`${sql.param(ids)}::uuid[]`;
+    for (const table of [activityEntries, checklistItems, taskAssignees, taskLabels]) {
+      await this.db.execute(
+        sql`delete from ${table} where ${table.organizationId} = ${organizationId}::uuid and ${table.taskId} = any(${array})`,
+      );
+    }
+    await this.db.execute(
+      sql`update ${tasks} set parent_id = null where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.parentId} = any(${array}) and ${tasks.id} <> all(${array})`,
+    );
+    const deleted = await this.db.execute(
+      sql`delete from ${tasks} where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.trashEntryId} = ${entryId}::uuid and ${tasks.id} = any(${array})`,
+    );
+    if (deleted.rowCount !== ids.length)
+      throw new Error(`A task of ${entryId} left the purge batch.`);
+    const updated = await this.db.execute(
+      sql`update ${trashEntries} set task_count = task_count - ${ids.length} where organization_id = ${organizationId}::uuid and id = ${entryId}::uuid and purge_started and task_count > ${ids.length}`,
+    );
+    if (updated.rowCount !== 1) throw new Error(`The purge count of ${entryId} changed.`);
+    return ids.length;
   }
 
   /**

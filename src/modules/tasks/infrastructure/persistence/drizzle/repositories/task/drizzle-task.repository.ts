@@ -498,17 +498,13 @@ export class DrizzleTaskRepository implements TaskRepository {
    * Method lockArchive
    *
    * @description
-   * Locks the members of an archive in one statement through `tasks_archive_member_index`,
-   * `ORDER BY id FOR NO KEY UPDATE`, so two restorations of one archive through two members lock
-   * in the same order and the second waits for the first; then loads their assignees, labels and
-   * parent keys after the lock, not their checklists (a restoration never writes or emits them,
-   * so the members carry an empty one). The members of an archive in the trash are left out
-   * (`untrashedTask`). PostgreSQL checks the condition again on a row it waited for, so a member
-   * restored or moved to the trash meanwhile is left out.
+   * Reads the tree, archive members and root's parent through their indexes, then locks the union
+   * by primary key in ascending id. The caller checks the archive and trash state again after
+   * waiting. Loads assignees, labels and parent keys after the lock, not checklists.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} rootId - The root of the archive.
-   * @returns {Promise<readonly Task[]>} The members without checklist, in ascending id order.
+   * @returns {Promise<readonly Task[]>} The locked tasks without checklist, in ascending id order.
    */
   public async lockArchive(organizationId: string, rootId: string): Promise<readonly Task[]> {
     const rows: TaskRow[] = await this.db
@@ -517,8 +513,14 @@ export class DrizzleTaskRepository implements TaskRepository {
       .where(
         and(
           eq(tasks.organizationId, organizationId),
-          eq(tasks.archiveRootId, rootId),
-          untrashedTask(),
+          sql`${tasks.id} = any(array(with recursive tree (id, list_id) as (
+              select id, list_id from tasks where organization_id = ${organizationId}::uuid and id = ${rootId}::uuid and trash_entry_id is null
+              union
+              select child.id, child.list_id from tasks as child join tree on child.parent_id = tree.id
+              where child.organization_id = ${organizationId}::uuid and child.list_id = tree.list_id and child.trash_entry_id is null
+            ) select id from tree
+            union select id from tasks where organization_id = ${organizationId}::uuid and archive_root_id = ${rootId}::uuid and trash_entry_id is null
+            union select parent_id from tasks where organization_id = ${organizationId}::uuid and id = ${rootId}::uuid and parent_id is not null))`,
         ),
       )
       .orderBy(asc(tasks.id))

@@ -217,6 +217,9 @@ export interface StoredTrashEntry extends TrashEntryDraft {
 
   /** The hand-over to the purge, `null` while in the trash. */
   readonly purgeRequest: TrashHandOver | null;
+
+  /** Whether purge events were committed. */
+  readonly purgeStarted: boolean;
   // #endregion
 }
 
@@ -254,6 +257,7 @@ export function storedEntry(overrides: Partial<StoredTrashEntry> = {}): StoredTr
     trashedAt: TRASHED_AT,
     trashedBy: { type: 'user', id: CAMILLE },
     purgeRequest: null,
+    purgeStarted: false,
     ...overrides,
   };
 }
@@ -2603,6 +2607,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
               ...draft,
               id: this.nextId('019a7006'),
               purgeRequest: null,
+              purgeStarted: false,
             };
             entries.set(entry.id, entry);
             return recordOf(entry);
@@ -2713,6 +2718,50 @@ export class InMemoryTasks implements TasksUnitOfWork {
             .slice(0, limit)
             .flatMap(recordOf),
         );
+      },
+      startPurge: (organizationId, entryId, at, by): Promise<void> => {
+        const entry = entries.get(entryId);
+        if (entry?.organizationId !== organizationId || entry.purgeStarted)
+          return Promise.reject(new Error('Invalid purge start'));
+        entries.set(entryId, {
+          ...entry,
+          purgeStarted: true,
+          purgeRequest: entry.purgeRequest ?? { at, by },
+        });
+        return Promise.resolve();
+      },
+      erasePart: (organizationId, entryId, rootId, limit): Promise<number> => {
+        const entry = entries.get(entryId);
+        if (entry?.organizationId !== organizationId || !entry.purgeStarted)
+          return Promise.reject(new Error('Invalid purge entry'));
+        const rows = inOrganization(organizationId).filter((row) => row.trash?.entryId === entryId);
+        const depth = (row: TaskState): number => {
+          let current: TaskState = row;
+          let level = 0;
+          while (current.id !== rootId) {
+            const parent = rows.find((candidate) => candidate.id === current.parentId);
+            if (parent === undefined || level >= rows.length) throw new Error('Invalid purge tree');
+            current = parent;
+            level += 1;
+          }
+          return level;
+        };
+        const selected = rows
+          .sort((left, right) => depth(right) - depth(left) || compareText(left.id, right.id))
+          .slice(0, limit);
+        if (selected.length !== limit || selected.some((row) => row.id === rootId))
+          return Promise.reject(new Error('Invalid purge batch'));
+        const erased = new Set(selected.map((row) => row.id));
+        for (const [id, item] of activity)
+          if (item.organizationId === organizationId && erased.has(item.taskId))
+            activity.delete(id);
+        for (const row of inOrganization(organizationId)) {
+          if (erased.has(row.id)) tasks.delete(row.id);
+          else if (row.parentId !== null && erased.has(row.parentId))
+            tasks.set(row.id, { ...row, parentId: null, parentKey: null });
+        }
+        entries.set(entryId, { ...entry, taskCount: entry.taskCount - selected.length });
+        return Promise.resolve(selected.length);
       },
       erase: (organizationId: string, entryIds: readonly string[]): Promise<void> => {
         this.trace.push('trash.erase');
@@ -2873,9 +2922,30 @@ export class InMemoryTasks implements TasksUnitOfWork {
           Promise.resolve(liveChildrenOf(organizationId, parentId).length),
         lockArchive: (organizationId: string, rootId: string): Promise<readonly Task[]> => {
           this.trace.push('tasks.lockArchive');
+          const parentId: string | null = tasks.get(rootId)?.parentId ?? null;
+          const root: TaskState | undefined = tasks.get(rootId);
+          const treeIds = new Set<string>();
+          if (root?.trash === null) {
+            treeIds.add(rootId);
+            for (let size = 0; size !== treeIds.size;) {
+              size = treeIds.size;
+              for (const row of inOrganization(organizationId)) {
+                if (
+                  row.trash === null &&
+                  row.listId === root.listId &&
+                  row.parentId !== null &&
+                  treeIds.has(row.parentId)
+                )
+                  treeIds.add(row.id);
+              }
+            }
+          }
           return Promise.resolve(
             inOrganization(organizationId)
-              .filter((row: TaskState): boolean => archiveOf(row) === rootId)
+              .filter(
+                (row: TaskState): boolean =>
+                  archiveOf(row) === rootId || row.id === parentId || treeIds.has(row.id),
+              )
               .sort((left: TaskState, right: TaskState): number => left.id.localeCompare(right.id))
               // The members are locked without their checklists, as the statement loads them.
               .map((row: TaskState): Task => Task.restore({ ...row, checklist: [] })),
