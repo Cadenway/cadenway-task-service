@@ -2202,6 +2202,7 @@ describe('the archives of lists and tasks', () => {
       expect(await taskActivityTotal(oldFaq.key)).toBeGreaterThanOrEqual(1);
 
       const realtime = { issuer: 'realtime-gateway' } as const;
+      const oldFaqId = await taskIdOf(oldFaq.key);
       for (const viewer of [camille, hugo]) {
         const response = await send(
           'get',
@@ -2214,6 +2215,7 @@ describe('the archives of lists and tasks', () => {
           role: 'edit',
           spaceId: produit.space.id,
           listId: publicPages.id,
+          taskId: oldFaqId,
           taskKey: oldFaq.key,
         });
       }
@@ -2226,6 +2228,7 @@ describe('the archives of lists and tasks', () => {
       expect(archivedInRecherche.status, archivedInRecherche.text).toBe(200);
       expect(conforms(CheckTaskAccessInternalResponse, bodyOf(archivedInRecherche))).toMatchObject({
         role: 'view',
+        taskId: await taskIdOf(interviewGuide.key),
         taskKey: interviewGuide.key,
       });
     });
