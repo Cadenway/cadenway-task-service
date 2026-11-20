@@ -104,6 +104,18 @@ export class CreateSpace {
    * @throws {InvalidSpaceError} When the domain refuses a field the API layer let through.
    */
   public async execute(input: CreateSpaceInput): Promise<CreateSpaceOutput> {
+    return this.create(input, FIRST_LIST_NAME);
+  }
+
+  /** Creates an onboarding space with its preset's first list in the same transaction. */
+  public async executeForOnboarding(
+    input: CreateSpaceInput,
+    firstListName: string,
+  ): Promise<CreateSpaceOutput> {
+    return this.create(input, firstListName);
+  }
+
+  private async create(input: CreateSpaceInput, firstListName: string): Promise<CreateSpaceOutput> {
     return this.unitOfWork.run(async (store: SpacesStore): Promise<CreateSpaceOutput> => {
       const viewer: Viewer = await this.viewers.resolve(
         input.organizationId,
@@ -138,7 +150,7 @@ export class CreateSpace {
         TaskList.create({
           organizationId: input.organizationId,
           spaceId: space.snapshot.id,
-          name: FIRST_LIST_NAME,
+          name: firstListName,
           icon: null,
           color: 'gris',
           sprint: null,
