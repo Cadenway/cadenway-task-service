@@ -1,4 +1,5 @@
 import type { TaskActor } from '../task/task-actor.value-object.js';
+import type { StatusKey } from '../task/status-key.value-object.js';
 import type { ActivityChange } from './activity-change.value-object.js';
 
 /**
@@ -78,5 +79,8 @@ export interface ActivityEntryDraft {
    * @readonly
    */
   readonly change: ActivityChange;
+
+  /** The original status for duration measurement, present on new creation entries. */
+  readonly initialStatus?: StatusKey;
   // #endregion
 }

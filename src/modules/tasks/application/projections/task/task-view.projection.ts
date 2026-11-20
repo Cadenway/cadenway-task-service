@@ -63,6 +63,9 @@ export interface TaskView {
   /** Current recurrence cadence. */
   readonly recurrence?: Recurrence;
 
+  /** Sparse active custom field values in the task's current space. */
+  readonly customFieldValues?: Readonly<Record<string, string | number>>;
+
   /** Key of a live successor visible to the requesting account. */
   readonly nextOccurrenceKey?: string;
 

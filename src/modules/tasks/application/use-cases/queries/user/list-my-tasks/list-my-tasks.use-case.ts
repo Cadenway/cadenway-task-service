@@ -81,35 +81,38 @@ export class ListMyTasks {
     if (input.userId.toLowerCase() !== input.actorUserId.toLowerCase()) {
       throw new TaskRefusal({ reason: 'user-not-found' });
     }
-    return this.unitOfWork.runReadOnly(async (store: TasksStore): Promise<ListMyTasksOutput> => {
-      const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
-      const listIds: readonly string[] = await this.spaces.visibleListIds(
-        input.organizationId,
-        viewer,
-      );
-      if (listIds.length === 0) {
-        return { items: [], next: null, counts: { open: 0, closed: 0 } };
-      }
-      const rows: readonly ListedTask[] = await store.assigned.pageAssignedTo(
-        input.organizationId,
-        viewer.userId,
-        listIds,
-        input.state,
-        input.after,
-        input.limit + 1,
-      );
-      const page: Slice<ListedTask, TaskPosition> = this.pages.slice(
-        rows,
-        input.limit,
-        (row: ListedTask): TaskPosition => row.position,
-      );
-      const counts: MyTaskCountsView = await store.counter.stateCountsOf(
-        input.organizationId,
-        viewer.userId,
-        listIds,
-      );
-      return { items: page.items.map((row: ListedTask) => row.task), next: page.next, counts };
-    });
+    return this.unitOfWork.runReadOnly(
+      async (store: TasksStore): Promise<ListMyTasksOutput> => {
+        const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
+        const listIds: readonly string[] = await this.spaces.visibleListIds(
+          input.organizationId,
+          viewer,
+        );
+        if (listIds.length === 0) {
+          return { items: [], next: null, counts: { open: 0, closed: 0 } };
+        }
+        const rows: readonly ListedTask[] = await store.assigned.pageAssignedTo(
+          input.organizationId,
+          viewer.userId,
+          listIds,
+          input.state,
+          input.after,
+          input.limit + 1,
+        );
+        const page: Slice<ListedTask, TaskPosition> = this.pages.slice(
+          rows,
+          input.limit,
+          (row: ListedTask): TaskPosition => row.position,
+        );
+        const counts: MyTaskCountsView = await store.counter.stateCountsOf(
+          input.organizationId,
+          viewer.userId,
+          listIds,
+        );
+        return { items: page.items.map((row: ListedTask) => row.task), next: page.next, counts };
+      },
+      { snapshot: true },
+    );
   }
   // #endregion
 }

@@ -14,6 +14,16 @@ import type { TaskSummaryView } from '../../../../projections/task/task-summary.
  */
 export interface TaskReader {
   // #region Methods
+  /** Reads values only for the task placements authorized with the rows, grouped by task ID. */
+  customFieldValues(
+    organizationId: string,
+    tasks: readonly {
+      readonly taskId: string;
+      readonly spaceId: string;
+      readonly listId: string;
+    }[],
+  ): Promise<ReadonlyMap<string, Readonly<Record<string, string | number>>>>;
+
   /**
    * Method subtaskCounts
    *

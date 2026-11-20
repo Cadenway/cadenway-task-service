@@ -44,6 +44,9 @@ export interface TaskChange {
   /** New estimate in minutes, `null` removes it. */
   readonly estimateMinutes?: number | null;
 
+  /** Sparse changes to active custom field values in the resulting space. */
+  readonly customFieldValues?: Readonly<Record<string, number | string | null>>;
+
   /** Whether the task is a milestone. */
   readonly milestone?: boolean;
 

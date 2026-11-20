@@ -59,11 +59,15 @@ access-requests module.
 | `public/access/remove-member-grants`        | member-lifecycle                                                                                                 |
 | `public/space/find-favorite-spaces`         | favorites                                                                                                        |
 | `public/space/resolve-task-template-space`  | task-templates                                                                                                   |
+| `public/space/resolve-custom-field-space`   | tasks                                                                                                            |
 
 `SpacesModule` exports these providers; each runs in `SpacesUnitOfWork.run`, which joins the
 tenant transaction of its caller, or opens one for the batches of the clean-up job. Inputs carry
 the organization and, for the readings, the member and their role as the caller read them from the
 copy of the memberships.
+
+`ResolveCustomFieldSpace` returns the viewer's space role and management permission. A mutation
+holds the space until its caller commits so that access and field order cannot change underneath it.
 
 - `FindListReaderAudience` returns the access sources of an already authorized task's list.
   It joins the caller's snapshot and reads only the bounded list and space grants. The tasks

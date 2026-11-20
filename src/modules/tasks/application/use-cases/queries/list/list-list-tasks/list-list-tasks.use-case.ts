@@ -81,41 +81,44 @@ export class ListListTasks {
    * @throws {TaskRefusal} `organization-not-found` or `list-not-found`.
    */
   public async execute(input: ListListTasksInput): Promise<ListListTasksOutput> {
-    return this.unitOfWork.runReadOnly(async (store: TasksStore): Promise<ListListTasksOutput> => {
-      const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
-      const placement: ListPlacement | null = await this.spaces.findVisibleList(
-        input.organizationId,
-        viewer,
-        input.listId,
-      );
-      if (placement === null) {
-        throw new TaskRefusal({ reason: 'list-not-found' });
-      }
-      const filter: TaskFilter = this.filters.build(input.filter, input.actorUserId);
-      const rows: readonly ListedTask[] = await store.queries.pageOfList(
-        input.organizationId,
-        input.listId,
-        filter,
-        input.order,
-        input.after,
-        input.limit + 1,
-      );
-      const page: Slice<ListedTask, TaskPosition> = this.pages.slice(
-        rows,
-        input.limit,
-        (row: ListedTask): TaskPosition => row.position,
-      );
-      const total: number = await store.queries.countOfList(
-        input.organizationId,
-        input.listId,
-        filter,
-      );
-      return {
-        items: page.items.map((row: ListedTask) => row.task),
-        next: page.next,
-        total,
-      };
-    });
+    return this.unitOfWork.runReadOnly(
+      async (store: TasksStore): Promise<ListListTasksOutput> => {
+        const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
+        const placement: ListPlacement | null = await this.spaces.findVisibleList(
+          input.organizationId,
+          viewer,
+          input.listId,
+        );
+        if (placement === null) {
+          throw new TaskRefusal({ reason: 'list-not-found' });
+        }
+        const filter: TaskFilter = this.filters.build(input.filter, input.actorUserId);
+        const rows: readonly ListedTask[] = await store.queries.pageOfList(
+          input.organizationId,
+          input.listId,
+          filter,
+          input.order,
+          input.after,
+          input.limit + 1,
+        );
+        const page: Slice<ListedTask, TaskPosition> = this.pages.slice(
+          rows,
+          input.limit,
+          (row: ListedTask): TaskPosition => row.position,
+        );
+        const total: number = await store.queries.countOfList(
+          input.organizationId,
+          input.listId,
+          filter,
+        );
+        return {
+          items: page.items.map((row: ListedTask) => row.task),
+          next: page.next,
+          total,
+        };
+      },
+      { snapshot: true },
+    );
   }
   // #endregion
 }

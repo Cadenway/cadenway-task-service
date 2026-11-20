@@ -7,6 +7,7 @@ import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
 import type { TaskState } from '../../../../../domain/value-objects/task/task-state.value-object.js';
 import type { TaskUpdate } from '../../../../../domain/value-objects/task/task-update.value-object.js';
+import type { CustomFieldValueChange } from '../../../../../domain/value-objects/custom-field/custom-field-value-change.value-object.js';
 import type { ScheduledTaskUpdate } from '../../../../models/task/scheduled-task-update.model.js';
 import type { PlannedChange } from '../../../../models/placement/planned-change.model.js';
 import type { LocatedTask } from '../../../../models/task/located-task.model.js';
@@ -32,6 +33,7 @@ import { TaskRuleGuard } from '../../../../services/task/task-rule-guard.service
 import { TaskViewBuilder } from '../../../../services/task/task-view-builder.service.js';
 import { EffectiveWatchers } from '../../../../services/watcher/effective-watchers.service.js';
 import { withWatcherAudienceRetry } from '../../../../services/watcher/watcher-audience-retry.service.js';
+import { TaskCustomFieldValues } from '../../../../services/custom-field/task-custom-field-values.service.js';
 import type { UpdateTaskInput } from './update-task.input.js';
 import type { UpdateTaskOutput } from './update-task.output.js';
 
@@ -127,6 +129,9 @@ export class UpdateTask {
 
   /** Builds the view of the task. */
   private readonly views: TaskViewBuilder;
+
+  /** Plans sparse custom values while the destination space is held. */
+  private readonly customFields = new TaskCustomFieldValues();
   // #endregion
 
   // #region Constructor
@@ -202,8 +207,28 @@ export class UpdateTask {
       plan.statuses,
       now,
     );
-    const update = scheduled.update;
+    const destinationSpaceId = scheduled.update.task.snapshot.spaceId;
+    const moved = task.snapshot.spaceId !== destinationSpaceId;
+    const values: readonly CustomFieldValueChange[] = await this.customFields.plan(
+      store,
+      task,
+      destinationSpaceId,
+      input.patch.customFieldValues,
+    );
+    const changedValues = moved
+      ? await this.customFields.movedWithValues(store, [task, ...descendants], destinationSpaceId)
+      : new Set<string>();
+    const update =
+      values.length > 0 || changedValues.has(task.snapshot.id)
+        ? task.markCustomFieldValuesChanged(scheduled.update, now)
+        : scheduled.update;
     if (update.changed.length > 0) {
+      if (moved) {
+        await this.customFields.clearMoved(store, [task, ...descendants], destinationSpaceId);
+      }
+      if (values.length > 0) {
+        await store.customFields.applyValues(input.organizationId, task.snapshot.id, values);
+      }
       await this.writer.commit(store, task, update, input.actorUserId, now, watcherIds);
       if (update.changed.includes('descriptionMentions')) {
         await appendDescriptionMentionChange(
@@ -217,11 +242,11 @@ export class UpdateTask {
         );
       }
       if (update.changed.includes('listId') || update.changed.includes('spaceId')) {
-        await this.moveDescendants(store, descendants, update.task, input, now);
+        await this.moveDescendants(store, descendants, update.task, input, now, changedValues);
       }
       await this.recurrence.createSuccessor(
         store,
-        scheduled,
+        { ...scheduled, update },
         plan.statuses,
         candidates,
         { type: 'user', id: input.actorUserId },
@@ -392,7 +417,10 @@ export class UpdateTask {
           }));
     const statusChanged = update.changed.includes('status');
     const { listId } = update.task.snapshot;
-    if (move === null && (statusChanged || recipients.length > 0)) {
+    if (
+      move === null &&
+      (statusChanged || recipients.length > 0 || input.patch.customFieldValues !== undefined)
+    ) {
       await this.planner.holdPlacement(input.organizationId, viewer, listId);
     }
     if (recipients.length > 0) {
@@ -433,12 +461,18 @@ export class UpdateTask {
     moved: Task,
     input: UpdateTaskInput,
     now: Date,
+    changedValues: ReadonlySet<string>,
   ): Promise<void> {
     const { listId, spaceId }: TaskState = moved.snapshot;
     for (const descendant of descendants) {
-      const update: TaskUpdate = this.rules.apply((): TaskUpdate =>
+      let update: TaskUpdate = this.rules.apply((): TaskUpdate =>
         descendant.followMove({ listId, spaceId }, now),
       );
+      if (descendant.snapshot.spaceId !== spaceId) {
+        if (changedValues.has(descendant.snapshot.id)) {
+          update = descendant.markCustomFieldValuesChanged(update, now);
+        }
+      }
       await this.writer.commit(store, descendant, update, input.actorUserId, now);
     }
   }

@@ -8,6 +8,7 @@ import { trashWritesProvider } from './composition/providers/adapters/trash/tras
 import { checkListAccessProvider } from './composition/providers/use-cases/access/check-list-access.provider.js';
 import { findAccessTargetProvider } from './composition/providers/use-cases/access/find-access-target.provider.js';
 import { resolveTaskTemplateSpaceProvider } from './composition/providers/use-cases/space/resolve-task-template-space.provider.js';
+import { resolveCustomFieldSpaceProvider } from './composition/providers/use-cases/space/resolve-custom-field-space.provider.js';
 import { grantRequestedAccessProvider } from './composition/providers/use-cases/access/grant-requested-access.provider.js';
 import { listListGrantsProvider } from './composition/providers/use-cases/access/list-list-grants.provider.js';
 import { listManagedAccessTargetsProvider } from './composition/providers/use-cases/access/list-managed-access-targets.provider.js';
@@ -63,6 +64,7 @@ import { SpaceListsController } from './presentation/http/controllers/list/space
 import { SpacesController } from './presentation/http/controllers/space/spaces.controller.js';
 import { FindAccessTarget } from './public/access/find-access-target.js';
 import { ResolveTaskTemplateSpace } from './public/space/resolve-task-template-space.js';
+import { ResolveCustomFieldSpace } from './public/space/resolve-custom-field-space.js';
 import { GrantRequestedAccess } from './public/access/grant-requested-access.js';
 import { ListManagedAccessTargets } from './public/access/list-managed-access-targets.js';
 import { RemoveMemberGrants } from './public/access/remove-member-grants.js';
@@ -198,6 +200,7 @@ markIdempotent(SpaceListsController.prototype, 'create');
     checkListAccessProvider,
     findAccessTargetProvider,
     resolveTaskTemplateSpaceProvider,
+    resolveCustomFieldSpaceProvider,
     listManagedAccessTargetsProvider,
     grantRequestedAccessProvider,
     removeMemberGrantsProvider,
@@ -205,6 +208,7 @@ markIdempotent(SpaceListsController.prototype, 'create');
   exports: [
     ProvisionOnboardingSpace,
     ResolveTaskTemplateSpace,
+    ResolveCustomFieldSpace,
     FindFavoriteSpaces,
     CreateListCopy,
     HandOverPrivateSpaces,

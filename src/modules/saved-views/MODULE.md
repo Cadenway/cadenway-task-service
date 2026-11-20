@@ -52,7 +52,8 @@ the list's saved-view order and affected view rows. This serializes the per-list
 position allocation, and optimistic version conditions with permission changes and concurrent
 deletion. Creation appends. A duplicate is inserted directly after its source and gets fresh
 identity and version. A patch changes only explicit settings and an identical patch preserves
-the version. Explicit deletion hard-deletes the view and its favorite references. It does not
+the version. Hidden custom column IDs and custom field sort are stored as presentation preferences.
+The client may ignore unknown or retired IDs. Explicit deletion hard-deletes the view and its favorite references. It does not
 return the deleted snapshot. The restored parent list never recreates deleted views.
 
 Actual changes append the published `list.saved-view-changed.v1` fact to the outbox in the

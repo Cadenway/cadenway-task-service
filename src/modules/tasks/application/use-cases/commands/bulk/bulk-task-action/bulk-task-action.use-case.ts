@@ -19,6 +19,7 @@ import { ViewerResolver } from '../../../../services/member/viewer-resolver.serv
 import { TaskChangeWriter } from '../../../../services/task/task-change-writer.service.js';
 import { TaskCopyCreator } from '../../../../services/task/task-copy-creator.service.js';
 import { TaskOccurrenceScheduler } from '../../../../services/task/task-occurrence-scheduler.service.js';
+import { TaskCustomFieldValues } from '../../../../services/custom-field/task-custom-field-values.service.js';
 import { TrashWriter } from '../../../../services/trash/trash-writer.service.js';
 import type { BulkTaskActionInput } from './bulk-task-action.input.js';
 import type { BulkTaskActionOutput } from './bulk-task-action.output.js';
@@ -46,6 +47,9 @@ export class BulkTaskAction {
 
   /** Groups deletions in the usual trash entries. */
   private readonly trash = new TrashWriter();
+
+  /** Clears values that belong to a former space after a move. */
+  private readonly customFields = new TaskCustomFieldValues();
   // #endregion
 
   // #region Constructor
@@ -134,6 +138,22 @@ export class BulkTaskAction {
     const results = new Map<string, BulkTaskResultEntry>();
     const schedules = new Map<string, ScheduledTaskUpdate>();
     const actor = { type: 'user', id: input.actorUserId } as const;
+    const destinationSpaceId = targets.destination?.space.id;
+    const movedWithValues =
+      destinationSpaceId === undefined
+        ? new Set<string>()
+        : await this.customFields.movedWithValues(
+            store,
+            changes.map(({ before }) => before),
+            destinationSpaceId,
+          );
+    if (destinationSpaceId !== undefined) {
+      await this.customFields.clearMoved(
+        store,
+        changes.map(({ before }) => before),
+        destinationSpaceId,
+      );
+    }
     const occurrences = changes
       .flatMap(({ before, occurrence }) =>
         occurrence === undefined ? [] : [{ before, ...occurrence }],
@@ -148,7 +168,10 @@ export class BulkTaskAction {
       );
     }
     for (const { before, update, occurrence, watcherIds } of changes) {
-      const planned = schedules.get(before.snapshot.id) ?? { update, successor: null };
+      const scheduled = schedules.get(before.snapshot.id) ?? { update, successor: null };
+      const planned = movedWithValues.has(before.snapshot.id)
+        ? { ...scheduled, update: before.markCustomFieldValuesChanged(scheduled.update, now) }
+        : scheduled;
       const { id, key, version } = planned.update.task.snapshot;
       await this.writer.commit(store, before, planned.update, actor.id, now, watcherIds);
       if (occurrence !== undefined) {

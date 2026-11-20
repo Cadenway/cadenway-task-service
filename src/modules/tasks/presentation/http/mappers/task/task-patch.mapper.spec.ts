@@ -14,6 +14,16 @@ function parse(patch: unknown): UpdateTaskBody {
 }
 
 describe('toTaskChange', () => {
+  it('passes sparse custom values including zero, empty text and explicit removal', () => {
+    const values = {
+      '019a700a-1234-7567-89ab-cdef01234567': 0,
+      '019a700a-1234-7567-89ab-cdef01234568': '',
+      '019a700a-1234-7567-89ab-cdef01234569': null,
+    };
+    expect(toTaskChange(parse({ customFieldValues: values }))).toEqual({
+      customFieldValues: values,
+    });
+  });
   it('retains disabling a milestone and a recurrence together', () => {
     expect(toTaskChange(parse({ milestone: false, recurrence: 'none' }))).toStrictEqual({
       milestone: false,
