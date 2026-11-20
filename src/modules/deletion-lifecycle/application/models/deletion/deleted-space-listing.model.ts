@@ -2,23 +2,24 @@
  * Interface DeletedSpaceListing
  *
  * @description
- * What the deletion job of a space reads of it, the space held `FOR SHARE` until the commit:
- * whether it is still deleted (a restoration from the trash may have brought it back), and its
- * deleted lists not erased yet, by id.
+ * What the deletion job of a space reads of it, the space held `FOR SHARE` until the commit when it
+ * exists: whether it is still deleted, live again (a restoration from the trash brought it back) or
+ * gone (erased, or unknown), and its deleted lists not erased yet, by id.
  */
 export interface DeletedSpaceListing {
   // #region Properties
   /**
-   * Property spaceDeleted
+   * Property space
    *
    * @description
-   * Whether the space is still deleted, read under its lock: only then are its pending access
-   * requests dropped.
+   * The state of the space, read under its lock: `deleted` or `gone` drop its pending access
+   * requests (the job exists only because the space was deleted, and an erased space is gone for
+   * good); `live` keeps them.
    *
-   * @type {boolean}
+   * @type {'deleted' | 'live' | 'gone'}
    * @readonly
    */
-  readonly spaceDeleted: boolean;
+  readonly space: 'deleted' | 'live' | 'gone';
 
   /**
    * Property listIds

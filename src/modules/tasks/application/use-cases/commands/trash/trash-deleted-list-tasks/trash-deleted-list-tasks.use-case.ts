@@ -54,18 +54,20 @@ const MAX_TASKS: number = 500;
  * hold 500 tasks or more; their tasks locked in one statement by id, without checklists, and the
  * trees read again under the locks). A root that no longer qualifies under its lock (gone, in the
  * trash, moved or attached meanwhile) is skipped. Then the list is held `FOR SHARE` (`HoldList`,
- * lock order tasks then lists): when it is no longer deleted (a restoration brought it back) or
- * gone, the batch writes nothing (`list-live`); the tasks it had not moved yet stay in the
- * restored list, an accepted race. Otherwise each tree makes one entry (`TrashWriter`: the
- * transaction instant, the actor who deleted the list), an archived task keeping its archive (out
+ * lock order tasks then lists): when it is no longer deleted, the batch writes nothing:
+ * `list-live` for a list a restoration brought back (a restoration of an entry of a deleted list
+ * waits for its job to finish, so only a list restored after its job leaves nothing behind),
+ * `list-gone` for an unknown or erased list. Otherwise each tree makes one entry (`TrashWriter`:
+ * the transaction instant, the actor who deleted the list), an archived task keeping its archive (out
  * of the archives while in the trash), in one bulk update, with one `task.trashed.v1` per task,
  * entry after entry. So an archived top-level task makes its own entry, and an archived subtask
  * goes with its top-level ancestor. With no candidate left, the list is held first (`HoldList`,
- * no task locked on that path: `list-live` unless it is still deleted), and then a list no task
- * row references any more is handed to the spaces module (`PurgeDeletedList`), which erases a
- * deleted list and then its deleted space once no list of it is left (`none-left`), both under
- * that lock. A deleted list takes no new task (a creation and a move hold it), so the candidates
- * before the position never grow.
+ * no task locked on that path: `list-live` or `list-gone` unless it is still deleted); a list that
+ * still holds a task out of the trash answers `rescan` (a safety net: the job starts the list
+ * again); otherwise a list no task row references any more is handed to the spaces module
+ * (`PurgeDeletedList`), which erases a deleted list and then its deleted space once no list of it
+ * is left (`none-left`), all under that lock. A deleted list takes no new task and loses none (a
+ * creation and a move hold both their lists), so the candidates before the position never grow.
  */
 export class TrashDeletedListTasks {
   // #region Properties
@@ -145,7 +147,7 @@ export class TrashDeletedListTasks {
       );
       const list: HeldList = await this.spaces.holdList(organizationId, listId);
       if (list.outcome !== 'deleted') {
-        return { outcome: 'list-live' };
+        return this.notDeleted(list);
       }
       const now: Date = await store.clock.now();
       const trashed: readonly TrashedTree[] = await this.writer.trash(
@@ -210,17 +212,20 @@ export class TrashDeletedListTasks {
    * Method purgeEmptyList
    *
    * @description
-   * With no candidate left, holds the list `FOR SHARE` first (`HoldList`; no task is locked on
-   * this path), so the check of the remaining tasks and the erasure of the tombstone run under
-   * that lock: a list no longer deleted (a restoration brought it back) or gone answers
-   * `list-live`. A deleted list is handed to the spaces module when no task row references it any
+   * With no candidate left after the position, holds the list `FOR SHARE` first (`HoldList`; no
+   * task is locked on this path), so the checks of the remaining tasks and the erasure of the
+   * tombstone run under that lock: a list no longer deleted (a restoration brought it back)
+   * answers `list-live`, an unknown or erased one `list-gone`. A deleted list that still holds a
+   * task out of the trash (behind the position: a safety net, as no task enters or leaves a
+   * deleted list) answers `rescan`, writing nothing, and the job starts it again from the start.
+   * Otherwise a deleted list is handed to the spaces module when no task row references it any
    * more (a task in the trash still does, until its entry is erased).
    *
    * @param {TasksStore} store - The store of the transaction.
    * @param {string} organizationId - The organization of the job.
    * @param {string} listId - The list.
-   * @returns {Promise<TrashDeletedListTasksOutput>} `list-live`, or `none-left` with what was
-   * erased.
+   * @returns {Promise<TrashDeletedListTasksOutput>} `list-live`, `list-gone`, `rescan`, or
+   * `none-left` with what was erased.
    */
   private async purgeEmptyList(
     store: TasksStore,
@@ -229,7 +234,13 @@ export class TrashDeletedListTasks {
   ): Promise<TrashDeletedListTasksOutput> {
     const list: HeldList = await this.spaces.holdList(organizationId, listId);
     if (list.outcome !== 'deleted') {
-      return { outcome: 'list-live' };
+      return this.notDeleted(list);
+    }
+    const pending: ReadonlySet<string> = await store.tasks.listsWithUntrashedTasks(organizationId, [
+      listId,
+    ]);
+    if (pending.has(listId)) {
+      return { outcome: 'rescan' };
     }
     const held: ReadonlySet<string> = await store.tasks.listsWithTasks(organizationId, [listId]);
     if (held.has(listId)) {
@@ -239,6 +250,20 @@ export class TrashDeletedListTasks {
     return purge.outcome === 'purged'
       ? { outcome: 'none-left', listPurged: true, spacePurged: purge.spacePurged }
       : { outcome: 'none-left', listPurged: false, spacePurged: false };
+  }
+
+  /**
+   * Method notDeleted
+   *
+   * @description
+   * The outcome of a batch whose list is no longer deleted under its hold: `list-live` for a list
+   * a restoration brought back, `list-gone` for an unknown or erased one.
+   *
+   * @param {Exclude<HeldList, { outcome: 'deleted' }>} list - The list as held.
+   * @returns {TrashDeletedListTasksOutput} The outcome, which writes nothing.
+   */
+  private notDeleted(list: Exclude<HeldList, { outcome: 'deleted' }>): TrashDeletedListTasksOutput {
+    return list.outcome === 'live' ? { outcome: 'list-live' } : { outcome: 'list-gone' };
   }
   // #endregion
 }

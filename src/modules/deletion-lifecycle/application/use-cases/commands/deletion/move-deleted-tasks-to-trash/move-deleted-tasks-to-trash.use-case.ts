@@ -12,6 +12,18 @@ import type { DeletionUnitOfWork } from '../../../../ports/outbound/transactions
 import type { MoveDeletedTasksToTrashInput } from './move-deleted-tasks-to-trash.input.js';
 import type { MoveDeletedTasksToTrashOutput } from './move-deleted-tasks-to-trash.output.js';
 
+/**
+ * Constant MAX_RESCANS
+ *
+ * @description
+ * How many times one attempt starts a list again from its first root when a batch answers
+ * `rescan` (tasks of the list still out of the trash although no candidate root was left after the
+ * position: a task moved behind the cursor). One more is a defect, which fails the attempt.
+ *
+ * @type {number}
+ */
+const MAX_RESCANS: number = 3;
+
 /** The counts of a run, as they grow batch after batch. */
 interface Progress {
   // #region Properties
@@ -57,18 +69,24 @@ type SpaceListingResult = DeletedSpaceListing & { readonly dropped: number };
  * operations of the other modules join:
  *
  * 1. for a space, one transaction: `ListDeletedSpaceLists` of spaces holds the space `FOR SHARE`
- *    and reads whether it is still deleted and its deleted lists not erased yet, by id; when it is
- *    still deleted, the pending requests of the space itself are dropped in the same transaction
- *    (`DropTargetAccessRequests` of access-requests, kind `space`); for a list, the list itself;
+ *    and reads whether it is still deleted, live again or gone (erased) and its deleted lists not
+ *    erased yet, by id; unless it is live again, the pending requests of the space and of its lists
+ *    are dropped in the same transaction (`DropTargetAccessRequests` of access-requests, kind
+ *    `space`): a deleted space has all its lists deleted and an erased one has none left, so each
+ *    of those list requests belongs to a deleted or erased list, those erased before the job ran
+ *    included; for a list, the list itself;
  * 2. for each list, batch after batch, from the first root of the list, then after the last root of
  *    the previous batch, one transaction: `TrashDeletedListTasks` of tasks (one entry per task that
  *    reads as top-level, with its subtasks, with the actor of the deletion and one
  *    `task.trashed.v1` per task), which holds the list `FOR SHARE` and writes nothing once it is no
- *    longer deleted (`list-live`); in the first batch that saw it deleted (`trashed` or
- *    `none-left`), the pending requests of the list, and in every `trashed` batch those of the
- *    tasks it moved, both dropped in the same transaction, so a failed drop rolls the batch back;
- *    `list-live` and `none-left` (the tombstone of the list, and of its space, erased when no task
- *    references it) end the list;
+ *    longer deleted (`list-live`); in the first batch that saw it deleted or gone (`trashed`,
+ *    `none-left` or `list-gone`), the pending requests of the list, and in every `trashed` batch
+ *    those of the tasks it moved, both dropped in the same transaction, so a failed drop rolls the
+ *    batch back; `list-live`, `list-gone` (erased before the job reached it) and `none-left` (the
+ *    tombstone of the list, and of its space, erased when no task references it) end the list;
+ *    `rescan` (tasks of the list still out of the trash behind the position) starts the list again
+ *    from its first root, 3 times at most per list and attempt, then fails the attempt as a
+ *    defect;
  * 3. for a space, once its lists are handled, the erasure of the space when no list row of it is
  *    left (`PurgeDeletedSpace` of spaces), unless a list already erased it.
  *
@@ -207,9 +225,10 @@ export class MoveDeletedTasksToTrash {
     const listing: SpaceListingResult = await this.step('lists', progress, () =>
       this.unitOfWork.run(async (): Promise<SpaceListingResult> => {
         const read: DeletedSpaceListing = await this.lists.deletedListsOf(organizationId, spaceId);
-        const dropped: number = read.spaceDeleted
-          ? await this.requests.dropPending(organizationId, { kind: 'space', spaceId })
-          : 0;
+        const dropped: number =
+          read.space === 'live'
+            ? 0
+            : await this.requests.dropPending(organizationId, { kind: 'space', spaceId });
         return { ...read, dropped };
       }),
     );
@@ -241,6 +260,7 @@ export class MoveDeletedTasksToTrash {
   ): Promise<void> {
     let after: RootPosition | null = null;
     let listRequestsDropped: boolean = false;
+    let rescans: number = 0;
     for (;;) {
       signal?.throwIfAborted();
       const from: RootPosition | null = after;
@@ -248,7 +268,7 @@ export class MoveDeletedTasksToTrash {
       const batch: ListBatchResult = await this.step('tasks', progress, () =>
         this.unitOfWork.run(async (): Promise<ListBatchResult> => {
           const moved: DeletedListBatch = await this.tasks.trashBatch(organizationId, listId, from);
-          if (moved.outcome === 'list-live') {
+          if (moved.outcome === 'list-live' || moved.outcome === 'rescan') {
             return { ...moved, dropped: 0 };
           }
           let dropped: number = withListRequests
@@ -268,7 +288,24 @@ export class MoveDeletedTasksToTrash {
         progress.listsLive += 1;
         return;
       }
+      if (batch.outcome === 'rescan') {
+        rescans += 1;
+        if (rescans > MAX_RESCANS) {
+          throw new DeletionStepError(
+            'tasks',
+            progress.batches,
+            new Error(
+              `The deleted list still holds tasks out of the trash after ${String(MAX_RESCANS)} rescans.`,
+            ),
+          );
+        }
+        after = null;
+        continue;
+      }
       listRequestsDropped = true;
+      if (batch.outcome === 'list-gone') {
+        return;
+      }
       if (batch.outcome === 'none-left') {
         progress.listsPurged += batch.listPurged ? 1 : 0;
         progress.spacePurged = progress.spacePurged || batch.spacePurged;

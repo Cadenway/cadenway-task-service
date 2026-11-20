@@ -54,5 +54,19 @@ export interface FindAccessTargetInput {
    * @readonly
    */
   readonly target: AccessTargetRef;
+
+  /**
+   * Property lock
+   *
+   * @description
+   * `share` to read the row of the target (the space for a space, the list for a list)
+   * `FOR SHARE` until the end of the transaction of the caller, so that a deletion of it, which
+   * locks it `FOR NO KEY UPDATE`, either committed first (the target reads unknown) or waits for
+   * the caller; `none` (the default) to read it without lock.
+   *
+   * @type {'none' | 'share' | undefined}
+   * @readonly
+   */
+  readonly lock?: 'none' | 'share';
   // #endregion
 }

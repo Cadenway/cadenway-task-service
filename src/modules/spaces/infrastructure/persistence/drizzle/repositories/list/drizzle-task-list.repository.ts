@@ -57,8 +57,9 @@ import { spaces } from '../../schemas/space/space.schema.js';
  * names `organization_id`, the first column of the primary key and of the index of the lists of a
  * space `(organization_id, space_id, created_at, id)`; row-level security is the second barrier.
  * The readings by id and the locks before a change apply `undeletedListCondition`, so a tombstone
- * answers as an unknown list; `lockMany` (the clean-up of a member who left), the methods named
- * `IncludingDeleted`, the trash reads and the deletion machinery read the tombstones on purpose.
+ * answers as an unknown list; `lockMany` (the clean-up of a member who left, the erasure of the
+ * trash), the methods named `IncludingDeleted`, the trash reads and the deletion machinery read the
+ * tombstones on purpose. Several lists are locked in one statement in ascending id.
  * Every collection joins `spaces` on `(organization_id, id)` and applies the ONE visibility
  * condition of `visibleListCondition` (no tombstone of a list or of its space) over the left joins
  * of the grants of the member on the space
@@ -169,18 +170,39 @@ export class DrizzleTaskListRepository implements TaskListRepository {
   }
 
   /**
+   * Method lockShared
+   *
+   * @description
+   * Loads a list by its organization and its id, and locks its row `FOR SHARE` until the end of
+   * the transaction, unless it is deleted.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} id - The id of the list.
+   * @returns {Promise<TaskList | null>} The list, or `null`.
+   */
+  public async lockShared(organizationId: string, id: string): Promise<TaskList | null> {
+    return this.lockRow(organizationId, id, 'share', undeletedListCondition());
+  }
+
+  /**
    * Method lockMany
    *
    * @description
-   * Loads some lists by their primary keys and locks them `FOR NO KEY UPDATE` in the order of
-   * their ids, so that two batches never wait on each other; deleted ones are locked like any
-   * other, for the clean-up of a member who left. No id reads nothing.
+   * Loads some lists by their primary keys and locks them in one statement in ascending id, so
+   * that two lockers never wait on each other: `FOR NO KEY UPDATE` (`update`) or `FOR UPDATE`
+   * (`delete`); deleted ones are locked like any other, for the clean-up of a member who left and
+   * the erasure of the trash. No id reads nothing.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} ids - The ids of the lists.
+   * @param {'update' | 'delete'} [mode] - How the caller writes them next, `update` by default.
    * @returns {Promise<TaskList[]>} The lists that exist, by id.
    */
-  public async lockMany(organizationId: string, ids: readonly string[]): Promise<TaskList[]> {
+  public async lockMany(
+    organizationId: string,
+    ids: readonly string[],
+    mode: 'update' | 'delete' = 'update',
+  ): Promise<TaskList[]> {
     if (ids.length === 0) {
       return [];
     }
@@ -189,8 +211,63 @@ export class DrizzleTaskListRepository implements TaskListRepository {
       .from(taskLists)
       .where(and(eq(taskLists.organizationId, organizationId), inArray(taskLists.id, [...ids])))
       .orderBy(asc(taskLists.id))
-      .for('no key update');
+      .for(mode === 'update' ? 'no key update' : 'update');
     return rows.map(toTaskList);
+  }
+
+  /**
+   * Method findManyIncludingDeleted
+   *
+   * @description
+   * Loads some lists by their primary keys, live, archived or deleted, without lock, in one
+   * statement. No id reads nothing.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {readonly string[]} ids - The ids of the lists.
+   * @returns {Promise<TaskList[]>} The lists that exist, in no particular order.
+   */
+  public async findManyIncludingDeleted(
+    organizationId: string,
+    ids: readonly string[],
+  ): Promise<TaskList[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+    const rows: TaskListRow[] = await this.db
+      .select()
+      .from(taskLists)
+      .where(and(eq(taskLists.organizationId, organizationId), inArray(taskLists.id, [...ids])));
+    return rows.map(toTaskList);
+  }
+
+  /**
+   * Method lockUndeletedOfSpace
+   *
+   * @description
+   * Locks `FOR NO KEY UPDATE` the lists of a space that are not deleted yet, in ascending id, in
+   * one statement over the range `(organization_id, space_id)` of
+   * `lists_organization_space_created_index`, then a sort of the few lists of the space; the rows
+   * are locked in the order of the sort. A list a concurrent deletion of it wrote first is left
+   * out, as PostgreSQL checks the condition again on the row it locks.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} spaceId - The space, locked by the caller.
+   * @returns {Promise<string[]>} The ids of the locked lists, ascending.
+   */
+  public async lockUndeletedOfSpace(organizationId: string, spaceId: string): Promise<string[]> {
+    const rows: { id: string }[] = await this.db
+      .select({ id: taskLists.id })
+      .from(taskLists)
+      .where(
+        and(
+          eq(taskLists.organizationId, organizationId),
+          eq(taskLists.spaceId, spaceId),
+          undeletedListCondition(),
+        ),
+      )
+      .orderBy(asc(taskLists.id))
+      .for('no key update');
+    return rows.map((row: { id: string }): string => row.id);
   }
 
   /**
@@ -544,8 +621,9 @@ export class DrizzleTaskListRepository implements TaskListRepository {
    * Writes the tombstone of a deleted space on every list of it that is not deleted yet, in ONE
    * `UPDATE` of the range `(organization_id, space_id)` of `lists_organization_space_created_index`
    * (O(lists of the space)): `deleted_at` and `deleted_by_*` of the space, `updated_at`, and the
-   * same version (`TaskList.deleteWithSpace`). A list deleted on its own keeps its tombstone; one
-   * a concurrent deletion of it wrote first is skipped once PostgreSQL checks the condition again.
+   * same version (`TaskList.deleteWithSpace`), after `lockUndeletedOfSpace` locked them in
+   * ascending id (an `UPDATE` takes its rows in the order of its scan). A list deleted on its own
+   * keeps its tombstone.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} spaceId - The deleted space, locked by the caller.

@@ -99,7 +99,44 @@ function shapeOf(refusal: SpaceRefusalReason): ProblemShape {
       return { status: 422, code: 'access.owner-unchangeable' };
     case 'grant-limit-reached':
       return { status: 422, code: 'access.grant-limit-reached' };
+    case 'trash-writes-disabled':
+      // The answer of the kit for an unknown route (title `Not Found`), as the release before,
+      // which has no such route, answers.
+      return { status: 404, code: 'http.not-found' };
   }
+}
+
+/**
+ * Interface RequestedRoute
+ *
+ * @description
+ * The method and the URL of a request as Express gives them, which the answer for a route the
+ * service does not have names.
+ */
+export interface RequestedRoute {
+  // #region Properties
+  /**
+   * Property method
+   *
+   * @description
+   * The HTTP method.
+   *
+   * @type {string}
+   * @readonly
+   */
+  readonly method: string;
+
+  /**
+   * Property originalUrl
+   *
+   * @description
+   * The URL as requested, the query included (`originalUrl` of Express).
+   *
+   * @type {string}
+   * @readonly
+   */
+  readonly originalUrl: string;
+  // #endregion
 }
 
 /**
@@ -107,13 +144,20 @@ function shapeOf(refusal: SpaceRefusalReason): ProblemShape {
  *
  * @description
  * Runs a use case and turns its `SpaceRefusal` into the problem of the contract; any other error
- * passes through to the `ProblemFilter` of the kit.
+ * passes through to the `ProblemFilter` of the kit. A deletion refused while the writes of the
+ * trash are off (`trash-writes-disabled`) answers exactly as the kit and NestJS answer a route the
+ * service does not have: `404`, `type` `about:blank`, title `Not Found`, code `http.not-found`
+ * and, with the route of the request, the detail `Cannot <METHOD> <url>` of the router of NestJS.
  *
  * @param {() => Promise<TResult>} work - The call of the use case.
+ * @param {RequestedRoute} [route] - The route of the request, for the answer of an unknown route.
  * @returns {Promise<TResult>} What the use case resolved with.
  * @throws {ProblemException} For a refusal of the use case.
  */
-export async function answerRefusals<TResult>(work: () => Promise<TResult>): Promise<TResult> {
+export async function answerRefusals<TResult>(
+  work: () => Promise<TResult>,
+  route?: RequestedRoute,
+): Promise<TResult> {
   try {
     return await work();
   } catch (error) {
@@ -121,9 +165,13 @@ export async function answerRefusals<TResult>(work: () => Promise<TResult>): Pro
       throw error;
     }
     const shape: ProblemShape = shapeOf(error.refusal);
+    const unknownRoute: boolean = error.refusal.reason === 'trash-writes-disabled';
     throw new ProblemException({
       status: shape.status,
       code: shape.code,
+      ...(unknownRoute && route !== undefined
+        ? { detail: `Cannot ${route.method} ${route.originalUrl}` }
+        : {}),
       ...(shape.details === undefined ? {} : { details: shape.details }),
     });
   }

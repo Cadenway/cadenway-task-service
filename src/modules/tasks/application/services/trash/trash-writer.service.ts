@@ -5,6 +5,7 @@ import type { TaskActor } from '../../../domain/value-objects/task/task-actor.va
 import type { TasksStore } from '../../models/transactions/tasks-store.model.js';
 import type { TrashEntryDraft } from '../../models/trash/trash-entry-draft.model.js';
 import type { TrashEntryRecord } from '../../models/trash/trash-entry-record.model.js';
+import type { TrashTaskWrite } from '../../models/trash/trash-task-write.model.js';
 import type { TrashTree } from '../../models/trash/trash-tree.model.js';
 import type { TrashedTree } from '../../models/trash/trashed-tree.model.js';
 import type { TaskReferenceInListView } from '../../projections/task/task-reference-in-list.projection.js';
@@ -111,7 +112,12 @@ export class TrashWriter {
     await store.tasks.writeTrash(
       organizationId,
       entries.map((entry: TrashEntryRecord): string => entry.id),
-      trashed.flatMap((tree: TrashedTree): readonly Task[] => tree.tasks),
+      trashed.flatMap((tree: TrashedTree): readonly TrashTaskWrite[] =>
+        tree.tasks.map((task: Task): TrashTaskWrite => ({
+          task,
+          versionBefore: task.snapshot.version - 1,
+        })),
+      ),
     );
     const purgeAt: Date = purgeAtOf(now);
     for (const tree of trashed) {

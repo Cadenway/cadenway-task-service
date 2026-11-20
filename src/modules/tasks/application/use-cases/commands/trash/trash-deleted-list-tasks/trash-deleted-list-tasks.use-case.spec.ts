@@ -249,6 +249,17 @@ describe('TrashDeletedListTasks: one entry per top-level task of a deleted list'
     expect(tasks.trashEntries.size).toBe(0);
     expect(tasks.events).toEqual([]);
   });
+
+  it('writes nothing and answers list-gone for a list the fake spaces no longer know', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState({ listId: UNKNOWN_LIST })] });
+    const useCase = new TrashDeletedListTasks(tasks, new InMemorySpaceDirectory());
+
+    expect(
+      await useCase.execute({ organizationId: ATELIER_NORD, listId: UNKNOWN_LIST, after: null }),
+    ).toEqual({ outcome: 'list-gone' });
+    expect(tasks.trashEntries.size).toBe(0);
+    expect(tasks.events).toEqual([]);
+  });
 });
 
 describe('TrashDeletedListTasks: with no root left, the tombstone goes once no task references it', () => {
@@ -277,7 +288,7 @@ describe('TrashDeletedListTasks: with no root left, the tombstone goes once no t
     expect(directory.purgeCalls).toEqual([]);
   });
 
-  it('answers list-live for a list a restoration brought back or that is gone, purging nothing', async () => {
+  it('answers list-live for a list a restoration brought back and list-gone for an erased one', async () => {
     const live = new InMemorySpaceDirectory();
     const { useCase } = deletedSprint([], live);
 
@@ -286,8 +297,25 @@ describe('TrashDeletedListTasks: with no root left, the tombstone goes once no t
     ).toEqual({ outcome: 'list-live' });
     expect(
       await useCase.execute({ organizationId: ATELIER_NORD, listId: UNKNOWN_LIST, after: null }),
-    ).toEqual({ outcome: 'list-live' });
+    ).toEqual({ outcome: 'list-gone' });
     expect(live.purgeCalls).toEqual([]);
+  });
+
+  it('answers rescan when no root is left after the position but tasks out of the trash are', async () => {
+    const { directory, tasks, useCase } = deletedSprint([
+      taskState(),
+      cad490State({ createdAt: new Date(taskState().createdAt.getTime() - 1) }),
+    ]);
+
+    expect(
+      await useCase.execute({
+        organizationId: ATELIER_NORD,
+        listId: SPRINT_14,
+        after: { createdAt: new Date(taskState().createdAt.getTime() + 1), id: CAD_482 },
+      }),
+    ).toEqual({ outcome: 'rescan' });
+    expect(tasks.trashEntries.size).toBe(0);
+    expect(directory.purgeCalls).toEqual([]);
   });
 
   it('holds the list before it checks the tasks left and erases the tombstone, under that lock', async () => {

@@ -43,6 +43,7 @@ describe('answerRefusals', () => {
     [{ reason: 'guest-space-forbidden' }, 422, 'access.guest-space-forbidden', undefined],
     [{ reason: 'owner-unchangeable' }, 422, 'access.owner-unchangeable', undefined],
     [{ reason: 'grant-limit-reached' }, 422, 'access.grant-limit-reached', undefined],
+    [{ reason: 'trash-writes-disabled' }, 404, 'http.not-found', undefined],
   ];
 
   it.each(answers)(
@@ -61,6 +62,58 @@ describe('answerRefusals', () => {
       expect(thrown.problem.details).toEqual(details);
     },
   );
+
+  it.each([
+    ['a list', '/internal/v1/lists/019a7100-0000-7000-8000-000000000002'],
+    ['a space', '/internal/v1/spaces/019a7000-0000-7000-8000-000000000001?force=1'],
+  ])(
+    'answers the deletion of %s while the writes of the trash are off exactly as a route the service lacks',
+    async (_what: string, originalUrl: string) => {
+      const thrown: unknown = await answerRefusals(
+        () => Promise.reject(new SpaceRefusal({ reason: 'trash-writes-disabled' })),
+        { method: 'DELETE', originalUrl },
+      ).catch((error: unknown) => error);
+
+      expect(thrown).toBeInstanceOf(ProblemException);
+      if (!(thrown instanceof ProblemException)) {
+        return;
+      }
+      expect(thrown.problem).toEqual({
+        type: 'about:blank',
+        title: 'Not Found',
+        status: 404,
+        code: 'http.not-found',
+        detail: `Cannot DELETE ${originalUrl}`,
+      });
+    },
+  );
+
+  it('names the route only for a deletion refused by the switch', async () => {
+    const thrown: unknown = await answerRefusals(
+      () => Promise.reject(new SpaceRefusal({ reason: 'list-not-found' })),
+      { method: 'DELETE', originalUrl: '/internal/v1/lists/019a7100-0000-7000-8000-000000000002' },
+    ).catch((error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(ProblemException);
+    expect(thrown instanceof ProblemException ? thrown.problem.detail : null).toBeUndefined();
+  });
+
+  it('answers the switch without a detail when no route is given', async () => {
+    const thrown: unknown = await answerRefusals(() =>
+      Promise.reject(new SpaceRefusal({ reason: 'trash-writes-disabled' })),
+    ).catch((error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(ProblemException);
+    if (!(thrown instanceof ProblemException)) {
+      return;
+    }
+    expect(thrown.problem).toMatchObject({
+      status: 404,
+      code: 'http.not-found',
+      title: 'Not Found',
+    });
+    expect(thrown.problem.detail).toBeUndefined();
+  });
 
   it('lets any other error through to the filter of the kit', async () => {
     const failure: Error = new Error('unexpected');

@@ -330,6 +330,59 @@ describe('CreateAccessRequest: always the same answer, whatever the target', () 
   });
 });
 
+describe('CreateAccessRequest: the target is read under FOR SHARE locks, the same for every outcome', () => {
+  it('reads a space under a FOR SHARE lock', async () => {
+    const { targets, tasks, useCase } = wire();
+
+    await useCase.execute(askDirection());
+
+    expect(targets.locks).toEqual(['share']);
+    expect(tasks.locks).toEqual([]);
+  });
+
+  it('reads a list under a FOR SHARE lock', async () => {
+    const { targets, useCase } = wire();
+
+    await useCase.execute(askDirection({ target: { kind: 'list', listId: BUDGET } }));
+
+    expect(targets.locks).toEqual(['share']);
+  });
+
+  it('reads the task under a FOR SHARE lock, then its list under another, in that order', async () => {
+    const { targets, tasks, useCase } = wire();
+    const order: string[] = [];
+    const findByKey = tasks.findByKey.bind(tasks);
+    const find = targets.find.bind(targets);
+    tasks.findByKey = (...args: Parameters<FakeTaskReferences['findByKey']>) => {
+      order.push(`task:${args[2]}`);
+      return findByKey(...args);
+    };
+    targets.find = (...args: Parameters<FakeAccessTargets['find']>) => {
+      order.push(`${args[3].kind}:${args[4]}`);
+      return find(...args);
+    };
+
+    await useCase.execute(askDirection({ target: { kind: 'task', taskKey: 'DIR-12' } }));
+
+    expect(order).toEqual(['task:share', 'list:share']);
+  });
+
+  it('takes the same locks for an unknown key, a task in the trash or a deleted list, as for a known one', async () => {
+    const known = wire();
+    const unknown = wire();
+    unknown.tasks.tasks = [];
+
+    await known.useCase.execute(askDirection({ target: { kind: 'task', taskKey: 'DIR-12' } }));
+    await unknown.useCase.execute(askDirection({ target: { kind: 'task', taskKey: 'DIR-12' } }));
+
+    expect(unknown.tasks.locks).toEqual(known.tasks.locks);
+    expect(unknown.targets.locks).toEqual(known.targets.locks);
+    expect(unknown.store.calls.filter((call) => !call.startsWith('events.'))).toEqual(
+      known.store.calls.filter((call) => !call.startsWith('events.')),
+    );
+  });
+});
+
 describe('CreateAccessRequest: 10 requests per requester within the last hour, stored or not', () => {
   it('takes the tenth request of the hour', async () => {
     const attempts = Array.from({ length: 9 }, (_, index) => ({

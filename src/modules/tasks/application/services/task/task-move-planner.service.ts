@@ -34,9 +34,12 @@ import { TaskSubtreeLocker } from './task-subtree-locker.service.js';
  * in ordered statements after the task itself, until every live descendant of the task is locked
  * (a descendant that left the subtree while the locks were taken is not kept); an archived
  * subtask stays in its list with its parent link. A parent in the trash is unseen
- * (`parent-invalid`), read before the locks or under them. A move to another list holds that list
- * `FOR SHARE` once the tasks are locked (`HoldList`, lock order tasks then lists), so a deletion of
- * it either committed first (`list-invalid`) or waits and its job moves the task too. It also picks
+ * (`parent-invalid`), read before the locks or under them. A move to another list holds the list
+ * it leaves and the one it goes to, in ascending list id, `FOR SHARE` once the tasks are locked
+ * (`HoldList`, lock order tasks then lists), and an attachment to a parent in another list holds
+ * the list it leaves: a deletion of the list left either committed first (`task-not-found`, as for
+ * any task of a deleted list) or waits, so no task leaves a deleted list; a deletion of the target
+ * either committed first (`list-invalid`) or waits and its job moves the task too. It also picks
  * the statuses the domain checks a new status against: those of the space the task ends up in. The
  * rules of the tree (depth, limit, cycles, the list of a subtask) stay with `Task.update`.
  */
@@ -111,9 +114,12 @@ export class TaskMovePlanner {
       attachment = attached.attachment;
       statuses = attached.statuses;
       descendants = attached.descendants;
+      if (attached.listId !== current.list.id) {
+        await this.holdSource(task.snapshot.organizationId, current.list.id);
+      }
     } else if (moves) {
       descendants = (await this.subtrees.lock(store, task, [], true)).tasks;
-      await this.holdTarget(task.snapshot.organizationId, target.list.id);
+      await this.holdBoth(task.snapshot.organizationId, current.list.id, target.list.id);
     }
     const patch: TaskPatch = {
       ...fields,
@@ -176,8 +182,9 @@ export class TaskMovePlanner {
    * @param {Viewer} viewer - The acting member.
    * @param {Task} task - The task to attach.
    * @param {string} parentKey - The key of the new parent.
-   * @returns {Promise<{ attachment: TaskAttachment; statuses: SpaceStatusUse; descendants: readonly Task[] }>}
-   * The attachment for the domain, the statuses of the space of the parent and the descendants.
+   * @returns {Promise<{ attachment: TaskAttachment; statuses: SpaceStatusUse; descendants: readonly Task[]; listId: string }>}
+   * The attachment for the domain, the statuses of the space of the parent, the descendants and
+   * the list of the locked parent, where the task ends up.
    * @throws {TaskRefusal} `parent-invalid` when the parent is unknown or not seen,
    * `role-insufficient` when the actor sees its list without `edit`, `task-archived` with the key
    * of the parent when the locked parent is archived.
@@ -191,6 +198,7 @@ export class TaskMovePlanner {
     readonly attachment: TaskAttachment;
     readonly statuses: SpaceStatusUse;
     readonly descendants: readonly Task[];
+    readonly listId: string;
   }> {
     const { organizationId } = task.snapshot;
     const invalid: TaskRefusal = new TaskRefusal({ reason: 'parent-invalid', parentKey });
@@ -249,7 +257,61 @@ export class TaskMovePlanner {
       descendants: locked.filter((candidate: Task): boolean =>
         subtree.descendantIds.includes(candidate.snapshot.id),
       ),
+      listId: parent.snapshot.listId,
     };
+  }
+
+  /**
+   * Method holdBoth
+   *
+   * @description
+   * Holds the list a task leaves and the one it moves to in ascending list id, the order every
+   * writer that locks several lists follows (the grants of a removed member, a deletion of a
+   * space), so two moves in opposite directions and a deletion never wait for each other in a
+   * cycle. Each hold refuses as its own: the list left `task-not-found`, the target
+   * `list-invalid`.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} sourceId - The list the task leaves.
+   * @param {string} targetId - The list it moves to.
+   * @returns {Promise<void>} Resolves once both are held, live.
+   * @throws {TaskRefusal} `task-not-found` or `list-invalid`, from the first list held that is
+   * deleted or gone.
+   */
+  private async holdBoth(
+    organizationId: string,
+    sourceId: string,
+    targetId: string,
+  ): Promise<void> {
+    if (sourceId < targetId) {
+      await this.holdSource(organizationId, sourceId);
+      await this.holdTarget(organizationId, targetId);
+      return;
+    }
+    await this.holdTarget(organizationId, targetId);
+    await this.holdSource(organizationId, sourceId);
+  }
+
+  /**
+   * Method holdSource
+   *
+   * @description
+   * Holds the list a task leaves `FOR SHARE` until the commit, after the task and its subtree are
+   * locked (`HoldList`), for a move to another list and an attachment to a parent in another
+   * list: a deletion of that list either committed first, and the change answers `task-not-found`
+   * as for any task of a deleted list, or waits for it. So no task leaves a deleted list, and its
+   * deletion job cannot miss the archived subtasks a move leaves behind in it.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} listId - The list the task leaves.
+   * @returns {Promise<void>} Resolves once held, the list live.
+   * @throws {TaskRefusal} `task-not-found` when the list is deleted or gone.
+   */
+  private async holdSource(organizationId: string, listId: string): Promise<void> {
+    const held: HeldList = await this.spaces.holdList(organizationId, listId);
+    if (held.outcome !== 'live') {
+      throw new TaskRefusal({ reason: 'task-not-found' });
+    }
   }
 
   /**

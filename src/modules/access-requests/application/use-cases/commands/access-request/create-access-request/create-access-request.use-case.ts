@@ -56,16 +56,31 @@ interface ResolvedTarget {
  *    eleventh (`429 access-request.limit-reached`, rolled back, so the refused attempt counts for
  *    nothing); otherwise the attempts that left the hour are deleted and this one is recorded,
  *    stored or not;
- * 4. the target: a space or a list through the spaces module, a task through the tasks module then
- *    its list through the spaces module;
+ * 4. the target, read under a `FOR SHARE` lock held until the commit: a space through the spaces
+ *    module (the space), a list through the spaces module (the list; its space is read without a
+ *    lock), a task through the tasks module (the task), then its list through the spaces module
+ *    (the list, its space read without a lock);
  * 5. one insert statement, always: it stores the request only when `isRequestStored` says so,
  *    once per requester and target while pending; a stored request appends its
  *    `…access-requested.v1`.
  *
  * It always resolves the same way, whatever the target: the route answers `202` with no body, and
- * the statements of steps 1 to 5 are the same for every outcome, so neither the answer nor the
- * statements tell whether the target exists, is seen already or is asked for already. The one
+ * the statements of steps 1 to 5, their locks included, are the same for every outcome (an unknown
+ * target is read as one no row has), so neither the answer nor the statements tell whether the
+ * target exists, is deleted, is in the trash, is seen already or is asked for already. The one
  * difference left is the outbox append of a stored request.
+ *
+ * The locks of step 4 make a deletion or a trash of the target running meanwhile either commit
+ * first, so the request reads the target deleted or in the trash and stores nothing, or wait for
+ * the request, whose pending row the job of that deletion or trash then drops. The lock of the
+ * list suffices for a list or a task: a deletion of its space writes the list rows too (it marks
+ * them deleted), so it conflicts with that lock as a deletion of the list does. Lock order: the
+ * membership, the advisory lock, the attempts, the task, then the space (a space target) or the
+ * list, then the insert. It cannot deadlock with a batch of a deletion job (tasks `FOR NO KEY
+ * UPDATE`, then the list `FOR SHARE`, then the access requests), a trash (tasks, then the list), a
+ * deletion of a list or a space (the space, then its lists) or a restoration (tasks, then the
+ * space, then the list): the request holds one row of the space or the list only, after its task,
+ * and takes the access requests last, so no two wait for each other in opposite orders.
  */
 export class CreateAccessRequest {
   // #region Properties
@@ -219,9 +234,9 @@ export class CreateAccessRequest {
    * Method resolveTarget
    *
    * @description
-   * Reads the target and the role of the actor on it: the space, the list, or the list of the task,
-   * the list the task is in now. An unknown key still reads a list, one that cannot exist, so that
-   * it costs the same calls as a known one.
+   * Reads the target and the role of the actor on it, under `FOR SHARE` locks: the space, the list,
+   * or the task then the list it is in now. An unknown key still reads a list, one that cannot
+   * exist, so that it costs the same calls and locks as a known one.
    *
    * @param {CreateAccessRequestInput} input - The request.
    * @param {MemberRole} role - The role of the actor in the organization.
@@ -235,30 +250,38 @@ export class CreateAccessRequest {
     switch (input.target.kind) {
       case 'space':
         return {
-          target: await this.targets.find(organizationId, actorUserId, role, {
-            kind: 'space',
-            spaceId: input.target.spaceId,
-          }),
+          target: await this.targets.find(
+            organizationId,
+            actorUserId,
+            role,
+            { kind: 'space', spaceId: input.target.spaceId },
+            'share',
+          ),
           task: null,
         };
       case 'list':
         return {
-          target: await this.targets.find(organizationId, actorUserId, role, {
-            kind: 'list',
-            listId: input.target.listId,
-          }),
+          target: await this.targets.find(
+            organizationId,
+            actorUserId,
+            role,
+            { kind: 'list', listId: input.target.listId },
+            'share',
+          ),
           task: null,
         };
       case 'task': {
         const task: TaskReference | null = await this.tasks.findByKey(
           organizationId,
           input.target.taskKey,
+          'share',
         );
         const target: TargetAccess | null = await this.targets.find(
           organizationId,
           actorUserId,
           role,
           { kind: 'list', listId: task === null ? NO_LIST : task.listId },
+          'share',
         );
         return { target: task === null ? null : target, task };
       }

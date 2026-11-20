@@ -68,22 +68,31 @@ schedule this module registers.
 
 ## Invariants
 
+- The workers stay served whatever `TRASH_WRITES_ENABLED` says (`src/config/app-config.ts`): the
+  switch only keeps the routes that create entries and tombstones (the deletions of lists and
+  spaces, "Supprimer la tâche", "Vider la corbeille") answering `404 http.not-found` while it is
+  off. The jobs act only on what exists: with the switch off nothing new reaches them, and if it is
+  turned off again after use, the tasks of the lists already deleted still reach the trash and the
+  trash is still erased on time.
+
 - Every job runs in the organization of its envelope, lower-cased (`runJobInOrganization` of
   `src/app.module.ts`), except the schedule, which has none; every write to a table of an
   organization runs in a tenant transaction of that organization. The only work across
   organizations is the read of the organizations with trash to erase, ids only, plus a system
   transaction that inserts job rows and nothing else.
 - The pending requests of a target are dropped only in a transaction that read the target deleted,
-  or in the trash, under its lock: the space in the transaction of `ListDeletedSpaceLists` (space
-  `FOR SHARE`, `spaceDeleted`), a list in its first batch that saw it deleted (`trashed` or
-  `none-left`, list `FOR SHARE`), the tasks of a batch in that batch, the tasks of an entry under
-  the `FOR SHARE` lock `ListUntrashedTaskIds` takes on them, only those it does not find out of the
+  gone or in the trash, under its lock: the space and the list requests of the space in the
+  transaction of `ListDeletedSpaceLists` (space `FOR SHARE`, `deleted` or `gone`), a list in its
+  first batch that saw it deleted or gone (`trashed`, `none-left` or `list-gone`, list `FOR
+SHARE`), the tasks of a batch in that batch, the tasks of an entry under the `FOR SHARE` lock `ListUntrashedTaskIds` takes on them, only those it does not find out of the
   trash. A restoration that came first keeps them; one that comes during the drop waits for it.
 - A batch of a deletion job moves its tasks to the trash and drops the pending requests of the list
   and of those tasks in one transaction: all commit or none does.
-- A deletion job writes nothing in a list that is no longer deleted: a restoration from the trash
-  stops it on that list, and the tasks it had not moved yet stay live there. The other deleted lists
-  of a restored space still go to the trash.
+- A deletion job writes nothing in a list that is no longer deleted (`list-live`). The tasks module
+  refuses to restore an entry of a deleted list while that list still holds tasks out of the trash
+  (`RestoreTrashEntry`, under the lock of the list), so a list comes back only once its job moved
+  every task, and `list-live` leaves nothing behind. The other deleted lists of a restored space
+  still go to the trash.
 - Only pending access requests are dropped; answered requests stay, and archived targets keep
   their requests, as the contract stores requests for archived targets.
 - The purge erases only entries handed over by "Vider la corbeille" or deleted 30 days ago or more
@@ -103,8 +112,9 @@ events of a batch leave at the next poll of the relay, within a second of the co
 **The deletion job.** `MoveDeletedTasksToTrash`, for a list or a space:
 
 1. for a space, one transaction: `ListDeletedSpaceLists` holds the space `FOR SHARE`, reads
-   whether it is still deleted and its deleted lists not erased yet, by id, O(lists of the space),
-   and when it is still deleted `DropTargetAccessRequests` deletes the pending space requests, one
+   whether it is still deleted, live again or gone (erased, or unknown) and its deleted lists not
+   erased yet, by id, O(lists of the space), and unless it is live again `DropTargetAccessRequests`
+   deletes the pending space requests and the pending list requests of the space (`space_id`), one
    statement; for a list, the list itself;
 2. for each list, batch after batch, from its first root, then after the last root of the previous
    batch (kept in memory by the attempt): one transaction in which `TrashDeletedListTasks` locks the
@@ -113,17 +123,23 @@ events of a batch leave at the next poll of the relay, within a second of the co
    does not limit), then holds the list `FOR SHARE`, writes the entries and the tasks; then, in the
    first batch that saw the list deleted, `DropTargetAccessRequests` deletes its pending list
    requests, and in every `trashed` batch the pending requests of the tasks it moved (the adapter
-   gives them to `DropTargetAccessRequests` 2,000 at a time, its bound). `list-live` and `none-left` end the list; `none-left` erases the tombstone of the
-   list, and of its space, when no task references it any more;
+   gives them to `DropTargetAccessRequests` 2,000 at a time, its bound). `list-live` (restored),
+   `list-gone` (erased before the job reached it: its pending list requests are dropped in that
+   transaction all the same) and `none-left` end the list; `none-left` erases the tombstone of the
+   list, and of its space, when no task references it any more. `rescan` (no candidate root left
+   after the position while tasks of the list are still out of the trash, checked under the list
+   lock: a task that reached a position behind the cursor) writes nothing and starts the list again
+   from its first root, 3 times at most per list and attempt; a fourth fails the attempt with a
+   `DeletionStepError` of the step `tasks`, a defect to look at;
 3. for a space not erased by its last list, one transaction: `PurgeDeletedSpace`, which erases it
    when no list row of it is left (`not-empty` while a deleted list of it still holds entries: the
    purge erases both with the last of them).
 
 Lock order within a batch: tasks, then the list `FOR SHARE`, then the access requests (row locks of
 the delete). An approval locks its request, then the list it grants on, but only after it read the
-list live (`FindAccessTarget`), which a deleted list held by the batch is not: the two never wait for
-each other in opposite orders. A pending request an answer holds makes the delete wait 5 s at most
-(the lock timeout of the application role), then it is answered and stays.
+list live (`FindAccessTarget`), which a deleted list held by the batch is not: the two never wait
+for each other in opposite orders. A pending request an answer holds makes the delete wait 5 s at
+most (the lock timeout of the application role), then it is answered and stays.
 
 **The job of a trash entry.** `DropTrashedTaskRequests`: one transaction, `ListUntrashedTaskIds`
 locks the tasks of the entry `FOR SHARE` until the commit and reads those out of the trash, then one
@@ -291,7 +307,11 @@ against pg-boss 12.38), with `$queue` one of the four queues:
   requests are hidden from the commit on, since the target is no longer found. Review fix of PR 3
   (security): each is dropped in a transaction that read its target still deleted or in the trash
   under its lock, so a restoration that came before the job keeps the requests of what it brought
-  back; the space drops its space requests only, each list its own list requests. The job of a
+  back. The space drops its space requests and the list requests of the space: a deleted space has
+  all its lists deleted (restoring a list restores its space) and an erased one has none left, so
+  under the lock of a space read `deleted` or `gone`, every list request of the space belongs to a
+  deleted or erased list, those erased before the job ran included; each list drops its own again
+  in its first batch, which then finds none for a list of the space. The job of a
   trash entry reads its tasks under a `FOR SHARE` lock (`ListUntrashedTaskIds`, follow-up review of
   PR 3), so a restoration and the drop are serialized on the tasks, the tasks before the access
   requests in both: a request is dropped only for a task still in the trash at the commit.

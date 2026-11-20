@@ -156,11 +156,13 @@ export class RequestAnswerer {
       }
     }
     const placement: RequestPlacement = request.placement(task);
+    // No lock: an approval locks the space or the list itself, in `GrantRequestedAccess`.
     const target: TargetAccess | null = await this.targets.find(
       organizationId,
       actorUserId,
       actorRole,
       request.grantTarget(placement),
+      'none',
     );
     if (target?.viewerManages !== true) {
       throw new AccessRequestRefusal({ reason: 'access-request-not-found' });

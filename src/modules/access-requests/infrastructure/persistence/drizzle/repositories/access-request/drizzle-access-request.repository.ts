@@ -73,7 +73,8 @@ function scopeCondition(organizationId: string, scope: PendingScope): SQL | unde
  *
  * @description
  * The requests of a deleted target, pending or not: the task requests of the tasks, the list
- * requests of the list, or the space requests of the space.
+ * requests of the list, or the space requests of the space and the list requests of its lists (the
+ * space a list request stored is the space of its list, since a list never changes space).
  *
  * @param {DroppedRequestTarget} target - The deleted target.
  * @returns {SQL | undefined} The condition.
@@ -85,7 +86,10 @@ function targetCondition(target: DroppedRequestTarget): SQL | undefined {
     case 'list':
       return and(eq(accessRequests.target, 'list'), eq(accessRequests.targetId, target.listId));
     case 'space':
-      return and(eq(accessRequests.target, 'space'), eq(accessRequests.targetId, target.spaceId));
+      return or(
+        and(eq(accessRequests.target, 'space'), eq(accessRequests.targetId, target.spaceId)),
+        and(eq(accessRequests.target, 'list'), eq(accessRequests.spaceId, target.spaceId)),
+      );
   }
 }
 
@@ -383,11 +387,11 @@ export class DrizzleAccessRequestRepository implements AccessRequestRepository {
    * @description
    * `DELETE FROM access_requests WHERE organization_id = $1 AND state = 'pending' AND <target>
    * RETURNING id`, one statement: `target = 'task' AND target_id = ANY($tasks)`, `target = 'list'
-   * AND target_id = $list`, or `target = 'space' AND target_id = $space` (`target_id` is the task,
-   * the list or the space of its target, `access_requests_target_shape_check`). No index serves
-   * `target_id` alone: the statement reads the pending requests of the organization
-   * (`access_requests_pending_index`), O(pending requests of the organization), as the listing
-   * does, which the hourly limit of each requester bounds. A row an answer locked is waited for (5 s
+   * AND target_id = $list`, or `(target = 'space' AND target_id = $space) OR (target = 'list' AND
+   * space_id = $space)` (`target_id` is the task, the list or the space of its target,
+   * `access_requests_target_shape_check`). No index serves `target_id` or `space_id` alone: the
+   * statement reads the pending requests of the organization (`access_requests_pending_index`),
+   * O(pending requests of the organization), as the listing does, which the hourly limit of each requester bounds. A row an answer locked is waited for (5 s
    * at most, the lock timeout of the application role), then evaluated again: answered meanwhile,
    * it stays. No task deletes nothing without a statement.
    *

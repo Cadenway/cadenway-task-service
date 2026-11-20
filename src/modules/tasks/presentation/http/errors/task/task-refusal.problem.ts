@@ -60,7 +60,9 @@ interface ProblemShape {
  * (`TaskArchived`, and `TaskCreationConflict` for a new subtask or checklist item). A task in the
  * trash answers `404 task.trashed` with its entry in `details` (`TaskNotFound`: the instants as ISO
  * 8601 texts, `trashedBy` an `Actor`), an entry the actor may not restore `404
- * trash-entry.not-found` (`TrashEntryNotFound`).
+ * trash-entry.not-found` (`TrashEntryNotFound`). A write of the trash while its switch is off
+ * answers `404 http.not-found`, title `Not Found`: the answer of the kit for a route the service
+ * does not have (see `answerRefusals`).
  *
  * @param {TaskRefusalReason} refusal - The refusal.
  * @returns {ProblemShape} The problem of the contract.
@@ -103,6 +105,8 @@ function shapeOf(refusal: TaskRefusalReason): ProblemShape {
       };
     case 'trash-entry-not-found':
       return { status: 404, code: 'trash-entry.not-found' };
+    case 'trash-writes-disabled':
+      return { status: 404, code: 'http.not-found' };
 
     case 'version-mismatch':
       return {
@@ -146,17 +150,41 @@ function shapeOf(refusal: TaskRefusalReason): ProblemShape {
 }
 
 /**
+ * Interface RequestedRoute
+ *
+ * @description
+ * The method and the URL of a request as Express gives them, which the answer for a route the
+ * service does not have names.
+ */
+export interface RequestedRoute {
+  // #region Properties
+  /** The HTTP method. */
+  readonly method: string;
+
+  /** The URL as requested, the query included (`originalUrl` of Express). */
+  readonly originalUrl: string;
+  // #endregion
+}
+
+/**
  * Function answerRefusals
  *
  * @description
  * Runs a use case and turns its `TaskRefusal` into the problem of the contract; any other error
- * passes through to the `ProblemFilter` of the kit.
+ * passes through to the `ProblemFilter` of the kit. A write of the trash refused while its switch
+ * is off (`trash-writes-disabled`) answers exactly as the kit and NestJS answer a route the
+ * service does not have: `404`, `type` `about:blank`, title `Not Found`, code `http.not-found`
+ * and, with the route of the request, the detail `Cannot <METHOD> <url>` of the router of NestJS.
  *
  * @param {() => Promise<TResult>} work - The call of the use case.
+ * @param {RequestedRoute} [route] - The route of the request, for the answer of an unknown route.
  * @returns {Promise<TResult>} What the use case resolved with.
  * @throws {ProblemException} For a refusal of the use case.
  */
-export async function answerRefusals<TResult>(work: () => Promise<TResult>): Promise<TResult> {
+export async function answerRefusals<TResult>(
+  work: () => Promise<TResult>,
+  route?: RequestedRoute,
+): Promise<TResult> {
   try {
     return await work();
   } catch (error) {
@@ -164,9 +192,13 @@ export async function answerRefusals<TResult>(work: () => Promise<TResult>): Pro
       throw error;
     }
     const shape: ProblemShape = shapeOf(error.refusal);
+    const unknownRoute: boolean = error.refusal.reason === 'trash-writes-disabled';
     throw new ProblemException({
       status: shape.status,
       code: shape.code,
+      ...(unknownRoute && route !== undefined
+        ? { detail: `Cannot ${route.method} ${route.originalUrl}` }
+        : {}),
       ...(shape.details === undefined ? {} : { details: shape.details }),
     });
   }

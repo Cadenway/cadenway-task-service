@@ -24,6 +24,7 @@ import type { TrashListAccess } from '../models/list/trash-list-access.model.js'
 import type { ArchivedListPosition } from '../models/page/archived-list-position.model.js';
 import type { PagePosition } from '../models/page/page-position.model.js';
 import type { SpacesStore } from '../models/transactions/spaces-store.model.js';
+import type { TrashWrites } from '../ports/outbound/feature/trash/trash-writes.port.js';
 import type { MemberDirectory } from '../ports/outbound/members/membership/member-directory.port.js';
 import type { SpacesUnitOfWork } from '../ports/outbound/transactions/space/spaces-unit-of-work.port.js';
 import {
@@ -590,8 +591,9 @@ export class InMemorySpaces implements SpacesUnitOfWork {
    * Property reads
    *
    * @description
-   * The readings by id, in order (`space` and `list` for `find`, `grants` for `viewerGrants`),
-   * whatever they found: what a spec compares to tell whether a path reads more than another.
+   * The readings by id, in order (`space` and `list` for `find`, `lists` for
+   * `findManyIncludingDeleted`, `grants` for `viewerGrants`), whatever they found: what a spec
+   * compares to tell whether a path reads more than another.
    *
    * @type {string[]}
    * @readonly
@@ -1513,15 +1515,49 @@ export class InMemorySpaces implements SpacesUnitOfWork {
           this.journal.push(`list ${id}`);
           return Promise.resolve(findList(organizationId, id));
         },
-        lockMany: (organizationId: string, ids: readonly string[]): Promise<TaskList[]> => {
-          const found: TaskList[] = [...ids]
+        lockShared: (organizationId: string, id: string): Promise<TaskList | null> => {
+          this.journal.push(`list ${id} share`);
+          return Promise.resolve(findList(organizationId, id));
+        },
+        lockMany: (
+          organizationId: string,
+          ids: readonly string[],
+          mode: 'update' | 'delete' = 'update',
+        ): Promise<TaskList[]> => {
+          const found: TaskList[] = [...new Set(ids)]
             .sort()
             .map((id: string): TaskList | null => findAnyList(organizationId, id))
             .filter((list: TaskList | null): list is TaskList => list !== null);
           for (const list of found) {
-            this.journal.push(`list ${list.snapshot.id}`);
+            this.journal.push(`list ${list.snapshot.id}${mode === 'delete' ? ' delete' : ''}`);
           }
           return Promise.resolve(found);
+        },
+        findManyIncludingDeleted: (
+          organizationId: string,
+          ids: readonly string[],
+        ): Promise<TaskList[]> => {
+          this.reads.push('lists');
+          return Promise.resolve(
+            [...new Set(ids)]
+              .map((id: string): TaskList | null => findAnyList(organizationId, id))
+              .filter((list: TaskList | null): list is TaskList => list !== null),
+          );
+        },
+        lockUndeletedOfSpace: (organizationId: string, spaceId: string): Promise<string[]> => {
+          const ids: string[] = [...lists.values()]
+            .filter(
+              (row: TaskListState): boolean =>
+                row.organizationId === organizationId &&
+                row.spaceId === spaceId &&
+                row.deletedAt === null,
+            )
+            .map((row: TaskListState): string => row.id)
+            .sort();
+          for (const id of ids) {
+            this.journal.push(`list ${id}`);
+          }
+          return Promise.resolve(ids);
         },
         update: (list: TaskList): Promise<void> => {
           lists.set(list.snapshot.id, list.snapshot);
@@ -2184,6 +2220,12 @@ export class InMemorySpaces implements SpacesUnitOfWork {
   }
   // #endregion
 }
+
+/** The writes of the trash served (`TRASH_WRITES_ENABLED=true`). */
+export const TRASH_WRITES_ON: TrashWrites = Object.freeze({ isEnabled: (): boolean => true });
+
+/** The writes of the trash off, the default (`TRASH_WRITES_ENABLED=false`). */
+export const TRASH_WRITES_OFF: TrashWrites = Object.freeze({ isEnabled: (): boolean => false });
 
 /** An account the copy of the members does not know. */
 export const STRANGER = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1bff';

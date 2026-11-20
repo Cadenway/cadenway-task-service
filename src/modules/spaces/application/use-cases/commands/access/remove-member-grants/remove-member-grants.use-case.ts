@@ -70,8 +70,8 @@ function byId(ids: readonly string[]): string[] {
  * 4. otherwise it removes each grant (`ResourceGrants.revoke`, which never refuses), takes the
  *    next version of its space or list and appends `space.access-changed.v1` or
  *    `list.access-changed.v1` with the actor `{ type: 'system', id: 'task-service' }`; a deleted
- *    space or list (a tombstone) takes its version all the same and appends nothing until it comes
- *    back from the trash.
+ *    space or list (a tombstone) is changed and announced all the same (`announcesChanges`), so
+ *    that the person leaves the set of who reaches it of every consumer.
  *
  * A removed grant leaves the range of step 1, so the next call goes on with the next ones; a call
  * once none is left changes nothing: the removal is idempotent. A batch rolls back alone.
@@ -207,8 +207,8 @@ export class RemoveMemberGrants {
           const next: Space = space.recordAccessChange();
           await store.spaces.update(next);
           spaces.set(resource.spaceId, next);
-          // A tombstone takes its version all the same, and emits nothing until it comes back.
-          if (announcesChanges(next.snapshot)) {
+          // A tombstone takes its version and announces who lost it all the same.
+          if (announcesChanges('access', next.snapshot)) {
             await store.events.spaceAccessChanged(
               next,
               update.grants.snapshot.grants,
@@ -220,7 +220,7 @@ export class RemoveMemberGrants {
         }
         const next: TaskList = list.recordAccessChange();
         await store.lists.update(next);
-        if (announcesChanges(space.snapshot, next.snapshot)) {
+        if (announcesChanges('access', space.snapshot, next.snapshot)) {
           await store.events.listAccessChanged(
             next,
             update.grants.snapshot.grants,

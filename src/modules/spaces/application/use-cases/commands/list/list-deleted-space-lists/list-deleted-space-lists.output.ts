@@ -2,30 +2,30 @@
  * Interface ListDeletedSpaceListsOutput
  *
  * @description
- * Whether a space is still deleted, held `FOR SHARE` until the end of the transaction of the
- * caller, and its deleted lists that are not erased yet.
+ * Where a space stands, held `FOR SHARE` until the end of the transaction of the caller, and its
+ * deleted lists that are not erased yet.
  */
 export interface ListDeletedSpaceListsOutput {
   // #region Properties
   /**
-   * Property spaceDeleted
+   * Property space
    *
    * @description
-   * Whether the space is a tombstone on the locked row: `false` for a space restored from the trash
-   * meanwhile, an unknown or an erased one. The deletion job drops the access requests of the space
-   * itself only when it is `true`.
+   * The space on the locked row: `deleted` for a tombstone, `live` for a space restored from the
+   * trash meanwhile, `gone` for an erased or unknown one. The deletion job drops the access
+   * requests of the space itself when it is `deleted` or `gone`.
    *
-   * @type {boolean}
+   * @type {'deleted' | 'live' | 'gone'}
    * @readonly
    */
-  readonly spaceDeleted: boolean;
+  readonly space: 'deleted' | 'live' | 'gone';
 
   /**
    * Property listIds
    *
    * @description
    * The ids of the deleted lists of the space, in id order, whether the space is still deleted or
-   * not (a restoration brings back one list only); none for an unknown or erased space.
+   * not (a restoration brings back one list only); none for a space that is `gone`.
    *
    * @type {readonly string[]}
    * @readonly

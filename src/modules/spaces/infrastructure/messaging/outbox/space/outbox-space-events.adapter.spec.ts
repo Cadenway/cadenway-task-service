@@ -157,3 +157,38 @@ describe('OutboxSpaceEvents: the events of the deletions and the restorations ma
     expect(appended.every(acceptedByContract)).toBe(true);
   });
 });
+
+describe('OutboxSpaceEvents: the republish of the access of a restored space or list matches the contract', () => {
+  it('appends list.access-changed.v1 with the whole set, both members changed and nobody named', async () => {
+    const { events, appended } = recording();
+
+    await events.listAccessChanged(
+      TaskList.restore(sprintState({ restoredAt: COMMITTED_AT, version: 4 })),
+      [{ userId: '019a6f00-1b2c-7d3e-8f4a-5b6c7d8e9f40', role: 'comment' }],
+      ['grants', 'organizationAccess'],
+      [],
+      BY_CAMILLE,
+    );
+
+    expect(appended[0]?.payload).toMatchObject({
+      changed: ['grants', 'organizationAccess'],
+      changedUserIds: [],
+    });
+    expect(appended.every(acceptedByContract)).toBe(true);
+  });
+
+  it('appends space.access-changed.v1 naming every person who holds a grant, and the contract refuses nobody named', async () => {
+    const { events, appended } = recording();
+    const space = Space.restore(spaceState({ restoredAt: COMMITTED_AT, version: 7 }));
+
+    await events.spaceAccessChanged(
+      space,
+      [{ userId: '019a6f00-1b2c-7d3e-8f4a-5b6c7d8e9f40', role: 'view' }],
+      ['019a6f00-1b2c-7d3e-8f4a-5b6c7d8e9f40'],
+      BY_CAMILLE,
+    );
+    await events.spaceAccessChanged(space, [], [], BY_CAMILLE);
+
+    expect(appended.map(acceptedByContract)).toEqual([true, false]);
+  });
+});

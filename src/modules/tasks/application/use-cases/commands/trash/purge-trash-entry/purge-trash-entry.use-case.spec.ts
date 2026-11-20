@@ -169,6 +169,55 @@ describe('PurgeTrashEntry: "Supprimer définitivement" erases an entry for good'
     expect(directory.isStored(SPRINT_14)).toBe(true);
   });
 
+  it('locks the deleted lists in one call once the tasks are deleted, and checks under that lock before an erasure', async () => {
+    const trace: string[] = [];
+    const tasks = new InMemoryTasks({
+      tasks: trashedTree(),
+      trashEntries: [storedEntry({ taskCount: 2 })],
+      trace,
+    });
+    const useCase = new PurgeTrashEntry(
+      tasks,
+      atelierNordMembers([], trace),
+      new InMemorySpaceDirectory({ trace, deletedLists: { [SPRINT_14]: camille } }),
+    );
+
+    await useCase.execute(purge());
+
+    expect(
+      trace.filter((call: string): boolean =>
+        [
+          'trash.erase',
+          'spaces.lockDeletedLists',
+          'tasks.listsWithTasks',
+          'spaces.purgeDeletedList',
+        ].includes(call),
+      ),
+    ).toEqual([
+      'trash.erase',
+      'spaces.lockDeletedLists',
+      'tasks.listsWithTasks',
+      'spaces.purgeDeletedList',
+    ]);
+  });
+
+  it('neither probes nor erases a live list after an erasure', async () => {
+    const trace: string[] = [];
+    const tasks = new InMemoryTasks({
+      tasks: trashedTree(),
+      trashEntries: [storedEntry({ taskCount: 2 })],
+      trace,
+    });
+    const directory = new InMemorySpaceDirectory({ trace });
+    const useCase = new PurgeTrashEntry(tasks, atelierNordMembers([], trace), directory);
+
+    await useCase.execute(purge());
+
+    expect(trace).toContain('spaces.lockDeletedLists');
+    expect(trace).not.toContain('tasks.listsWithTasks');
+    expect(directory.purgeCalls).toEqual([]);
+  });
+
   it('locks the actor, the entry, then its tasks for update', async () => {
     const trace: string[] = [];
     const tasks = new InMemoryTasks({

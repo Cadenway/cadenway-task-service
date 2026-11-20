@@ -71,6 +71,15 @@ describe('TasksDeletedListTasks: one batch of TrashDeletedListTasks', () => {
     expect(batch).toEqual({ outcome: 'list-live' });
   });
 
+  it.each(['list-live', 'list-gone', 'rescan'] as const)(
+    'maps the outcome %s, which wrote nothing',
+    async (outcome) => {
+      const { adapter } = adapterOn({ outcome });
+
+      await expect(adapter.trashBatch(ATELIER_NORD, SPRINT_14, null)).resolves.toEqual({ outcome });
+    },
+  );
+
   it('maps the end of a list with what was erased', async () => {
     const { adapter } = adapterOn({ outcome: 'none-left', listPurged: true, spacePurged: false });
 

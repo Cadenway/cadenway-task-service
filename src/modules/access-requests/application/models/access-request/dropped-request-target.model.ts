@@ -7,8 +7,9 @@
  *
  * - `tasks`: tasks in the trash or erased, whose task requests go; 2,000 ids at most;
  * - `list`: a deleted list, whose list requests go (the requests for its tasks go with the tasks);
- * - `space`: a deleted space, whose space requests go (the list requests of its lists go with each
- *   list).
+ * - `space`: a deleted or erased space, whose space requests and the list requests of its lists go
+ *   (a list never changes space, so the space a list request stored is the space of its list; a
+ *   deleted space has all its lists deleted, and an erased one has none left).
  *
  * @type {{ readonly kind: 'tasks'; readonly taskIds: readonly string[] } | { readonly kind: 'list'; readonly listId: string } | { readonly kind: 'space'; readonly spaceId: string }}
  */

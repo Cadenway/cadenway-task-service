@@ -36,8 +36,13 @@ const NO_TARGET: string = '00000000-0000-0000-0000-000000000000';
  * list, its space and the grants of the member; an unknown target is read with the nil UUID in
  * its place, and the grants are always read (no shortcut by the rule of the organization). The
  * role of the member comes from the caller, which read it from the copy of the memberships. It
- * runs in `SpacesUnitOfWork.run`, which joins the tenant transaction of the caller; it takes no
- * lock and appends no event.
+ * runs in `SpacesUnitOfWork.run`, which joins the tenant transaction of the caller, and appends no
+ * event. With `lock: 'share'` the reading of the row of the target (the space for a space, the
+ * list for a list) takes `FOR SHARE` in the same statement whatever the outcome (an unknown target
+ * locks nothing, as no row matches the nil UUID or its id): a deletion of the target, which locks
+ * that row `FOR NO KEY UPDATE`, either committed first and the target reads unknown, or waits for
+ * the caller, whose clean-up then sees what it stored. A deleted target is never found. Without it
+ * (`none`, the default), no lock.
  */
 export class FindAccessTarget {
   // #region Properties
@@ -95,7 +100,10 @@ export class FindAccessTarget {
       const viewer: Viewer = { userId: input.viewerUserId, role: input.viewerRole };
       const target: FindAccessTargetInput['target'] = input.target;
       if (target.kind === 'space') {
-        const space: Space | null = await store.spaces.find(input.organizationId, target.spaceId);
+        const space: Space | null =
+          input.lock === 'share'
+            ? await store.spaces.lockShared(input.organizationId, target.spaceId)
+            : await store.spaces.find(input.organizationId, target.spaceId);
         const grants: ViewerGrants = await store.grants.viewerGrants(
           input.organizationId,
           viewer.userId,
@@ -117,7 +125,10 @@ export class FindAccessTarget {
           viewerManages: access.canManage,
         };
       }
-      const list: TaskList | null = await store.lists.find(input.organizationId, target.listId);
+      const list: TaskList | null =
+        input.lock === 'share'
+          ? await store.lists.lockShared(input.organizationId, target.listId)
+          : await store.lists.find(input.organizationId, target.listId);
       const space: Space | null = await store.spaces.find(
         input.organizationId,
         list?.snapshot.spaceId ?? NO_TARGET,

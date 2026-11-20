@@ -6,6 +6,7 @@ import type {
   FindTaskReferences,
   FindTaskReferencesOutput,
 } from '../../../../tasks/public/task/find-task-references.js';
+import type { ReadLock } from '../../../application/models/lock/read-lock.model.js';
 import type { TaskReference } from '../../../application/models/task/task-reference.model.js';
 import type { TaskReferences } from '../../../application/ports/outbound/tasks/task/task-references.port.js';
 
@@ -88,12 +89,18 @@ export class TasksTaskReferences implements TaskReferences {
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} taskKey - The key.
+   * @param {ReadLock} lock - The lock the read of the task takes.
    * @returns {Promise<TaskReference | null>} The task, or `null`.
    */
-  public async findByKey(organizationId: string, taskKey: string): Promise<TaskReference | null> {
+  public async findByKey(
+    organizationId: string,
+    taskKey: string,
+    lock: ReadLock,
+  ): Promise<TaskReference | null> {
     const task: TaskLocation | null = await this.findTaskReference.execute({
       organizationId,
       taskKey,
+      lock,
     });
     return task === null ? null : toReference(task);
   }

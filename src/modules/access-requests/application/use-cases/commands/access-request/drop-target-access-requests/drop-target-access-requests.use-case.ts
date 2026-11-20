@@ -24,7 +24,8 @@ const MAX_TASK_IDS: number = 2_000;
  * deleted ... are dropped" of `openapi/public/access.yaml`; `deleteListInternal` and
  * `deleteSpaceInternal` of `openapi/internal/task-service.yaml`), for the jobs of the
  * deletion-lifecycle module: the task requests of the tasks a job moved to the trash (or found in
- * the trash or erased), the list requests of a deleted list, the space requests of a deleted space.
+ * the trash or erased), the list requests of a deleted list, the space requests of a deleted space
+ * and the list requests of its lists.
  * The job decides on the locked rows that the target is still deleted. One statement in the tenant transaction of the caller, which `run` joins (or its own),
  * without event: the contract defines none for a dropped request.
  *

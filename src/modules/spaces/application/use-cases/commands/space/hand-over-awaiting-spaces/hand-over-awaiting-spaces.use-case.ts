@@ -30,8 +30,9 @@ const SYSTEM_ACTOR: EventActor = Object.freeze({ type: 'system', id: 'task-servi
  * joins; each space passes with `space.updated.v1` (`changed: ['ownerUserId']`, actor
  * `{ type: 'system', id: 'task-service' }`); a grant the owner held on such a space or on one of
  * its lists is removed with its access event, since an owner holds none (`OwnerGrantsRemover`). A
- * deleted space (a tombstone) passes all the same, without event until it comes back.
- * Idempotent: a second run finds nothing awaiting.
+ * deleted space (a tombstone) passes all the same, without `space.updated.v1` until it comes back
+ * (`announcesChanges`), its grants removed with their access events. Idempotent: a second run
+ * finds nothing awaiting.
  */
 export class HandOverAwaitingSpaces {
   // #region Properties
@@ -110,8 +111,8 @@ export class HandOverAwaitingSpaces {
         const { space, changed }: SpaceUpdate = stored.handOver(ownerUserId);
         await store.spaces.update(space);
         if (changed.length > 0) {
-          // A tombstone changes owner all the same, and emits nothing until it comes back.
-          if (announcesChanges(space.snapshot)) {
+          // A tombstone changes owner all the same, without its content event until it comes back.
+          if (announcesChanges('content', space.snapshot)) {
             await store.events.spaceUpdated(space, changed, SYSTEM_ACTOR);
           }
           handed.push({ space, formerOwnerUserId: stored.snapshot.ownerUserId });

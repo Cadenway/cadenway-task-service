@@ -282,6 +282,49 @@ describe('DrizzleTaskListRepository: a tombstone answers as an unknown list, but
     await lists.lockMany(ORGANIZATION, ['019a7100-0000-7000-8000-000000000002']);
 
     expect(texts[0]).not.toContain('deleted_at" is');
+    expect(texts[0]?.endsWith('order by "lists"."id" asc for no key update')).toBe(true);
+  });
+
+  it('locks several lists for an erasure in one statement in ascending id, for update', async () => {
+    const { lists, texts } = capturing();
+
+    await lists.lockMany(
+      ORGANIZATION,
+      ['019a7100-0000-7000-8000-000000000002', '019a7100-0000-7000-8000-000000000001'],
+      'delete',
+    );
+
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).not.toContain('deleted_at" is');
+    expect(texts[0]?.endsWith('order by "lists"."id" asc for update')).toBe(true);
+  });
+
+  it('reads several lists in any state in one statement without lock, and nothing for no id', async () => {
+    const { lists, texts } = capturing();
+
+    await lists.findManyIncludingDeleted(ORGANIZATION, []);
+    await lists.findManyIncludingDeleted(ORGANIZATION, ['019a7100-0000-7000-8000-000000000002']);
+
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).toContain('"lists"."id" in ($');
+    expect(texts[0]).not.toContain('deleted_at" is');
+    expect(texts[0]).not.toContain(' for ');
+  });
+
+  it('locks the lists of a space being deleted in one statement in ascending id, tombstones left out', async () => {
+    const { lists, texts } = capturing();
+
+    const locked: string[] = await lists.lockUndeletedOfSpace(
+      ORGANIZATION,
+      '019a7000-0000-7000-8000-000000000001',
+    );
+
+    expect(locked).toEqual([]);
+    expect(texts).toHaveLength(1);
+    expect(texts[0]?.startsWith('select "id" from "lists"')).toBe(true);
+    expect(texts[0]).toContain('"lists"."space_id" = $');
+    expect(texts[0]).toContain(UNDELETED);
+    expect(texts[0]?.endsWith('order by "lists"."id" asc for no key update')).toBe(true);
   });
 
   it('reads and locks a list in any state for the trash, in the lock mode asked', async () => {
@@ -444,5 +487,16 @@ describe('DrizzleTaskListRepository: an update writes the archive of the list', 
     expect(text).toContain('"deleted_by_type" = $');
     expect(text).toContain('"deleted_by_id" = $');
     expect(values[0]).toEqual(expect.arrayContaining(['automation', 'rule-7', 5]));
+  });
+});
+
+describe('DrizzleTaskListRepository: lockShared holds a list that is not deleted for share', () => {
+  it('reads the list by id, tombstones left out, for share', async () => {
+    const { lists, texts } = capturing();
+
+    await lists.lockShared(ORGANIZATION, '019a7100-0000-7000-8000-000000000002');
+
+    expect(texts[0]).toContain('"lists"."deleted_at" is null');
+    expect(texts[0]?.endsWith('for share')).toBe(true);
   });
 });

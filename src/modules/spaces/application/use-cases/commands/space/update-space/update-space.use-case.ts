@@ -8,12 +8,15 @@ import {
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
 import type { SpaceUpdate } from '../../../../../domain/value-objects/space/space-update.value-object.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
+import type { CheckedLock } from '../../../../models/access/checked-lock.model.js';
 import type { ViewerAccess } from '../../../../models/access/viewer-access.model.js';
+import type { SpaceRefusalReason } from '../../../../models/space/space-refusal-reason.model.js';
 import { SpaceRefusal } from '../../../../models/space/space-refusal.model.js';
 import type { SpacesStore } from '../../../../models/transactions/spaces-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpacesUnitOfWork } from '../../../../ports/outbound/transactions/space/spaces-unit-of-work.port.js';
 import { AccessResolver } from '../../../../services/access/access-resolver.service.js';
+import { CheckedLocker } from '../../../../services/access/checked-locker.service.js';
 import { OwnerGrantsRemover } from '../../../../services/access/owner-grants-remover.service.js';
 import { ViewerResolver } from '../../../../services/member/viewer-resolver.service.js';
 import { SpaceViewBuilder } from '../../../../services/space/space-view-builder.service.js';
@@ -24,8 +27,10 @@ import type { UpdateSpaceOutput } from './update-space.output.js';
  * Class UpdateSpace
  *
  * @description
- * Changes a space the actor has `edit` on (`PATCH /internal/v1/spaces/{spaceId}`). The space is
- * locked until the end of the transaction, so two changes of one space apply one after the other.
+ * Changes a space the actor has `edit` on (`PATCH /internal/v1/spaces/{spaceId}`). The actor is
+ * checked on the space read without lock first, then the space is locked until the end of the
+ * transaction, so two changes of one space apply one after the other, and the actor is checked
+ * again on the locked row when it changed meanwhile (`CheckedLocker`).
  * Refusals, in this order: a space the actor does not see answers `space-not-found`; one they see
  * without `edit` on it `role-insufficient` with their role there (`null` through some of its lists
  * only); an `If-Match` that does not name the stored version `version-mismatch` with it; then the
@@ -107,6 +112,17 @@ export class UpdateSpace {
    * @readonly
    */
   private readonly views: SpaceViewBuilder;
+
+  /**
+   * Property locker
+   *
+   * @description
+   * Checks the actor before the lock, and again on a row that changed.
+   *
+   * @type {CheckedLocker}
+   * @readonly
+   */
+  private readonly locker: CheckedLocker;
   // #endregion
 
   // #region Constructor
@@ -127,6 +143,7 @@ export class UpdateSpace {
     this.access = new AccessResolver();
     this.ownerGrants = new OwnerGrantsRemover();
     this.views = new SpaceViewBuilder();
+    this.locker = new CheckedLocker();
   }
   // #endregion
 
@@ -151,22 +168,33 @@ export class UpdateSpace {
         input.actorUserId,
         true,
       );
-      const stored: Space | null = await store.spaces.lock(input.organizationId, input.spaceId);
-      if (stored === null) {
-        throw new SpaceRefusal({ reason: 'space-not-found' });
-      }
-      const access: ViewerAccess = await this.access.resolve(
-        store.grants,
-        viewer,
-        stored.snapshot,
-        null,
+      const checked: CheckedLock<Space, SpaceRefusalReason> = await this.locker.space(
+        store,
+        input.organizationId,
+        input.spaceId,
+        'update',
+        async (space: Space): Promise<SpaceRefusalReason | null> => {
+          const access: ViewerAccess = await this.access.resolve(
+            store.grants,
+            viewer,
+            space.snapshot,
+            null,
+          );
+          if (!access.seesSpace) {
+            return { reason: 'space-not-found' };
+          }
+          return canEdit(access.spaceRole)
+            ? null
+            : { reason: 'role-insufficient', role: access.spaceRole };
+        },
       );
-      if (!access.seesSpace) {
+      if (checked.outcome === 'unknown') {
         throw new SpaceRefusal({ reason: 'space-not-found' });
       }
-      if (!canEdit(access.spaceRole)) {
-        throw new SpaceRefusal({ reason: 'role-insufficient', role: access.spaceRole });
+      if (checked.outcome === 'refused') {
+        throw new SpaceRefusal(checked.refusal);
       }
+      const stored: Space = checked.locked;
       const storedVersion: number = stored.snapshot.version;
       if (input.expectedVersions !== null && !input.expectedVersions.includes(storedVersion)) {
         throw new SpaceRefusal({ reason: 'version-mismatch', version: storedVersion });

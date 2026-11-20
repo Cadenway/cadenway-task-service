@@ -98,7 +98,7 @@ describe('DropTargetAccessRequests: the pending requests of a deleted target go'
     expect(store.requests.has(RECRUTEMENT_REQUEST)).toBe(true);
   });
 
-  it('drops the space requests of a deleted space, and leaves the list requests of its lists to each list', async () => {
+  it('drops the space requests of a deleted space and the list requests of its lists, erased ones included', async () => {
     const store = new InMemoryAccessRequests(requestsOfAtelierNord());
 
     const output = await new DropTargetAccessRequests(store).execute({
@@ -106,10 +106,20 @@ describe('DropTargetAccessRequests: the pending requests of a deleted target go'
       target: { kind: 'space', spaceId: DIRECTION },
     });
 
-    expect(output).toEqual({ dropped: 1 });
-    expect(idsLeft(store)).toEqual(
-      [LIST_REQUEST, RECRUTEMENT_REQUEST, ROADMAP_REQUEST, TASK_REQUEST, DIR_13_REQUEST].sort(),
-    );
+    expect(output).toEqual({ dropped: 3 });
+    expect(idsLeft(store)).toEqual([ROADMAP_REQUEST, TASK_REQUEST, DIR_13_REQUEST].sort());
+  });
+
+  it('leaves the task requests of a deleted space, which go with the tasks moved to the trash', async () => {
+    const store = new InMemoryAccessRequests([taskRequestState()]);
+
+    const output = await new DropTargetAccessRequests(store).execute({
+      organizationId: ATELIER_NORD,
+      target: { kind: 'space', spaceId: DIRECTION },
+    });
+
+    expect(output).toEqual({ dropped: 0 });
+    expect(store.requests.has(TASK_REQUEST)).toBe(true);
   });
 
   it('keeps the answered requests of the target, with their history', async () => {
@@ -118,7 +128,13 @@ describe('DropTargetAccessRequests: the pending requests of a deleted target go'
       decidedAt: DECIDED_AT,
       decidedBy: { type: 'user', id: LEA },
     });
-    const store = new InMemoryAccessRequests([refused, listRequestState()]);
+    const answeredList = listRequestState({
+      status: 'approved',
+      role: 'view',
+      decidedAt: DECIDED_AT,
+      decidedBy: { type: 'user', id: LEA },
+    });
+    const store = new InMemoryAccessRequests([refused, answeredList]);
 
     const output = await new DropTargetAccessRequests(store).execute({
       organizationId: ATELIER_NORD,
@@ -127,7 +143,7 @@ describe('DropTargetAccessRequests: the pending requests of a deleted target go'
 
     expect(output).toEqual({ dropped: 0 });
     expect(store.requests.get(SPACE_REQUEST)).toEqual(refused);
-    expect(store.requests.has(LIST_REQUEST)).toBe(true);
+    expect(store.requests.get(LIST_REQUEST)).toEqual(answeredList);
   });
 
   it('leaves the requests of another organization, whatever their target', async () => {

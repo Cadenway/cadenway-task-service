@@ -138,7 +138,8 @@ export interface AccessRequestRepository {
    *
    * @description
    * Deletes the pending requests of a deleted target in one statement: the task requests of the
-   * tasks, the list requests of the list, or the space requests of the space. An answered request stays; a pending one an answer holds is waited for, then kept
+   * tasks, the list requests of the list, or the space requests of the space and the list requests
+   * of its lists. An answered request stays; a pending one an answer holds is waited for, then kept
    * once answered.
    *
    * @param {string} organizationId - The organization of the transaction.

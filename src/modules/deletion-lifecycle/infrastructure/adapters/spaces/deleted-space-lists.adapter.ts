@@ -51,8 +51,8 @@ export class SpacesDeletedSpaceLists implements DeletedSpaceLists {
    *
    * @param {string} organizationId - The organization of the context.
    * @param {string} spaceId - The deleted space.
-   * @returns {Promise<DeletedSpaceListing>} Whether the space is still deleted, and its deleted
-   * lists, by id.
+   * @returns {Promise<DeletedSpaceListing>} Whether the space is still deleted, live again or gone,
+   * and its deleted lists, by id.
    */
   public async deletedListsOf(
     organizationId: string,
@@ -62,7 +62,7 @@ export class SpacesDeletedSpaceLists implements DeletedSpaceLists {
       organizationId,
       spaceId,
     });
-    return { spaceDeleted: output.spaceDeleted, listIds: output.listIds };
+    return { space: output.space, listIds: output.listIds };
   }
   // #endregion
 }

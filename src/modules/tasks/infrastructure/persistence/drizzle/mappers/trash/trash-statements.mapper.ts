@@ -7,6 +7,7 @@ import type { TrashEntryDraft } from '../../../../../application/models/trash/tr
 import type { TrashPosition } from '../../../../../application/models/trash/trash-position.model.js';
 import type { TaskActor } from '../../../../../domain/value-objects/task/task-actor.value-object.js';
 import type { TaskState } from '../../../../../domain/value-objects/task/task-state.value-object.js';
+import type { TrashHandOver } from '../../../../../domain/value-objects/trash/trash-hand-over.value-object.js';
 import { activityEntries } from '../../schemas/activity/activity-entry.schema.js';
 import { checklistItems } from '../../schemas/checklist/checklist-item.schema.js';
 import { taskAssignees } from '../../schemas/task/task-assignee.schema.js';
@@ -275,18 +276,27 @@ export function eraseEntriesStatements(
  *
  * @description
  * The trash or the restoration of tasks in one `UPDATE ... FROM unnest(...)` statement: the entry
- * (`null` for a restoration), the parent (`null` for a root detached), the version and the instant
- * of each (an archived task keeps its archive columns: in the trash, it is out of the archives by
- * its entry), guarded by the version before the change (`version = changed.version - 1`), scoped
- * to the organization. The caller checks that every row was written.
+ * (`null` for a restoration), the four archive columns and `archive_root` as the task holds them
+ * (an archived task keeps its archive in the trash, out of the archives by its entry; an archived
+ * member of a restored entry comes back with the archive of the restoration), the parent (`null`
+ * for a root detached), the version and the instant of each, guarded by the version each task had
+ * under its lock (`version = changed.version_before`: one version less for a trash or a
+ * restoration, two for a member restored then archived again), scoped to the organization. The
+ * caller checks that every row was written.
  *
  * @param {string} organizationId - The organization of the transaction.
  * @param {readonly TaskState[]} states - The tasks after the change.
+ * @param {readonly number[]} versionsBefore - The version of each, in the same order, under its
+ * lock.
  * @returns {SQL} The statement.
  */
-export function writeTrashStatement(organizationId: string, states: readonly TaskState[]): SQL {
+export function writeTrashStatement(
+  organizationId: string,
+  states: readonly TaskState[],
+  versionsBefore: readonly number[],
+): SQL {
   const column = <TValue>(pick: (state: TaskState) => TValue): TValue[] => states.map(pick);
-  return sql`update ${tasks} set trash_entry_id = changed.trash_entry_id, parent_id = changed.parent_id, version = changed.version, updated_at = changed.updated_at from unnest(${sql.param(column((state) => state.id))}::uuid[], ${sql.param(column((state) => state.trash?.entryId ?? null))}::uuid[], ${sql.param(column((state) => state.parentId))}::uuid[], ${sql.param(column((state) => String(state.version)))}::int[], ${sql.param(column((state) => state.updatedAt.toISOString()))}::timestamptz[]) as changed (id, trash_entry_id, parent_id, version, updated_at) where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.id} = changed.id and ${tasks.version} = changed.version - 1`;
+  return sql`update ${tasks} set trash_entry_id = changed.trash_entry_id, archived_at = changed.archived_at, archived_by_type = changed.archived_by_type, archived_by_id = changed.archived_by_id, archive_root_id = changed.archive_root_id, archive_root = coalesce(changed.archive_root_id = changed.id, false), parent_id = changed.parent_id, version = changed.version, updated_at = changed.updated_at from unnest(${sql.param(column((state) => state.id))}::uuid[], ${sql.param(column((state) => state.trash?.entryId ?? null))}::uuid[], ${sql.param(column((state) => (state.archive === null ? null : state.archive.at.toISOString())))}::timestamptz[], ${sql.param(column((state) => state.archive?.by.type ?? null))}::text[], ${sql.param(column((state) => state.archive?.by.id ?? null))}::text[], ${sql.param(column((state) => state.archive?.rootId ?? null))}::uuid[], ${sql.param(column((state) => state.parentId))}::uuid[], ${sql.param(column((state) => String(state.version)))}::int[], ${sql.param(versionsBefore.map((version: number): string => String(version)))}::int[], ${sql.param(column((state) => state.updatedAt.toISOString()))}::timestamptz[]) as changed (id, trash_entry_id, archived_at, archived_by_type, archived_by_id, archive_root_id, parent_id, version, version_before, updated_at) where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.id} = changed.id and ${tasks.version} = changed.version_before`;
 }
 
 /**
@@ -365,14 +375,88 @@ export function untrashedIdsLockStatement(organizationId: string, taskIds: reado
  *
  * @description
  * Which of some lists any task row still references, one probe of `tasks_list_created_index` per
- * list (`exists`, so a live list of many tasks costs one row).
+ * list (`exists`, so a live list of many tasks costs one row); with `untrashedOnly`, which of them
+ * hold a task out of the trash (`untrashedTask`, a filter of the rows of the probe): in a deleted
+ * list, the tasks its deletion job has not moved yet.
  *
  * @param {string} organizationId - The organization of the transaction.
  * @param {readonly string[]} listIds - The lists.
- * @returns {SQL} The statement; each row is `{ listId }` of a list that holds a task.
+ * @param {boolean} [untrashedOnly] - `true` to count the tasks out of the trash only; `false` by
+ * default.
+ * @returns {SQL} The statement; each row is `{ listId }` of a list that holds such a task.
  */
-export function listsWithTasksStatement(organizationId: string, listIds: readonly string[]): SQL {
-  return sql`select candidate.list_id as "listId" from unnest(${sql.param([...listIds])}::uuid[]) as candidate (list_id) where exists (select 1 from ${tasks} where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.listId} = candidate.list_id)`;
+export function listsWithTasksStatement(
+  organizationId: string,
+  listIds: readonly string[],
+  untrashedOnly: boolean = false,
+): SQL {
+  const untrashed: SQL = untrashedOnly ? sql` and ${untrashedTask()}` : sql``;
+  return sql`select candidate.list_id as "listId" from unnest(${sql.param([...listIds])}::uuid[]) as candidate (list_id) where exists (select 1 from ${tasks} where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.listId} = candidate.list_id${untrashed})`;
+}
+
+/**
+ * Function entryTreeStatement
+ *
+ * @description
+ * The tasks of one trash entry from its stored parent links, in one recursive statement: its root,
+ * then every task of the entry under it (`tasks_parent_created_index`, the children kept when in
+ * the same entry), at any depth; PostgreSQL detects a cycle of parent links
+ * (`CYCLE id SET is_cycle USING path`), which the caller treats as a defect. Built without a
+ * connection, so a test can `EXPLAIN` it.
+ *
+ * @param {string} organizationId - The organization of the transaction.
+ * @param {string} entryId - The entry.
+ * @param {string} rootTaskId - Its root.
+ * @returns {SQL} The statement; each row is `{ id, rootId, depth, isCycle }`, by depth and id.
+ */
+export function entryTreeStatement(
+  organizationId: string,
+  entryId: string,
+  rootTaskId: string,
+): SQL {
+  return sql`with recursive tree (id, root_id, depth) as (select ${tasks.id}, ${tasks.id}, 0 from ${tasks} where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.id} = ${rootTaskId}::uuid and ${tasks.trashEntryId} = ${entryId}::uuid union all select ${childTasks.id}, tree.root_id, tree.depth + 1 from tree join ${tasks} as ${childTasks} on ${childTasks.organizationId} = ${organizationId}::uuid and ${childTasks.parentId} = tree.id where ${childTasks.trashEntryId} = ${entryId}::uuid) cycle id set is_cycle using path select id, root_id as "rootId", depth::int as "depth", is_cycle as "isCycle" from tree order by depth, id`;
+}
+
+/**
+ * Function erasePartStatements
+ *
+ * @description
+ * The erasure of some tasks of one entry, in the statements of `eraseEntriesStatements` scoped to
+ * those tasks by primary key: their activity entries, checklist items, assignees and labels; the
+ * tasks outside them whose parent is one of them detached (`parent_id` null, no version: the
+ * tasks of the entry under them are erased before, deepest first, so only tasks of other entries
+ * and archived tasks left in another list can be there); the tasks, guarded by the entry; then
+ * the entry row, its `task_count` less the tasks erased, handed to the purge when it was still in
+ * the trash (the three `purge_requested_*` columns set together, a hand-over kept as it was).
+ *
+ * @param {string} organizationId - The organization of the transaction.
+ * @param {string} entryId - The entry.
+ * @param {readonly string[]} taskIds - The tasks to erase.
+ * @param {TrashHandOver} handOver - The hand-over set on an entry still in the trash.
+ * @returns {readonly SQL[]} The statements, to run in this order; the row counts of the last two
+ * are the tasks erased and 1.
+ */
+export function erasePartStatements(
+  organizationId: string,
+  entryId: string,
+  taskIds: readonly string[],
+  handOver: TrashHandOver,
+): readonly SQL[] {
+  const ids: SQL = sql`${sql.param([...taskIds])}::uuid[]`;
+  const collection = (
+    table:
+      typeof activityEntries | typeof checklistItems | typeof taskAssignees | typeof taskLabels,
+  ): SQL =>
+    sql`delete from ${table} where ${table.organizationId} = ${organizationId}::uuid and ${table.taskId} = any(${ids})`;
+  return [
+    collection(activityEntries),
+    collection(checklistItems),
+    collection(taskAssignees),
+    collection(taskLabels),
+    sql`update ${tasks} set parent_id = null where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.parentId} = any(${ids}) and ${tasks.id} <> all(${ids})`,
+    sql`delete from ${tasks} where ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.id} = any(${ids}) and ${tasks.trashEntryId} = ${entryId}::uuid`,
+    sql`update ${trashEntries} set task_count = ${trashEntries.taskCount} - ${String(taskIds.length)}::int, purge_requested_at = coalesce(${trashEntries.purgeRequestedAt}, ${handOver.at.toISOString()}::timestamptz), purge_requested_by_type = coalesce(${trashEntries.purgeRequestedByType}, ${handOver.by.type}), purge_requested_by_id = coalesce(${trashEntries.purgeRequestedById}, ${handOver.by.id}) where ${trashEntries.organizationId} = ${organizationId}::uuid and ${trashEntries.id} = ${entryId}::uuid`,
+  ];
 }
 
 /**

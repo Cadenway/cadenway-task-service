@@ -12,6 +12,7 @@ import {
   atelierNordMembers,
   designState,
   marketingState,
+  spaceGrantOf,
   spaceState,
 } from '../../../spaces.fixture.js';
 import { HandOverAwaitingSpaces } from './hand-over-awaiting-spaces.use-case.js';
@@ -209,12 +210,14 @@ describe('HandOverAwaitingSpaces: the same member event can be delivered again',
   });
 });
 
-describe('HandOverAwaitingSpaces: a deleted space awaiting an owner passes without event', () => {
+describe('HandOverAwaitingSpaces: a deleted space awaiting an owner passes without space.updated.v1', () => {
+  /** The tombstone of a deletion by Hugo Dubois, before he left. */
+  const tombstone = {
+    deletedAt: new Date('2026-11-08T16:10:00Z'),
+    deletedBy: { type: 'user', id: HUGO },
+  } as const;
+
   it('gives the tombstone to the owner of the organization at the next version, and emits nothing', async () => {
-    const tombstone = {
-      deletedAt: new Date('2026-11-08T16:10:00Z'),
-      deletedBy: { type: 'user', id: HUGO },
-    } as const;
     const spaces = new InMemorySpaces({
       spaces: [designState({ ...tombstone, awaitingOwner: true })],
     });
@@ -227,5 +230,28 @@ describe('HandOverAwaitingSpaces: a deleted space awaiting an owner passes witho
       designState({ ...tombstone, ownerUserId: CAMILLE, version: 2 }),
     );
     expect(spaces.events).toEqual([]);
+  });
+
+  it('announces only the access event of the grant the new owner held on the tombstone', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [designState({ ...tombstone, awaitingOwner: true })],
+      grants: [spaceGrantOf(DESIGN, CAMILLE, 'view')],
+    });
+
+    await new HandOverAwaitingSpaces(spaces, atelierNordMembers({ removed: [HUGO] })).execute({
+      organizationId: ATELIER_NORD,
+    });
+
+    expect(spaces.grantsOf({ kind: 'space', spaceId: DESIGN })).toEqual([]);
+    expect(spaces.events).toEqual([
+      {
+        kind: 'spaceAccessChanged',
+        spaceId: DESIGN,
+        version: 2,
+        grants: [],
+        changedUserIds: [CAMILLE],
+        actor: SYSTEM,
+      },
+    ]);
   });
 });

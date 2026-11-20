@@ -150,7 +150,7 @@ function scripted(scripts: Scripts, onCall: (call: string) => void = () => undef
   const lists: DeletedSpaceLists = {
     deletedListsOf: (organizationId: string, spaceId: string) => {
       record(`lists ${organizationId} ${spaceId}`);
-      return answer(scripts.lists ?? { spaceDeleted: true, listIds: [] });
+      return answer(scripts.lists ?? { space: 'deleted', listIds: [] });
     },
   };
   const tasks: DeletedListTasks = {
@@ -313,11 +313,121 @@ describe('MoveDeletedTasksToTrash: a deleted list, batch after batch, with its r
   });
 });
 
+describe('MoveDeletedTasksToTrash: an erased list and a rescan', () => {
+  it('drops the requests of a list erased before its job ran, and ends the list', async () => {
+    const { calls, useCase } = scripted({
+      requests: [2],
+      batches: { [SPRINT_14]: [{ outcome: 'list-gone' }] },
+    });
+
+    const output = await useCase.execute(listInput);
+
+    expect(output).toMatchObject({ outcome: 'completed', requestsDropped: 2, batches: 0 });
+    expect(calls).toEqual([
+      `1:tasks ${ATELIER_NORD} ${SPRINT_14} after first`,
+      `1:requests ${ATELIER_NORD} list ${SPRINT_14}`,
+    ]);
+  });
+
+  it('starts the list again from its first root on a rescan, writing and dropping nothing for it', async () => {
+    const { calls, useCase } = scripted({
+      batches: {
+        [SPRINT_14]: [
+          { outcome: 'trashed', entries: 1, taskIds: [CAD_482], last: AFTER_490 },
+          { outcome: 'rescan' },
+          { outcome: 'trashed', entries: 1, taskIds: [CAD_490], last: AFTER_482 },
+        ],
+      },
+    });
+
+    const output = await useCase.execute(listInput);
+
+    expect(output).toMatchObject({ outcome: 'completed', entries: 2, batches: 2 });
+    expect(calls).toEqual([
+      `1:tasks ${ATELIER_NORD} ${SPRINT_14} after first`,
+      `1:requests ${ATELIER_NORD} list ${SPRINT_14}`,
+      `1:requests ${ATELIER_NORD} tasks[${CAD_482}]`,
+      `2:tasks ${ATELIER_NORD} ${SPRINT_14} after ${CAD_490}`,
+      `3:tasks ${ATELIER_NORD} ${SPRINT_14} after first`,
+      `3:requests ${ATELIER_NORD} tasks[${CAD_490}]`,
+      `4:tasks ${ATELIER_NORD} ${SPRINT_14} after ${CAD_482}`,
+    ]);
+  });
+
+  it('drops the requests of the list in its first batch after a rescan when none dropped them before', async () => {
+    const { calls, useCase } = scripted({
+      batches: {
+        [SPRINT_14]: [
+          { outcome: 'rescan' },
+          { outcome: 'none-left', listPurged: false, spacePurged: false },
+        ],
+      },
+    });
+
+    await useCase.execute(listInput);
+
+    expect(kindsOf(calls)).toEqual(['tasks', 'tasks', 'requests']);
+  });
+
+  it('rescans a list 3 times at most in an attempt, then fails it with a step error of the step tasks', async () => {
+    const { calls, useCase } = scripted({
+      batches: {
+        [SPRINT_14]: [
+          { outcome: 'rescan' },
+          { outcome: 'rescan' },
+          { outcome: 'rescan' },
+          { outcome: 'rescan' },
+        ],
+      },
+    });
+
+    const rejection: unknown = await useCase.execute(listInput).catch((error: unknown) => error);
+
+    expect(rejection).toBeInstanceOf(DeletionStepError);
+    expect(rejection).toMatchObject({
+      step: 'tasks',
+      batches: 0,
+      message:
+        'tasks batch failed after 0 committed batches: The deleted list still holds tasks out of the trash after 3 rescans.',
+    });
+    expect(kindsOf(calls)).toEqual(['tasks', 'tasks', 'tasks', 'tasks']);
+  });
+
+  it('counts the rescans of each list apart', async () => {
+    const { useCase } = scripted({
+      lists: { space: 'deleted', listIds: [SPRINT_14, ROADMAP] },
+      batches: {
+        [SPRINT_14]: [{ outcome: 'rescan' }, { outcome: 'rescan' }, { outcome: 'rescan' }],
+        [ROADMAP]: [{ outcome: 'rescan' }, { outcome: 'rescan' }, { outcome: 'rescan' }],
+      },
+    });
+
+    await expect(useCase.execute(spaceInput)).resolves.toMatchObject({ outcome: 'completed' });
+  });
+});
+
 describe('MoveDeletedTasksToTrash: a deleted space, list after list, then the space', () => {
+  it('drops the requests of a space erased before its job ran, and still erases nothing', async () => {
+    const { calls, useCase } = scripted({
+      requests: [3],
+      lists: { space: 'gone', listIds: [] },
+      space: 'not-found',
+    });
+
+    const output = await useCase.execute(spaceInput);
+
+    expect(output).toMatchObject({ outcome: 'completed', requestsDropped: 3, spacePurged: false });
+    expect(calls).toEqual([
+      `1:lists ${ATELIER_NORD} ${PRODUIT}`,
+      `1:requests ${ATELIER_NORD} space ${PRODUIT}`,
+      `2:space ${ATELIER_NORD} ${PRODUIT}`,
+    ]);
+  });
+
   it('reads its lists and drops the requests of the space in one transaction, moves each list with its requests, then erases the space', async () => {
     const { calls, useCase } = scripted({
       requests: [4, 1, 2, 0, 3],
-      lists: { spaceDeleted: true, listIds: [SPRINT_14, ROADMAP] },
+      lists: { space: 'deleted', listIds: [SPRINT_14, ROADMAP] },
       batches: {
         [SPRINT_14]: [{ outcome: 'trashed', entries: 1, taskIds: [CAD_482], last: AFTER_482 }],
         [ROADMAP]: [{ outcome: 'trashed', entries: 1, taskIds: [CAD_490], last: AFTER_490 }],
@@ -353,7 +463,7 @@ describe('MoveDeletedTasksToTrash: a deleted space, list after list, then the sp
 
   it('keeps the requests of a space a restoration brought back, and still moves its lists that stay deleted', async () => {
     const { calls, useCase } = scripted({
-      lists: { spaceDeleted: false, listIds: [ROADMAP] },
+      lists: { space: 'live', listIds: [ROADMAP] },
       batches: {
         [ROADMAP]: [{ outcome: 'trashed', entries: 1, taskIds: [CAD_490], last: AFTER_490 }],
       },
@@ -375,7 +485,7 @@ describe('MoveDeletedTasksToTrash: a deleted space, list after list, then the sp
 
   it('erases a deleted space that holds no deleted list', async () => {
     const { calls, useCase } = scripted({
-      lists: { spaceDeleted: true, listIds: [] },
+      lists: { space: 'deleted', listIds: [] },
       space: 'purged',
     });
 
@@ -387,7 +497,7 @@ describe('MoveDeletedTasksToTrash: a deleted space, list after list, then the sp
 
   it('asks for no erasure of the space once its last list erased it', async () => {
     const { calls, useCase } = scripted({
-      lists: { spaceDeleted: true, listIds: [SPRINT_14] },
+      lists: { space: 'deleted', listIds: [SPRINT_14] },
       batches: { [SPRINT_14]: [{ outcome: 'none-left', listPurged: true, spacePurged: true }] },
     });
 
@@ -399,7 +509,7 @@ describe('MoveDeletedTasksToTrash: a deleted space, list after list, then the sp
 
   it('goes on with the other lists after one a restoration brought back', async () => {
     const { calls, useCase } = scripted({
-      lists: { spaceDeleted: true, listIds: [SPRINT_14, ROADMAP] },
+      lists: { space: 'deleted', listIds: [SPRINT_14, ROADMAP] },
       batches: {
         [SPRINT_14]: [{ outcome: 'list-live' }],
         [ROADMAP]: [{ outcome: 'trashed', entries: 1, taskIds: [CAD_490], last: AFTER_490 }],
@@ -478,7 +588,7 @@ describe('MoveDeletedTasksToTrash: a failed step fails the attempt, says where, 
 
   it('names the step space with the batches before it when the space cannot be erased', async () => {
     const { useCase } = scripted({
-      lists: { spaceDeleted: true, listIds: [SPRINT_14] },
+      lists: { space: 'deleted', listIds: [SPRINT_14] },
       batches: {
         [SPRINT_14]: [{ outcome: 'trashed', entries: 1, taskIds: [CAD_482], last: AFTER_482 }],
       },
@@ -538,7 +648,7 @@ describe('MoveDeletedTasksToTrash: no step starts once the signal of the attempt
     const attempt = new AbortController();
     const { calls, useCase } = scripted(
       {
-        lists: { spaceDeleted: true, listIds: [SPRINT_14, ROADMAP] },
+        lists: { space: 'deleted', listIds: [SPRINT_14, ROADMAP] },
         batches: {
           [SPRINT_14]: [{ outcome: 'trashed', entries: 1, taskIds: [CAD_482], last: AFTER_482 }],
         },

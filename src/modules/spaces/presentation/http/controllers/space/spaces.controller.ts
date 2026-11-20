@@ -15,9 +15,10 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   Res,
 } from '@nestjs/common';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 
 import type { SpaceView } from '../../../../application/projections/space/space-view.projection.js';
 import type { CreateSpaceOutput } from '../../../../application/use-cases/commands/space/create-space/create-space.output.js';
@@ -274,9 +275,12 @@ export class SpacesController {
    * enqueued. `If-Match` is optional. `404 space.not-found` (a deleted space included),
    * `403 space.manage-forbidden` for an actor who sees the space without managing it and
    * `412 request.version-mismatch` with `details.version`, in this order, come from the use case.
+   * While the writes of the trash are off, the route answers as one the service does not have
+   * (`404 http.not-found`, detail `Cannot DELETE <url>`, after the guard and the validation).
    *
    * @param {SpacePath} path - The id of the space.
    * @param {string | undefined} ifMatch - The `If-Match` header, optional.
+   * @param {Request} request - The request, whose route an answer of an unknown route names.
    * @returns {Promise<void>} Resolves once deleted.
    * @throws {ProblemException} The refusals above, or `400 request.invalid` for a malformed
    * `If-Match`.
@@ -286,11 +290,13 @@ export class SpacesController {
   public async delete(
     @Param() path: SpacePath,
     @Headers('if-match') ifMatch: string | undefined,
+    @Req() request: Request,
   ): Promise<void> {
     const caller: Caller = toCaller();
     const expectedVersions: readonly number[] | null = toExpectedVersions(ifMatch);
-    await answerRefusals(() =>
-      this.deleteSpace.execute({ ...caller, spaceId: path.spaceId, expectedVersions }),
+    await answerRefusals(
+      () => this.deleteSpace.execute({ ...caller, spaceId: path.spaceId, expectedVersions }),
+      request,
     );
   }
   // #endregion

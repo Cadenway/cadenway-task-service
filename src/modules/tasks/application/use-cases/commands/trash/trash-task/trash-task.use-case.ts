@@ -4,6 +4,8 @@ import type { TaskActor } from '../../../../../domain/value-objects/task/task-ac
 import type { LocatedTask } from '../../../../models/task/located-task.model.js';
 import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
 import type { LockedTrashTrees } from '../../../../models/trash/locked-trash-trees.model.js';
+import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
+import type { TrashWrites } from '../../../../ports/outbound/feature/trash/trash-writes.port.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
@@ -20,8 +22,11 @@ import type { TrashTaskOutput } from './trash-task.output.js';
  *
  * @description
  * Moves a task the actor sees and its subtasks at every level to the trash as one entry
- * (`POST /internal/v1/tasks/{taskKey}/trash`; "Entries" of `openapi/public/trash.yaml`). The actor
- * needs `edit` on the list of the task. Refusals in order: `task-not-found`, `task-trashed` (the
+ * (`POST /internal/v1/tasks/{taskKey}/trash`; "Entries" of `openapi/public/trash.yaml`). While the
+ * switch of the writes of the trash is off (`TrashWrites`, `TRASH_WRITES_ENABLED`), it refuses
+ * first, before any read, with `trash-writes-disabled`, which the route answers as a route the
+ * service does not have. The actor needs `edit` on the list of the task. Refusals in order:
+ * `task-not-found`, `task-trashed` (the
  * task is in the trash already, with its entry when the actor may restore it), `role-insufficient`,
  * `task-archived` (an archived task "is deleted once restored"), `version-mismatch` (`If-Match` on
  * the task). Locks follow the order of the module: the membership of the actor `FOR SHARE`, the
@@ -43,6 +48,9 @@ import type { TrashTaskOutput } from './trash-task.output.js';
  */
 export class TrashTask {
   // #region Properties
+  /** The switch of the writes of the trash. */
+  private readonly writes: TrashWrites;
+
   /** The tenant transaction of the use case. */
   private readonly unitOfWork: TasksUnitOfWork;
 
@@ -67,18 +75,21 @@ export class TrashTask {
    * Constructor
    *
    * @description
-   * Takes the transaction port and the two directories.
+   * Takes the switch of the writes of the trash, the transaction port and the two directories.
    *
+   * @param {TrashWrites} writes - The switch of the writes of the trash.
    * @param {TasksUnitOfWork} unitOfWork - The tenant transaction.
    * @param {MemberDirectory} members - The copy of the memberships.
    * @param {SpaceDirectory} spaces - The spaces module.
    * @constructor
    */
   public constructor(
+    writes: TrashWrites,
     unitOfWork: TasksUnitOfWork,
     members: MemberDirectory,
     spaces: SpaceDirectory,
   ) {
+    this.writes = writes;
     this.unitOfWork = unitOfWork;
     this.viewers = new ViewerResolver(members);
     this.locator = new TaskLocator(spaces);
@@ -97,12 +108,16 @@ export class TrashTask {
    *
    * @param {TrashTaskInput} input - The actor, the task and the versions `If-Match` accepts.
    * @returns {Promise<TrashTaskOutput>} The entry.
-   * @throws {TaskRefusal} `organization-not-found`, `task-not-found`, `task-trashed`,
-   * `role-insufficient`, `task-archived` or `version-mismatch`.
+   * @throws {TaskRefusal} `trash-writes-disabled` while the switch is off, then
+   * `organization-not-found`, `task-not-found`, `task-trashed`, `role-insufficient`,
+   * `task-archived` or `version-mismatch`.
    * @throws {Error} When the tree holds a cycle of parent links or keeps changing while it is
    * locked, or a task changed version under its lock: defects.
    */
   public async execute(input: TrashTaskInput): Promise<TrashTaskOutput> {
+    if (!this.writes.isEnabled()) {
+      throw new TaskRefusal({ reason: 'trash-writes-disabled' });
+    }
     return this.unitOfWork.run(async (store: TasksStore): Promise<TrashTaskOutput> => {
       const { organizationId } = input;
       const viewer: Viewer = await this.viewers.resolve(organizationId, input.actorUserId, true);

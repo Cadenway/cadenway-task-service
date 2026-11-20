@@ -14,6 +14,8 @@ import {
   PRODUIT,
   SPRINT_14,
   STRANGER,
+  TRASH_WRITES_OFF,
+  TRASH_WRITES_ON,
   TRANSACTION_INSTANT,
   UNKNOWN_LIST,
   atelierNordMembers,
@@ -71,7 +73,7 @@ describe('DeleteList: a member with edit on the list deletes it ("Supprimer la l
   it('makes a tombstone at the instant of the transaction, by the actor, at the next version', async () => {
     const spaces = atelierNord();
 
-    await new DeleteList(spaces, atelierNordMembers()).execute(deleteSprint());
+    await new DeleteList(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteSprint());
 
     expect(spaces.lists.get(SPRINT_14)).toEqual(
       sprintState({
@@ -85,7 +87,7 @@ describe('DeleteList: a member with edit on the list deletes it ("Supprimer la l
   it('appends list.deleted with its version and space, by the actor', async () => {
     const spaces = atelierNord();
 
-    await new DeleteList(spaces, atelierNordMembers()).execute(deleteSprint());
+    await new DeleteList(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteSprint());
 
     expect(spaces.events).toEqual([
       {
@@ -102,7 +104,7 @@ describe('DeleteList: a member with edit on the list deletes it ("Supprimer la l
   it('enqueues the job that moves its tasks to the trash, keyed by the list and its version after', async () => {
     const spaces = atelierNord();
 
-    await new DeleteList(spaces, atelierNordMembers()).execute(deleteSprint());
+    await new DeleteList(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteSprint());
 
     expect(spaces.jobs).toEqual([
       { payload: { listId: SPRINT_14 }, occurrenceKey: `list:${SPRINT_14}:4` },
@@ -121,7 +123,7 @@ describe('DeleteList: a member with edit on the list deletes it ("Supprimer la l
       ],
     });
 
-    await new DeleteList(spaces, atelierNordMembers()).execute(deleteSprint());
+    await new DeleteList(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteSprint());
 
     expect(spaces.lists.get(SPRINT_14)).toMatchObject({
       archivedAt: ARCHIVED_AT,
@@ -137,7 +139,7 @@ describe('DeleteList: a member with edit on the list deletes it ("Supprimer la l
       grants: [listGrantOf(PRODUIT, SPRINT_14, NADIA, 'view')],
     });
 
-    await new DeleteList(spaces, atelierNordMembers()).execute(deleteSprint());
+    await new DeleteList(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteSprint());
 
     expect(spaces.grantsOf({ kind: 'list', spaceId: PRODUIT, listId: SPRINT_14 })).toEqual([
       { userId: NADIA, role: 'view' },
@@ -148,7 +150,7 @@ describe('DeleteList: a member with edit on the list deletes it ("Supprimer la l
   it('lets the owner of a private space delete its lists', async () => {
     const spaces = atelierNord();
 
-    await new DeleteList(spaces, atelierNordMembers()).execute(
+    await new DeleteList(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(
       deleteSprint({ actorUserId: HUGO, listId: MAQUETTES }),
     );
 
@@ -177,7 +179,7 @@ describe('DeleteList: the refusals come in the order 404, 403, 412 and write not
       const spaces = sprintShared(role);
 
       const refusal = await refusalOf(
-        new DeleteList(spaces, atelierNordMembers()).execute(deleteSprint()),
+        new DeleteList(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteSprint()),
       );
 
       expect(refusal).toEqual({ reason: 'role-insufficient', role });
@@ -189,7 +191,7 @@ describe('DeleteList: the refusals come in the order 404, 403, 412 and write not
 
   it('answers role-insufficient before a stale If-Match', async () => {
     const refusal = await refusalOf(
-      new DeleteList(sprintShared('view'), atelierNordMembers()).execute(
+      new DeleteList(sprintShared('view'), atelierNordMembers(), TRASH_WRITES_ON).execute(
         deleteSprint({ expectedVersions: [1] }),
       ),
     );
@@ -201,7 +203,9 @@ describe('DeleteList: the refusals come in the order 404, 403, 412 and write not
     const spaces = sprintShared('edit');
 
     const refusal = await refusalOf(
-      new DeleteList(spaces, atelierNordMembers()).execute(deleteSprint({ expectedVersions: [2] })),
+      new DeleteList(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(
+        deleteSprint({ expectedVersions: [2] }),
+      ),
     );
 
     expect(refusal).toEqual({ reason: 'version-mismatch', version: 3 });
@@ -211,7 +215,7 @@ describe('DeleteList: the refusals come in the order 404, 403, 412 and write not
   it('deletes when the stored version is one of the versions sent', async () => {
     const spaces = sprintShared('edit');
 
-    await new DeleteList(spaces, atelierNordMembers()).execute(
+    await new DeleteList(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(
       deleteSprint({ expectedVersions: [2, 3] }),
     );
 
@@ -226,7 +230,9 @@ describe('DeleteList: the refusals come in the order 404, 403, 412 and write not
     const spaces = atelierNord();
 
     const refusal = await refusalOf(
-      new DeleteList(spaces, atelierNordMembers()).execute(deleteSprint(overrides)),
+      new DeleteList(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(
+        deleteSprint(overrides),
+      ),
     );
 
     expect(refusal).toEqual({ reason: 'list-not-found' });
@@ -235,7 +241,7 @@ describe('DeleteList: the refusals come in the order 404, 403, 412 and write not
 
   it('answers list-not-found for a list deleted already, and enqueues nothing more', async () => {
     const spaces = atelierNord();
-    const deletion = new DeleteList(spaces, atelierNordMembers());
+    const deletion = new DeleteList(spaces, atelierNordMembers(), TRASH_WRITES_ON);
     await deletion.execute(deleteSprint());
 
     const refusal = await refusalOf(deletion.execute(deleteSprint()));
@@ -252,7 +258,7 @@ describe('DeleteList: the refusals come in the order 404, 403, 412 and write not
     });
 
     const refusal = await refusalOf(
-      new DeleteList(spaces, atelierNordMembers()).execute(deleteSprint()),
+      new DeleteList(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteSprint()),
     );
 
     expect(refusal).toEqual({ reason: 'list-not-found' });
@@ -265,7 +271,7 @@ describe('DeleteList: the refusals come in the order 404, 403, 412 and write not
     });
 
     const refusal = await refusalOf(
-      new DeleteList(spaces, atelierNordMembers()).execute(deleteSprint()),
+      new DeleteList(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteSprint()),
     );
 
     expect(refusal).toEqual({ reason: 'list-not-found' });
@@ -273,7 +279,7 @@ describe('DeleteList: the refusals come in the order 404, 403, 412 and write not
 
   it('answers organization-not-found to an account the copy of the members does not know', async () => {
     const refusal = await refusalOf(
-      new DeleteList(atelierNord(), atelierNordMembers()).execute(
+      new DeleteList(atelierNord(), atelierNordMembers(), TRASH_WRITES_ON).execute(
         deleteSprint({ actorUserId: STRANGER }),
       ),
     );
@@ -288,7 +294,7 @@ describe('DeleteList: the membership is read for share, then the list is locked'
     const members = atelierNordMembers();
     members.journal = spaces.journal;
 
-    await new DeleteList(spaces, members).execute(deleteSprint());
+    await new DeleteList(spaces, members, TRASH_WRITES_ON).execute(deleteSprint());
 
     expect(spaces.journal).toEqual([`membership ${LEA}`, `list ${SPRINT_14}`]);
   });
@@ -306,7 +312,7 @@ describe('DeleteList: a deleted list is invisible everywhere (a tombstone answer
       lists: [backlogState(), sprintState({ version: 3 })],
       grants: [listGrantOf(PRODUIT, SPRINT_14, NADIA, 'edit')],
     });
-    await new DeleteList(spaces, atelierNordMembers()).execute(deleteSprint());
+    await new DeleteList(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteSprint());
     return spaces;
   }
 
@@ -402,5 +408,33 @@ describe('DeleteList: a deleted list is invisible everywhere (a tombstone answer
     );
 
     expect(refusal).toEqual({ reason: 'space-not-found' });
+  });
+});
+
+describe('DeleteList: the route answers as an unknown one while the writes of the trash are off', () => {
+  it('refuses trash-writes-disabled before reading the membership, and writes nothing', async () => {
+    const spaces = atelierNord();
+    const members = atelierNordMembers();
+    members.journal = spaces.journal;
+
+    const refusal = await refusalOf(
+      new DeleteList(spaces, members, TRASH_WRITES_OFF).execute(deleteSprint()),
+    );
+
+    expect(refusal).toEqual({ reason: 'trash-writes-disabled' });
+    expect(spaces.runs).toBe(0);
+    expect(spaces.journal).toEqual([]);
+    expect(spaces.events).toEqual([]);
+    expect(spaces.jobs).toEqual([]);
+  });
+
+  it('answers it even to an actor the copy of the members does not know', async () => {
+    const refusal = await refusalOf(
+      new DeleteList(atelierNord(), atelierNordMembers(), TRASH_WRITES_OFF).execute(
+        deleteSprint({ actorUserId: STRANGER }),
+      ),
+    );
+
+    expect(refusal).toEqual({ reason: 'trash-writes-disabled' });
   });
 });

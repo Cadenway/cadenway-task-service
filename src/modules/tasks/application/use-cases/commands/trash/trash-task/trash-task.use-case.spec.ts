@@ -18,6 +18,8 @@ import {
   NOW,
   SPRINT_14,
   TRASHED_AT,
+  TRASH_WRITES_OFF,
+  TRASH_WRITES_ON,
   archiveFrom,
   atelierNordLists,
   atelierNordMembers,
@@ -117,7 +119,7 @@ function atelierNord(
   });
   return {
     tasks,
-    useCase: new TrashTask(tasks, atelierNordMembers([], trace), spaces(trace)),
+    useCase: new TrashTask(TRASH_WRITES_ON, tasks, atelierNordMembers([], trace), spaces(trace)),
   };
 }
 
@@ -269,6 +271,7 @@ describe('TrashTask: a deletion moves the task and its subtasks at every level t
     const trace: string[] = [];
     const tasks = new InMemoryTasks({ tasks: liveTree(), activity: [priorityEntry()], trace });
     const useCase = new TrashTask(
+      TRASH_WRITES_ON,
       tasks,
       atelierNordMembers([], trace),
       new InMemorySpaceDirectory({ trace }),
@@ -297,6 +300,24 @@ describe('TrashTask: a deletion moves the task and its subtasks at every level t
 });
 
 describe('TrashTask: the refusals, in the order of the contract', () => {
+  it('refuses first while the switch of the writes of the trash is off, reading nothing', async () => {
+    const trace: string[] = [];
+    const tasks = new InMemoryTasks({ tasks: liveTree(), trace });
+    const useCase = new TrashTask(
+      TRASH_WRITES_OFF,
+      tasks,
+      atelierNordMembers([], trace),
+      new InMemorySpaceDirectory({ trace }),
+    );
+
+    expect(await refusalOf(useCase.execute(trash()))).toEqual({
+      reason: 'trash-writes-disabled',
+    });
+    expect(trace).toEqual([]);
+    expect(tasks.runs).toBe(0);
+    expect(tasks.stored(CAD_482).trash).toBeNull();
+  });
+
   it('refuses an unknown key and a task of a list the actor has no role on as task-not-found', async () => {
     const { useCase } = atelierNord(liveTree(), (trace: string[]) => sprint14SharedWith({}, trace));
 

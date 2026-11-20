@@ -30,28 +30,70 @@ describe('listStateOf: where a list stands, as the trash and the archives name i
   });
 });
 
-describe('announcesChanges: a tombstone emits nothing until it comes back from the trash', () => {
+describe('announcesChanges: a tombstone emits no content event until it comes back from the trash', () => {
   it('announces a change of a live space, and of a live or archived list of it', () => {
-    expect(announcesChanges({ deletedAt: null })).toBe(true);
-    expect(announcesChanges({ deletedAt: null }, { archivedAt: null, deletedAt: null })).toBe(true);
+    expect(announcesChanges('content', { deletedAt: null })).toBe(true);
     expect(
-      announcesChanges({ deletedAt: null }, { archivedAt: ARCHIVED_AT, deletedAt: null }),
+      announcesChanges('content', { deletedAt: null }, { archivedAt: null, deletedAt: null }),
+    ).toBe(true);
+    expect(
+      announcesChanges(
+        'content',
+        { deletedAt: null },
+        { archivedAt: ARCHIVED_AT, deletedAt: null },
+      ),
     ).toBe(true);
   });
 
   it('announces nothing of a deleted space, nor of any list of it', () => {
-    expect(announcesChanges({ deletedAt: DELETED_AT })).toBe(false);
-    expect(announcesChanges({ deletedAt: DELETED_AT }, { archivedAt: null, deletedAt: null })).toBe(
-      false,
-    );
+    expect(announcesChanges('content', { deletedAt: DELETED_AT })).toBe(false);
+    expect(
+      announcesChanges('content', { deletedAt: DELETED_AT }, { archivedAt: null, deletedAt: null }),
+    ).toBe(false);
   });
 
   it('announces nothing of a deleted list, archived or not, in a live space', () => {
-    expect(announcesChanges({ deletedAt: null }, { archivedAt: null, deletedAt: DELETED_AT })).toBe(
-      false,
-    );
     expect(
-      announcesChanges({ deletedAt: null }, { archivedAt: ARCHIVED_AT, deletedAt: DELETED_AT }),
+      announcesChanges('content', { deletedAt: null }, { archivedAt: null, deletedAt: DELETED_AT }),
     ).toBe(false);
+    expect(
+      announcesChanges(
+        'content',
+        { deletedAt: null },
+        { archivedAt: ARCHIVED_AT, deletedAt: DELETED_AT },
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('announcesChanges: an access change is announced, tombstones included, so who reaches what converges', () => {
+  it('announces an access change of a live space, and of a live or archived list of it', () => {
+    expect(announcesChanges('access', { deletedAt: null })).toBe(true);
+    expect(
+      announcesChanges('access', { deletedAt: null }, { archivedAt: null, deletedAt: null }),
+    ).toBe(true);
+    expect(
+      announcesChanges('access', { deletedAt: null }, { archivedAt: ARCHIVED_AT, deletedAt: null }),
+    ).toBe(true);
+  });
+
+  it('announces an access change of a deleted space, and of any list of it', () => {
+    expect(announcesChanges('access', { deletedAt: DELETED_AT })).toBe(true);
+    expect(
+      announcesChanges('access', { deletedAt: DELETED_AT }, { archivedAt: null, deletedAt: null }),
+    ).toBe(true);
+  });
+
+  it('announces an access change of a deleted list, archived or not, in a live space', () => {
+    expect(
+      announcesChanges('access', { deletedAt: null }, { archivedAt: null, deletedAt: DELETED_AT }),
+    ).toBe(true);
+    expect(
+      announcesChanges(
+        'access',
+        { deletedAt: null },
+        { archivedAt: ARCHIVED_AT, deletedAt: DELETED_AT },
+      ),
+    ).toBe(true);
   });
 });

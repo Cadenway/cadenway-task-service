@@ -20,10 +20,10 @@ import { GrantKeeper } from './grant-keeper.service.js';
  * locked the spaces; each list is locked after its space, the lock order of the module. A space
  * grant removed emits `space.access-changed.v1` with the version the handover took (one change,
  * one version, as for the switch of a list); a list grant takes the next version of its list and
- * emits `list.access-changed.v1`. A deleted space or list is locked and changed like any other
- * (the grants a tombstone keeps come back with it, and none may name the owner), but emits nothing
- * until it comes back: a consumer dropped it at `space.deleted.v1` or `list.deleted.v1`. Nothing is
- * read beyond one statement when the owner held none.
+ * emits `list.access-changed.v1`. A deleted space or list is locked, changed and announced like any
+ * other (the grants a tombstone keeps come back with it, and none may name the owner; its access
+ * event keeps who reaches it right in every consumer, `announcesChanges`). Nothing is read beyond
+ * one statement when the owner held none.
  */
 export class OwnerGrantsRemover {
   // #region Properties
@@ -100,7 +100,7 @@ export class OwnerGrantsRemover {
       await store.grants.remove(organizationId, resource, ownerUserId);
       removed += 1;
       if (resource.kind === 'space') {
-        if (announcesChanges(entry.space.snapshot)) {
+        if (announcesChanges('access', entry.space.snapshot)) {
           await store.events.spaceAccessChanged(
             entry.space,
             update.grants.snapshot.grants,
@@ -120,7 +120,7 @@ export class OwnerGrantsRemover {
       }
       const next: TaskList = list.recordAccessChange();
       await store.lists.update(next);
-      if (announcesChanges(entry.space.snapshot, next.snapshot)) {
+      if (announcesChanges('access', entry.space.snapshot, next.snapshot)) {
         await store.events.listAccessChanged(
           next,
           update.grants.snapshot.grants,

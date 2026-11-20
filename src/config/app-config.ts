@@ -25,11 +25,50 @@ import { z } from 'zod';
  * - `INTERNAL_TOKEN_AUDIENCE` and `INTERNAL_TOKEN_TRUSTED_ISSUERS`: the `aud` this service accepts
  *   and the public keys of the backends allowed to call it.
  *
+ * - `TRASH_WRITES_ENABLED` (`TrashConfig`): whether the writes that put something in the trash or
+ *   make a tombstone are served ("Supprimer la tâche", `DELETE` of a list and of a space, "Vider la
+ *   corbeille"); `false` by default.
+ *
  * `OTEL_EXPORTER_OTLP_ENDPOINT` is read by `telemetry.ts`, before the application exists.
  *
- * @type {BaseConfig & DatabaseConfig & MessagingConfig & InternalTokenVerifierConfig}
+ * @type {BaseConfig & DatabaseConfig & MessagingConfig & InternalTokenVerifierConfig & TrashConfig}
  */
-export type AppConfig = BaseConfig & DatabaseConfig & MessagingConfig & InternalTokenVerifierConfig;
+export type AppConfig = BaseConfig &
+  DatabaseConfig &
+  MessagingConfig &
+  InternalTokenVerifierConfig &
+  TrashConfig;
+
+/**
+ * Interface TrashConfig
+ *
+ * @description
+ * The switch of the writes of the trash (P3b-1 PR 3). The release that brings the trash reads it
+ * everywhere (a task in the trash and a deleted list or space are left out of every collection), but
+ * serves the writes that create entries or tombstones only once `TRASH_WRITES_ENABLED` is `true`:
+ * while it is `false`, "Supprimer la tâche", `DELETE /internal/v1/lists/{listId}`, `DELETE
+ * /internal/v1/spaces/{spaceId}` and "Vider la corbeille" answer `404 http.not-found`, as the
+ * release before, which has no such route, does. So no trash entry and no tombstone exists until it is
+ * turned on, and this release stays a safe rollback target for the release that turns it on, while the
+ * release before 0007 stays one until then (`.claude/rules/migrations.md`: the running version keeps
+ * working on the expanded schema). The restoration and the erasure of an entry, the trash page and
+ * the jobs are always served: they only act on what is already there.
+ */
+export interface TrashConfig {
+  // #region Properties
+  /**
+   * Property TRASH_WRITES_ENABLED
+   *
+   * @description
+   * `true` to serve the writes that create trash entries and tombstones; `false` (the default) to
+   * answer them as an unknown route.
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  readonly TRASH_WRITES_ENABLED: boolean;
+  // #endregion
+}
 
 /**
  * Constant appConfigSchema
@@ -47,6 +86,7 @@ export const appConfigSchema: z.ZodType<AppConfig> = z.object({
   ...databaseConfigShape,
   ...messagingConfigShape,
   ...internalTokenVerifierConfigShape,
+  TRASH_WRITES_ENABLED: z.stringbool().default(false),
 });
 
 /**

@@ -6,11 +6,13 @@ import type { TrashEntryRecord } from '../../../../../application/models/trash/t
 import type { TrashPosition } from '../../../../../application/models/trash/trash-position.model.js';
 import type { TrashEntryRepository } from '../../../../../application/ports/outbound/persistence/trash/trash-entry-repository.port.js';
 import type { TaskActor } from '../../../../../domain/value-objects/task/task-actor.value-object.js';
+import type { TrashHandOver } from '../../../../../domain/value-objects/trash/trash-hand-over.value-object.js';
 import type { RawTrashEntryRow } from '../../mappers/trash/raw-trash-entry-row.mapper.js';
 import { toTrashEntryRecord } from '../../mappers/trash/trash-entry.mapper.js';
 import {
   dueEntriesStatement,
   eraseEntriesStatements,
+  erasePartStatements,
   handedOverEntriesStatement,
   insertEntriesStatement,
   removeEntryStatement,
@@ -248,6 +250,47 @@ export class DrizzleTrashEntryRepository implements TrashEntryRepository {
     }
     for (const statement of eraseEntriesStatements(organizationId, entryIds)) {
       await this.db.execute(statement);
+    }
+  }
+
+  /**
+   * Method erasePart
+   *
+   * @description
+   * Erases some tasks of one entry in the seven statements of `erasePartStatements`, in their
+   * order, and checks that every task and the entry row were written.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} entryId - The entry.
+   * @param {readonly string[]} taskIds - The tasks to erase.
+   * @param {TrashHandOver} handOver - The hand-over set on an entry still in the trash.
+   * @returns {Promise<void>} Resolves once erased.
+   * @throws {Error} When a task or the entry vanished, which their locks prevent.
+   */
+  public async erasePart(
+    organizationId: string,
+    entryId: string,
+    taskIds: readonly string[],
+    handOver: TrashHandOver,
+  ): Promise<void> {
+    if (taskIds.length === 0) {
+      return;
+    }
+    const statements: readonly SQL[] = erasePartStatements(
+      organizationId,
+      entryId,
+      taskIds,
+      handOver,
+    );
+    const counts: (number | null)[] = [];
+    for (const statement of statements) {
+      counts.push((await this.db.execute(statement)).rowCount);
+    }
+    const [erased, entries] = counts.slice(-2);
+    if (erased !== taskIds.length || entries !== 1) {
+      throw new Error(
+        `The part of the trash entry ${entryId} lost ${String(taskIds.length - (erased ?? 0))} of its ${String(taskIds.length)} tasks or its row while they were locked.`,
+      );
     }
   }
 

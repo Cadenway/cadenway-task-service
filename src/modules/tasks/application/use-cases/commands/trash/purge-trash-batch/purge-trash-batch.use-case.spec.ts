@@ -70,6 +70,54 @@ function atelierNord(
   return { tasks, directory: spaces, useCase: new PurgeTrashBatch(tasks, spaces) };
 }
 
+/**
+ * Builds a store holding CAD-482 with 25 subtasks of 20 subtasks each, 526 tasks in one entry due,
+ * and CAD-490 alone in the entry of Bugs, due after it.
+ *
+ * @param entry - What replaces the entry of CAD-482.
+ * @returns The fake store and the root.
+ */
+function bigEntry(entry: Partial<StoredTrashEntry> = {}): {
+  readonly large: InMemoryTasks;
+  readonly root: TaskState;
+} {
+  const root: TaskState = taskState({ trash: trashIn(), version: 13 });
+  const big: TaskState[] = [root];
+  for (let child = 0; child < 25; child += 1) {
+    const middle: TaskState = queryTask(child * 21 + 1, {
+      parentId: root.id,
+      parentKey: root.key,
+      trash: trashIn(),
+      version: 2,
+    });
+    big.push(middle);
+    for (let leaf = 0; leaf < 20; leaf += 1) {
+      big.push(
+        queryTask(child * 21 + 2 + leaf, {
+          parentId: middle.id,
+          parentKey: middle.key,
+          trash: trashIn(),
+          version: 2,
+        }),
+      );
+    }
+  }
+  const large = new InMemoryTasks({
+    tasks: [...big, cad490State({ listId: BUGS, trash: trashIn(BUGS_ENTRY), version: 2 })],
+    trashEntries: [
+      storedEntry({ taskCount: 526, trashedAt: new Date(DUE.getTime() - 1), ...entry }),
+      storedEntry({
+        id: BUGS_ENTRY,
+        rootTaskId: CAD_490,
+        listId: BUGS,
+        taskCount: 1,
+        trashedAt: DUE,
+      }),
+    ],
+  });
+  return { large, root };
+}
+
 describe('PurgeTrashBatch: one batch of the erasure of the trash of an organization', () => {
   it('erases the entries handed over first, with the requester of "Vider la corbeille"', async () => {
     const { tasks, useCase } = atelierNord(
@@ -138,6 +186,41 @@ describe('PurgeTrashBatch: one batch of the erasure of the trash of an organizat
     expect(spaces.hasSpace(PRODUIT)).toBe(false);
   });
 
+  it('locks the lists of the entries it erased in one call, then probes the deleted ones once', async () => {
+    const hugo = { type: 'user', id: HUGO } as const;
+    const trace: string[] = [];
+    const spaces = new InMemorySpaceDirectory({ trace, deletedLists: { [BUGS]: hugo } });
+    const tasks = new InMemoryTasks({
+      tasks: [
+        taskState({ trash: trashIn(), version: 13 }),
+        cad490State({ listId: BUGS, trash: trashIn(BUGS_ENTRY), version: 2 }),
+      ],
+      trashEntries: [
+        storedEntry({ taskCount: 1, trashedAt: DUE }),
+        storedEntry({
+          id: BUGS_ENTRY,
+          rootTaskId: CAD_490,
+          listId: BUGS,
+          taskCount: 1,
+          trashedAt: DUE,
+        }),
+      ],
+      trace,
+    });
+
+    expect(
+      await new PurgeTrashBatch(tasks, spaces).execute({ organizationId: ATELIER_NORD }),
+    ).toMatchObject({ entries: 2, listsPurged: 1 });
+    expect(
+      trace.filter((call: string): boolean =>
+        ['spaces.lockDeletedLists', 'tasks.listsWithTasks', 'spaces.purgeDeletedList'].includes(
+          call,
+        ),
+      ),
+    ).toEqual(['spaces.lockDeletedLists', 'tasks.listsWithTasks', 'spaces.purgeDeletedList']);
+    expect(spaces.purgeCalls).toEqual([BUGS]);
+  });
+
   it('locks 20 entries at most and stops once it holds 500 tasks or more', async () => {
     const stored: TaskState[] = [];
     const entries: StoredTrashEntry[] = [];
@@ -162,50 +245,75 @@ describe('PurgeTrashBatch: one batch of the erasure of the trash of an organizat
       entries: 20,
     });
     expect(tasks.trashEntries.size).toBe(5);
+  });
 
-    // CAD-482 with 25 subtasks of 20 subtasks each: 526 tasks in one entry.
-    const root: TaskState = taskState({ trash: trashIn(), version: 13 });
-    const big: TaskState[] = [root];
-    for (let child = 0; child < 25; child += 1) {
-      const middle: TaskState = queryTask(child * 21 + 1, {
-        parentId: root.id,
-        parentKey: root.key,
-        trash: trashIn(),
-        version: 2,
-      });
-      big.push(middle);
-      for (let leaf = 0; leaf < 20; leaf += 1) {
-        big.push(
-          queryTask(child * 21 + 2 + leaf, {
-            parentId: middle.id,
-            parentKey: middle.key,
-            trash: trashIn(),
-            version: 2,
-          }),
-        );
-      }
-    }
-    const large = new InMemoryTasks({
-      tasks: [...big, cad490State({ listId: BUGS, trash: trashIn(BUGS_ENTRY), version: 2 })],
-      trashEntries: [
-        storedEntry({ taskCount: 526, trashedAt: new Date(DUE.getTime() - 1) }),
-        storedEntry({
-          id: BUGS_ENTRY,
-          rootTaskId: CAD_490,
-          listId: BUGS,
-          taskCount: 1,
-          trashedAt: DUE,
-        }),
-      ],
+  it('erases an entry of more than 500 tasks in parts of 500, the deepest first, hidden from the first', async () => {
+    const { large, root } = bigEntry();
+    const batch = new PurgeTrashBatch(large, new InMemorySpaceDirectory());
+
+    expect(await batch.execute({ organizationId: ATELIER_NORD })).toEqual({
+      outcome: 'purged',
+      entries: 0,
+      tasks: 500,
+      listsPurged: 0,
+      spacesPurged: 0,
+    });
+    // The 500 leaves went first; the root and its 25 subtasks wait, the entry handed over.
+    expect(large.tasks.has(CAD_482)).toBe(true);
+    expect([...large.tasks.values()].filter((task) => task.parentId === root.id)).toHaveLength(25);
+    expect(large.trashEntries.get(CAD_482_ENTRY)).toMatchObject({
+      taskCount: 26,
+      purgeRequest: { at: NOW, by: { type: 'system', id: 'task-service' } },
+    });
+    expect(large.events).toHaveLength(500);
+    expect(
+      large.events.every(
+        (event) =>
+          event.kind === 'purged' &&
+          event.key !== 'CAD-482' &&
+          event.parentKey !== 'CAD-482' &&
+          event.actor.id === 'task-service',
+      ),
+    ).toBe(true);
+    expect(large.trace).toEqual(
+      expect.arrayContaining(['tasks.entryTree', 'tasks.lockEntryTasks:update', 'trash.erasePart']),
+    );
+    expect(large.trace).not.toContain('trash.erase');
+
+    // The entry, handed over by then, comes before the entries due and goes whole.
+    expect(await batch.execute({ organizationId: ATELIER_NORD })).toMatchObject({
+      entries: 1,
+      tasks: 26,
+    });
+    expect(large.tasks.has(CAD_482)).toBe(false);
+    expect(large.trashEntries.has(CAD_482_ENTRY)).toBe(false);
+    expect(large.trashEntries.has(BUGS_ENTRY)).toBe(true);
+  });
+
+  it('keeps the requester of a hand-over for every part of an entry it erases', async () => {
+    const { large } = bigEntry({ purgeRequest: { at: NOW, by: camille } });
+    const batch = new PurgeTrashBatch(large, new InMemorySpaceDirectory());
+
+    await batch.execute({ organizationId: ATELIER_NORD });
+
+    expect(large.trashEntries.get(CAD_482_ENTRY)?.purgeRequest).toEqual({ at: NOW, by: camille });
+    expect(large.events.every((event) => event.actor.id === CAMILLE)).toBe(true);
+  });
+
+  it('stops before an entry of more than 500 tasks that does not come first', async () => {
+    const { large } = bigEntry({ trashedAt: DUE });
+    large.trashEntries.set(BUGS_ENTRY, {
+      ...storedEntry({ id: BUGS_ENTRY, rootTaskId: CAD_490, listId: BUGS, taskCount: 1 }),
+      trashedAt: new Date(DUE.getTime() - 1),
     });
     const batch = new PurgeTrashBatch(large, new InMemorySpaceDirectory());
 
     expect(await batch.execute({ organizationId: ATELIER_NORD })).toMatchObject({
       entries: 1,
-      tasks: 526,
+      tasks: 1,
     });
-    expect(large.trashEntries.has(BUGS_ENTRY)).toBe(true);
-    expect(large.tasks.has(CAD_482)).toBe(false);
+    expect(large.trashEntries.get(CAD_482_ENTRY)?.taskCount).toBe(526);
+    expect(large.trashEntries.has(BUGS_ENTRY)).toBe(false);
   });
 
   it('locks the tasks of all the entries it takes in one statement, archived ones included', async () => {

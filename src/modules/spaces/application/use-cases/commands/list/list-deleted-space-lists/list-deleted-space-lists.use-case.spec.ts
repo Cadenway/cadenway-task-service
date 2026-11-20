@@ -22,7 +22,7 @@ import { ListDeletedSpaceLists } from './list-deleted-space-lists.use-case.js';
 /** Who deleted the space or a list in these specs. */
 const BY_CAMILLE = { type: 'user', id: CAMILLE } as const;
 
-describe('ListDeletedSpaceLists: whether a space is still deleted, held for share, and its deleted lists', () => {
+describe('ListDeletedSpaceLists: where a space stands, held for share, and its deleted lists', () => {
   it('reads a deleted space and the lists deleted with it or on their own before, by id', async () => {
     const spaces = new InMemorySpaces({
       spaces: [spaceState({ deletedAt: DELETED_AT, deletedBy: BY_CAMILLE }), marketingState()],
@@ -43,7 +43,7 @@ describe('ListDeletedSpaceLists: whether a space is still deleted, held for shar
       spaceId: PRODUIT,
     });
 
-    expect(output).toEqual({ spaceDeleted: true, listIds: [BACKLOG, SPRINT_14] });
+    expect(output).toEqual({ space: 'deleted', listIds: [BACKLOG, SPRINT_14] });
   });
 
   it('holds the space for share before it reads the lists', async () => {
@@ -70,11 +70,11 @@ describe('ListDeletedSpaceLists: whether a space is still deleted, held for shar
         organizationId: ATELIER_NORD,
         spaceId: PRODUIT,
       }),
-    ).toEqual({ spaceDeleted: false, listIds: [BACKLOG] });
+    ).toEqual({ space: 'live', listIds: [BACKLOG] });
   });
 
   it.each([
-    ['an unknown or erased space', ATELIER_NORD, UNKNOWN_SPACE],
+    ['an unknown or erased space, gone', ATELIER_NORD, UNKNOWN_SPACE],
     ['a space of another organization', OTHER_ORGANIZATION, PRODUIT],
   ])('reads nothing for %s', async (_why: string, organizationId: string, spaceId: string) => {
     const spaces = new InMemorySpaces({
@@ -83,7 +83,7 @@ describe('ListDeletedSpaceLists: whether a space is still deleted, held for shar
     });
 
     expect(await new ListDeletedSpaceLists(spaces).execute({ organizationId, spaceId })).toEqual({
-      spaceDeleted: false,
+      space: 'gone',
       listIds: [],
     });
   });

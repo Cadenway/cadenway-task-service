@@ -22,9 +22,11 @@ import type { PagePosition } from '../../../../models/page/page-position.model.j
  * `positionInSpaceOf` (their last restoration, or else their creation), the id as tie-breaker.
  * A deleted list, or a list of a deleted space, is a tombstone ("Deletion" of
  * `openapi/public/lists.yaml`): every reading by id, lock before a change and collection leaves it
- * out, as an unknown one; `lockMany`, for the clean-up of a member who left, treats it like any
- * list; only the methods named `IncludingDeleted`, the trash reads, `markDeletedWithSpace`,
- * `listDeletedIdsOfSpace`, `anyOfSpace` and `erase` read or write it on purpose.
+ * out, as an unknown one; `lockMany`, for the clean-up of a member who left and the erasure of
+ * the trash, treats it like any list; only the methods named `IncludingDeleted`, the trash reads,
+ * `markDeletedWithSpace`, `listDeletedIdsOfSpace`, `anyOfSpace` and `erase` read or write it on
+ * purpose. Several lists are always locked in ascending id (`lockMany`, `lockUndeletedOfSpace`),
+ * the order of every locker of several lists.
  */
 export interface TaskListRepository {
   // #region Methods
@@ -67,17 +69,64 @@ export interface TaskListRepository {
   lock(organizationId: string, id: string): Promise<TaskList | null>;
 
   /**
+   * Method lockShared
+   *
+   * @description
+   * Loads a list by its id and locks it `FOR SHARE` until the end of the transaction, unless it is
+   * deleted: a deletion of it waits for the caller, which stores something that names it (an
+   * access request).
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} id - The id of the list.
+   * @returns {Promise<TaskList | null>} The list, or `null` when unknown or deleted.
+   */
+  lockShared(organizationId: string, id: string): Promise<TaskList | null>;
+
+  /**
    * Method lockMany
    *
    * @description
-   * Loads and locks some lists until the end of the transaction, in the order of their ids, so
-   * that two batches never wait on each other; deleted ones are locked like any other.
+   * Loads and locks some lists until the end of the transaction, in ascending id, so that two
+   * lockers never wait on each other; deleted ones are locked like any other: `FOR NO KEY UPDATE`
+   * before a change (`update`, the default), `FOR UPDATE` before an erasure (`delete`).
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} ids - The ids of the lists.
+   * @param {'update' | 'delete'} [mode] - How the caller writes them next, `update` by default.
    * @returns {Promise<TaskList[]>} The lists that exist, by id.
    */
-  lockMany(organizationId: string, ids: readonly string[]): Promise<TaskList[]>;
+  lockMany(
+    organizationId: string,
+    ids: readonly string[],
+    mode?: 'update' | 'delete',
+  ): Promise<TaskList[]>;
+
+  /**
+   * Method findManyIncludingDeleted
+   *
+   * @description
+   * Loads some lists by their ids, live, archived or deleted, without lock, in one statement.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {readonly string[]} ids - The ids of the lists.
+   * @returns {Promise<TaskList[]>} The lists that exist, in no particular order.
+   */
+  findManyIncludingDeleted(organizationId: string, ids: readonly string[]): Promise<TaskList[]>;
+
+  /**
+   * Method lockUndeletedOfSpace
+   *
+   * @description
+   * Locks `FOR NO KEY UPDATE` every list of a space that is not deleted yet, archived ones
+   * included, in ascending id, in one statement: the deletion of the space takes them in the order
+   * of every other locker of several lists before `markDeletedWithSpace` writes them. The caller
+   * locked the space first, so no list joins or leaves the set meanwhile.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} spaceId - The space, locked by the caller.
+   * @returns {Promise<string[]>} The ids of the locked lists, ascending.
+   */
+  lockUndeletedOfSpace(organizationId: string, spaceId: string): Promise<string[]>;
 
   /**
    * Method update
@@ -279,8 +328,8 @@ export interface TaskListRepository {
    * @description
    * Deletes with their space every list of it that is not deleted yet, in ONE statement
    * (`TaskList.deleteWithSpace` for each: the instant and the actor of the space, the same
-   * version, no event), after the space was locked: O(lists of the space). A list deleted on its
-   * own before keeps its own tombstone.
+   * version, no event), after the space and those lists were locked (`lockUndeletedOfSpace`):
+   * O(lists of the space). A list deleted on its own before keeps its own tombstone.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} spaceId - The deleted space.

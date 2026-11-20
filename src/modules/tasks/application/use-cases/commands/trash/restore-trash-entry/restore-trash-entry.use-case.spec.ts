@@ -9,6 +9,7 @@ import {
   CAD_482_ENTRY,
   CAD_483,
   CAD_484,
+  CAD_490,
   CAMILLE,
   InMemorySpaceDirectory,
   InMemoryTasks,
@@ -20,6 +21,7 @@ import {
   archiveFrom,
   atelierNordLists,
   atelierNordMembers,
+  cad490State,
   queryTask,
   refusalOf,
   sprint14SharedWith,
@@ -34,6 +36,9 @@ import { RestoreTrashEntry } from './restore-trash-entry.use-case.js';
 
 /** The entry of CAD-483 and CAD-484, deleted from under CAD-482. */
 const ENTRY_483: string = '019a7006-7a8b-7c9d-8e0f-1a2b3c4d5e04';
+
+/** The entry of CAD-490, deleted on its own. */
+const BUGS_ENTRY: string = '019a7006-7a8b-7c9d-8e0f-1a2b3c4d5e06';
 
 /** A task archived alone below CAD-484, a fourth level the live tree does not count. */
 const CAD_499: string = '019a7200-0000-7000-8000-000000000499';
@@ -288,15 +293,81 @@ describe('RestoreTrashEntry: an entry comes back to its list, its root and every
     expect(restored).toMatchObject({ subtaskCount: 2, detached: false });
     expect(tasks.stored(CAD_483).parentId).toBe(CAD_482);
     expect(tasks.stored(CAD_499)).toMatchObject({
-      archive: archiveFrom(CAD_499),
+      archive: { at: NOW, by: camille, rootId: CAD_499 },
       trash: null,
       parentId: CAD_484,
-      version: 4,
+      version: 5,
     });
-    expect(tasks.events.map((event) => event.key)).toEqual(['CAD-483', 'CAD-484', 'CAD-499']);
+    expect(tasks.events.map((event) => [event.kind, event.key])).toEqual([
+      ['restored', 'CAD-483'],
+      ['restored', 'CAD-484'],
+      ['restored', 'CAD-499'],
+      ['archived', 'CAD-499'],
+    ]);
   });
 
-  it('brings an archived root back archived and never detaches it, answering it as it reads', async () => {
+  it('archives again as of the restoration a member that comes back archived, one version on', async () => {
+    const archivedBelow: TaskState = subtaskState({
+      id: CAD_499,
+      key: TaskKey.of('CAD', 499),
+      parentId: CAD_484,
+      parentKey: TaskKey.of('CAD', 484),
+      archive: archiveFrom(CAD_499),
+      trash: trashIn(ENTRY_483),
+      version: 3,
+    });
+    const { tasks, useCase } = atelierNord(
+      [...trashedSubtree(), archivedBelow],
+      [{ ...entry483, taskCount: 3 }],
+    );
+
+    await useCase.execute(restore({ entryId: ENTRY_483 }));
+
+    expect(tasks.events.slice(2)).toEqual([
+      expect.objectContaining({ kind: 'restored', key: 'CAD-499', version: 4, rootKey: 'CAD-483' }),
+      {
+        kind: 'archived',
+        key: 'CAD-499',
+        version: 5,
+        rootKey: 'CAD-499',
+        parentKey: 'CAD-484',
+        actor: camille,
+      },
+    ]);
+    expect(tasks.stored(CAD_499)).toMatchObject({
+      archive: { at: NOW, by: camille, rootId: CAD_499 },
+      updatedAt: NOW,
+      version: 5,
+    });
+  });
+
+  it('names the root of the archive of a member in its task.archived.v1, the root first', async () => {
+    const { tasks, useCase } = atelierNord(
+      [
+        taskState({ listId: BUGS }),
+        subtaskState({ archive: archiveFrom(CAD_483), trash: trashIn(ENTRY_483), version: 3 }),
+        grandchild({ archive: archiveFrom(CAD_483), trash: trashIn(ENTRY_483), version: 3 }),
+      ],
+      [{ ...entry483, parentKey: null }],
+    );
+
+    await useCase.execute(restore({ entryId: ENTRY_483 }));
+
+    expect(
+      tasks.events.map((event) => [
+        event.kind,
+        event.key,
+        'rootKey' in event ? event.rootKey : null,
+      ]),
+    ).toEqual([
+      ['restored', 'CAD-483', 'CAD-483'],
+      ['archived', 'CAD-483', 'CAD-483'],
+      ['restored', 'CAD-484', 'CAD-483'],
+      ['archived', 'CAD-484', 'CAD-483'],
+    ]);
+  });
+
+  it('detaches an archived root from a parent in another list, keeping its archive', async () => {
     const { tasks, useCase } = atelierNord(
       [
         taskState({ listId: BUGS }),
@@ -308,14 +379,140 @@ describe('RestoreTrashEntry: an entry comes back to its list, its root and every
 
     const restored = await useCase.execute(restore({ entryId: ENTRY_483 }));
 
-    expect(restored).toMatchObject({ task: { key: 'CAD-483', version: 4 }, detached: false });
-    expect(tasks.stored(CAD_483)).toMatchObject({
-      archive: archiveFrom(CAD_483),
-      trash: null,
-      parentId: CAD_482,
+    expect(restored).toMatchObject({
+      task: { key: 'CAD-483', version: 5, parentKey: null },
+      detached: true,
     });
-    expect(tasks.stored(CAD_484).archive).toEqual(archiveFrom(CAD_483));
+    expect(tasks.stored(CAD_483)).toMatchObject({
+      archive: { at: NOW, by: camille, rootId: CAD_483 },
+      trash: null,
+      parentId: null,
+    });
+    expect(tasks.stored(CAD_484)).toMatchObject({
+      archive: { at: NOW, by: camille, rootId: CAD_483 },
+      parentId: CAD_483,
+      version: 5,
+    });
+    expect(tasks.events[0]).toMatchObject({ kind: 'restored', key: 'CAD-483', parentKey: null });
+  });
+
+  it.each<[string, Partial<TaskState>]>([
+    ['live', {}],
+    ['archived', { archive: archiveFrom(CAD_482), version: 13 }],
+  ])(
+    'keeps the parent of an archived root when the parent is %s in its list',
+    async (_case: string, parent: Partial<TaskState>) => {
+      const { tasks, useCase } = atelierNord(
+        [
+          taskState(parent),
+          subtaskState({ archive: archiveFrom(CAD_483), trash: trashIn(ENTRY_483), version: 3 }),
+          grandchild({ archive: archiveFrom(CAD_483), trash: trashIn(ENTRY_483), version: 3 }),
+        ],
+        [entry483],
+      );
+
+      const restored = await useCase.execute(restore({ entryId: ENTRY_483 }));
+
+      expect(restored).toMatchObject({ detached: false });
+      expect(tasks.stored(CAD_483)).toMatchObject({
+        archive: { at: NOW, by: camille, rootId: CAD_483 },
+        parentId: CAD_482,
+      });
+    },
+  );
+
+  it('detaches the root from a parent in the trash without locking the parent', async () => {
+    const { tasks, useCase } = atelierNord(
+      trashedSubtree({ trash: trashIn('019a7006-7a8b-7c9d-8e0f-1a2b3c4d5e05'), version: 13 }),
+      [entry483],
+    );
+
+    const restored = await useCase.execute(restore({ entryId: ENTRY_483 }));
+
+    expect(restored.detached).toBe(true);
     expect(tasks.trace).not.toContain('tasks.lockStanding');
+  });
+
+  it('refuses an entry of a deleted list whose job has not moved every task yet, writing nothing', async () => {
+    const { tasks, directory, useCase } = atelierNord(
+      [...trashedTree(), cad490State()],
+      undefined,
+      (trace: string[]) =>
+        new InMemorySpaceDirectory({ trace, deletedLists: { [SPRINT_14]: camille } }),
+    );
+
+    expect(await refusalOf(useCase.execute(restore()))).toEqual({
+      reason: 'trash-entry-not-found',
+    });
+    expect(tasks.trace).toContain('spaces.lockDeletedList');
+    expect(tasks.trace).not.toContain('spaces.restoreDeletedList');
+    expect(directory.isDeleted(SPRINT_14)).toBe(true);
+    expect(tasks.stored(CAD_482).trash).toEqual(trashIn());
+    expect(tasks.trashEntries.size).toBe(1);
+    expect(tasks.events).toEqual([]);
+  });
+
+  it('restores an entry of a deleted list once its job has moved every task, under the lock of the list', async () => {
+    const { tasks, useCase } = atelierNord(
+      [...trashedTree(), cad490State({ trash: trashIn(BUGS_ENTRY), version: 2 })],
+      [{}, { id: BUGS_ENTRY, rootTaskId: CAD_490, taskCount: 1 }],
+      (trace: string[]) =>
+        new InMemorySpaceDirectory({ trace, deletedLists: { [SPRINT_14]: camille } }),
+    );
+
+    expect(await useCase.execute(restore())).toMatchObject({ listRestored: true });
+    const order: string[] = tasks.trace.filter((call: string): boolean =>
+      [
+        'spaces.lockDeletedList',
+        'tasks.listsWithUntrashedTasks',
+        'spaces.restoreDeletedList',
+      ].includes(call),
+    );
+    expect(order).toEqual([
+      'spaces.lockDeletedList',
+      'tasks.listsWithUntrashedTasks',
+      'spaces.restoreDeletedList',
+      'tasks.listsWithUntrashedTasks',
+    ]);
+  });
+
+  it('checks again under the lock of a list it brings back, read live before, and rolls everything back', async () => {
+    /** A directory that reads Sprint 14 live at first, deleted by the time it restores it. */
+    class DeletedInBetween extends InMemorySpaceDirectory {
+      // #region Methods
+      /**
+       * Answers the list live, as read before a deletion committed.
+       *
+       * @returns The list, live.
+       */
+      public override lockDeletedList(): ReturnType<InMemorySpaceDirectory['lockDeletedList']> {
+        return Promise.resolve({ outcome: 'live' });
+      }
+      // #endregion
+    }
+    const trace: string[] = [];
+    const tasks = new InMemoryTasks({
+      tasks: [...trashedTree(), cad490State()],
+      trace,
+      trashEntries: [storedEntry()],
+    });
+    const useCase = new RestoreTrashEntry(
+      tasks,
+      atelierNordMembers([], trace),
+      new DeletedInBetween({ trace, deletedLists: { [SPRINT_14]: camille } }),
+    );
+
+    expect(await refusalOf(useCase.execute(restore()))).toEqual({
+      reason: 'trash-entry-not-found',
+    });
+    expect(
+      trace.filter((call: string): boolean =>
+        ['spaces.restoreDeletedList', 'tasks.listsWithUntrashedTasks'].includes(call),
+      ),
+    ).toEqual(['spaces.restoreDeletedList', 'tasks.listsWithUntrashedTasks']);
+    expect(tasks.stored(CAD_482).trash).toEqual(trashIn());
+    expect(tasks.trashEntries.size).toBe(1);
+    expect(tasks.events).toEqual([]);
   });
 
   it('leaves an archived list that is not deleted archived, its tasks live', async () => {
@@ -340,13 +537,14 @@ describe('RestoreTrashEntry: an entry comes back to its list, its root and every
 
     await useCase.execute(restore({ entryId: ENTRY_483 }));
 
-    expect(tasks.trace.slice(0, 7)).toEqual([
+    expect(tasks.trace.slice(0, 8)).toEqual([
       `members.roleOf:${CAMILLE}:lock`,
       'trash.find',
       'spaces.findTrashList',
       'trash.lock',
       'tasks.lockTrashEntries',
       'tasks.lockStanding',
+      'spaces.lockDeletedList',
       'spaces.restoreDeletedList',
     ]);
   });

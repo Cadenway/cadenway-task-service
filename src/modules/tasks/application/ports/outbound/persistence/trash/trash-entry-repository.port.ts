@@ -1,4 +1,5 @@
 import type { TaskActor } from '../../../../../domain/value-objects/task/task-actor.value-object.js';
+import type { TrashHandOver } from '../../../../../domain/value-objects/trash/trash-hand-over.value-object.js';
 import type { TrashEntryDraft } from '../../../../models/trash/trash-entry-draft.model.js';
 import type { TrashEntryRecord } from '../../../../models/trash/trash-entry-record.model.js';
 import type { TrashPosition } from '../../../../models/trash/trash-position.model.js';
@@ -149,6 +150,31 @@ export interface TrashEntryRepository {
    * @returns {Promise<void>} Resolves once erased.
    */
   erase(organizationId: string, entryIds: readonly string[]): Promise<void>;
+
+  /**
+   * Method erasePart
+   *
+   * @description
+   * Erases some tasks of one entry for good, which the caller holds locked with the entry, in the
+   * statements of `erase` scoped to those tasks: their activity entries, checklist items, assignees
+   * and labels; the tasks outside them whose parent is one of them detached (`parent_id` null, no
+   * version, no event); the tasks. The entry row stays, its `task_count` less the tasks erased,
+   * and is handed to the purge with `handOver` when it was still in the trash (a hand-over keeps
+   * its requester), so it is out of the trash from its first part on.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} entryId - The entry.
+   * @param {readonly string[]} taskIds - The tasks to erase, fewer than the entry holds.
+   * @param {TrashHandOver} handOver - The hand-over set on an entry still in the trash.
+   * @returns {Promise<void>} Resolves once erased.
+   * @throws {Error} When a task or the entry vanished, which their locks prevent.
+   */
+  erasePart(
+    organizationId: string,
+    entryId: string,
+    taskIds: readonly string[],
+    handOver: TrashHandOver,
+  ): Promise<void>;
 
   /**
    * Method remove

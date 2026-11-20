@@ -4,6 +4,7 @@ import { Module } from '@nestjs/common';
 import { OrganizationMembersModule } from '../organization-members/organization-members.module.js';
 import { SpacesModule } from '../spaces/spaces.module.js';
 import { memberDirectoryProvider } from './composition/providers/adapters/membership/member-directory.provider.js';
+import { trashWritesProvider } from './composition/providers/adapters/feature/trash-writes.provider.js';
 import { spaceDirectoryProvider } from './composition/providers/adapters/space/space-directory.provider.js';
 import { tasksUnitOfWorkProvider } from './composition/providers/adapters/task/tasks-unit-of-work.provider.js';
 import { trashSystemUnitOfWorkProvider } from './composition/providers/adapters/trash/trash-system-unit-of-work.provider.js';
@@ -153,6 +154,7 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
     tasksUnitOfWorkProvider,
     memberDirectoryProvider,
     spaceDirectoryProvider,
+    trashWritesProvider,
     createTaskProvider,
     updateTaskProvider,
     getTaskProvider,

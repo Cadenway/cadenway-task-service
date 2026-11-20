@@ -1,3 +1,4 @@
+import { CONFIG } from '@cadenway/nest-common';
 import { SystemTransactionRunner, TenantTransactionRunner } from '@cadenway/nest-common/database';
 import { JobProducer, JobScheduler, JobWorkerRegistry } from '@cadenway/nest-jobs/runtime';
 import type { JobScheduleOptions } from '@cadenway/nest-jobs/runtime';
@@ -17,13 +18,15 @@ const schedules: { queue: string; cron: string; options: JobScheduleOptions }[] 
 
 /**
  * Stands for the global providers of the kit that `DeletionLifecycleModule` and the modules it
- * imports inject: the tenant and system runners, the outbox writer and the relay, which no
+ * imports inject: the validated configuration (the switch of the writes of the trash off), the
+ * tenant and system runners, the outbox writer and the relay, which no
  * registration uses, the job producer, and the workers and the scheduler of `@cadenway/nest-jobs`,
  * which record the registrations instead of reaching PostgreSQL.
  */
 @Global()
 @Module({
   providers: [
+    { provide: CONFIG, useValue: { TRASH_WRITES_ENABLED: false } },
     { provide: TenantTransactionRunner, useValue: {} },
     { provide: SystemTransactionRunner, useValue: {} },
     { provide: OutboxWriter, useValue: {} },
@@ -50,6 +53,7 @@ const schedules: { queue: string; cron: string; options: JobScheduleOptions }[] 
     },
   ],
   exports: [
+    CONFIG,
     TenantTransactionRunner,
     SystemTransactionRunner,
     OutboxWriter,

@@ -52,9 +52,11 @@ const SYSTEM_ACTOR: EventActor = { type: 'system', id: 'task-service' };
  *    `space.updated.v1` (field `ownerUserId`, actor `{ type: 'system', id: 'task-service' }`); while
  *    the copy does not hold that owner, it marks the spaces awaiting one, seen by nobody, without
  *    event, and `HandOverAwaitingSpaces` gives them to the owner once the copy learns it; a deleted
- *    space (a tombstone) is handed over all the same, without event until it comes back;
+ *    space (a tombstone) is handed over all the same, without `space.updated.v1` until it comes
+ *    back (`announcesChanges`);
  * 4. a grant the owner of the organization held on a space handed over to them, or on one of its
- *    lists, is removed with its access event (`OwnerGrantsRemover`): an owner holds no grant.
+ *    lists, is removed with its access event, a tombstone's included (`OwnerGrantsRemover`): an
+ *    owner holds no grant.
  *
  * The spaces of a batch, their versions and their events commit together, or the batch rolls back
  * alone. A handed-over or awaiting space leaves the filter of step 1, so the next call goes on with
@@ -164,8 +166,8 @@ export class HandOverPrivateSpaces {
         const { space, changed }: SpaceUpdate = stored.handOver(ownerUserId);
         if (changed.length > 0) {
           await store.spaces.update(space);
-          // A tombstone changes owner all the same, and emits nothing until it comes back.
-          if (announcesChanges(space.snapshot)) {
+          // A tombstone changes owner all the same, without its content event until it comes back.
+          if (announcesChanges('content', space.snapshot)) {
             await store.events.spaceUpdated(space, changed, SYSTEM_ACTOR);
           }
           handed.push({ space, formerOwnerUserId: input.formerOwnerUserId });

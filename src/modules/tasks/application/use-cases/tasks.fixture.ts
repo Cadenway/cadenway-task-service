@@ -56,6 +56,8 @@ import type { MyTaskState } from '../models/user/my-task-state.model.js';
 import type { ArchivedLists } from '../models/placement/archived-lists.model.js';
 import type { KeyAllocation } from '../models/placement/key-allocation.model.js';
 import type { ListPlacement } from '../models/placement/list-placement.model.js';
+import type { DeletedListLock } from '../models/placement/deleted-list-lock.model.js';
+import type { LockedDeletedList } from '../models/placement/locked-deleted-list.model.js';
 import type { ListRestoration } from '../models/placement/list-restoration.model.js';
 import type { DeletedListPurge } from '../models/placement/deleted-list-purge.model.js';
 import type { DeletedListRestoration } from '../models/placement/deleted-list-restoration.model.js';
@@ -74,7 +76,9 @@ import type { TrashCandidateRoot } from '../models/trash/trash-candidate-root.mo
 import type { TrashEntryDraft } from '../models/trash/trash-entry-draft.model.js';
 import type { TrashEntryRecord } from '../models/trash/trash-entry-record.model.js';
 import type { TrashPosition } from '../models/trash/trash-position.model.js';
+import type { TrashTaskWrite } from '../models/trash/trash-task-write.model.js';
 import type { TrashTreeNode } from '../models/trash/trash-tree-node.model.js';
+import type { TrashWrites } from '../ports/outbound/feature/trash/trash-writes.port.js';
 import type { MemberDirectory } from '../ports/outbound/members/membership/member-directory.port.js';
 import type { ArchiveReader } from '../ports/outbound/persistence/archive/archive-reader.port.js';
 import type { AssignedTaskReader } from '../ports/outbound/persistence/assignee/assigned-task-reader.port.js';
@@ -215,6 +219,12 @@ export interface StoredTrashEntry extends TrashEntryDraft {
   readonly purgeRequest: TrashHandOver | null;
   // #endregion
 }
+
+/** The switch of the writes of the trash, on: "Supprimer la tâche" and "Vider la corbeille" serve. */
+export const TRASH_WRITES_ON: TrashWrites = { isEnabled: (): boolean => true };
+
+/** The switch of the writes of the trash, off: they answer as a route the service does not have. */
+export const TRASH_WRITES_OFF: TrashWrites = { isEnabled: (): boolean => false };
 
 /**
  * Whether a task is live, the condition of `liveTask`: in no archive and not in the trash.
@@ -1002,6 +1012,61 @@ export class InMemorySpaceDirectory implements SpaceDirectory {
       this.liveSpaces.delete(list.spaceId);
     }
     return Promise.resolve({ outcome: 'purged', spacePurged });
+  }
+
+  /**
+   * Method lockDeletedLists
+   *
+   * @description
+   * Locks several deleted lists as the spaces module does, in one call: for each distinct list, in
+   * the order first given, `deleted` when the list or its space is deleted, `live` or `not-found`
+   * otherwise. More than 100 lists is a defect of the caller.
+   *
+   * @param {string} organizationId - The organization.
+   * @param {readonly string[]} listIds - The lists.
+   * @returns {Promise<readonly DeletedListLock[]>} What the lock found for each list.
+   */
+  public lockDeletedLists(
+    organizationId: string,
+    listIds: readonly string[],
+  ): Promise<readonly DeletedListLock[]> {
+    this.trace.push('spaces.lockDeletedLists');
+    if (listIds.length > 100) {
+      return Promise.reject(new Error('At most 100 lists are locked at once.'));
+    }
+    return Promise.resolve(
+      [...new Set(listIds)].map((listId: string): DeletedListLock => {
+        const list: PlacedList | undefined = this.lists.get(listId);
+        if (organizationId !== ATELIER_NORD || list === undefined) {
+          return { listId, outcome: 'not-found' };
+        }
+        const deleted: boolean =
+          this.deletedLists.has(listId) || this.deletedSpaces.has(list.spaceId);
+        return { listId, outcome: deleted ? 'deleted' : 'live' };
+      }),
+    );
+  }
+
+  /**
+   * Method lockDeletedList
+   *
+   * @description
+   * Locks a deleted list as the spaces module does: `deleted` when the list or its space is
+   * deleted (its space, then the list `FOR UPDATE`), `live` for a live list and `not-found` for an
+   * unknown or erased list, neither of them locked.
+   *
+   * @param {string} organizationId - The organization.
+   * @param {string} listId - The list.
+   * @returns {Promise<LockedDeletedList>} Whether the list is deleted under its lock, live or gone.
+   */
+  public lockDeletedList(organizationId: string, listId: string): Promise<LockedDeletedList> {
+    this.trace.push('spaces.lockDeletedList');
+    const list: PlacedList | undefined = this.lists.get(listId);
+    if (organizationId !== ATELIER_NORD || list === undefined) {
+      return Promise.resolve({ outcome: 'not-found' });
+    }
+    const deleted: boolean = this.deletedLists.has(listId) || this.deletedSpaces.has(list.spaceId);
+    return Promise.resolve(deleted ? { outcome: 'deleted' } : { outcome: 'live' });
   }
 
   /**
@@ -2632,6 +2697,41 @@ export class InMemoryTasks implements TasksUnitOfWork {
         }
         return Promise.resolve();
       },
+      erasePart: (
+        organizationId: string,
+        entryId: string,
+        taskIds: readonly string[],
+        handOver: TrashHandOver,
+      ): Promise<void> => {
+        this.trace.push('trash.erasePart');
+        const entry: StoredTrashEntry | undefined = entries.get(entryId);
+        if (entry?.organizationId !== organizationId) {
+          return Promise.reject(new Error(`The trash entry ${entryId} vanished.`));
+        }
+        const erased: ReadonlySet<string> = new Set(taskIds);
+        for (const [id, activityEntry] of activity) {
+          if (activityEntry.organizationId === organizationId && erased.has(activityEntry.taskId)) {
+            activity.delete(id);
+          }
+        }
+        for (const row of inOrganization(organizationId)) {
+          if (erased.has(row.id)) {
+            if (row.trash?.entryId !== entryId) {
+              return Promise.reject(new Error(`The task ${row.id} left the entry ${entryId}.`));
+            }
+            tasks.delete(row.id);
+          } else if (row.parentId !== null && erased.has(row.parentId)) {
+            // Detached without a new version, as the statement does.
+            tasks.set(row.id, { ...row, parentId: null, parentKey: null });
+          }
+        }
+        entries.set(entryId, {
+          ...entry,
+          taskCount: entry.taskCount - taskIds.length,
+          purgeRequest: entry.purgeRequest ?? handOver,
+        });
+        return Promise.resolve();
+      },
       remove: (organizationId: string, entryId: string): Promise<void> => {
         this.trace.push('trash.remove');
         if (entries.get(entryId)?.organizationId !== organizationId) {
@@ -2693,7 +2793,9 @@ export class InMemoryTasks implements TasksUnitOfWork {
             (candidate: TaskState): boolean => candidate.id === taskId,
           );
           return Promise.resolve(
-            row === undefined ? null : { live: isLiveState(row), listId: row.listId },
+            row === undefined
+              ? null
+              : { live: isLiveState(row), inTrash: row.trash !== null, listId: row.listId },
           );
         },
         insert: (draft: TaskDraft, key: TaskKey): Promise<Task> => {
@@ -2842,11 +2944,12 @@ export class InMemoryTasks implements TasksUnitOfWork {
         writeTrash: (
           _organizationId: string,
           entryIds: readonly string[],
-          updated: readonly Task[],
+          writes: readonly TrashTaskWrite[],
         ): Promise<void> => {
           this.trace.push('tasks.writeTrash');
-          for (const task of updated) {
-            if (tasks.get(task.snapshot.id)?.version !== task.snapshot.version - 1) {
+          for (const { task, versionBefore } of writes) {
+            // Guarded by the version under the lock, as the statement is.
+            if (tasks.get(task.snapshot.id)?.version !== versionBefore) {
               return Promise.reject(
                 new Error(
                   `A task of the trash entries ${entryIds.join(', ')} changed since it was locked.`,
@@ -2854,7 +2957,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
               );
             }
           }
-          for (const task of updated) {
+          for (const { task } of writes) {
             // The statement writes neither the checklist nor the collections, which the rows keep.
             tasks.set(task.snapshot.id, {
               ...task.snapshot,
@@ -2951,6 +3054,82 @@ export class InMemoryTasks implements TasksUnitOfWork {
                 .map((row: TaskState): string => row.listId)
                 .filter((listId: string): boolean => listIds.includes(listId)),
             ),
+          );
+        },
+        listsWithUntrashedTasks: (
+          organizationId: string,
+          listIds: readonly string[],
+        ): Promise<ReadonlySet<string>> => {
+          this.trace.push('tasks.listsWithUntrashedTasks');
+          return Promise.resolve(
+            new Set(
+              inOrganization(organizationId)
+                .filter((row: TaskState): boolean => row.trash === null)
+                .map((row: TaskState): string => row.listId)
+                .filter((listId: string): boolean => listIds.includes(listId)),
+            ),
+          );
+        },
+        shareLocationByKey: (
+          organizationId: string,
+          key: TaskKey,
+        ): Promise<TaskLocation | null> => {
+          // The task of the key is locked `FOR SHARE` whatever it is; one in the trash answers null.
+          this.trace.push('tasks.shareLocationByKey:share');
+          const row: TaskState | undefined = inOrganization(organizationId).find(
+            (candidate: TaskState): boolean => candidate.key.equals(key),
+          );
+          return Promise.resolve(row?.trash !== null ? null : locationOf(row));
+        },
+        entryTree: (
+          organizationId: string,
+          entryId: string,
+          rootTaskId: string,
+        ): Promise<readonly TrashTreeNode[]> => {
+          this.trace.push('tasks.entryTree');
+          const inEntry: TaskState[] = inOrganization(organizationId).filter(
+            (row: TaskState): boolean => row.trash?.entryId === entryId,
+          );
+          const nodes: TrashTreeNode[] = [];
+          let level: readonly TaskState[] = inEntry.filter(
+            (row: TaskState): boolean => row.id === rootTaskId,
+          );
+          for (let depth: number = 0; level.length > 0; depth += 1) {
+            nodes.push(
+              ...level.map((row: TaskState): TrashTreeNode => ({
+                id: row.id,
+                rootId: rootTaskId,
+                depth,
+              })),
+            );
+            const parentIds: readonly string[] = level.map((row: TaskState): string => row.id);
+            level = inEntry.filter(
+              (row: TaskState): boolean =>
+                row.parentId !== null && parentIds.includes(row.parentId),
+            );
+          }
+          return Promise.resolve(
+            nodes.sort(
+              (left: TrashTreeNode, right: TrashTreeNode): number =>
+                left.depth - right.depth || compareText(left.id, right.id),
+            ),
+          );
+        },
+        lockEntryTasks: (
+          organizationId: string,
+          entryId: string,
+          taskIds: readonly string[],
+        ): Promise<readonly Task[]> => {
+          this.trace.push('tasks.lockEntryTasks:update');
+          return Promise.resolve(
+            inOrganization(organizationId)
+              .filter(
+                (row: TaskState): boolean =>
+                  row.trash?.entryId === entryId && taskIds.includes(row.id),
+              )
+              .sort((left: TaskState, right: TaskState): number => compareText(left.id, right.id))
+              // The tasks are locked without their checklists, as the statement loads them.
+              .map((row: TaskState): Task => Task.restore({ ...row, checklist: [] })),
           );
         },
       },

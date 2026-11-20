@@ -1,7 +1,9 @@
 import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
 import type { PagePosition } from '../../../../models/page/page-position.model.js';
+import type { TaskLocation } from '../../../../projections/task/task-location.projection.js';
 import type { TaskStanding } from '../../../../models/task/task-standing.model.js';
 import type { TrashCandidateRoot } from '../../../../models/trash/trash-candidate-root.model.js';
+import type { TrashTaskWrite } from '../../../../models/trash/trash-task-write.model.js';
 import type { TrashTreeNode } from '../../../../models/trash/trash-tree-node.model.js';
 
 import type { SubtreeShape } from '../../../../../domain/value-objects/subtask/subtree-shape.value-object.js';
@@ -60,8 +62,8 @@ export interface TaskRepository {
    *
    * @description
    * Locks one task `FOR NO KEY UPDATE` and reads only whether it is live (in no archive and not in
-   * the trash) and its list, in one statement, without its collections: the parent of the root of
-   * an archive or a trash entry being restored.
+   * the trash), whether it is in the trash, and its list, in one statement, without its
+   * collections: the parent of the root of an archive or a trash entry being restored.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} taskId - The task.
@@ -300,21 +302,23 @@ export interface TaskRepository {
    *
    * @description
    * Writes the trash or the restoration of tasks the caller holds locked, in one set-based
-   * statement: the entry (`null` for a restoration), the parent (`null` for a root detached by a
-   * restoration), the version and the instant of each, guarded by the version before the change.
-   * Nothing else of the task changes (an archived task keeps its archive in the trash), so its
-   * archive, assignees, labels and checklist are not written.
+   * statement: the entry (`null` for a restoration), the archive as the task holds it (kept by the
+   * trash; renewed for an archived member of a restored entry, archived again as of the
+   * restoration), the parent (`null` for a root detached by a restoration), the version and the
+   * instant of each, guarded by the version each had under its lock (one version before for a
+   * trash or a restoration, two for a member restored then archived again). Its assignees, labels
+   * and checklist are not written.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} entryIds - The entries made or restored, which a failure names.
-   * @param {readonly Task[]} updated - The tasks after `trash` or `restoreFromTrash`, each one
-   * version after the one read under its lock.
+   * @param {readonly TrashTaskWrite[]} writes - The tasks after the change, each with the version
+   * read under its lock.
    * @returns {Promise<void>} Resolves once written.
    */
   writeTrash(
     organizationId: string,
     entryIds: readonly string[],
-    updated: readonly Task[],
+    writes: readonly TrashTaskWrite[],
   ): Promise<void>;
 
   /**
@@ -351,5 +355,79 @@ export interface TaskRepository {
    * @returns {Promise<ReadonlySet<string>>} The lists that still hold a task.
    */
   listsWithTasks(organizationId: string, listIds: readonly string[]): Promise<ReadonlySet<string>>;
+
+  /**
+   * Method listsWithUntrashedTasks
+   *
+   * @description
+   * Tells which of some lists still hold a task out of the trash (live or archived), in one
+   * statement through `tasks_list_created_index`, without a lock: in a deleted list, the tasks its
+   * deletion job has not moved yet.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {readonly string[]} listIds - The lists.
+   * @returns {Promise<ReadonlySet<string>>} The lists that still hold a task out of the trash.
+   */
+  listsWithUntrashedTasks(
+    organizationId: string,
+    listIds: readonly string[],
+  ): Promise<ReadonlySet<string>>;
+
+  /**
+   * Method shareLocationByKey
+   *
+   * @description
+   * Locks the task of a key `FOR SHARE` and reads where it is, in one statement through
+   * `tasks_key_unique` whatever the outcome (a task in the trash is locked too and answers
+   * `null`), without its collections: a change of another module that must not commit against a
+   * task a concurrent deletion moves to the trash (which locks it `FOR NO KEY UPDATE`).
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {TaskKey} key - The key.
+   * @returns {Promise<TaskLocation | null>} The task, or `null` when the organization has none or
+   * it is in the trash.
+   * @throws {Error} When the stored status is outside the status keys.
+   */
+  shareLocationByKey(organizationId: string, key: TaskKey): Promise<TaskLocation | null>;
+
+  /**
+   * Method entryTree
+   *
+   * @description
+   * Reads, without a lock, in one recursive statement, the tasks of a trash entry from its stored
+   * parent links: its root, then every task of the entry under it, at any depth (PostgreSQL
+   * detects a cycle of parent links, a defect), each with its depth under the root. The purge
+   * erases an entry too large for one batch from its deepest tasks.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} entryId - The entry.
+   * @param {string} rootTaskId - Its root.
+   * @returns {Promise<readonly TrashTreeNode[]>} The tasks of the entry, by depth and id.
+   * @throws {Error} When the tree holds a cycle of parent links: a defect.
+   */
+  entryTree(
+    organizationId: string,
+    entryId: string,
+    rootTaskId: string,
+  ): Promise<readonly TrashTreeNode[]>;
+
+  /**
+   * Method lockEntryTasks
+   *
+   * @description
+   * Locks some tasks of one trash entry `FOR UPDATE` in one statement ordered by id, and reads them
+   * after the lock, without their checklists (an erasure never emits them): the part of an entry
+   * one batch of the purge erases.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} entryId - The entry.
+   * @param {readonly string[]} taskIds - The tasks.
+   * @returns {Promise<readonly Task[]>} Those of them still in the entry, in ascending id order.
+   */
+  lockEntryTasks(
+    organizationId: string,
+    entryId: string,
+    taskIds: readonly string[],
+  ): Promise<readonly Task[]>;
   // #endregion
 }

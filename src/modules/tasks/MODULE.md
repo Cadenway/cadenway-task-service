@@ -42,10 +42,11 @@ role of the actor on them, come from the public entries of the spaces module (`F
 restoration of a task restores its archived list through `RestoreArchivedList`, in the transaction
 of the restoration. The trash reads the lists through `ListTrashLists` and `FindTrashList` (the
 role as if the list and its space were not deleted, every role: the module keeps the lists on
-which its own `canWriteTasksOf` accepts it), holds a list with `HoldList`, brings a
-deleted list and space back with `RestoreDeletedList` and erases a tombstone with
-`PurgeDeletedList`. Spaces owns the archive and the deletion of a list; this module never writes a
-list.
+which its own `canWriteTasksOf` accepts it), holds a list with `HoldList`, locks a deleted list
+with `LockDeletedList` (a restoration decides under it) and several with `LockDeletedLists` (an
+erasure decides under it), brings a deleted list and
+space back with `RestoreDeletedList` and erases a tombstone with `PurgeDeletedList`. Spaces owns
+the archive and the deletion of a list; this module never writes a list.
 
 ## Public entry points
 
@@ -68,7 +69,13 @@ key, and `{ organizationId, taskIds }` (100 ids at most, more is a defect that t
 trash is not found by either (`null`, left out), so the requests of its tasks are hidden at once.
 Neither checks any visibility: the caller decides what the actor may learn. Both join the transaction of the
 caller (`TasksUnitOfWork.run`, read-only or not), read one statement without the collections of
-the task, take no lock and write nothing.
+the task, take no lock and write nothing. `FindTaskReference` also takes `lock: 'none' | 'share'`
+(`none` by default): with `share`, the caller's transaction must be able to lock, and the task of
+the key is locked `FOR SHARE` until its commit, in the same statement whatever the outcome
+(unknown, in the trash or found; a task in the trash is still `null`), so a concurrent deletion of
+the task ("Supprimer la tâche" or a deletion batch, `FOR NO KEY UPDATE`) either committed first
+and the request finds nothing, or waits for the request, whose clean-up then drops it. A
+malformed key reads nothing in either mode.
 
 `TasksModule` also exports the `UnassignRemovedMember` provider
 (`{ organizationId, userId, afterTaskId }` to `{ outcome: 'none-left' }`,
@@ -82,13 +89,18 @@ handed over, from `afterTaskId: null`, then after each `lastTaskId`, until `none
 tenant transaction of their caller (`TasksUnitOfWork.run`) or open their own:
 
 - `TrashDeletedListTasks` (`{ organizationId, listId, after }` to `{ outcome: 'list-live' }`,
+  `{ outcome: 'list-gone' }`, `{ outcome: 'rescan' }`,
   `{ outcome: 'none-left', listPurged, spacePurged }` or
   `{ outcome: 'trashed', entries, taskIds, last }`): one batch of the move of the tasks of a
-  deleted list to the trash, from `after: null`, then after each `last`, until `list-live` or
-  `none-left`; `taskIds` (1,150 live tasks at most, plus the archived subtasks under them, which
-  the product does not limit) are for the requests the caller drops in the same transaction.
+  deleted list to the trash, from `after: null`, then after each `last`, until `list-live` (a list
+  restored after its job), `list-gone` (an unknown or erased list) or `none-left`; on `rescan`
+  (no root after the position while the list still holds tasks out of the trash) the caller starts
+  the list again from `after: null`; `taskIds` (1,150 live tasks at most, plus the archived
+  subtasks under them, which the product does not limit) are for the requests the caller drops in
+  the same transaction.
 - `PurgeTrashBatch` (`{ organizationId }` to `{ outcome: 'none-left' }` or
-  `{ outcome: 'purged', entries, tasks, listsPurged, spacesPurged }`): one batch of the purge.
+  `{ outcome: 'purged', entries, tasks, listsPurged, spacesPurged }`): one batch of the purge,
+  999 tasks at most, or a part of 500 tasks of an entry too large for one batch (`entries: 0`).
 - `ListOrganizationsWithTrashToPurge` (`{ after, limit }`, 1 to 1,000, to
   `{ organizationIds }`): the organizations holding an entry due or handed over, by id; the only
   cross-organization read of the module, in a read-only system transaction of its own
@@ -157,14 +169,17 @@ it).
   `task_app` (`55P03`, `500`). It also builds `list_grants_space_index` (a `SHARE` lock on `list_grants`:
   grant writes wait) and the extended statistics of `trash_entries`. Measured
   (`tests/trash-queries.int-spec.ts`, its 25 statements under fresh names in a rolled-back
-  transaction of the migrator, 211,912 tasks, 5,134 lists, 408 spaces, 40,116 list grants): 101 ms
-  in all, of which 24.9 ms for the foreign key scan of `tasks`, 20.4 ms for the build of
-  `tasks_trash_entry_index`, 14.8 ms for `list_grants_space_index`, about 1 ms for each CHECK of
-  `lists` and `spaces`, under 1 ms for each `ADD COLUMN`; `tasks` is held about 50 ms, and every
+  transaction of the migrator, 231,912 tasks, 5,134 lists, 408 spaces, 40,116 list grants): 113 ms
+  in all, of which 28.2 ms for the foreign key scan of `tasks`, 23.9 ms for the build of
+  `tasks_trash_entry_index`, 16.0 ms for `list_grants_space_index`, about 1 ms for each CHECK of
+  `lists` and `spaces`, under 1 ms for each `ADD COLUMN`; `tasks` is held about 60 ms, and every
   lock until the commit. The scans grow with the whole tables (every organization).
-  Rollback: none once it ran. A release before it reads neither the trash nor the tombstones, so
-  it would show the tasks in the trash and the deleted lists and spaces as live: roll forward with
-  a fix instead. A later contract migration that drops what 0007 added never re-adds
+  Rollback: a release before 0007 reads neither the trash nor the tombstones, so it would show the
+  tasks in the trash and the deleted lists and spaces as live. That is why this release creates
+  neither while `TRASH_WRITES_ENABLED` is off (its default; `docs/development.md` "Trash writes"):
+  until the switch is turned on in an environment, the release before stays a safe rollback target
+  there; once it is on, the minimum rollback target is this release (turn the switch off and keep
+  it, or roll forward). A later contract migration that drops what 0007 added never re-adds
   `space_prefixes_space_fkey`: the prefix rows outlive the spaces erased since.
 
 - `tasks.archived_at` (`timestamptz(3)`), `archived_by_type`, `archived_by_id` and
@@ -427,10 +442,24 @@ description, the checklist nor, outside `task.status-changed.v1`, the cancel not
   member still emits `task.updated.v1` for a task of a deleted list that the deletion job has not
   moved yet (the task is not in the trash), after `list.deleted.v1`; its `task.trashed.v1` follows
   when the job takes it.
+- An archived task restored from the trash comes back archived as of the restoration, by the
+  person who restored it: it is restored at its next version V (`task.restored.v1` at V), then
+  archived again in the same transaction (the instant of the restoration as `archivedAt`, the
+  restoring user as `archivedBy`, the same root of its archive), stored at V+1, with its
+  `task.archived.v1` at V+1 right after its `task.restored.v1` (`occurredAt` its new `archivedAt`,
+  the restoring user as actor, the key of the root of its archive as `rootKey`; root first, in the
+  order of the entry). A consumer that follows the contract ignores a version it already applied,
+  so a second event at the same version would not hide it again; an archive lies wholly inside an
+  entry, so every member of an archive changes together.
 - To report to cadenway-api-contracts: `task.restored.v1` has no archive state, and an archived
   member of a restored entry comes back archived (in its archive). The service keeps one
-  `task.restored.v1` per task, as the contract says; proposal: an additive nullable `archivedAt` /
-  `archivedBy` on `task.restored.v1`, so a consumer knows the task is not live again.
+  `task.restored.v1` per task, as the contract says, followed by the `task.archived.v1` above (one
+  version on);
+  proposal: an additive nullable `archivedAt` / `archivedBy` on `task.restored.v1`, so a consumer
+  knows the task is not live again without the second event.
+- A part of an entry too large for one batch of the purge emits one `task.purged.v1` per task it
+  erases, in the order they are erased (the deepest first, then by id), each with the entry, the
+  key of its root and its parent as stored before any detachment; the root goes with the last part.
 
 ## Events consumed
 
@@ -588,8 +617,18 @@ changes the assignees.
   depth limit (a limit an editor could reach would block a deletion for good: moves and
   attachments count the live height only, so archived chains can deepen). It stays in one
   organization and one list, and PostgreSQL detects a cycle of parent links
-  (`CYCLE id SET is_cycle USING path`), a defect that throws. A batch of the deletion job or of
-  the purge still stops adding roots or entries once it holds 500 tasks or more.
+  (`CYCLE id SET is_cycle USING path`), a defect that throws. A batch of the deletion job still
+  stops adding roots once it holds 500 tasks or more. A batch of the purge erases whole entries of
+  500 tasks or fewer while it holds fewer than 500 tasks (999 at most), and an entry larger than
+  that, when it comes first, in parts of exactly 500 tasks, the deepest first (children before
+  parents, from the stored parent links read by one recursive statement with cycle detection):
+  the entry row stays with its `task_count` lowered and is handed to the purge from the first part
+  on (as task-service for an entry due; a hand-over keeps its requester), so it no longer lists,
+  restores or erases by a person and its remaining tasks answer `404 task.not-found`; a later
+  batch goes on with it and erases it whole once 500 tasks or fewer are left. Known limit, to
+  report: "Supprimer la tâche", a deletion batch, "Supprimer définitivement" by a person and a
+  restoration still move or erase an entry in one transaction, whatever the archived subtasks it
+  holds.
 - A task in the trash is left out of every collection and count, the subtask reads included,
   through `liveTask` (`archived_at is null and trash_entry_id is null`) and the subtask rule
   (`sameArchiveAsParent` also leaves out the subtasks in the trash); `FindTaskReference(s)` and
@@ -598,23 +637,42 @@ changes the assignees.
   (`showsParent`). It refuses every change but the removal of a member, which unassigns it at its
   next version. The tasks of a deleted list not in the trash yet answer `404 task.not-found`.
 - A restoration brings the whole entry back to its list, each task with its archive state as it
-  was (an archived task comes back archived, in its archive): a live root keeps its parent only
+  was (an archived task comes back archived, in its archive, as of the restoration and by the
+  restoring user, two versions on): a live root keeps its parent only
   when the parent takes it back (`takesRestoredRoot`: live, in its list, fewer than 25 live
   subtasks, its level plus the height of the live tasks of the entry 3 at most) and is detached
-  otherwise; an archived root (top-level by construction) has no parent to keep and is never
-  detached. A root deleted as a subtask whose parent was erased meanwhile (the erasure set its
-  parent to `null`) answers `detached: true` too. The archived tasks counting towards neither limit, the 25-subtask and 3-level limits
-  stay true. A deleted list comes back at the end of its space and a deleted space at the end of
-  the sidebar (spaces); an archived list stays archived; the entry row is deleted. The answer is
-  the root as it reads, archived for an archived root.
+  otherwise; an archived root keeps its parent only when the parent is out of the trash and in its
+  list (live or archived), and is detached otherwise, keeping its archive, so `task.restored.v1`
+  and every answer agree. A parent in the trash detaches the root without being locked. A root
+  deleted as a subtask whose parent was erased meanwhile (the erasure set its parent to `null`)
+  answers `detached: true` too. The archived tasks counting towards neither limit, the 25-subtask
+  and 3-level limits stay true. A deleted list comes back at the end of its space and a deleted
+  space at the end of the sidebar (spaces); an archived list stays archived; the entry row is
+  deleted. The answer is the root as it reads, archived for an archived root.
+- An entry of a deleted list whose deletion job has not moved every task of the list yet cannot be
+  restored: a list that still holds a task out of the trash answers `404 trash-entry.not-found`
+  (the only refusal the contract declares for a restoration), writing nothing. Those tasks are the
+  pending work of the job (no task enters or leaves a deleted list: creations and moves hold their
+  lists, and its tasks are invisible), and the entry is restorable once the job finished, within
+  minutes. The check runs twice: under `LockDeletedList` for a list read deleted (an early
+  refusal), and again, when `RestoreDeletedList` answers `listRestored`, under the
+  `FOR NO KEY UPDATE` it then holds on the list (which conflicts with the `FOR SHARE` of a
+  deletion batch and of `HoldList`): `LockDeletedList` takes no lock on a list it reads live, so a
+  deletion that commits between the two reads is seen only by the second, whose refusal rolls back
+  the restored list, the restored space and their events. Only with both checks does a
+  restoration never expose a task its deletion job has not moved. So the job's `list-live` exit
+  only follows a list restored after its job finished, which leaves nothing behind.
 - An erasure deletes the activity entries, checklist items, assignees, labels and tasks of its
   entries and the entries, and detaches (no version, no event) the tasks outside them that hung
   from one of their tasks: tasks of other entries, and archived tasks out of the trash left in
   another list when their live parent moved away (a deletion takes every subtask of its list, so
   none is left in the list of the entry); a list no task row references any more is handed to
-  spaces, which erases a deleted one and its deleted space with its last list. "Vider la
-  corbeille" hands every entry the actor may restore to the purge job at
-  once: they no longer list, restore or erase by a person, and their tasks answer
+  spaces, which erases a deleted one and its deleted space with its last list, decided under the
+  locks of the lists (`LockDeletedLists`, one call for the lists of the erased entries, taken
+  after the tasks are deleted, the spaces in `(created_at, id)` order, then the lists in ascending id), so the last two
+  erasures of one list serialize on it and the second erases the tombstone. "Vider la corbeille"
+  hands every entry the actor may restore to the purge job at once: they no longer list, restore
+  or erase by a person, and their tasks answer
   `task.not-found`. The daily purge erases the entries due (`trashed_at` at or before the
   transaction instant less 30 days) and the entries handed over.
 - The page of the trash lists the entries the actor may restore still in the trash, the most
@@ -625,9 +683,25 @@ changes the assignees.
   the list out of the trash that reads as top-level (no parent, or a parent in another list or in
   the trash), live or archived, with its descendants as above, by the actor of the deletion: an
   archived top-level task makes its own entry, an archived subtask goes with its top-level
-  ancestor. A creation of a
-  top-level task and a move to another list hold the target list (`HoldList`) and answer a list
-  deleted meanwhile as unseen (`404 list.not-found`, `422 task.list-invalid`).
+  ancestor. A creation of a top-level task and a move to another list hold the target list
+  (`HoldList`) and answer a list deleted meanwhile as unseen (`404 list.not-found`,
+  `422 task.list-invalid`); a move to another list and an attachment to a parent in another list
+  also hold the list the task leaves (two lists in ascending list id, the order of every writer
+  that locks several lists), and answer it deleted meanwhile as for any task of a deleted list
+  (`404 task.not-found`), so no task leaves a deleted list (a move leaves its archived
+  subtasks behind, which the job would otherwise miss). A batch that finds no root after its
+  position while the list still holds a task out of the trash answers `rescan` (a safety net).
+- The writes of the trash are behind a switch, `TRASH_WRITES_ENABLED` (`src/config/app-config.ts`,
+  `false` by default; the `TrashWrites` port, bound in composition from `CONFIG`). The release
+  before 0007 ignores `trash_entry_id` and `deleted_at`, so no trash entry and no tombstone may
+  exist while a rollback to it is possible (`.claude/rules/migrations.md`). While it is `false`,
+  "Supprimer la tâche" (`trashTaskInternal`) and "Vider la corbeille" (`emptyTrashInternal`) check
+  it first, before the membership, and answer exactly as an unknown route of the kit does: `404`,
+  `http.not-found`, title `Not Found`, detail `Cannot POST <url>` (after the internal-token guard
+  and the validation of the request); the deletions of a list and of a space are switched by the
+  spaces module. The restoration and the erasure of an entry, the page of the trash and the batches
+  of the jobs are always served: they only act on what exists, so with the switch turned off again
+  after use the trash is still erased on time and the tasks of deleted lists still reach it.
 - Labels: one per label key, whatever the case, in the order of the first 128 code points of the
   folded key then the key (code point order); the spelling is the first in code point order among
   the visible tasks, so a list the actor has no role on leaks none. A search that folds to nothing
@@ -716,15 +790,32 @@ The trash keeps the global order memberships `FOR SHARE`, trash entry rows, task
   entry) and enqueues its job, with one outbox row per task.
 - A restoration locks the membership, the entry `FOR UPDATE` (checked again: there, not handed
   over, same list), every task of the entry `FOR NO KEY UPDATE` in one statement ordered by id
-  (`tasks_trash_entry_index`, no checklists), the parent of a live root by `lockStanding`, then the
-  space and the list (`RestoreDeletedList`, always called); one bulk update, one delete of the
-  entry. Two restorations, or a restoration and an erasure, of one entry serialize on its row: the
-  second finds it gone and answers `trash-entry-not-found`; a job skips it.
+  (`tasks_trash_entry_index`, no checklists), then reads the parent of the root without a lock and
+  locks it by `lockStanding` only when it is out of the trash (checked again under the lock), then
+  the list (`LockDeletedList`: for a deleted list its space `FOR NO KEY UPDATE`, then the list
+  `FOR UPDATE`, which waits for a deletion batch holding it `FOR SHARE`; nothing for a live list),
+  checks under it that a deleted list holds no task out of the trash, then
+  `RestoreDeletedList`, always called, and, when it brought the list back, checks again under the
+  `FOR NO KEY UPDATE` it holds (a list read live had no lock); one bulk update guarded by the
+  version of each task under its lock (two versions on for an archived member, restored then
+  archived again), one delete of the entry. Two
+  restorations, or a restoration and an erasure, of one entry serialize on its row: the second
+  finds it gone and answers `trash-entry-not-found`; a job skips it. Rows of two entries (a
+  parent in one, its child the root of another): a restoration locks its own entry's tasks and
+  never a parent in the trash; an erasure locks its entry's tasks, then (by its detachment,
+  `parent_id = null where parent_id = any(...)`) the children outside it, a condition PostgreSQL
+  checks again on a row it waited for, so a root restored and detached meanwhile is not touched
+  again. Neither waits for the other in a cycle.
 - An erasure of one entry by a person locks the entry `FOR UPDATE` and its tasks `FOR UPDATE`
   ordered by id in one statement, then runs seven set-based statements whatever its size (four for
   the collections and the activity, the detachment, the tasks, the entry), the outbox rows and,
-  per list left without a task, `PurgeDeletedList` (list then space `FOR UPDATE`, safe: a
-  restoration needs an entry of the list).
+  once the tasks are deleted, one `LockDeletedLists` for the lists of its entries (the spaces of
+  the deleted ones `FOR NO KEY UPDATE` in `(created_at, id)` order, then those lists `FOR UPDATE` in
+  ascending list id; nothing for a live or erased list), one new read of the task rows left in the
+  lists still deleted and, for each left without a task, `PurgeDeletedList`. Two erasures of the last
+  two entries of one list serialize on its row; the second reads the first one's deletes and
+  erases the tombstone. Two deletion batches that both find the list empty may both call
+  `PurgeDeletedList`, which answers `not-found` to the second (idempotent).
 - "Vider la corbeille" updates the entry rows of the caller in one statement (O(entries they may
   restore)) and no task, and enqueues one `task.purge-trash`.
 - A batch of the deletion job (`TrashDeletedListTasks`) reads up to 50 candidate roots in a range
@@ -733,19 +824,27 @@ The trash keeps the global order memberships `FOR SHARE`, trash entry rows, task
   trees in one statement ordered by id (`FOR NO KEY UPDATE`, no checklists), reads the trees again
   under the locks (a task that joined meanwhile is locked in one more statement), checks each root
   again (in the list, out of the trash, read as top-level), then holds the list `FOR SHARE` (tasks,
-  then lists): a list no longer deleted writes nothing (`list-live`), and the tasks the job had not
-  moved stay in the restored list (accepted race). With no candidate left, the batch locks no task:
-  it holds the list `FOR SHARE` first and answers `list-live` unless it is still deleted, so the
-  check of the tasks left and the erasure of the tombstone (`PurgeDeletedList`, the list then its
-  space `FOR UPDATE`) run under that lock. A batch of the purge (`PurgeTrashBatch`) locks up to 20
-  entries `FOR UPDATE SKIP LOCKED` (handed over first, else due, oldest first), takes
-  them in that order until their stored `task_count` reaches 500 or more, and locks the tasks of
-  all the entries taken in one statement
+  then lists): a list no longer deleted writes nothing (`list-live`, or `list-gone` for an erased
+  one); a restoration of an entry of the list waits for the job to finish, so only a list restored
+  after its job is seen live. With no candidate left, the batch locks no task: it holds the list
+  `FOR SHARE` first and answers `list-live` or `list-gone` unless it is still deleted, `rescan`
+  when the list still holds a task out of the trash, so the checks of the tasks left and the
+  erasure of the tombstone (`PurgeDeletedList`, the list then its space `FOR UPDATE`) run under
+  that lock. A batch of the purge (`PurgeTrashBatch`) locks up to 20 entries
+  `FOR UPDATE SKIP LOCKED` (handed over first, else due, oldest first), takes whole entries of 500
+  tasks or fewer in that order while their stored `task_count` stays under 500, and locks the
+  tasks of all the entries taken in one statement
   (`trash_entry_id = any($entries) order by id for update`); the entries it locked and did not
-  take wait for the next batch. Fewer statements per batch, one lock order inside a batch. A
-  creation or a move holds its target list after its task locks and before the key counter, so a
-  deletion of the list either committed first or waits for it and its job moves the new task too;
-  a new subtask and an attachment lock their parent, which the job locks too.
+  take wait for the next batch. An entry of more than 500 tasks that comes first is erased alone,
+  by parts: one recursive read of its tree, the 500 deepest tasks locked `FOR UPDATE` in one
+  statement by id, the erasure statements scoped to them, and one update of the entry row (its
+  count, its hand-over). Fewer statements per batch, one lock order inside a batch. A creation or
+  a move holds its target list after its task locks and before the key counter, so a deletion of
+  the list either committed first or waits for it and its job moves the new task too; a move to
+  another list holds the list it leaves and the target in ascending list id, and an attachment to
+  a parent in another list holds the list it leaves (`HoldList`), so a deletion of that list
+  either committed first (`task-not-found`) or waits; a
+  new subtask and an attachment lock their parent, which the job locks too.
 - Like a move, a deletion and the batches lock their trees in an order that is not global, so two
   writers on nested trees can deadlock: PostgreSQL aborts one (`40P01`), the request answers `500`
   or the batch is retried.
@@ -949,9 +1048,14 @@ member-lifecycle (its MODULE.md).
   collection; the removal of a member unassigns a task in the trash without `task.updated.v1` (a
   consumer dropped it at `task.trashed.v1`, and `task.restored.v1` carries the assignees), so its
   `task.purged.v1` can come more than one version after its `task.trashed.v1` (the contract says
-  "one more": to report to cadenway-api-contracts); a
-  restoration that brings a list back during its deletion job stops the job, and the tasks it had
-  not moved stay live ("without its other tasks" holds once the job finished); the `parentKey` of
+  "one more": to report to cadenway-api-contracts); an entry of a list whose deletion job is still
+  moving its tasks cannot be restored until the job finished (`404 trash-entry.not-found`, the
+  only refusal the contract declares; to report to cadenway-api-contracts: a code of its own would
+  be clearer), so a restoration never exposes the tasks the job has not moved (checked under
+  `LockDeletedList`, and again under the lock `RestoreDeletedList` holds on a list it brings back,
+  since a list read live is not locked); an archived task restored from the trash comes back
+  archived as of the restoration, by the person who restored it (one more version and its
+  `task.archived.v1`); the `parentKey` of
   an entry made by the job is the parent as it reads once the batch is in the trash, so a root
   whose parent goes in the same batch reads as detached. `purgeAt` and the due cut-off come from
   one domain policy (`purgeAtOf`, `purgeDueBefore`), the statements compare `trashed_at` with the

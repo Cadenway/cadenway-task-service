@@ -38,19 +38,28 @@ function adapterOn(output: ListDeletedSpaceListsOutput): {
 
 describe('SpacesDeletedSpaceLists: the deleted lists of a space through ListDeletedSpaceLists', () => {
   it('asks for the space and answers whether it is still deleted, with its deleted lists', async () => {
-    const { adapter, inputs } = adapterOn({ spaceDeleted: true, listIds: [SPRINT_14] });
+    const { adapter, inputs } = adapterOn({ space: 'deleted', listIds: [SPRINT_14] });
 
     const listing = await adapter.deletedListsOf(ATELIER_NORD, PRODUIT);
 
     expect(inputs).toEqual([{ organizationId: ATELIER_NORD, spaceId: PRODUIT }]);
-    expect(listing).toEqual({ spaceDeleted: true, listIds: [SPRINT_14] });
+    expect(listing).toEqual({ space: 'deleted', listIds: [SPRINT_14] });
+  });
+
+  it('answers a space erased before the job ran as gone', async () => {
+    const { adapter } = adapterOn({ space: 'gone', listIds: [] });
+
+    await expect(adapter.deletedListsOf(ATELIER_NORD, PRODUIT)).resolves.toEqual({
+      space: 'gone',
+      listIds: [],
+    });
   });
 
   it('answers a space a restoration brought back, with its lists still deleted', async () => {
-    const { adapter } = adapterOn({ spaceDeleted: false, listIds: [SPRINT_14] });
+    const { adapter } = adapterOn({ space: 'live', listIds: [SPRINT_14] });
 
     await expect(adapter.deletedListsOf(ATELIER_NORD, PRODUIT)).resolves.toEqual({
-      spaceDeleted: false,
+      space: 'live',
       listIds: [SPRINT_14],
     });
   });

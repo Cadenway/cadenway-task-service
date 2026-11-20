@@ -12,9 +12,12 @@ import {
   NADIA,
   NOW,
   SPRINT_14,
+  TRASH_WRITES_OFF,
+  TRASH_WRITES_ON,
   atelierNordLists,
   atelierNordMembers,
   cad490State,
+  refusalOf,
   storedEntry,
   taskState,
   trashIn,
@@ -47,7 +50,7 @@ function atelierNord(spaces: InMemorySpaceDirectory = new InMemorySpaceDirectory
       storedEntry({ id: BUGS_ENTRY, rootTaskId: cad490State().id, listId: BUGS, taskCount: 1 }),
     ],
   });
-  return { tasks, useCase: new EmptyTrash(tasks, atelierNordMembers(), spaces) };
+  return { tasks, useCase: new EmptyTrash(TRASH_WRITES_ON, tasks, atelierNordMembers(), spaces) };
 }
 
 describe('EmptyTrash: "Vider la corbeille" hands every entry the actor may restore to the purge', () => {
@@ -88,6 +91,7 @@ describe('EmptyTrash: "Vider la corbeille" hands every entry the actor may resto
     const trace: string[] = [];
     const tasks = new InMemoryTasks({ trace });
     const useCase = new EmptyTrash(
+      TRASH_WRITES_ON,
       tasks,
       atelierNordMembers([], trace),
       new InMemorySpaceDirectory({ trace }),
@@ -99,7 +103,12 @@ describe('EmptyTrash: "Vider la corbeille" hands every entry the actor may resto
     expect(tasks.jobs).toEqual([]);
 
     const guest = new InMemoryTasks({ trace: [] });
-    const nothing = new EmptyTrash(guest, atelierNordMembers(), new InMemorySpaceDirectory());
+    const nothing = new EmptyTrash(
+      TRASH_WRITES_ON,
+      guest,
+      atelierNordMembers(),
+      new InMemorySpaceDirectory(),
+    );
     expect(await nothing.execute({ organizationId: ATELIER_NORD, actorUserId: NADIA })).toEqual({
       entryCount: 0,
     });
@@ -115,5 +124,25 @@ describe('EmptyTrash: "Vider la corbeille" hands every entry the actor may resto
       entryCount: 0,
     });
     expect(tasks.jobs).toHaveLength(1);
+  });
+});
+
+describe('EmptyTrash: while the switch of the writes of the trash is off', () => {
+  it('refuses first, reading nothing and handing nothing over', async () => {
+    const trace: string[] = [];
+    const tasks = new InMemoryTasks({ trace, trashEntries: [storedEntry({ taskCount: 1 })] });
+    const useCase = new EmptyTrash(
+      TRASH_WRITES_OFF,
+      tasks,
+      atelierNordMembers([], trace),
+      new InMemorySpaceDirectory({ trace }),
+    );
+
+    expect(
+      await refusalOf(useCase.execute({ organizationId: ATELIER_NORD, actorUserId: CAMILLE })),
+    ).toEqual({ reason: 'trash-writes-disabled' });
+    expect(trace).toEqual([]);
+    expect(tasks.runs).toBe(0);
+    expect(tasks.trashEntries.get(CAD_482_ENTRY)?.purgeRequest).toBeNull();
   });
 });

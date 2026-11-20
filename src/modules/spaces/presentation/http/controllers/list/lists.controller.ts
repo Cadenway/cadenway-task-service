@@ -10,7 +10,9 @@ import {
   Param,
   Patch,
   Post,
+  Req,
 } from '@nestjs/common';
+import type { Request } from 'express';
 
 import type { ArchiveListOutput } from '../../../../application/use-cases/commands/list/archive-list/archive-list.output.js';
 import { ArchiveList } from '../../../../application/use-cases/commands/list/archive-list/archive-list.use-case.js';
@@ -263,10 +265,13 @@ export class ListsController {
    * list is a tombstone and the job that moves its tasks to the trash is enqueued. `If-Match` is
    * optional. `404 list.not-found` (a deleted list included), `403 access.role-insufficient`
    * without `edit` on the list, archived or not, and `412 request.version-mismatch` with
-   * `details.version`, in this order, come from the use case.
+   * `details.version`, in this order, come from the use case. While the writes of the trash are
+   * off, the route answers as one the service does not have (`404 http.not-found`, detail
+   * `Cannot DELETE <url>`, after the guard and the validation).
    *
    * @param {ListPath} path - The id of the list.
    * @param {string | undefined} ifMatch - The `If-Match` header, optional.
+   * @param {Request} request - The request, whose route an answer of an unknown route names.
    * @returns {Promise<void>} Resolves once deleted.
    * @throws {ProblemException} The refusals above, or `400 request.invalid` for a malformed
    * `If-Match`.
@@ -276,11 +281,13 @@ export class ListsController {
   public async delete(
     @Param() path: ListPath,
     @Headers('if-match') ifMatch: string | undefined,
+    @Req() request: Request,
   ): Promise<void> {
     const caller: Caller = toCaller();
     const expectedVersions: readonly number[] | null = toExpectedVersions(ifMatch);
-    await answerRefusals(() =>
-      this.deleteList.execute({ ...caller, listId: path.listId, expectedVersions }),
+    await answerRefusals(
+      () => this.deleteList.execute({ ...caller, listId: path.listId, expectedVersions }),
+      request,
     );
   }
   // #endregion

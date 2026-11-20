@@ -4,7 +4,8 @@ import type {
   TrashRestored,
 } from '@cadenway/contracts/types/internal/task-service';
 import { InternalAccess } from '@cadenway/nest-common';
-import { Body, Controller, Delete, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Post, Query, Req } from '@nestjs/common';
+import type { Request } from 'express';
 
 import type { Caller } from '../../../../application/models/caller/caller.model.js';
 import type { EmptyTrashOutput } from '../../../../application/use-cases/commands/trash/empty-trash/empty-trash.output.js';
@@ -36,7 +37,9 @@ import { toTrashRestored } from '../../mappers/trash/trash-restored.mapper.js';
  * `TrashRestored`) and `emptyTrashInternal` (`202`, `TrashEmptied`). The bodies are the empty
  * object of the contract, validated and not read; `entryId` is a UUID (`400 request.invalid`
  * otherwise). An entry the actor may not restore answers `404 trash-entry.not-found`. Issuer
- * `api-gateway`, actor `user`, organization required. No `ETag`.
+ * `api-gateway`, actor `user`, organization required. No `ETag`. While the switch of the writes
+ * of the trash is off, `emptyTrashInternal` answers as a route the service does not have
+ * (`404 http.not-found`); the page, the restoration and the erasure are always served.
  */
 @Controller('internal/v1/trash')
 @InternalAccess({ issuers: ['api-gateway'], actors: ['user'], organization: 'required' })
@@ -155,15 +158,18 @@ export class TrashController {
    *
    * @param {EmptyTrashBody} body - The empty object of the contract, validated, not read: the
    * generated validator drops any member, so it carries nothing for the use case.
+   * @param {Request} request - The request, whose route an answer of an unknown route names.
    * @returns {Promise<TrashEmptied>} The count of the entries handed to the purge, with `202`.
-   * @throws {ProblemException} `404 organization.not-found`.
+   * @throws {ProblemException} `404 http.not-found` while the switch is off,
+   * `404 organization.not-found`.
    */
   @Post('empty')
   @HttpCode(202)
-  public async empty(@Body() body: EmptyTrashBody): Promise<TrashEmptied> {
+  public async empty(@Body() body: EmptyTrashBody, @Req() request: Request): Promise<TrashEmptied> {
     const caller: Caller = toCaller();
-    const emptied: EmptyTrashOutput = await answerRefusals(() =>
-      this.emptyTrash.execute(toEmptyTrashInput(body, caller)),
+    const emptied: EmptyTrashOutput = await answerRefusals(
+      () => this.emptyTrash.execute(toEmptyTrashInput(body, caller)),
+      request,
     );
     return toTrashEmptied(emptied);
   }

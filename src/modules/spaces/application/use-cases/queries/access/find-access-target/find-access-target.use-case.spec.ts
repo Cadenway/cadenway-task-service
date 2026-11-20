@@ -172,3 +172,64 @@ describe('FindAccessTarget: the statements tell nothing of the existence of the 
     ]);
   });
 });
+
+describe('FindAccessTarget: lock share holds the row of the target against a deletion', () => {
+  it('reads without lock by default', async () => {
+    const spaces = atelierNord();
+
+    await new FindAccessTarget(spaces).execute(find());
+    await new FindAccessTarget(spaces).execute(
+      find({ target: { kind: 'list', listId: SPRINT_14 } }),
+    );
+
+    expect(spaces.journal).toEqual([]);
+  });
+
+  it('holds the space of a space target, and the list of a list target, for share', async () => {
+    const spaces = atelierNord();
+
+    await new FindAccessTarget(spaces).execute(find({ lock: 'share' }));
+    await new FindAccessTarget(spaces).execute(
+      find({ lock: 'share', target: { kind: 'list', listId: SPRINT_14 } }),
+    );
+
+    expect(spaces.journal).toEqual([`space ${DESIGN} share`, `list ${SPRINT_14} share`]);
+  });
+
+  it.each([
+    ['a space', { kind: 'space', spaceId: DESIGN }, { kind: 'space', spaceId: UNKNOWN_SPACE }],
+    ['a list', { kind: 'list', listId: SPRINT_14 }, { kind: 'list', listId: UNKNOWN_LIST }],
+  ] as const)(
+    'runs the same statements and locks for %s that exists and one that does not',
+    async (_kind, existing, unknown) => {
+      const seen = atelierNord();
+      const unseen = atelierNord();
+
+      await new FindAccessTarget(seen).execute(find({ lock: 'share', target: existing }));
+      await new FindAccessTarget(unseen).execute(find({ lock: 'share', target: unknown }));
+
+      expect(unseen.reads).toEqual(seen.reads);
+      expect(unseen.journal.map((entry) => entry.replace(/ [0-9a-f-]{36}/u, ''))).toEqual(
+        seen.journal.map((entry) => entry.replace(/ [0-9a-f-]{36}/u, '')),
+      );
+    },
+  );
+
+  it('never finds a deleted target, locked or not', async () => {
+    const tombstone = {
+      deletedAt: new Date('2026-11-08T16:10:00Z'),
+      deletedBy: { type: 'user', id: CAMILLE },
+    } as const;
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState(), designState(tombstone)],
+      lists: [sprintState(tombstone)],
+    });
+
+    expect(await new FindAccessTarget(spaces).execute(find({ lock: 'share' }))).toBeNull();
+    expect(
+      await new FindAccessTarget(spaces).execute(
+        find({ lock: 'share', target: { kind: 'list', listId: SPRINT_14 } }),
+      ),
+    ).toBeNull();
+  });
+});

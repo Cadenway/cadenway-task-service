@@ -46,6 +46,8 @@ access-requests module.
 | `public/list/restore-deleted-list`          | tasks                                                        |
 | `public/list/purge-deleted-list`            | tasks                                                        |
 | `public/list/hold-list`                     | tasks                                                        |
+| `public/list/lock-deleted-list`             | tasks                                                        |
+| `public/list/lock-deleted-lists`            | tasks                                                        |
 | `public/list/list-deleted-space-lists`      | deletion-lifecycle                                           |
 | `public/space/purge-deleted-space`          | deletion-lifecycle                                           |
 | `public/access/find-access-target`          | access-requests                                              |
@@ -107,10 +109,10 @@ copy of the memberships.
   threshold of a change to both, so "may restore" is decided in one place.
 - `RestoreDeletedList` (`{ organizationId, actorUserId, viewerRole, listId }` to
   `{ outcome: 'restored', listRestored, spaceRestored }`, `not-found` or
-  `{ outcome: 'role-insufficient', role }`): needs `edit` as if not deleted, decided on the locked
-  rows; brings back a deleted space then a deleted list and appends `space.restored.v1` then
-  `list.restored.v1` by the actor; a live list in a live space writes nothing. A refusal writes
-  nothing.
+  `{ outcome: 'role-insufficient', role }`): needs `edit` as if not deleted, decided on the rows
+  read without lock, then again on the locked rows when they changed; brings back a deleted space
+  then a deleted list, each with its restored event and the republish of who reaches it (Events
+  emitted), by the actor; a live list in a live space writes nothing. A refusal writes nothing.
 - `PurgeDeletedList` (`{ organizationId, listId }` to `{ outcome: 'purged', spacePurged }`,
   `not-deleted` or `not-found`): erases a deleted list and its grants, then its deleted space and
   its grants once no list row of it is left; the caller guarantees that no task references the
@@ -119,18 +121,31 @@ copy of the memberships.
 - `HoldList` (`{ organizationId, listId }` to `live`, `{ outcome: 'deleted', deletedBy }` or
   `not-found`): holds the list `FOR SHARE` until the commit, deleted or not, no role checked;
   `deleted` when the list or its space is deleted.
-- `ListDeletedSpaceLists` (`{ organizationId, spaceId }` to `{ spaceDeleted, listIds }`): holds
-  the space `FOR SHARE` until the commit and reads whether it is still deleted (`false` for a
-  space restored meanwhile, unknown or erased), then the deleted lists of the space that are not
-  erased, by id, whether the space is still deleted or not (none for an unknown space). The
-  deletion job drops the requests of the space itself only when `spaceDeleted`.
+- `LockDeletedList` (`{ organizationId, listId }` to `deleted`, `live` or `not-found`): reads the
+  list without lock; a live or unknown list answers at once, without any lock; a deleted one is
+  locked, its space `FOR NO KEY UPDATE`, then the list `FOR UPDATE` (which waits for the
+  `FOR SHARE` of `HoldList`, of a batch of the deletion job and of a creation of a task), then read
+  again under the lock (`live` once restored meanwhile, `not-found` once erased). The tasks module
+  calls it before it restores an entry of the list. No role, no write.
+- `LockDeletedLists` (`{ organizationId, listIds }`, 100 ids at most, more throws, to `{ lists }`,
+  each `{ listId, outcome }` as for `LockDeletedList`, one per distinct id in the order first
+  given): the same for several lists at once, in the one lock order of the module (Transactions).
+  The tasks module calls it once for the lists of the entries it erases. No role, no write.
+- `ListDeletedSpaceLists` (`{ organizationId, spaceId }` to `{ space, listIds }`): holds the
+  space `FOR SHARE` until the commit and reads where it stands (`deleted`, `live` for a space
+  restored meanwhile, `gone` for an erased or unknown one), then the deleted lists of the space
+  that are not erased, by id, whether the space is still deleted or not (none when `gone`). The
+  deletion job drops the requests of the space itself when it is `deleted` or `gone`.
 - `FindAccessTarget` (`{ …, target: { kind: 'space', spaceId } | { kind: 'list', listId } }`): the
   target with `spaceName`, `spaceOwnerUserId`, `listName`, `viewerRole` (on the space for a space,
   on the list for a list) and `viewerManages` (`canManageSpace` for a space,
   `canManageListAccess` for a list), seen or not; `null` only when the organization has no such
-  space or list, live or archived (a tombstone answers `null`). No lock. The same statements run
-  whatever the outcome (an unknown target is read with the nil UUID in its place, and the grants
-  are always read), so that they tell nothing of the existence of the target.
+  space or list, live or archived (a tombstone answers `null`). With `lock: 'share'` (the default
+  `none` takes no lock) the reading of the row of the target, the space for a space, the list for a
+  list, takes `FOR SHARE`, so that a deletion of it committed first or waits for the caller. The
+  same statements and locks run whatever the outcome (an unknown target is read with the nil UUID
+  in its place, and the grants are always read), so that they tell nothing of the existence of the
+  target.
 - `ListManagedAccessTargets` (`{ organizationId, viewerUserId, viewerRole }` to
   `{ spaceIds, listIds }`): the spaces the viewer manages and the lists they have `edit` on.
 - `GrantRequestedAccess` (`{ organizationId, actorUserId, actorRole, target, granteeUserId, role }`
@@ -263,7 +278,11 @@ Issuer `realtime-gateway` only, in a controller of its own: `GET /internal/v1/li
 - `archive` and `unarchive` take the `EmptyRequest` body (an object, its members dropped) and an
   optional `If-Match`, and answer `200` with the `TaskList`, `callerRole: 'edit'`, and `ETag`; an
   archived list archived again, or a live list restored, answers its stored version.
-- The two `DELETE` take an optional `If-Match` and answer `204` without a body or `ETag`.
+- The two `DELETE` take an optional `If-Match` and answer `204` without a body or `ETag`. While
+  `TRASH_WRITES_ENABLED` is off (the default), both answer exactly as a route the service does not
+  have: `404 http.not-found`, title `Not Found`, detail `Cannot DELETE <url>` (the URL as
+  requested), checked first in the use case, before the membership (after the guard and the
+  validation of the path and of `If-Match`).
 - `PUT …/grants/{userId}` answers `200` with the `Grant` and `ETag`, the version of the space or the
   list after the change (the same one when the person already held that role); `DELETE` answers
   `204` with `ETag` (the same version when the person held no grant). The `userId` of the path is
@@ -298,10 +317,19 @@ Appended to the outbox in the transaction of the change (`asyncapi/task-service.
   `spaceId`, version) for a list deleted on its own; both by the actor, `occurredAt` the stored
   `deleted_at`. `space.restored.v1` (the whole space, as `space.updated.v1` without `changed`)
   then `list.restored.v1` (the whole list with `organizationAccess`) when `RestoreDeletedList`
-  brings them back, by the member who restores the entry, before the task events of its caller.
-  An erasure emits nothing. A tombstone emits nothing until it comes back: the clean-up of a
-  member who left changes its owner, its grants and its version, without `space.updated.v1` or an
-  access event (a consumer dropped it at `space.deleted.v1` or `list.deleted.v1`).
+  brings them back, by the member who restores the entry, before the task events of its caller,
+  each followed at the version it took by the republish of who reaches it:
+  `space.access-changed.v1` with every grant of the space (`changedUserIds` every person who holds
+  one), `list.access-changed.v1` with the switch and every grant of the list
+  (`changed: ['grants', 'organizationAccess']`, `changedUserIds: []`); the order is
+  `space.restored.v1`, `space.access-changed.v1`, `list.restored.v1`, `list.access-changed.v1`.
+  `space.access-changed.v1` requires one person in `changedUserIds`: a restored space without a
+  grant appends none (to report to cadenway-api-contracts).
+  An erasure emits nothing. The handover of a deleted space changes its owner and its version
+  without `space.updated.v1` until it comes back (the whole space, which would bring it back in a
+  consumer that dropped it at `space.deleted.v1`); the clean-up of a member who left appends the
+  access event of every grant it removes on a tombstone, as on a live space or list, the removed
+  person in `changedUserIds`.
 - The handovers emit `space.updated.v1` (`changed: ['ownerUserId']`) and the clean-up of a member's
   grants the access events, both with the actor `{ type: 'system', id: 'task-service' }`; a
   space left awaiting an owner emits nothing until its handover. An approved access request emits
@@ -326,6 +354,12 @@ gives an organization its owner.
   of its lists (`callerRole: null`, those lists only). What the actor does not see answers `404`
   and is left out of every collection; the owner and the admins of the organization see neither a
   private space nor a list whose switch is off unless it is shared with them.
+- Every write of a space or a list checks the actor on the rows read without lock first, then
+  locks them and checks again on the locked rows when they changed (`CheckedLocker`): what the
+  actor does not see, or may not change, answers at once, whatever another transaction holds.
+- While `TRASH_WRITES_ENABLED` is off, no tombstone is created (`TrashWrites`): the deletions of a
+  list and of a space answer as an unknown route; every other route, the trash and the erasure of
+  what exists stay served.
 - Refusal order of every write: unknown or not seen `404`, then seen without `edit`
   `403 access.role-insufficient` (`details: { role, requiredRole: 'edit' }`, `role` null through
   lists only), then `If-Match` `412`, then the rules of the domain `422`. The grants of a space are
@@ -375,9 +409,11 @@ gives an organization its owner.
   (`409 space.prefix-taken` for another space) and its numbers are never given again.
 - Spaces are ordered by `(coalesce(restored_at, created_at), id)` (`positionInSidebarOf`) in
   `GET /spaces` and its cursor, `ListVisibleListIds` and `ListSidebarLists`.
-- A tombstone appends no event until it comes back from the trash, whoever changes it (the
-  clean-up of a member who left still hands it over, removes grants and takes versions): ONE
-  policy decides it (`announcesChanges`), which every call site of the clean-up reads.
+- A tombstone appends no content event until it comes back from the trash, whoever changes it
+  (the clean-up of a member who left still hands it over, removes grants and takes versions), and
+  every access event of the grants removed there, so that who reaches what converges in every
+  consumer with the republish of the restoration: ONE policy decides both (`announcesChanges`,
+  `content` or `access`), which every call site of the clean-up reads.
 - A private space whose owner left passes to the owner of the organization through the clean-up
   job, unless the copy holds the person as a member again when the batch runs; until then nobody
   sees it, and while the copy does not hold the owner of the organization it awaits an owner. A
@@ -398,26 +434,41 @@ refusal rolls it back. The readings of the copy join the same transaction.
 
 Locks are always taken in this order: memberships `FOR SHARE`, then (for a caller of the tasks
 module) its trash entries and tasks, then spaces, then lists; `PurgeDeletedList` is the one
-exception (below).
+exception (below). Several spaces are locked in `(created_at, id)` order
+(`SpaceRepository.lockInOrder` and the batches of the handover), several lists in ascending id in
+one statement (`lockMany`, `lockUndeletedOfSpace`), so that no two lockers wait on each other in a
+cycle.
 
 - A write reads the membership of the actor `FOR SHARE`, so that a concurrent removal waits for it.
 - A change of a space (`PATCH`, its grants) locks it `FOR NO KEY UPDATE`; a change of a list locks
-  the list (`PATCH`, `archive`, `unarchive`). A creation of a list holds its space `FOR SHARE`, so
-  that a deletion of the space either commits first (`404`) or waits and deletes the new list. A
-  `PUT` of a grant locks the membership of the person given access `FOR SHARE` after the actor's,
-  so that the clean-up of a removal sees the grant.
+  the list (`PATCH`, `archive`, `unarchive`); each after the check of the actor on the rows read
+  without lock, and again on the locked rows when they changed (`CheckedLocker`). A creation of a
+  list holds its space `FOR SHARE`, so that a deletion of the space either commits first (`404`)
+  or waits and deletes the new list. A `PUT` of a grant locks the membership of the person given
+  access `FOR SHARE` after the actor's, so that the clean-up of a removal sees the grant.
   `RestoreArchivedList` reads no membership and locks the list `FOR NO KEY UPDATE` after the tasks
   its caller locked.
 - `DeleteList` locks the list `FOR NO KEY UPDATE` (`EditableListLocator`, as `ArchiveList`);
-  `DeleteSpace` locks the space `FOR NO KEY UPDATE`, then writes its lists in ONE `UPDATE`
-  (O(lists of the space)). Each enqueues `task.trash-deleted-tasks` (`{ listId }` or `{ spaceId }`
-  and the `traceparent`, occurrence key `list:<id>:<version>` or `space:<id>:<version>`) through the
-  connection of the transaction, with its event: all commit or none does.
+  `DeleteSpace` locks the space `FOR NO KEY UPDATE`, then its lists not deleted yet
+  `FOR NO KEY UPDATE` in ascending id in one `select … order by id for no key update`, then writes
+  them in ONE `UPDATE` (O(lists of the space)), which would otherwise take them in the order of its
+  scan, `(created_at, id)`, against the ascending id of every other locker of several lists (the
+  clean-up of a member, the moves of tasks). Each enqueues `task.trash-deleted-tasks`
+  (`{ listId }` or `{ spaceId }` and the `traceparent`, occurrence key `list:<id>:<version>` or
+  `space:<id>:<version>`) through the connection of the transaction, with its event: all commit
+  or none does.
 - `HoldList` locks the list `FOR SHARE` after the tasks its caller locked; a deletion of it or of
-  its space writes the row, so the two serialize. `RestoreDeletedList` reads the list, locks its
-  space `FOR NO KEY UPDATE`, then the list `FOR NO KEY UPDATE`, after the entry and the tasks its
-  caller locked. `PurgeDeletedList` reads the list without lock and locks `FOR UPDATE` only a
-  deleted one, then, for a deleted space, the space `FOR UPDATE`: list before space is safe there,
+  its space writes the row, so the two serialize. `LockDeletedList` locks a deleted list's space
+  `FOR NO KEY UPDATE`, then the list `FOR UPDATE`, and nothing for a live or unknown list.
+  `LockDeletedLists` reads its lists in one statement without lock, then locks the spaces of the
+  deleted ones `FOR NO KEY UPDATE` in `(created_at, id)` order, then those lists `FOR UPDATE` in
+  ascending id in one statement, which reads them again; nothing for the live and unknown ones.
+  `RestoreDeletedList` reads the list and its space, checks the role, locks the space
+  `FOR NO KEY UPDATE`, then the list `FOR NO KEY UPDATE`, after the entry and the tasks its caller
+  locked (and `LockDeletedList`, whose locks it then holds already). `FindAccessTarget` with
+  `lock: 'share'` holds the space of a space target, or the list of a list target, `FOR SHARE`.
+  `PurgeDeletedList` reads the list without lock and locks `FOR UPDATE` only a deleted one, then,
+  for a deleted space, the space `FOR UPDATE`: list before space is safe there,
   a restoration needs an entry of the list, and its caller found none. `PurgeDeletedSpace` locks
   the space `FOR UPDATE`; both erase a space through the one `DeletedSpaceEraser`.
   `ListDeletedSpaceLists` holds the space `FOR SHARE`, which waits for a restoration or an erasure
@@ -428,9 +479,9 @@ exception (below).
   system clock.
 - A change of the grants of a list (its routes, `GrantRequestedAccess`) reads the list, locks its
   space `FOR SHARE` (its owner, whom no grant may name, cannot change meanwhile), then the list
-  `FOR NO KEY UPDATE`. `GrantRequestedAccess` checks on these locked rows, with the role of the
-  actor its caller read in the same transaction, that the actor still manages the space or the
-  access of the list.
+  `FOR NO KEY UPDATE`. `GrantRequestedAccess` checks, with the role of the actor its caller read in
+  the same transaction, that the actor still manages the space or the access of the list, on the
+  rows read without lock, then on the locked rows when they changed.
 - A grant write loads every grant of the space or the list (200 at most), applies
   `ResourceGrants`, checks `If-Match` against the version of the space or the list, upserts or
   deletes the one row (`granted_at` and `granted_by_*` change only when the role changes,
@@ -520,12 +571,20 @@ list_grants join lists` by `list_grants_user_index`, which `list_grants.space_id
   events `list.archived.v1` and `list.unarchived.v1` name the actor, and are kept 7 days (the sent
   rows of the outbox and the stream `EVENTS`). Open point: a durable trail of who archived and
   restored a list.
+- The writes of the trash are behind `TRASH_WRITES_ENABLED` (off by default, `TrashConfig` of
+  `src/config/app-config.ts`, port `TrashWrites`): the release before ignores `deleted_at`, so no
+  tombstone may exist while a rollback to it is possible (`.claude/rules/migrations.md`); the
+  readings of the tombstones, the restoration and the erasure stay served, as they act only on
+  what exists.
 - Deletions (P3b-1 PR 3), beyond the contract: the grants of a tombstone stay until it is erased
   (they give the role "as if not deleted" in the trash, and come back with a restored list or
   space); the clean-up of a member who left (`RemoveMemberGrants`, `HandOverPrivateSpaces`,
   `HandOverAwaitingSpaces`, the removal of the grants of a new owner) changes tombstones like any
-  space or list (owner, grants, versions) but appends no event for them until they come back, as a
-  task in the trash emits nothing; a restoration of an entry whose list is
+  space or list (owner, grants, versions) but appends no `space.updated.v1` for them until they
+  come back, as a task in the trash emits nothing; it still appends the access events of the
+  grants it removes there: a restored space whose last grant went while it was deleted
+  republishes none (`changedUserIds` names one person at least), so without them a consumer would
+  keep a removed member able to reach it; a restoration of an entry whose list is
   archived and not deleted leaves the list archived; a list archived, then deleted, comes back
   live, its archive cleared ("a deleted list comes back with it, at the end of its space" of
   `openapi/public/trash.yaml`); the archived tasks of its entries come back archived (tasks

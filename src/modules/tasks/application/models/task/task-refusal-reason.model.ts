@@ -22,7 +22,11 @@ import type { TaskActor } from '../../../domain/value-objects/task/task-actor.va
  *   key and name, its entry, the root of the entry, when and by whom it was deleted and when it is
  *   erased. Anyone else gets `task-not-found`.
  * - `trash-entry-not-found`: no entry with this id that the actor may restore: unknown, handed to
- *   the purge by "Vider la corbeille", or of a list the actor could not change.
+ *   the purge by "Vider la corbeille", or of a list the actor could not change; for a
+ *   restoration, also an entry of a deleted list whose deletion job has not moved all its tasks
+ *   yet.
+ * - `trash-writes-disabled`: the switch of the writes of the trash is off (`TrashWrites`): the
+ *   route answers as one the service does not have.
  * - `version-mismatch`: `If-Match` names another version than the stored one.
  * - `status-hidden`: the status is hidden in the space the task is in after the operation.
  * - `cancel-reason-required`, `cancel-reason-unexpected`: the cancellation rules.
@@ -53,6 +57,7 @@ export type TaskRefusalReason =
       readonly purgeAt: Date;
     }
   | { readonly reason: 'trash-entry-not-found' }
+  | { readonly reason: 'trash-writes-disabled' }
   | { readonly reason: 'version-mismatch'; readonly version: number }
   | { readonly reason: 'status-hidden'; readonly status: StatusKey }
   | { readonly reason: 'cancel-reason-required' }

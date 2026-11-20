@@ -1,6 +1,7 @@
 import type { TrashEntry } from '@cadenway/contracts/types/internal/task-service';
 import { InternalAccess } from '@cadenway/nest-common';
-import { Body, Controller, Headers, HttpCode, Param, Post } from '@nestjs/common';
+import { Body, Controller, Headers, HttpCode, Param, Post, Req } from '@nestjs/common';
+import type { Request } from 'express';
 
 import type { Caller } from '../../../../application/models/caller/caller.model.js';
 import type { TrashTaskOutput } from '../../../../application/use-cases/commands/trash/trash-task/trash-task.output.js';
@@ -20,7 +21,9 @@ import { toExpectedVersions } from '../../mappers/version/expected-versions.mapp
  * empty object of the contract as body (`EmptyRequest`, validated, not read) and an optional
  * `If-Match` on the version of the task; `200` with the entry (`TrashEntry`, no `ETag`). Issuer
  * `api-gateway`, actor `user`, organization required. The key is checked by the contract
- * validator of the path (`400 request.invalid` otherwise).
+ * validator of the path (`400 request.invalid` otherwise). While the switch of the writes of the
+ * trash is off, the route answers as one the service does not have (`404 http.not-found`, after
+ * the guard and the validation).
  */
 @Controller('internal/v1/tasks')
 @InternalAccess({ issuers: ['api-gateway'], actors: ['user'], organization: 'required' })
@@ -55,8 +58,10 @@ export class TaskTrashController {
    * @param {TaskPath} path - The key of the task.
    * @param {TrashTaskBody} _body - The empty object of the contract.
    * @param {string | undefined} ifMatch - The `If-Match` header, if any.
+   * @param {Request} request - The request, whose route an answer of an unknown route names.
    * @returns {Promise<TrashEntry>} The entry.
-   * @throws {ProblemException} `404 task.not-found`, `404 task.trashed`,
+   * @throws {ProblemException} `404 http.not-found` while the switch is off, `404 task.not-found`,
+   * `404 task.trashed`,
    * `403 access.role-insufficient`, `409 task.archived`, `412 request.version-mismatch`,
    * `404 organization.not-found`.
    */
@@ -66,11 +71,13 @@ export class TaskTrashController {
     @Param() path: TaskPath,
     @Body() _body: TrashTaskBody,
     @Headers('if-match') ifMatch: string | undefined,
+    @Req() request: Request,
   ): Promise<TrashEntry> {
     const caller: Caller = toCaller();
     const expectedVersions: readonly number[] | null = toExpectedVersions(ifMatch);
-    const entry: TrashTaskOutput = await answerRefusals(() =>
-      this.trashTask.execute({ ...caller, taskKey: path.taskKey, expectedVersions }),
+    const entry: TrashTaskOutput = await answerRefusals(
+      () => this.trashTask.execute({ ...caller, taskKey: path.taskKey, expectedVersions }),
+      request,
     );
     return toTrashEntry(entry);
   }

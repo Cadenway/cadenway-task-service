@@ -16,6 +16,8 @@ import {
   PRODUIT,
   SPRINT_14,
   STRANGER,
+  TRASH_WRITES_OFF,
+  TRASH_WRITES_ON,
   TRANSACTION_INSTANT,
   UNKNOWN_SPACE,
   atelierNordMembers,
@@ -64,7 +66,7 @@ describe('DeleteSpace: who manages a space deletes it with its lists ("Supprimer
   it('makes a tombstone of the space at the instant of the transaction, by the actor, at the next version', async () => {
     const spaces = atelierNord();
 
-    await new DeleteSpace(spaces, atelierNordMembers()).execute(deleteProduit());
+    await new DeleteSpace(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteProduit());
 
     expect(spaces.spaces.get(PRODUIT)).toEqual(
       spaceState({
@@ -78,7 +80,7 @@ describe('DeleteSpace: who manages a space deletes it with its lists ("Supprimer
   it('makes a tombstone of each of its lists at the same instant and actor, each at its own version', async () => {
     const spaces = atelierNord();
 
-    await new DeleteSpace(spaces, atelierNordMembers()).execute(deleteProduit());
+    await new DeleteSpace(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteProduit());
 
     expect(spaces.lists.get(BACKLOG)).toEqual(
       backlogState({
@@ -103,7 +105,7 @@ describe('DeleteSpace: who manages a space deletes it with its lists ("Supprimer
       ],
     });
 
-    await new DeleteSpace(spaces, atelierNordMembers()).execute(deleteProduit());
+    await new DeleteSpace(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteProduit());
 
     expect(spaces.lists.get(BACKLOG)).toMatchObject({
       deletedAt: DELETED_AT,
@@ -119,7 +121,7 @@ describe('DeleteSpace: who manages a space deletes it with its lists ("Supprimer
   it('appends space.deleted alone, no list.deleted for its lists', async () => {
     const spaces = atelierNord();
 
-    await new DeleteSpace(spaces, atelierNordMembers()).execute(deleteProduit());
+    await new DeleteSpace(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteProduit());
 
     expect(spaces.events).toEqual([
       {
@@ -135,7 +137,7 @@ describe('DeleteSpace: who manages a space deletes it with its lists ("Supprimer
   it('enqueues the job that moves its tasks to the trash, keyed by the space and its version after', async () => {
     const spaces = atelierNord();
 
-    await new DeleteSpace(spaces, atelierNordMembers()).execute(deleteProduit());
+    await new DeleteSpace(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteProduit());
 
     expect(spaces.jobs).toEqual([
       { payload: { spaceId: PRODUIT }, occurrenceKey: `space:${PRODUIT}:6` },
@@ -149,7 +151,7 @@ describe('DeleteSpace: who manages a space deletes it with its lists ("Supprimer
       grants: [spaceGrantOf(PRODUIT, LEA, 'view'), listGrantOf(PRODUIT, SPRINT_14, NADIA, 'edit')],
     });
 
-    await new DeleteSpace(spaces, atelierNordMembers()).execute(deleteProduit());
+    await new DeleteSpace(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteProduit());
 
     expect(spaces.spaces.get(MARKETING)).toEqual(marketingState());
     expect(spaces.lists.get(BACKLOG)?.deletedAt).toBeNull();
@@ -162,7 +164,7 @@ describe('DeleteSpace: who manages a space deletes it with its lists ("Supprimer
   ])('lets %s delete it', async (_who: string, actorUserId: string, spaceId: string) => {
     const spaces = atelierNord();
 
-    await new DeleteSpace(spaces, atelierNordMembers()).execute(
+    await new DeleteSpace(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(
       deleteProduit({ actorUserId, spaceId }),
     );
 
@@ -175,7 +177,9 @@ describe('DeleteSpace: the refusals come in the order 404, 403 space.manage-forb
     const spaces = atelierNord();
 
     const refusal = await refusalOf(
-      new DeleteSpace(spaces, atelierNordMembers()).execute(deleteProduit({ actorUserId: LEA })),
+      new DeleteSpace(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(
+        deleteProduit({ actorUserId: LEA }),
+      ),
     );
 
     expect(refusal).toEqual({ reason: 'manage-forbidden' });
@@ -193,7 +197,7 @@ describe('DeleteSpace: the refusals come in the order 404, 403 space.manage-forb
     });
 
     const refusal = await refusalOf(
-      new DeleteSpace(spaces, atelierNordMembers()).execute(
+      new DeleteSpace(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(
         deleteProduit({ actorUserId: NADIA, expectedVersions: [1] }),
       ),
     );
@@ -205,7 +209,7 @@ describe('DeleteSpace: the refusals come in the order 404, 403 space.manage-forb
     const spaces = atelierNord();
 
     const refusal = await refusalOf(
-      new DeleteSpace(spaces, atelierNordMembers()).execute(
+      new DeleteSpace(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(
         deleteProduit({ expectedVersions: [4] }),
       ),
     );
@@ -222,7 +226,9 @@ describe('DeleteSpace: the refusals come in the order 404, 403 space.manage-forb
     'answers space-not-found for %s',
     async (_why: string, overrides: Partial<DeleteSpaceInput>) => {
       const refusal = await refusalOf(
-        new DeleteSpace(atelierNord(), atelierNordMembers()).execute(deleteProduit(overrides)),
+        new DeleteSpace(atelierNord(), atelierNordMembers(), TRASH_WRITES_ON).execute(
+          deleteProduit(overrides),
+        ),
       );
 
       expect(refusal).toEqual({ reason: 'space-not-found' });
@@ -231,7 +237,7 @@ describe('DeleteSpace: the refusals come in the order 404, 403 space.manage-forb
 
   it('answers space-not-found for a space deleted already, and enqueues nothing more', async () => {
     const spaces = atelierNord();
-    const deletion = new DeleteSpace(spaces, atelierNordMembers());
+    const deletion = new DeleteSpace(spaces, atelierNordMembers(), TRASH_WRITES_ON);
     await deletion.execute(deleteProduit());
 
     const refusal = await refusalOf(deletion.execute(deleteProduit()));
@@ -242,7 +248,7 @@ describe('DeleteSpace: the refusals come in the order 404, 403 space.manage-forb
 
   it('answers organization-not-found to an account the copy of the members does not know', async () => {
     const refusal = await refusalOf(
-      new DeleteSpace(atelierNord(), atelierNordMembers()).execute(
+      new DeleteSpace(atelierNord(), atelierNordMembers(), TRASH_WRITES_ON).execute(
         deleteProduit({ actorUserId: STRANGER }),
       ),
     );
@@ -252,21 +258,59 @@ describe('DeleteSpace: the refusals come in the order 404, 403 space.manage-forb
 });
 
 describe('DeleteSpace: the membership, then the space, then its lists', () => {
-  it('locks the membership of the actor for share, then the space', async () => {
+  it('locks the membership of the actor for share, then the space, then its lists in ascending id', async () => {
     const spaces = atelierNord();
     const members = atelierNordMembers();
     members.journal = spaces.journal;
 
-    await new DeleteSpace(spaces, members).execute(deleteProduit());
+    await new DeleteSpace(spaces, members, TRASH_WRITES_ON).execute(deleteProduit());
 
-    expect(spaces.journal).toEqual([`membership ${CAMILLE}`, `space ${PRODUIT}`]);
+    expect(spaces.journal).toEqual([
+      `membership ${CAMILLE}`,
+      `space ${PRODUIT}`,
+      ...[BACKLOG, SPRINT_14].sort().map((id: string) => `list ${id}`),
+    ]);
+  });
+
+  it('locks the lists of the space in ascending id whatever their order of creation, not the tombstones nor the lists of other spaces', async () => {
+    /** "Recette", created first, with the highest id. */
+    const RECETTE = '019a7100-0000-7000-8000-0000000000fe';
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState(), marketingState()],
+      lists: [
+        backlogState({ id: RECETTE, name: 'Recette', createdAt: new Date('2026-09-01T08:00:00Z') }),
+        sprintState(),
+        backlogState({ deletedAt: DELETED_AT, deletedBy: { type: 'user', id: LEA } }),
+        backlogState({ id: '019a7100-0000-7000-8000-000000000000', spaceId: MARKETING }),
+      ],
+    });
+
+    await new DeleteSpace(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteProduit());
+
+    expect(spaces.journal).toEqual([
+      `space ${PRODUIT}`,
+      ...[SPRINT_14, RECETTE].sort().map((id: string) => `list ${id}`),
+    ]);
+    expect(spaces.lists.get(RECETTE)?.deletedAt).toEqual(TRANSACTION_INSTANT);
+  });
+
+  it('locks no list when the refusal comes from the space', async () => {
+    const spaces = atelierNord();
+
+    await refusalOf(
+      new DeleteSpace(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(
+        deleteProduit({ actorUserId: LEA }),
+      ),
+    );
+
+    expect(spaces.journal.filter((entry: string) => entry.startsWith('list '))).toEqual([]);
   });
 });
 
 describe('DeleteSpace: a deleted space is invisible everywhere, and its prefix stays reserved', () => {
   it('answers space-not-found by id and leaves it out of the spaces, the sidebar and the managed targets', async () => {
     const spaces = atelierNord();
-    await new DeleteSpace(spaces, atelierNordMembers()).execute(deleteProduit());
+    await new DeleteSpace(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteProduit());
 
     const refusal = await refusalOf(
       new GetSpace(spaces, atelierNordMembers()).execute({
@@ -302,7 +346,7 @@ describe('DeleteSpace: a deleted space is invisible everywhere, and its prefix s
 
   it('keeps its prefix reserved for another space', async () => {
     const spaces = atelierNord();
-    await new DeleteSpace(spaces, atelierNordMembers()).execute(deleteProduit());
+    await new DeleteSpace(spaces, atelierNordMembers(), TRASH_WRITES_ON).execute(deleteProduit());
 
     const refusal = await refusalOf(
       new CreateSpace(spaces, atelierNordMembers()).execute({
@@ -318,5 +362,33 @@ describe('DeleteSpace: a deleted space is invisible everywhere, and its prefix s
     );
 
     expect(refusal).toEqual({ reason: 'prefix-taken', prefix: 'CAD' });
+  });
+});
+
+describe('DeleteSpace: the route answers as an unknown one while the writes of the trash are off', () => {
+  it('refuses trash-writes-disabled before reading the membership, and writes nothing', async () => {
+    const spaces = atelierNord();
+    const members = atelierNordMembers();
+    members.journal = spaces.journal;
+
+    const refusal = await refusalOf(
+      new DeleteSpace(spaces, members, TRASH_WRITES_OFF).execute(deleteProduit()),
+    );
+
+    expect(refusal).toEqual({ reason: 'trash-writes-disabled' });
+    expect(spaces.runs).toBe(0);
+    expect(spaces.journal).toEqual([]);
+    expect(spaces.events).toEqual([]);
+    expect(spaces.jobs).toEqual([]);
+  });
+
+  it('answers it even to an actor the copy of the members does not know', async () => {
+    const refusal = await refusalOf(
+      new DeleteSpace(atelierNord(), atelierNordMembers(), TRASH_WRITES_OFF).execute(
+        deleteProduit({ actorUserId: STRANGER }),
+      ),
+    );
+
+    expect(refusal).toEqual({ reason: 'trash-writes-disabled' });
   });
 });

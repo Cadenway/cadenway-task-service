@@ -25,6 +25,8 @@ services:
       NATS_USER: task
       NATS_PASSWORD: ${TASK_NATS_PASSWORD}
       INTERNAL_TOKEN_AUDIENCE: task-service
+      # Off until the release that turns the trash on (docs/development.md, "Trash writes").
+      TRASH_WRITES_ENABLED: ${TASK_SERVICE_TRASH_WRITES_ENABLED:-false}
       INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
         {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}],
         "realtime-gateway": [${REALTIME_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}],

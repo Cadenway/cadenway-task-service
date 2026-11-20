@@ -49,7 +49,7 @@ function sharedForComment(): InMemorySpaces {
 describe('EditableListLocator.find: the guard of a write of a list, without throwing', () => {
   const locator = new EditableListLocator();
 
-  it('answers the locked list to an actor with edit on it, locked before it is read', async () => {
+  it('answers the locked list to an actor with edit on it, read then locked', async () => {
     const spaces = atelierNord();
 
     const found: EditableListLookup = await spaces.run((store: SpacesStore) =>
@@ -140,5 +140,47 @@ describe('EditableListLocator.lock: the same guard, thrown, then If-Match', () =
     );
 
     expect(reason).toEqual({ reason: 'version-mismatch', version: 3 });
+  });
+});
+
+describe('EditableListLocator: the actor is checked on the list read without lock, before any lock', () => {
+  const locator = new EditableListLocator();
+
+  it.each([
+    ['a list the actor does not see', CAMILLE_VIEWER, MAQUETTES, 'list-not-found'],
+    ['a list they see without edit', LEA_VIEWER, SPRINT_14, 'role-insufficient'],
+  ] as const)('refuses %s without locking it', async (_why, viewer, listId, outcome) => {
+    const spaces = listId === SPRINT_14 ? sharedForComment() : atelierNord();
+
+    const found: EditableListLookup = await spaces.run((store: SpacesStore) =>
+      locator.find(store, viewer, ATELIER_NORD, listId),
+    );
+
+    expect(found.outcome).toBe(outcome);
+    expect(spaces.journal).toEqual([]);
+  });
+
+  it('decides again on the locked list when it changed meanwhile, its switch turned off', async () => {
+    const spaces = atelierNord();
+
+    const found: EditableListLookup = await spaces.run((store: SpacesStore) =>
+      locator.find(
+        {
+          ...store,
+          lists: {
+            ...store.lists,
+            lock: async (organizationId: string, id: string): Promise<TaskList | null> => {
+              const locked: TaskList | null = await store.lists.lock(organizationId, id);
+              return locked === null ? null : locked.update({ organizationAccess: false }).list;
+            },
+          },
+        },
+        LEA_VIEWER,
+        ATELIER_NORD,
+        SPRINT_14,
+      ),
+    );
+
+    expect(found).toEqual({ outcome: 'list-not-found' });
   });
 });

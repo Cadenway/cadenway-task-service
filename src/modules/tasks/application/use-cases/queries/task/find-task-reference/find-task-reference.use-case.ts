@@ -14,10 +14,15 @@ import type { FindTaskReferenceOutput } from './find-task-reference.output.js';
  * with its id, name and status as they are now and the list and space it is in, so that a request
  * for access to a task can be addressed to its list. It checks no visibility: the caller decides
  * what the actor may learn of the task. A key that is not a key (`^[A-Z]{2,5}-[1-9][0-9]{0,8}$`)
- * and a key the organization holds no task under both answer `null`. It runs in
- * `TasksUnitOfWork.run`, which joins the tenant transaction of the caller, read-only or not,
- * scoped to the organization of the input: one statement by `tasks_key_unique`, no lock, nothing
- * written and no event.
+ * and a key the organization holds no task under both answer `null`, and so does a task in the
+ * trash. It runs in `TasksUnitOfWork.run`, which joins the tenant transaction of the caller,
+ * scoped to the organization of the input: one statement by `tasks_key_unique`, nothing written
+ * and no event. With `lock: 'none'` (the default) the statement takes no lock and the caller's
+ * transaction may be read-only; with `lock: 'share'` it locks the task of the key `FOR SHARE` until
+ * the commit of the caller, in the same statement for every outcome (unknown, in the trash or
+ * found), so a deletion of the task ("Supprimer la tâche", a deletion batch, both
+ * `FOR NO KEY UPDATE`) either committed before and the task reads as not found, or waits for the
+ * caller. A malformed key reads nothing in either mode: it says nothing of the database.
  */
 export class FindTaskReference {
   // #region Properties
@@ -61,7 +66,9 @@ export class FindTaskReference {
       throw error;
     }
     return this.unitOfWork.run((store: TasksStore): Promise<TaskLocation | null> =>
-      store.reader.locationByKey(input.organizationId, key),
+      input.lock === 'share'
+        ? store.tasks.shareLocationByKey(input.organizationId, key)
+        : store.reader.locationByKey(input.organizationId, key),
     );
   }
   // #endregion

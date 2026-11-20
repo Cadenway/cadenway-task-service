@@ -29,6 +29,8 @@ import {
 import { ListSpaces } from '../../../queries/space/list-spaces/list-spaces.use-case.js';
 import { GetList } from '../../../queries/list/get-list/get-list.use-case.js';
 import type { RestoreDeletedListInput } from './restore-deleted-list.input.js';
+import { Space } from '../../../../../domain/aggregates/space/space.aggregate.js';
+import type { SpacesUnitOfWork } from '../../../../ports/outbound/transactions/space/spaces-unit-of-work.port.js';
 import { RestoreDeletedList } from './restore-deleted-list.use-case.js';
 
 /** Who deleted the list or the space in these specs. */
@@ -89,6 +91,17 @@ describe('RestoreDeletedList: a deleted list comes back with a restored entry', 
         archivedAt: null,
         actor: { type: 'user', id: LEA },
       },
+      {
+        kind: 'listAccessChanged',
+        listId: SPRINT_14,
+        spaceId: PRODUIT,
+        version: 5,
+        organizationAccess: true,
+        grants: [],
+        changed: ['grants', 'organizationAccess'],
+        changedUserIds: [],
+        actor: { type: 'user', id: LEA },
+      },
     ]);
   });
 
@@ -103,7 +116,11 @@ describe('RestoreDeletedList: a deleted list comes back with a restored entry', 
     );
     expect(spaces.lists.get(SPRINT_14)).toMatchObject({ deletedAt: null, version: 4 });
     expect(spaces.lists.get(BACKLOG)?.deletedAt).toEqual(DELETED_AT);
-    expect(spaces.events.map((event) => event.kind)).toEqual(['spaceRestored', 'listRestored']);
+    expect(spaces.events.map((event) => event.kind)).toEqual([
+      'spaceRestored',
+      'listRestored',
+      'listAccessChanged',
+    ]);
     expect(spaces.events[0]).toEqual({
       kind: 'spaceRestored',
       spaceId: PRODUIT,
@@ -111,6 +128,115 @@ describe('RestoreDeletedList: a deleted list comes back with a restored entry', 
       restoredAt: TRANSACTION_INSTANT,
       actor: { type: 'user', id: LEA },
     });
+  });
+
+  it('republishes who reaches the restored space and list, every grant as it stands, at the versions they took', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState({ deletedAt: DELETED_AT, deletedBy: BY_CAMILLE, version: 6 })],
+      lists: [
+        sprintState({
+          organizationAccess: false,
+          deletedAt: DELETED_AT,
+          deletedBy: BY_CAMILLE,
+          version: 3,
+        }),
+      ],
+      grants: [
+        spaceGrantOf(PRODUIT, HUGO, 'view'),
+        spaceGrantOf(PRODUIT, LEA, 'edit', { createdAt: new Date('2026-03-05T09:00:00Z') }),
+        listGrantOf(PRODUIT, SPRINT_14, NADIA, 'comment'),
+      ],
+    });
+
+    await new RestoreDeletedList(spaces).execute(restoreSprint());
+
+    expect(spaces.events.map((event) => event.kind)).toEqual([
+      'spaceRestored',
+      'spaceAccessChanged',
+      'listRestored',
+      'listAccessChanged',
+    ]);
+    expect(spaces.events[1]).toEqual({
+      kind: 'spaceAccessChanged',
+      spaceId: PRODUIT,
+      version: 7,
+      grants: [
+        { userId: HUGO, role: 'view' },
+        { userId: LEA, role: 'edit' },
+      ],
+      changedUserIds: [HUGO, LEA],
+      actor: { type: 'user', id: LEA },
+    });
+    expect(spaces.events[3]).toEqual({
+      kind: 'listAccessChanged',
+      listId: SPRINT_14,
+      spaceId: PRODUIT,
+      version: 4,
+      organizationAccess: false,
+      grants: [{ userId: NADIA, role: 'comment' }],
+      changed: ['grants', 'organizationAccess'],
+      changedUserIds: [],
+      actor: { type: 'user', id: LEA },
+    });
+  });
+
+  it('appends no space.access-changed for a restored space that holds no grant, the contract needing one person', async () => {
+    const spaces = produitDeleted();
+
+    await new RestoreDeletedList(spaces).execute(restoreSprint());
+
+    expect(spaces.events.map((event) => event.kind)).not.toContain('spaceAccessChanged');
+  });
+
+  it('decides on the unlocked rows first: a member without a role answers not-found without any lock', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [designState({ deletedAt: DELETED_AT, deletedBy: { type: 'user', id: HUGO } })],
+      lists: [
+        backlogState({
+          id: SPRINT_14,
+          spaceId: DESIGN,
+          deletedAt: DELETED_AT,
+          deletedBy: { type: 'user', id: HUGO },
+        }),
+      ],
+    });
+
+    expect(await new RestoreDeletedList(spaces).execute(restoreSprint())).toEqual({
+      outcome: 'not-found',
+    });
+    expect(spaces.journal).toEqual([]);
+  });
+
+  it('decides again on the locked rows when they changed meanwhile', async () => {
+    const spaces = produitDeleted();
+    const changed: SpacesUnitOfWork = {
+      run: (work) =>
+        spaces.run((store) =>
+          work({
+            ...store,
+            // A concurrent commit made the space private to Camille Martin, at a new version.
+            spaces: {
+              ...store.spaces,
+              lockIncludingDeleted: async (organizationId, id, mode) => {
+                await store.spaces.lockIncludingDeleted(organizationId, id, mode);
+                return Space.restore(
+                  spaceState({
+                    visibility: 'private',
+                    deletedAt: DELETED_AT,
+                    deletedBy: BY_CAMILLE,
+                    version: 7,
+                  }),
+                );
+              },
+            },
+          }),
+        ),
+    };
+
+    expect(await new RestoreDeletedList(changed).execute(restoreSprint())).toEqual({
+      outcome: 'not-found',
+    });
+    expect(spaces.events).toEqual([]);
   });
 
   it('puts the restored space at the end of the sidebar', async () => {
@@ -284,7 +410,7 @@ describe('RestoreDeletedList: the role as if not deleted decides, on the locked 
 
     await new RestoreDeletedList(spaces).execute(restoreSprint());
 
-    expect(spaces.reads[0]).toBe('list');
+    expect(spaces.reads.slice(0, 2)).toEqual(['list', 'space']);
     expect(spaces.journal).toEqual([`space ${PRODUIT}`, `list ${SPRINT_14}`]);
   });
 });

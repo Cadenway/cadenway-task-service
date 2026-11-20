@@ -40,7 +40,22 @@ describe('appConfigSchema', () => {
           },
         ],
       },
+      TRASH_WRITES_ENABLED: false,
     });
+  });
+
+  it('serves the writes of the trash only when TRASH_WRITES_ENABLED says true', () => {
+    expect(
+      loadConfig(appConfigSchema, { ...complete, TRASH_WRITES_ENABLED: 'true' }),
+    ).toMatchObject({
+      TRASH_WRITES_ENABLED: true,
+    });
+    expect(
+      loadConfig(appConfigSchema, { ...complete, TRASH_WRITES_ENABLED: 'false' }),
+    ).toMatchObject({ TRASH_WRITES_ENABLED: false });
+    expect(() =>
+      loadConfig(appConfigSchema, { ...complete, TRASH_WRITES_ENABLED: 'peut-être' }),
+    ).toThrow(/TRASH_WRITES_ENABLED/u);
   });
 
   it('accepts the committed .env.example as it is', () => {

@@ -1,5 +1,6 @@
 import type { Task } from '../../../domain/aggregates/task/task.aggregate.js';
 import { depthsUnder } from '../../../domain/policies/subtask/subtask-tree.policy.js';
+import type { TaskKey } from '../../../domain/value-objects/task/task-key.value-object.js';
 import type { TaskState } from '../../../domain/value-objects/task/task-state.value-object.js';
 import type { TaskUpdate } from '../../../domain/value-objects/task/task-update.value-object.js';
 import type { EventActor } from '../../models/actor/event-actor.model.js';
@@ -154,16 +155,26 @@ export class TaskAnnouncer {
    *
    * @description
    * Announces a restoration from the trash: one `task.restored.v1` per task it brought back, in the
-   * order of `treeOrder`. The `space.restored.v1` and `list.restored.v1` of what came back with
-   * them are appended before, by the spaces module.
+   * order of `treeOrder`, at the version of its restoration; each member that comes back archived
+   * is followed at once by its `task.archived.v1` at the next version, archived again as of the
+   * restoration (the instant and the actor of the restoration, the key of the root of its archive),
+   * so a consumer that follows the contract, which ignores a version it already applied, hides it
+   * again (`task.restored.v1` carries no archive state). The `space.restored.v1` and
+   * `list.restored.v1` of what came back with them are appended before, by the spaces module.
    *
    * @param {TaskEvents} events - The outbox of the transaction.
    * @param {Task} root - The root of the entry, restored.
-   * @param {readonly Task[]} members - Every task of the entry, the root included, restored.
+   * @param {readonly Task[]} members - Every task of the entry, the root included, restored (an
+   * archived one at the version of its restoration).
    * @param {string} entryId - The entry they came from, which no longer exists.
-   * @param {EventActor} actor - Who restored them.
+   * @param {EventActor} actor - Who restored them, the actor of every event.
+   * @param {ReadonlyMap<string, Task>} rearchived - The archived members archived again as of the
+   * restoration, at the next version, by id.
+   * @param {ReadonlyMap<string, TaskKey>} archiveRootKeys - The key of the root of each archive a
+   * member is in, by the id of that root.
    * @returns {Promise<void>} Resolves once appended.
    * @throws {InvalidTaskError} When the members are not a tree under the root.
+   * @throws {Error} When the key of the root of an archive is missing, a defect.
    */
   public async restored(
     events: TaskEvents,
@@ -171,9 +182,22 @@ export class TaskAnnouncer {
     members: readonly Task[],
     entryId: string,
     actor: EventActor,
+    rearchived: ReadonlyMap<string, Task>,
+    archiveRootKeys: ReadonlyMap<string, TaskKey>,
   ): Promise<void> {
     for (const member of this.treeOrder(root, members, true)) {
       await events.taskRestored(member, entryId, root.snapshot.key, actor);
+      const again: Task | undefined = rearchived.get(member.snapshot.id);
+      const archive = again?.snapshot.archive ?? null;
+      if (again !== undefined && archive !== null) {
+        const rootKey: TaskKey | undefined = archiveRootKeys.get(archive.rootId);
+        if (rootKey === undefined) {
+          throw new Error(
+            `The root ${archive.rootId} of the archive of ${again.snapshot.id} has no key.`,
+          );
+        }
+        await events.taskArchived(again, rootKey, actor);
+      }
     }
   }
 
@@ -202,6 +226,35 @@ export class TaskAnnouncer {
     const entryId: string = this.entryOf(root);
     for (const member of this.treeOrder(root, members, true)) {
       await events.taskPurged(member, entryId, root.snapshot.key, actor);
+    }
+  }
+
+  /**
+   * Method purgedPart
+   *
+   * @description
+   * Announces the erasure of a part of an entry too large for one batch of the purge: one
+   * `task.purged.v1` per task of the part, in the order they are erased (the deepest first, then
+   * by id), each at the version of its erasure with the entry and the key of its root, which a
+   * later part erases.
+   *
+   * @param {TaskEvents} events - The outbox of the transaction.
+   * @param {string} entryId - The entry.
+   * @param {TaskKey} rootKey - The key of the root of the entry.
+   * @param {readonly Task[]} tasks - The tasks of the part, at the version of their erasure, in
+   * their order.
+   * @param {EventActor} actor - Who erases them.
+   * @returns {Promise<void>} Resolves once appended.
+   */
+  public async purgedPart(
+    events: TaskEvents,
+    entryId: string,
+    rootKey: TaskKey,
+    tasks: readonly Task[],
+    actor: EventActor,
+  ): Promise<void> {
+    for (const task of tasks) {
+      await events.taskPurged(task, entryId, rootKey, actor);
     }
   }
 

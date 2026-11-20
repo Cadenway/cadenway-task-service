@@ -52,6 +52,7 @@ describe('answerRefusals', () => {
       },
     ],
     [{ reason: 'trash-entry-not-found' }, 404, 'trash-entry.not-found', undefined],
+    [{ reason: 'trash-writes-disabled' }, 404, 'http.not-found', undefined],
     [{ reason: 'version-mismatch', version: 13 }, 412, 'request.version-mismatch', { version: 13 }],
     [
       { reason: 'status-hidden', status: 'review' },
@@ -82,8 +83,37 @@ describe('answerRefusals', () => {
     [{ reason: 'subtask-limit-reached' }, 422, 'task.subtask-limit-reached', undefined],
   ];
 
-  it('covers the twenty-three reasons of a refusal', () => {
-    expect(new Set(answers.map(([refusal]) => refusal.reason)).size).toBe(23);
+  it('covers the twenty-four reasons of a refusal', () => {
+    expect(new Set(answers.map(([refusal]) => refusal.reason)).size).toBe(24);
+  });
+
+  it('answers a write of the trash while its switch is off exactly as a route the service lacks', async () => {
+    const thrown: unknown = await answerRefusals(
+      () => Promise.reject(new TaskRefusal({ reason: 'trash-writes-disabled' })),
+      { method: 'POST', originalUrl: '/internal/v1/tasks/CAD-482/trash' },
+    ).catch((error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(ProblemException);
+    if (!(thrown instanceof ProblemException)) {
+      return;
+    }
+    expect(thrown.problem).toEqual({
+      type: 'about:blank',
+      title: 'Not Found',
+      status: 404,
+      code: 'http.not-found',
+      detail: 'Cannot POST /internal/v1/tasks/CAD-482/trash',
+    });
+  });
+
+  it('names the route only for a write of the trash refused by its switch', async () => {
+    const thrown: unknown = await answerRefusals(
+      () => Promise.reject(new TaskRefusal({ reason: 'task-not-found' })),
+      { method: 'POST', originalUrl: '/internal/v1/tasks/CAD-482/trash' },
+    ).catch((error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(ProblemException);
+    expect(thrown instanceof ProblemException ? thrown.problem.detail : null).toBeUndefined();
   });
 
   it.each(answers)(

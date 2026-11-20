@@ -1260,11 +1260,44 @@ describe('Task.restoreFromTrash: a restoration brings every task of the entry ba
     });
   });
 
-  it('refuses to detach an archived task, whose archive keeps its parent', () => {
+  it('detaches an archived root from a parent it could not show, keeping its archive', () => {
+    const restored: Task = Task.restore(
+      subtaskState({ trash: trashIn(), archive: archiveFrom(CAD_483), version: 3 }),
+    ).restoreFromTrash(NOW, true);
+
+    expect(restored.snapshot).toMatchObject({
+      trash: null,
+      archive: archiveFrom(CAD_483),
+      parentId: null,
+      parentKey: null,
+      version: 4,
+    });
+  });
+});
+
+describe('Task.rearchive: an archived task restored from the trash is archived as of the restoration', () => {
+  it('takes the instant and the actor of the restoration, the same root, one version more', () => {
+    const restored: Task = Task.restore(
+      subtaskState({ trash: trashIn(), archive: archiveFrom(CAD_482), version: 3 }),
+    ).restoreFromTrash(NOW, false);
+
+    const archived: Task = restored.rearchive({ type: 'user', id: CAMILLE }, NOW);
+
+    expect(archived.snapshot).toMatchObject({
+      archive: { at: NOW, by: { type: 'user', id: CAMILLE }, rootId: CAD_482 },
+      trash: null,
+      updatedAt: NOW,
+      version: 5,
+    });
+  });
+
+  it('refuses a live task and a task still in the trash', () => {
+    expect(() => cad482().rearchive({ type: 'user', id: CAMILLE }, NOW)).toThrow(InvalidTaskError);
     expect(() =>
-      Task.restore(
-        subtaskState({ trash: trashIn(), archive: archiveFrom(CAD_483) }),
-      ).restoreFromTrash(NOW, true),
+      cad482({ trash: trashIn(), archive: archiveFrom(CAD_482) }).rearchive(
+        { type: 'user', id: CAMILLE },
+        NOW,
+      ),
     ).toThrow(InvalidTaskError);
   });
 });

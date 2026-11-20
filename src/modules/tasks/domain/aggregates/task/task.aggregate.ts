@@ -1153,18 +1153,19 @@ export class Task {
    * @description
    * Brings the task back from its trash entry ("An entry comes back to its list", "Restoring" of
    * `openapi/public/trash.yaml`): the entry cleared, the next version and `updatedAt` = `at`
-   * (`task.restored.v1`). The root leaves its parent when the parent is no longer live or can no
-   * longer take it (`detach`, decided by `takesRestoredRoot`: "détachée de son parent supprimé")
-   * and becomes a top-level task of its list; every other task of the entry keeps its parent, a
-   * task of the same entry. An archived task comes back in its archive, its parent kept (the
-   * restoration of the archive decides on it).
+   * (`task.restored.v1`). The root leaves its parent when the parent can no longer take it
+   * (`detach`: for a live root, a parent no longer live or that `takesRestoredRoot` refuses,
+   * "détachée de son parent supprimé"; for an archived root, a parent in the trash or in another
+   * list, which it could not show) and becomes a top-level task of its list; every other task of
+   * the entry keeps its parent, a task of the same entry. An archived task comes back in its
+   * archive, detached or not.
    *
    * @param {Date} at - The transaction instant.
    * @param {boolean} detach - `true` to detach the root from its parent; the application passes it
-   * for a live root of the entry only.
+   * for the root of the entry only.
    * @returns {Task} The task, out of the trash, at the next version, with its archive as it was.
    * @throws {InvalidTaskError} When the task is not in the trash, the instant is invalid, or
-   * `detach` names a task without parent or an archived task.
+   * `detach` names a task without parent.
    */
   public restoreFromTrash(at: Date, detach: boolean): Task {
     requireInstant(at);
@@ -1172,8 +1173,8 @@ export class Task {
     if (state.trash === null) {
       throw new InvalidTaskError('a task that is not in the trash is not restored from it');
     }
-    if (detach && (state.parentId === null || state.archive !== null)) {
-      throw new InvalidTaskError('only a live task with a parent leaves it');
+    if (detach && state.parentId === null) {
+      throw new InvalidTaskError('only a task with a parent leaves it');
     }
 
     return new Task({
@@ -1181,6 +1182,45 @@ export class Task {
       trash: null,
       parentId: detach ? null : state.parentId,
       parentKey: detach ? null : state.parentKey,
+      updatedAt: at,
+      version: state.version + 1,
+    });
+  }
+
+  /**
+   * Method rearchive
+   *
+   * @description
+   * Archives again, as of its restoration from the trash, a task that came back archived ("an
+   * archived task restored from the trash comes back archived as of the restoration, by the person
+   * who restored it"): the same root of its archive (an archive lies wholly inside an entry, so
+   * every member of it changes together), the instant and the actor of the restoration, the next
+   * version and `updatedAt` = `at` (`task.archived.v1`, whose `occurredAt` is its new
+   * `archivedAt`). Nothing else changes.
+   *
+   * @param {TaskActor} by - Who restored it.
+   * @param {Date} at - The transaction instant of the restoration.
+   * @returns {Task} The task, archived as of the restoration, at the next version.
+   * @throws {InvalidTaskError} When the task is not archived or still in the trash, or the instant
+   * or the actor is invalid.
+   */
+  public rearchive(by: TaskActor, at: Date): Task {
+    requireInstant(at);
+    checkActor(by);
+    const { state } = this;
+    if (state.archive === null) {
+      throw new InvalidTaskError('only an archived task is archived again');
+    }
+    if (state.trash !== null) {
+      throw new InvalidTaskError('a task in the trash is not archived');
+    }
+    return new Task({
+      ...state,
+      archive: Object.freeze({
+        at,
+        by: Object.freeze({ type: by.type, id: by.id }),
+        rootId: state.archive.rootId,
+      }),
       updatedAt: at,
       version: state.version + 1,
     });

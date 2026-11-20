@@ -68,6 +68,10 @@ export class TasksDeletedListTasks implements DeletedListTasks {
     switch (output.outcome) {
       case 'list-live':
         return { outcome: 'list-live' };
+      case 'list-gone':
+        return { outcome: 'list-gone' };
+      case 'rescan':
+        return { outcome: 'rescan' };
       case 'none-left':
         return {
           outcome: 'none-left',

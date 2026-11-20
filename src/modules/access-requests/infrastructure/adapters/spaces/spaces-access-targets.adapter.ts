@@ -12,6 +12,7 @@ import type {
 } from '../../../../spaces/public/access/list-managed-access-targets.js';
 import type { GrantOutcome } from '../../../application/models/grant/grant-outcome.model.js';
 import type { GrantRequest } from '../../../application/models/grant/grant-request.model.js';
+import type { ReadLock } from '../../../application/models/lock/read-lock.model.js';
 import type { ManagedTargets } from '../../../application/models/target/managed-targets.model.js';
 import type { TargetAccess } from '../../../application/models/target/target-access.model.js';
 import type { TargetRef } from '../../../application/models/target/target-ref.model.js';
@@ -99,6 +100,7 @@ export class SpacesAccessTargets implements AccessTargets {
    * @param {string} viewerUserId - The account of the member.
    * @param {MemberRole} viewerRole - Its role in the organization.
    * @param {TargetRef} target - The space or the list.
+   * @param {ReadLock} lock - The lock the read of the space and the list takes.
    * @returns {Promise<TargetAccess | null>} The target, or `null`.
    */
   public async find(
@@ -106,12 +108,14 @@ export class SpacesAccessTargets implements AccessTargets {
     viewerUserId: string,
     viewerRole: MemberRole,
     target: TargetRef,
+    lock: ReadLock,
   ): Promise<TargetAccess | null> {
     const found: AccessTarget | null = await this.findAccessTarget.execute({
       organizationId,
       viewerUserId,
       viewerRole,
       target,
+      lock,
     });
     return found === null
       ? null

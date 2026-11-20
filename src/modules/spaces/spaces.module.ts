@@ -4,6 +4,7 @@ import { Module } from '@nestjs/common';
 import { OrganizationMembersModule } from '../organization-members/organization-members.module.js';
 import { memberDirectoryProvider } from './composition/providers/adapters/membership/member-directory.provider.js';
 import { spacesUnitOfWorkProvider } from './composition/providers/adapters/space/spaces-unit-of-work.provider.js';
+import { trashWritesProvider } from './composition/providers/adapters/trash/trash-writes.provider.js';
 import { checkListAccessProvider } from './composition/providers/use-cases/access/check-list-access.provider.js';
 import { findAccessTargetProvider } from './composition/providers/use-cases/access/find-access-target.provider.js';
 import { grantRequestedAccessProvider } from './composition/providers/use-cases/access/grant-requested-access.provider.js';
@@ -24,6 +25,8 @@ import { findVisibleListsProvider } from './composition/providers/use-cases/list
 import { findVisibleSpaceListsProvider } from './composition/providers/use-cases/list/find-visible-space-lists.provider.js';
 import { getListProvider } from './composition/providers/use-cases/list/get-list.provider.js';
 import { holdListProvider } from './composition/providers/use-cases/list/hold-list.provider.js';
+import { lockDeletedListProvider } from './composition/providers/use-cases/list/lock-deleted-list.provider.js';
+import { lockDeletedListsProvider } from './composition/providers/use-cases/list/lock-deleted-lists.provider.js';
 import { listArchivedListsProvider } from './composition/providers/use-cases/list/list-archived-lists.provider.js';
 import { listCurrentSprintsProvider } from './composition/providers/use-cases/list/list-current-sprints.provider.js';
 import { listDeletedSpaceListsProvider } from './composition/providers/use-cases/list/list-deleted-space-lists.provider.js';
@@ -60,6 +63,8 @@ import { FindVisibleList } from './public/list/find-visible-list.js';
 import { FindVisibleLists } from './public/list/find-visible-lists.js';
 import { FindVisibleSpaceLists } from './public/list/find-visible-space-lists.js';
 import { HoldList } from './public/list/hold-list.js';
+import { LockDeletedList } from './public/list/lock-deleted-list.js';
+import { LockDeletedLists } from './public/list/lock-deleted-lists.js';
 import { ListArchivedLists } from './public/list/list-archived-lists.js';
 import { ListCurrentSprints } from './public/list/list-current-sprints.js';
 import { ListDeletedSpaceLists } from './public/list/list-deleted-space-lists.js';
@@ -118,10 +123,11 @@ markIdempotent(SpaceListsController.prototype, 'create');
  * learns the owner; for the tasks module `FindVisibleList`, `FindVisibleLists`,
  * `FindVisibleSpaceLists`, `ListCurrentSprints`, `ListSidebarLists`, `ListVisibleListIds`,
  * `ListArchivedLists`, `RestoreArchivedList`, `AllocateTaskKeys`, and for the trash
- * `ListTrashLists`, `FindTrashList`, `RestoreDeletedList`, `PurgeDeletedList` and `HoldList`;
- * for the deletion-lifecycle module `ListDeletedSpaceLists` and `PurgeDeletedSpace`; for the
- * access-requests module `FindAccessTarget`, `ListManagedAccessTargets` and
- * `GrantRequestedAccess`. They run in the transaction of their caller.
+ * `ListTrashLists`, `FindTrashList`, `RestoreDeletedList`, `PurgeDeletedList`, `HoldList`,
+ * `LockDeletedList` and `LockDeletedLists`; for the deletion-lifecycle module
+ * `ListDeletedSpaceLists` and `PurgeDeletedSpace`; for the access-requests module
+ * `FindAccessTarget`, `ListManagedAccessTargets` and `GrantRequestedAccess`. They run in the
+ * transaction of their caller.
  */
 @Module({
   imports: [OrganizationMembersModule],
@@ -136,6 +142,7 @@ markIdempotent(SpaceListsController.prototype, 'create');
   providers: [
     spacesUnitOfWorkProvider,
     memberDirectoryProvider,
+    trashWritesProvider,
     createSpaceProvider,
     listSpacesProvider,
     getSpaceProvider,
@@ -163,6 +170,8 @@ markIdempotent(SpaceListsController.prototype, 'create');
     restoreDeletedListProvider,
     purgeDeletedListProvider,
     holdListProvider,
+    lockDeletedListProvider,
+    lockDeletedListsProvider,
     listDeletedSpaceListsProvider,
     purgeDeletedSpaceProvider,
     allocateTaskKeysProvider,
@@ -195,6 +204,8 @@ markIdempotent(SpaceListsController.prototype, 'create');
     RestoreDeletedList,
     PurgeDeletedList,
     HoldList,
+    LockDeletedList,
+    LockDeletedLists,
     ListDeletedSpaceLists,
     PurgeDeletedSpace,
     AllocateTaskKeys,

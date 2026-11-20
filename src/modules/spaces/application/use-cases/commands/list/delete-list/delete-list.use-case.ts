@@ -1,7 +1,9 @@
 import type { TaskList } from '../../../../../domain/aggregates/list/task-list.aggregate.js';
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
+import { SpaceRefusal } from '../../../../models/space/space-refusal.model.js';
 import type { SpacesStore } from '../../../../models/transactions/spaces-store.model.js';
+import type { TrashWrites } from '../../../../ports/outbound/feature/trash/trash-writes.port.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpacesUnitOfWork } from '../../../../ports/outbound/transactions/space/spaces-unit-of-work.port.js';
 import { EditableListLocator } from '../../../../services/list/editable-list-locator.service.js';
@@ -23,7 +25,9 @@ import type { DeleteListInput } from './delete-list.input.js';
  * takes `deletedAt` = the instant of the transaction, `deletedBy` = the actor, the next version;
  * `list.deleted.v1` is appended and the job enqueued (occurrence key
  * `list:<listId>:<version after>`) in the same tenant transaction, so the three commit together.
- * Not recorded in the activity log. Its grants stay with the tombstone.
+ * Not recorded in the activity log. Its grants stay with the tombstone. While the writes of the
+ * trash are off (`TrashWrites`, `TRASH_WRITES_ENABLED`), it answers `trash-writes-disabled` first,
+ * before the membership, which the route maps to the answer of an unknown route.
  */
 export class DeleteList {
   // #region Properties
@@ -50,6 +54,17 @@ export class DeleteList {
   private readonly viewers: ViewerResolver;
 
   /**
+   * Property trashWrites
+   *
+   * @description
+   * The switch of the writes of the trash, checked first.
+   *
+   * @type {TrashWrites}
+   * @readonly
+   */
+  private readonly trashWrites: TrashWrites;
+
+  /**
    * Property lists
    *
    * @description
@@ -66,15 +81,21 @@ export class DeleteList {
    * Constructor
    *
    * @description
-   * Takes the transaction port and the directory of the members.
+   * Takes the transaction port, the directory of the members and the switch of the trash.
    *
    * @param {SpacesUnitOfWork} unitOfWork - The tenant transaction.
    * @param {MemberDirectory} members - The copy of the memberships.
+   * @param {TrashWrites} trashWrites - The switch of the writes of the trash.
    * @constructor
    */
-  public constructor(unitOfWork: SpacesUnitOfWork, members: MemberDirectory) {
+  public constructor(
+    unitOfWork: SpacesUnitOfWork,
+    members: MemberDirectory,
+    trashWrites: TrashWrites,
+  ) {
     this.unitOfWork = unitOfWork;
     this.viewers = new ViewerResolver(members);
+    this.trashWrites = trashWrites;
     this.lists = new EditableListLocator();
   }
   // #endregion
@@ -89,10 +110,14 @@ export class DeleteList {
    * @param {DeleteListInput} input - The actor, the list and the versions `If-Match` accepts
    * (`null` when absent).
    * @returns {Promise<void>} Resolves once the deletion, its event and its job are written.
-   * @throws {SpaceRefusal} `organization-not-found`, `list-not-found`, `role-insufficient` or
+   * @throws {SpaceRefusal} `trash-writes-disabled` (first), `organization-not-found`, `list-not-found`, `role-insufficient` or
    * `version-mismatch`.
    */
   public async execute(input: DeleteListInput): Promise<void> {
+    // Before the membership and the transaction, so that the answer carries nothing.
+    if (!this.trashWrites.isEnabled()) {
+      throw new SpaceRefusal({ reason: 'trash-writes-disabled' });
+    }
     await this.unitOfWork.run(async (store: SpacesStore): Promise<void> => {
       const viewer: Viewer = await this.viewers.resolve(
         input.organizationId,

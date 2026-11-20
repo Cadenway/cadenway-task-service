@@ -39,9 +39,10 @@ It also exports the `DropTargetAccessRequests` provider (`{ organizationId, targ
 most, more throws before any statement, `{ kind: 'list', listId }` or `{ kind: 'space', spaceId }`):
 the pending requests of a deleted target, in the tenant transaction of its caller, which it joins.
 The jobs of deletion-lifecycle call it in transactions that read the target still deleted under its
-lock: for a deleted space (its space requests only) when they read its lists, for each deleted list
-in its first batch, for the tasks of each batch they move to the trash, and for the tasks of an
-entry of "Supprimer la tâche" that are not out of the trash. The caller decides that the target is
+lock: for a deleted or erased space (its space requests and the list requests of its lists) when
+they read its lists, for each deleted list in its first batch, for the tasks of each batch they
+move to the trash, and for the tasks of an entry of "Supprimer la tâche" that are not out of the
+trash. The caller decides that the target is
 deleted; this operation only deletes. No event.
 
 ## Owned tables
@@ -164,8 +165,11 @@ after a deletion of a list or a space and after "Supprimer la tâche".
   clean-up job, unless the copy holds them as a member again when a batch runs.
 - The pending requests of a deleted target are dropped by the jobs of deletion-lifecycle ("The
   pending requests of a target that is deleted ... are dropped"): the space requests of a deleted
-  space, the list requests of a deleted list (a list deleted with its space included), the task
-  requests of the tasks in the trash or erased, each while the target is still deleted. Until then
+  or erased space and the list requests of its lists, the list requests of a deleted or erased
+  list, the task requests of the tasks in the trash or erased, each while the target is still
+  deleted. A deleted space has all its lists deleted (restoring a list restores its space) and an
+  erased one has no list left, so every list request of such a space belongs to a deleted or erased
+  list; this also covers the lists of the space erased before its job ran. Until then
   they are hidden: their target is no longer found, so nobody reads or answers them; a target
   restored first keeps them. Answered requests stay, and a request for an archived target stays
   pending (a request is stored for an archived target); the attempts are untouched.
@@ -184,9 +188,22 @@ relay once a run that appended events resolved.
   so its clean-up job sees it), then `pg_advisory_xact_lock` on the organization and the account,
   which serializes the requests of one requester (the count, the insert and the uniqueness see each
   other), then the clock, the attempts of the hour (at most 10 rows), and, when allowed, the pruning
-  and the new attempt, then the target (one or two readings of other modules, without lock), then
-  one insert, always (`INSERT ... SELECT ... WHERE $stored ON CONFLICT ... DO NOTHING`), and, for a
-  stored request, one outbox append.
+  and the new attempt, then the target under a `FOR SHARE` lock held until the commit (a space
+  through `FindAccessTarget`, which locks the space; a list through `FindAccessTarget`, which locks
+  the list and reads its space without a lock; a task through `FindTaskReference`, which locks the
+  task, then its list through `FindAccessTarget`, which locks the list), in the same statements and
+  locks for every outcome (an unknown target is read as the nil UUID), then one
+  insert, always (`INSERT ... SELECT ... WHERE $stored ON CONFLICT ... DO NOTHING`), and, for a
+  stored request, one outbox append. A deletion or a trash of the target running meanwhile either
+  commits first, and the request reads its target deleted or in the trash and stores nothing, or
+  waits for the request, whose pending row its job then drops. The lock of the list suffices for a
+  list or a task: a deletion of its space writes the list rows too (it marks them deleted), so it
+  conflicts with that lock as a deletion of the list does. Lock order: the membership, the advisory
+  lock, the attempts, the task, then the space (a space target) or the list, then the insert. It
+  cannot deadlock with a batch of a deletion job (tasks `FOR NO KEY UPDATE`, the list `FOR SHARE`,
+  then the access requests), a trash (tasks, then the list), a deletion of a list or a space (the
+  space, then its lists) or a restoration (tasks, the space, the list): the request holds one row
+  of the space or the list only, after its task, and takes the access requests last.
 - The listing runs in `runReadOnly`: the role, `ListManagedAccessTargets`, then, when the actor has
   `edit` on some list, the distinct tasks of the pending task requests of the organization (one
   statement) located with `FindTaskReferences` in chunks of 100, then the page (one statement,
@@ -207,13 +224,13 @@ relay once a run that appended events resolved.
   back alone; the loop, the retries and the dead letters belong to member-lifecycle (its MODULE.md).
 - `DropTargetAccessRequests` joins the transaction of the job step that calls it: one delete of the
   pending requests (`state = 'pending'`) of the target, `target_id = ANY($tasks)` for task
-  requests, `target_id = $list` for list requests, `target_id = $space` for space requests
-  (`target_id` is the task, the list or the space of the target, which the shape check keeps), with
-  no read before it. No index serves `target_id` alone: the statement reads the pending requests of
+  requests, `target_id = $list` for list requests, `target_id = $space` or `space_id = $space` for
+  a space (`target_id` is the task, the list or the space of the target, which the shape check
+  keeps), with no read before it. No index serves `target_id` alone: the statement reads the pending requests of
   the organization through `access_requests_pending_index`, O(pending requests of the
   organization), like the listing, bounded by the hourly limit of each requester; its plans are for
-  the integration suite to measure. A request an answer holds `FOR UPDATE` makes the statement wait 5 s at most, then it is
-  answered and stays. In a deletion batch it runs after the tasks module locked the tasks and held
+  the integration suite to measure. A request an answer holds `FOR UPDATE` makes the statement wait
+  5 s at most, then it is answered and stays. In a deletion batch it runs after the tasks module locked the tasks and held
   the deleted list `FOR SHARE`: an approval locks its request, then the list, only once it read the
   list live, which a deleted list is not, so the two never wait in opposite orders.
 - Lock order of an approval: the membership of the actor `FOR SHARE`, the request `FOR UPDATE`,
