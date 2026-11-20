@@ -1526,6 +1526,17 @@ const unavailableDependencies: TasksStore['dependencies'] = {
   candidates: dependencyFixtureMissing,
 };
 
+/** Fixtures of unrelated operations do not use work logs. */
+const unavailableTime: TasksStore['time'] = {
+  create: dependencyFixtureMissing,
+  find: dependencyFixtureMissing,
+  remove: dependencyFixtureMissing,
+  page: dependencyFixtureMissing,
+  totals: dependencyFixtureMissing,
+  statusHistoryPage: dependencyFixtureMissing,
+  observationTime: dependencyFixtureMissing,
+};
+
 /** What a spec seeds in the fake store. */
 export interface InMemoryTasksSeed {
   // #region Properties
@@ -1546,6 +1557,9 @@ export interface InMemoryTasksSeed {
 
   /** Graph adapter supplied only by dependency specs. */
   readonly dependencies?: TasksStore['dependencies'];
+
+  /** Work-log adapter supplied by time operation specs. */
+  readonly time?: TasksStore['time'];
   // #endregion
 }
 
@@ -2321,6 +2335,8 @@ export class InMemoryTasks implements TasksUnitOfWork {
   /** The graph adapter, when this fixture is used by dependency specs. */
   private readonly dependencies: TasksStore['dependencies'];
 
+  private readonly time: TasksStore['time'];
+
   /**
    * The ids of the tasks another transaction holds `FOR NO KEY UPDATE` or `FOR UPDATE` (a change
    * or a deletion under way): `shareLocationUnlessLocked` leaves them out, as
@@ -2355,6 +2371,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
     this.now = seed.now ?? NOW;
     this.trace = seed.trace ?? [];
     this.dependencies = seed.dependencies ?? unavailableDependencies;
+    this.time = seed.time ?? unavailableTime;
     this.trashEntries = new Map(
       (seed.trashEntries ?? []).map((row: StoredTrashEntry): [string, StoredTrashEntry] => [
         row.id,
@@ -2928,6 +2945,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
       archives,
       trash,
       dependencies: this.dependencies,
+      time: this.time,
       copies: {
         listSources: (
           organizationId: string,
