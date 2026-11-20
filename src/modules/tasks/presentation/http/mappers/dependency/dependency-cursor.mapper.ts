@@ -18,6 +18,7 @@ interface DependencyCursorScope {
   // #region Properties
   /** The organization from the authenticated request. */
   readonly organizationId: string;
+
   /** The anchor task key within the organization. */
   readonly taskKey: string;
   // #endregion
