@@ -71,12 +71,19 @@ describe('MeasureGoalTargets', () => {
       listIds: ['list'],
       milestoneKeys: ['CAD-482', 'CAD-483'],
       lock: true,
+      scopeSpaceId: 'goal-space',
     });
     expect(milestones).toHaveBeenNthCalledWith(2, 'org', ['CAD-482'], true);
-    expect(lockTrashLists).toHaveBeenCalledWith('org', ['list', 'moved'], 'hold', {
-      userId: 'member',
-      role: 'member',
-    });
+    expect(lockTrashLists).toHaveBeenCalledWith(
+      'org',
+      ['list', 'moved'],
+      'hold',
+      { userId: 'member', role: 'member' },
+      ['goal-space'],
+    );
+    expect(milestones.mock.invocationCallOrder[1]).toBeLessThan(
+      lockTrashLists.mock.invocationCallOrder[0] ?? 0,
+    );
     expect(listCounts).not.toHaveBeenCalled();
     expect(result.lists.has('list')).toBe(true);
     expect(result.milestones.size).toBe(0);

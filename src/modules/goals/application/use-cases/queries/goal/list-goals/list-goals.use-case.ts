@@ -1,3 +1,4 @@
+import { rethrowGoalFailure } from '../../../../services/goal/goal-failure.service.js';
 import { GoalQuarter } from '../../../../../domain/value-objects/goal/goal-quarter.value-object.js';
 import type { GoalPageSummary } from '../../../../models/goal/goal-page-summary.model.js';
 import type { GoalPosition } from '../../../../models/goal/goal-position.model.js';
@@ -23,24 +24,26 @@ export class ListGoals {
   // #region Methods
   /** Scans bounded candidate batches and applies current visibility before paging. */
   public execute(input: ListGoalsInput): Promise<ListGoalsOutput> {
-    return this.work.read(async (store) => {
-      const viewer = await requireViewer(store, input, false);
-      const summary = await summarize(store, viewer, input);
-      const records = await visiblePage(store, viewer, input);
-      const hasMore = records.length > input.limit;
-      const page = records.slice(0, input.limit);
-      const links = await store.measureLinks(
-        viewer,
-        page.flatMap((record) => record.goal.snapshot.results),
-        false,
-      );
-      const items = page.map((record) => projectGoal(record.goal, input.today, links));
-      return {
-        items,
-        nextPosition: hasMore ? (page.at(-1)?.position ?? null) : null,
-        summary,
-      };
-    });
+    return this.work
+      .read(async (store) => {
+        const viewer = await requireViewer(store, input, false);
+        const summary = await summarize(store, viewer, input);
+        const records = await visiblePage(store, viewer, input);
+        const hasMore = records.length > input.limit;
+        const page = records.slice(0, input.limit);
+        const links = await store.measureLinks(
+          viewer,
+          page.flatMap((record) => record.goal.snapshot.results),
+          false,
+        );
+        const items = page.map((record) => projectGoal(record.goal, input.today, links));
+        return {
+          items,
+          nextPosition: hasMore ? (page.at(-1)?.position ?? null) : null,
+          summary,
+        };
+      })
+      .catch(rethrowGoalFailure);
   }
   // #endregion
 }

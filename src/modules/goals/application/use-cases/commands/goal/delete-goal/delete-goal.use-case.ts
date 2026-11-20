@@ -1,3 +1,4 @@
+import { rethrowGoalFailure } from '../../../../services/goal/goal-failure.service.js';
 import type { GoalsUnitOfWork } from '../../../../ports/outbound/transactions/goal/goals-unit-of-work.port.js';
 import {
   requireGoal,
@@ -17,13 +18,15 @@ export class DeleteGoal {
   // #region Methods
   /** Authorizes and locks the goal before checking its version. */
   public execute(input: DeleteGoalInput): Promise<DeleteGoalOutput> {
-    return this.work.run(async (store) => {
-      const viewer = await requireViewer(store, input, true);
-      const goal = await requireGoal(store, viewer, input.goalId, true);
-      requireVersion(goal, input);
-      await store.goals.delete(input.organizationId, input.goalId);
-      return undefined;
-    });
+    return this.work
+      .run(async (store) => {
+        const viewer = await requireViewer(store, input, true);
+        const goal = await requireGoal(store, viewer, input.goalId, true);
+        requireVersion(goal, input);
+        await store.goals.delete(input.organizationId, input.goalId);
+        return undefined;
+      })
+      .catch(rethrowGoalFailure);
   }
   // #endregion
 }

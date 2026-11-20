@@ -16,8 +16,31 @@ export async function requireResult(
   lock: boolean,
 ): Promise<GoalResult> {
   const result = goal.snapshot.results.find((entry) => entry.id === resultId.toLowerCase());
-  if (result === undefined) throw new GoalError({ reason: 'missing-result' });
-  if (lock) await requireVisibleTargets(store, viewer, [result], 'missing-result');
+  if (result === undefined) {
+    if (lock) {
+      await requireVisibleTargets(
+        store,
+        viewer,
+        [],
+        'missing-result',
+        true,
+        goal.snapshot.spaceId,
+        'missing-goal',
+      );
+    }
+    throw new GoalError({ reason: 'missing-result' });
+  }
+  if (lock) {
+    await requireVisibleTargets(
+      store,
+      viewer,
+      [result],
+      'missing-result',
+      true,
+      goal.snapshot.spaceId,
+      'missing-goal',
+    );
+  }
   return result;
 }
 

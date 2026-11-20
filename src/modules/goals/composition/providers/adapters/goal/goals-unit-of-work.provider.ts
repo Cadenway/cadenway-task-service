@@ -51,9 +51,9 @@ export const goalsUnitOfWorkProvider: FactoryProvider<GoalsUnitOfWork> = {
         if (owner === null) return false;
         return spaceId === null
           ? owner.role !== 'guest'
-          : (await findScope(owner, spaceId, lock)) !== null;
+          : (await findScope(owner, spaceId, false)) !== null;
       },
-      measureLinks: ({ organizationId, userId, role }, results, lock) =>
+      measureLinks: ({ organizationId, userId, role }, results, lock, scopeSpaceId) =>
         targets.execute({
           organizationId,
           viewer: { userId, role },
@@ -64,6 +64,7 @@ export const goalsUnitOfWorkProvider: FactoryProvider<GoalsUnitOfWork> = {
             result.kind === 'milestone' ? [result.taskKey] : [],
           ),
           lock,
+          scopeSpaceId,
         }),
     });
 

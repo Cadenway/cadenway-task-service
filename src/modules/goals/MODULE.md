@@ -43,8 +43,10 @@ None.
 
 Read authorization, linked values and goal data share one repeatable-read tenant snapshot. The
 quarter summary uses all visible goals and linked results before the page is returned. A write
-locks the relevant permissions, goal and linked targets for the current transaction. Goal and key
-result changes persist atomically in the same aggregate.
+locks the relevant permissions, goal and linked targets for the current transaction. Linked writes
+lock the goal before milestone tasks, then hold the scope and target spaces together in the common
+space order, then lists. They resolve access again under the locks. Goal and key result changes
+persist atomically in the same aggregate.
 
 ## Decisions
 

@@ -5,6 +5,7 @@ import type { GoalCaller } from '../../models/goal/goal-caller.model.js';
 import type { GoalViewer } from '../../models/goal/goal-viewer.model.js';
 import type { GoalWrite } from '../../models/goal/goal-write.model.js';
 import type { GoalsStore } from '../../models/goal/goals-store.model.js';
+import type { NewGoalResult } from '../../models/goal/new-goal-result.model.js';
 
 /** Loads current membership before accessing any tenant-scoped goal. */
 export async function requireViewer(
@@ -24,6 +25,7 @@ export async function requireScope(
   spaceId: string | null,
   write: boolean,
   missing: 'missing-space' | 'missing-goal',
+  lock: boolean = write,
 ): Promise<void> {
   if (spaceId === null) {
     if (!write && viewer.role === 'guest') {
@@ -34,7 +36,7 @@ export async function requireScope(
     }
     return;
   }
-  const role = await store.findScope(viewer, spaceId, write);
+  const role = await store.findScope(viewer, spaceId, lock);
   if (role === null) throw new GoalError({ reason: missing });
   if (write && role !== 'edit') throw new GoalError({ reason: 'role-insufficient', role });
 }
@@ -45,14 +47,18 @@ export async function requireGoal(
   viewer: GoalViewer,
   goalId: string,
   write: boolean,
+  lockScope = true,
 ): Promise<Goal> {
   const placement = await store.goals.find(viewer.organizationId, goalId, false);
   if (placement === null) throw new GoalError({ reason: 'missing-goal' });
-  await requireScope(store, viewer, placement.goal.snapshot.spaceId, write, 'missing-goal');
+  await requireScope(store, viewer, placement.goal.snapshot.spaceId, write, 'missing-goal', false);
   if (!write) return placement.goal;
   const locked = await store.goals.find(viewer.organizationId, goalId, true);
   if (locked?.goal.snapshot.spaceId !== placement.goal.snapshot.spaceId) {
     throw new GoalError({ reason: 'missing-goal' });
+  }
+  if (lockScope) {
+    await requireScope(store, viewer, locked.goal.snapshot.spaceId, true, 'missing-goal');
   }
   return locked.goal;
 }
@@ -76,11 +82,20 @@ export async function requireEligibleOwner(store: GoalsStore, goal: Goal): Promi
 export async function requireVisibleTargets(
   store: GoalsStore,
   viewer: GoalViewer,
-  results: readonly GoalResult[],
+  results: readonly (GoalResult | NewGoalResult)[],
   missing: 'result-target-invalid' | 'missing-result',
+  lock = true,
+  scopeSpaceId?: string | null,
+  scopeMissing?: 'missing-space' | 'missing-goal',
 ): Promise<void> {
-  const links = await store.measureLinks(viewer, results, true);
-  for (const result of results) {
+  const normalized = results.map((result) =>
+    result.kind === 'list-progress' ? { ...result, listId: result.listId.toLowerCase() } : result,
+  );
+  const links = await store.measureLinks(viewer, normalized, lock, scopeSpaceId);
+  if (scopeMissing !== undefined) {
+    await requireScope(store, viewer, scopeSpaceId ?? null, true, scopeMissing, false);
+  }
+  for (const result of normalized) {
     if (
       (result.kind === 'list-progress' && !links.lists.has(result.listId)) ||
       (result.kind === 'milestone' && !links.milestones.has(result.taskKey))
