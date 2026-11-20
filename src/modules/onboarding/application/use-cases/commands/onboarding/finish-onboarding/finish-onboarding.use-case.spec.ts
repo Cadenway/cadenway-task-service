@@ -35,7 +35,6 @@ function fixture(role: 'member' | 'guest' = 'member') {
     createInitial,
     find: () => Promise.resolve(current),
     save,
-    recordFirstTask: () => Promise.resolve(false),
   };
   const members: OnboardingMembers = { find: () => Promise.resolve({ role }) };
   const work: OnboardingUnitOfWork = {

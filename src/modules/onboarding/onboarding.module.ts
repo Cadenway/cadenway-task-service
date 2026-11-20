@@ -31,15 +31,9 @@ export class OnboardingModule {}
       provide: RecordFirstOnboardingTask,
       inject: [TenantTransactionRunner],
       useFactory: (runner: TenantTransactionRunner): RecordFirstOnboardingTask =>
-        new RecordFirstOnboardingTask(({ organizationId, actorUserId, spaceId }) =>
-          runner.run(async (tx) => {
-            await new DrizzleOnboardingRepository(tx.db).recordFirstTask(
-              organizationId,
-              actorUserId,
-              spaceId,
-            );
-          }),
-        ),
+        new RecordFirstOnboardingTask({
+          run: (work) => runner.run((tx) => work(new DrizzleOnboardingRepository(tx.db))),
+        }),
     },
   ],
   exports: [RecordFirstOnboardingTask],

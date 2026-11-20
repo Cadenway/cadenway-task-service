@@ -8,6 +8,5 @@ export interface OnboardingRepository {
   createInitial(organizationId: string, userId: string): Promise<void>;
   find(organizationId: string, userId: string, lock: boolean): Promise<Onboarding | null>;
   save(state: OnboardingState, expectedVersion: number): Promise<boolean>;
-  recordFirstTask(organizationId: string, userId: string, spaceId: string): Promise<boolean>;
   // #endregion
 }

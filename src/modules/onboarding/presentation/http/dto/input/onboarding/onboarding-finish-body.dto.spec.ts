@@ -20,4 +20,20 @@ describe('onboarding bodies', () => {
     expect(OnboardingDraftBody.schema.parse({ name: null }).name).toBeNull();
     expect(OnboardingDraftBody.schema.safeParse({ name: 'bad\u0000name' }).success).toBe(false);
   });
+
+  it('reports a blank space name in the draft and provisioning request', () => {
+    const draft = OnboardingDraftBody.schema.safeParse({ name: '   ' });
+    const finish = OnboardingFinishBody.schema.safeParse({
+      name: '   ',
+      prefix: 'CAD',
+      preset: 'dev',
+    });
+    for (const result of [draft, finish]) {
+      expect(result.success).toBe(false);
+      if (!result.success)
+        expect(result.error.issues).toEqual(
+          expect.arrayContaining([expect.objectContaining({ path: ['name'], code: 'custom' })]),
+        );
+    }
+  });
 });

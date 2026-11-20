@@ -71,13 +71,22 @@ describe('Onboarding', () => {
   });
 
   it('retains the draft on dismissal and preserves the version on repeated dismissal', () => {
-    const dismissed = initial().patchDraft({ name: 'Produit' }).patchDraft({ dismissed: true });
+    const draft = initial().patchDraft({ step: 'preset', name: 'Produit', prefix: 'CAD' });
+    const dismissal = {
+      dismissed: true,
+      step: 'team',
+      name: 'Atelier Nord',
+      prefix: null,
+      preset: 'agency',
+      color: 'azur',
+    } as const;
+    const dismissed = draft.patchDraft(dismissal);
     expect(dismissed.snapshot).toMatchObject({
       version: 3,
-      wizard: { status: 'dismissed', name: 'Produit' },
       provisioning: null,
     });
-    expect(dismissed.patchDraft({ dismissed: true })).toBe(dismissed);
+    expect(dismissed.snapshot.wizard).toEqual({ ...draft.snapshot.wizard, status: 'dismissed' });
+    expect(dismissed.patchDraft(dismissal)).toBe(dismissed);
     expect(dismissed.patchDraft({ name: 'Produit' })).toBe(dismissed);
     expect(() => dismissed.patchDraft({ step: 'team' })).toThrow(
       new OnboardingError('wizard-closed'),

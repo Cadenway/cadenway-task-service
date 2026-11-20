@@ -150,11 +150,17 @@ export class Onboarding {
     return new Onboarding(state);
   }
 
-  /** Saves supplied draft choices, including terminal dismissal. Identical drafts keep their version. */
+  /** Saves draft choices or dismisses at the current draft as specified by `updateOnboarding`. */
   public patchDraft(input: OnboardingDraftPatch): Onboarding {
     const current = this.snapshot.wizard;
+    if (input.dismissed === true) {
+      if (current.status === 'dismissed') return this;
+      this.requireOpen();
+      return this.next({ wizard: { ...current, status: 'dismissed' } });
+    }
+
     const wizard: Wizard = {
-      status: input.dismissed === true ? 'dismissed' : current.status,
+      status: current.status,
       step: input.step ?? current.step,
       preset: input.preset ?? current.preset,
       color: input.color ?? current.color,

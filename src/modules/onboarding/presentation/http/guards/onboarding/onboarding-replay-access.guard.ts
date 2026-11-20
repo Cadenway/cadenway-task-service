@@ -7,6 +7,7 @@ import { FinishOnboarding } from '../../../../application/use-cases/commands/onb
 import { OnboardingPath } from '../../dto/input/onboarding/onboarding-path.dto.js';
 import { answerOnboarding } from '../../errors/onboarding/onboarding.problem.js';
 import { onboardingActor } from '../../mappers/onboarding/onboarding.mapper.js';
+import { onboardingVersionCondition } from '../../mappers/onboarding/version-condition.mapper.js';
 
 /** Rechecks the verified actor's current membership before idempotent replay. */
 @Injectable()
@@ -20,6 +21,7 @@ export class OnboardingReplayAccessGuard implements CanActivate {
   /** Checks the verified principal before replay. */
   public async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
+    onboardingVersionCondition(request.headers['if-match']);
     if (request.headers['idempotency-key'] === undefined) return true;
     const path = OnboardingPath.schema.safeParse(request.params);
     if (!path.success) return true;

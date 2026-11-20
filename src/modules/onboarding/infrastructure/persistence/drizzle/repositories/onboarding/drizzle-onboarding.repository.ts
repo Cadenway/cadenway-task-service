@@ -99,29 +99,5 @@ export class DrizzleOnboardingRepository {
     return rows.length === 1;
   }
 
-  /** Marks the first ordinary task in the provisioned space, once, in the task transaction. */
-  public async recordFirstTask(
-    organizationId: string,
-    userId: string,
-    spaceId: string,
-  ): Promise<boolean> {
-    const rows = await this.db
-      .update(onboardingStates)
-      .set({
-        firstTaskCreated: true,
-        version: sql`${onboardingStates.version} + 1`,
-        updatedAt: sql`clock_timestamp()`,
-      })
-      .where(
-        and(
-          eq(onboardingStates.organizationId, organizationId),
-          eq(onboardingStates.userId, userId),
-          eq(onboardingStates.spaceId, spaceId),
-          eq(onboardingStates.firstTaskCreated, false),
-        ),
-      )
-      .returning({ userId: onboardingStates.userId });
-    return rows.length === 1;
-  }
   // #endregion
 }
