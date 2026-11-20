@@ -49,6 +49,7 @@ export class TaskAnnouncer {
    * @param {Task} before - The task before the change.
    * @param {TaskUpdate} update - The task after the change and what changed.
    * @param {EventActor} actor - Who changed it.
+   * @param {readonly string[]} watcherIds - The eligible audience for a status change.
    * @returns {Promise<void>} Resolves once appended.
    */
   public async changed(
@@ -56,13 +57,14 @@ export class TaskAnnouncer {
     before: Task,
     update: TaskUpdate,
     actor: EventActor,
+    watcherIds: readonly string[] = [],
   ): Promise<void> {
     if (update.changed.length === 0) {
       return;
     }
     await events.taskUpdated(update.task, update.changed, actor);
     if (update.changed.includes('status')) {
-      await events.taskStatusChanged(update.task, before.snapshot.status, actor);
+      await events.taskStatusChanged(update.task, before.snapshot.status, actor, watcherIds);
     }
     for (const assigneeId of update.task.snapshot.assigneeIds) {
       if (!before.snapshot.assigneeIds.includes(assigneeId)) {

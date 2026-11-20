@@ -45,7 +45,11 @@ export type TaskRefusalReason =
   | { readonly reason: 'space-not-found' }
   | { readonly reason: 'user-not-found' }
   | { readonly reason: 'checklist-item-not-found' }
-  | { readonly reason: 'role-insufficient'; readonly role: AccessRole }
+  | {
+      readonly reason: 'role-insufficient';
+      readonly role: AccessRole;
+      readonly requiredRole?: 'comment';
+    }
   | { readonly reason: 'task-archived'; readonly key: string }
   | {
       readonly reason: 'task-trashed';
@@ -64,10 +68,14 @@ export type TaskRefusalReason =
   | { readonly reason: 'status-hidden'; readonly status: StatusKey }
   | { readonly reason: 'cancel-reason-required' }
   | { readonly reason: 'cancel-reason-unexpected' }
+  | { readonly reason: 'description-mentions-invalid' }
+  | { readonly reason: 'mention-recipient-invalid' }
   | { readonly reason: 'assignee-invalid'; readonly userIds: readonly string[] }
   | { readonly reason: 'assignee-limit-reached' }
   | { readonly reason: 'label-limit-reached' }
   | { readonly reason: 'checklist-limit-reached' }
+  | { readonly reason: 'watcher-recipient-invalid' }
+  | { readonly reason: 'watcher-limit-reached' }
   | { readonly reason: 'start-date-invalid' }
   | { readonly reason: 'list-invalid' }
   | { readonly reason: 'parent-invalid'; readonly parentKey: string }

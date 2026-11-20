@@ -113,6 +113,7 @@ describe('toTrashRestored and toTrashEmptied', () => {
       status: 'cancelled',
       cancelReason: 'duplicate',
       description: 'Remplacé par CAD-482.',
+      descriptionMentions: [],
       cancelNote: null,
       priority: 'basse',
       assigneeIds: [CAMILLE],

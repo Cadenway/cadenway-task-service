@@ -2606,6 +2606,7 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
         },
       };
       const store = (): TasksStore => ({
+        savepoint: (work) => work(),
         tasks: new DrizzleTaskRepository(db),
         watcherOverrides: new DrizzleWatcherOverrideRepository(db),
         reader: new DrizzleTaskReader(db),

@@ -28,6 +28,9 @@ export interface CommentCreated {
   /** Current eligible mention recipients. */
   readonly mentionedUserIds?: readonly string[];
 
+  /** Effective eligible watchers snapshotted for a creation. */
+  readonly watcherIds?: readonly string[];
+
   /** Recipients newly added on edit. */
   readonly addedMentionUserIds?: readonly string[];
 

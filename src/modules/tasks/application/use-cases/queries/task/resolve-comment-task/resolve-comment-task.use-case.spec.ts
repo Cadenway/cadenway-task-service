@@ -1,37 +1,41 @@
-import { describe, expect, it, vi } from 'vitest';
-import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
-import type { CheckTaskAccess } from '../check-task-access/check-task-access.use-case.js';
-import type { FindTaskReference } from '../find-task-reference/find-task-reference.use-case.js';
+import { describe, expect, it } from 'vitest';
+import {
+  ATELIER_NORD,
+  CAD_482_ENTRY,
+  CAMILLE,
+  HUGO,
+  InMemoryTasks,
+  atelierNordMembers,
+  sprint14SharedWith,
+  storedEntry,
+  taskState,
+  trashIn,
+} from '../../../tasks.fixture.js';
 import { ResolveCommentTask } from './resolve-comment-task.use-case.js';
 
-/** Actor and task for a comment read. */
-const input = { organizationId: 'atelier-nord', actorUserId: 'camille', taskKey: 'CAD-482' };
-
 describe('resolve comment task', () => {
-  it('does not resolve the identity of an invisible task', async () => {
-    const access = {
-      execute: vi.fn().mockRejectedValue(new TaskRefusal({ reason: 'task-not-found' })),
-    };
-    const reference = { execute: vi.fn() };
-    const useCase = new ResolveCommentTask(
-      access as unknown as CheckTaskAccess,
-      reference as unknown as FindTaskReference,
-    );
-    expect(await useCase.execute(input)).toEqual({ outcome: 'task-not-found' });
-    expect(reference.execute).not.toHaveBeenCalled();
-  });
+  it('returns the detailed trash refusal only to a viewer eligible to restore it', async () => {
+    const entry = storedEntry({ taskCount: 1 });
+    const task = taskState({ trash: trashIn() });
+    const tasks = new InMemoryTasks({ tasks: [task], trashEntries: [entry] });
+    const spaces = sprint14SharedWith({ [HUGO]: 'comment' });
+    const resolve = new ResolveCommentTask(tasks, atelierNordMembers(), spaces);
+    const target = { organizationId: ATELIER_NORD, taskKey: 'CAD-482' };
 
-  it('returns the task identity only after access succeeds', async () => {
-    const access = { execute: vi.fn().mockResolvedValue({}) };
-    const reference = { execute: vi.fn().mockResolvedValue({ id: 'task' }) };
-    const useCase = new ResolveCommentTask(
-      access as unknown as CheckTaskAccess,
-      reference as unknown as FindTaskReference,
-    );
-    expect(await useCase.execute(input)).toEqual({ outcome: 'found', taskId: 'task' });
-    expect(reference.execute).toHaveBeenCalledWith({
-      organizationId: 'atelier-nord',
-      taskKey: 'CAD-482',
+    expect(await resolve.execute({ ...target, actorUserId: CAMILLE })).toEqual({
+      outcome: 'task-trashed',
+      details: {
+        key: 'CAD-482',
+        name: task.name,
+        entryId: CAD_482_ENTRY,
+        rootKey: 'CAD-482',
+        trashedAt: entry.trashedAt.toISOString(),
+        trashedBy: { type: 'user', id: CAMILLE },
+        purgeAt: new Date(entry.trashedAt.getTime() + 30 * 86_400_000).toISOString(),
+      },
+    });
+    expect(await resolve.execute({ ...target, actorUserId: HUGO })).toEqual({
+      outcome: 'task-not-found',
     });
   });
 });

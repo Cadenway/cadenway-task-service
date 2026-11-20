@@ -34,6 +34,7 @@ access-requests module.
 | `public/space/hand-over-awaiting-spaces`    | member-lifecycle                                             |
 | `public/space/allocate-task-keys`           | tasks                                                        |
 | `public/list/find-visible-list`             | tasks                                                        |
+| `public/list/find-list-reader-audience`     | tasks                                                        |
 | `public/list/find-visible-lists`            | tasks                                                        |
 | `public/list/find-visible-space-lists`      | tasks                                                        |
 | `public/list/list-current-sprints`          | tasks                                                        |
@@ -59,6 +60,10 @@ access-requests module.
 tenant transaction of its caller, or opens one for the batches of the clean-up job. Inputs carry
 the organization and, for the readings, the member and their role as the caller read them from the
 copy of the memberships.
+
+- `FindListReaderAudience` returns the access sources of an already authorized task's list.
+  It joins the caller's snapshot and reads only the bounded list and space grants. The tasks
+  module intersects the result with active memberships to page eligible participant IDs.
 
 - `HandOverPrivateSpaces` (`{ organizationId, formerOwnerUserId }` to `none-left`, `member-again`
   or `{ outcome: 'handed-over', handedOver, awaitingOwner }`): one batch of at most 100 private

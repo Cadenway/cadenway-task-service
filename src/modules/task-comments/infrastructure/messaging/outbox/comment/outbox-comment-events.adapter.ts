@@ -23,7 +23,7 @@ export class OutboxCommentEvents implements CommentEvents {
   // #endregion
 
   // #region Methods
-  /** Appends a text-free creation fact; the watcher audience is deferred. */
+  /** Appends a text-free creation fact with the eligible audiences. */
   public async created(event: CommentCreated): Promise<void> {
     const organizationId = this.transaction.organizationId;
     if (
@@ -42,7 +42,7 @@ export class OutboxCommentEvents implements CommentEvents {
       commentId: event.commentId,
       commentVersion: event.commentVersion,
       mentionedUserIds: [...(event.mentionedUserIds ?? [])],
-      watcherIds: [],
+      watcherIds: [...(event.watcherIds ?? [])],
       ...(event.reply === undefined
         ? {}
         : { replyToCommentId: event.reply.commentId, replyToUserId: event.reply.userId }),

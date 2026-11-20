@@ -113,6 +113,7 @@ export class TaskViewBuilder {
       status: state.status,
       cancelReason: state.cancelReason,
       description: state.description,
+      descriptionMentions: state.descriptionMentions,
       cancelNote: state.cancelNote,
       priority: state.priority,
       assigneeIds: state.assigneeIds,

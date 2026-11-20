@@ -32,6 +32,7 @@ ALTER TABLE "task_watcher_overrides" ENABLE ROW LEVEL SECURITY;--> statement-bre
 ALTER TABLE "activity_entries" DROP CONSTRAINT "activity_entries_kind_check";--> statement-breakpoint
 ALTER TABLE "activity_entries" ADD COLUMN "comment_id" uuid;--> statement-breakpoint
 ALTER TABLE "activity_entries" ADD COLUMN "comment_excerpt" text;--> statement-breakpoint
+ALTER TABLE "tasks" ADD COLUMN "description_mentions" jsonb;--> statement-breakpoint
 ALTER TABLE "task_comments" ADD CONSTRAINT "task_comments_task_fkey" FOREIGN KEY ("organization_id","task_id") REFERENCES "public"."tasks"("organization_id","id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_watcher_overrides" ADD CONSTRAINT "task_watcher_overrides_task_fkey" FOREIGN KEY ("organization_id","task_id") REFERENCES "public"."tasks"("organization_id","id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "task_comments_task_created_index" ON "task_comments" USING btree ("organization_id","task_id","created_at","id");--> statement-breakpoint

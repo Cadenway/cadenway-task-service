@@ -64,6 +64,7 @@ describe('list watchers', () => {
             work({
               ...store,
               watcherOverrides: {
+                ...store.watcherOverrides,
                 list: () =>
                   Promise.resolve([
                     { userId: INES, following: false },

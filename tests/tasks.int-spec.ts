@@ -18,10 +18,12 @@ import {
   CreateSubtaskInternalResponse,
   CreateTaskInternalResponse,
   CreateTaskCommentInternalResponse,
+  FollowTaskWatcherInternalResponse,
   GetTaskDetailInternalResponse,
   GetTaskInternalResponse,
   GetTaskCommentInternalResponse,
   ListTaskCommentsInternalResponse,
+  ListTaskWatchersInternalResponse,
   ListTaskParticipantsInternalResponse,
   ListListActivityInternalResponse,
   ListSubtasksInternalResponse,
@@ -2670,6 +2672,7 @@ describe('tasks', () => {
         status: 'progress',
         cancelReason: null,
         cancelNote: null,
+        watcherIds: [camille.userId],
       });
     });
 
@@ -3518,6 +3521,17 @@ describe('tasks', () => {
         name: 'Tâche sans Mathis',
         assigneeIds: [camille.userId],
       });
+      // One override follows a task with no assignment, so unassignment cannot clean it up.
+      await asSystem(
+        `insert into task_watcher_overrides (organization_id, task_id, user_id, following)
+         select tasks.organization_id, tasks.id, seeded.user_id, seeded.following
+           from (values ($2::text, $4::uuid, true), ($3::text, $4::uuid, false),
+                        ($3::text, $5::uuid, true)) as seeded(task_key, user_id, following)
+           join tasks on tasks.key_prefix = split_part(seeded.task_key, '-', 1)
+                     and tasks.key_number = split_part(seeded.task_key, '-', 2)::int
+          where tasks.organization_id = $1`,
+        [atelierNordId, open.key, untouched.key, mathis.userId, camille.userId],
+      );
       const eventsBefore = await countTaskEvents();
       const removal = toPublishedEvent('removed', atelierNordId, mathis, 'member', 2);
 
@@ -3527,6 +3541,18 @@ describe('tasks', () => {
       const [job] = await jobsCompleted(mathis, 1);
       expect(job?.organization_id).toBe(atelierNordId);
       expect(await countRows('task_assignees', 'user_id = $2', mathis.userId)).toBe(0);
+      expect(
+        await asSystem<{ readonly user_id: string; readonly following: boolean }>(
+          `select overrides.user_id, overrides.following
+             from task_watcher_overrides as overrides
+             join tasks on tasks.organization_id = overrides.organization_id
+                       and tasks.id = overrides.task_id
+            where overrides.organization_id = $1
+              and (tasks.key_prefix || '-' || tasks.key_number) = any($2::text[])
+            order by overrides.task_id, overrides.user_id`,
+          [atelierNordId, [open.key, untouched.key]],
+        ),
+      ).toEqual([{ user_id: camille.userId, following: true }]);
 
       // The job stored the traceparent of the delivery, and the rows it appended continue that
       // trace: the same trace id, another span.
@@ -4310,6 +4336,60 @@ describe('tasks', () => {
       ).toBeNull();
     });
 
+    it('omits an opted-in watcher from status and comment audiences after access is revoked', async () => {
+      const space = await createSpace(hugo, {
+        name: 'Watcher audience',
+        prefix: 'WAT',
+        visibility: 'private',
+      });
+      const task = await createTask(hugo, space.firstList.id, { name: 'Watcher audience' });
+      const grant = `/internal/v1/lists/${space.firstList.id}/grants/${camille.userId}`;
+      const taskPath = `/internal/v1/tasks/${task.key}`;
+      const commentPath = `${taskPath}/comments`;
+      expectStatus(await send('put', grant, hugo, { body: { role: 'comment' } }), 200);
+      expectStatus(
+        await send('put', `${taskPath}/watchers/${camille.userId}`, camille, {
+          body: {},
+          headers: { 'If-Match': `"${String(task.version)}"` },
+        }),
+        200,
+      );
+      await patchTask(hugo, task.key, { status: 'progress' });
+      expectStatus(
+        await send('post', commentPath, hugo, { body: { body: 'Before revocation' } }),
+        201,
+      );
+
+      expectStatus(await send('delete', grant, hugo), 204);
+      await patchTask(hugo, task.key, { status: 'review' });
+      expectStatus(
+        await send('post', commentPath, hugo, { body: { body: 'After revocation' } }),
+        201,
+      );
+
+      const rows = await asSystem<OutboxRow>(
+        `select event_name, status, payload from outbox_events where organization_id = $1
+          and event_name in ('task.status-changed.v1', 'comment.created.v1')
+          and payload ->> 'key' = $2 order by id`,
+        [atelierNordId, task.key],
+      );
+      const statusFacts = rows
+        .filter((row) => row.event_name === 'task.status-changed.v1')
+        .map((row) => conforms(taskEventSchemas['task.status-changed.v1'], row.payload));
+      const commentFacts = rows
+        .filter((row) => row.event_name === 'comment.created.v1')
+        .map((row) => conforms(taskEventSchemas['comment.created.v1'], row.payload));
+      const before = [hugo.userId, camille.userId].sort();
+      expect(statusFacts).toMatchObject([
+        { key: task.key, watcherIds: before },
+        { key: task.key, watcherIds: [hugo.userId] },
+      ]);
+      expect(commentFacts).toMatchObject([
+        { key: task.key, watcherIds: before },
+        { key: task.key, watcherIds: [hugo.userId] },
+      ]);
+    });
+
     it('creates once with idempotency and commits comment activity and outbox together', async () => {
       const restricted = await createSpace(hugo, {
         name: 'Comment permissions',
@@ -4440,7 +4520,7 @@ describe('tasks', () => {
         version: beforeVersion + 1,
         commentId: created.id,
         mentionedUserIds: [],
-        watcherIds: [],
+        watcherIds: [camille.userId],
       });
       const reply = await send('post', path, camille, {
         body: { body: 'A reply', replyToCommentId: created.id },
@@ -4496,6 +4576,27 @@ describe('tasks', () => {
       );
       expect(events).toEqual([]);
     });
+    it('requires a JSON patch body and accepts a literal empty object', async () => {
+      const task = await createTask(camille, produitList.id, { name: 'Comment patch body' });
+      const path = `/internal/v1/tasks/${task.key}/comments`;
+      const response = await send('post', path, camille, { body: { body: 'Original text' } });
+      expectStatus(response, 201);
+      const comment = conforms(CreateTaskCommentInternalResponse, bodyOf(response));
+      const item = `${path}/${comment.id}`;
+      const headers = { 'If-Match': '"1"', 'Content-Type': 'application/json' };
+      expectProblem(
+        await send('patch', item, camille, {
+          headers: { ...headers, 'Content-Length': '0' },
+        }),
+        400,
+        'request.invalid',
+        { issues: [{ in: 'body', path: '', code: 'required', message: 'Expected a JSON body.' }] },
+      );
+      const explicit = await send('patch', item, camille, { body: {}, headers });
+      expectStatus(explicit, 200);
+      expect(bodyOf(explicit)).toMatchObject({ body: 'Original text' });
+    });
+
     it('edits and tombstones only the author comment with comment-version preconditions', async () => {
       const task = await createTask(camille, produitList.id, { name: 'Comment changes' });
       const path = `/internal/v1/tasks/${task.key}/comments`;
@@ -4620,6 +4721,16 @@ describe('tasks', () => {
         }),
         400,
         'request.invalid',
+        {
+          issues: [
+            {
+              in: 'body',
+              path: 'mentions',
+              code: 'invalid_value',
+              message: 'Invalid mention spans.',
+            },
+          ],
+        },
       );
       expect((await readTask(camille, task.key)).version).toBe(before);
       const mentions = [
@@ -4679,11 +4790,40 @@ describe('tasks', () => {
       });
       expect(task.descriptionMentions).toEqual(mentions);
       const path = `/internal/v1/tasks/${task.key}`;
+      expect((await readTask(camille, task.key)).descriptionMentions).toEqual(mentions);
       expectProblem(
         await send('patch', path, camille, { body: { descriptionMentions: [] } }),
         400,
         'request.invalid',
       );
+      const current = { 'If-Match': `"${String(task.version)}"` };
+      expectProblem(
+        await send('patch', path, camille, {
+          body: { descriptionMentions: [{ userId: randomUUID(), start: 2, end: 7 }] },
+          headers: current,
+        }),
+        422,
+        'mention.recipient-invalid',
+      );
+      expectProblem(
+        await send('patch', path, camille, {
+          body: { descriptionMentions: [{ userId: hugo.userId, start: 1, end: 7 }] },
+          headers: current,
+        }),
+        400,
+        'request.invalid',
+        {
+          issues: [
+            {
+              in: 'body',
+              path: 'descriptionMentions',
+              code: 'invalid_value',
+              message: 'Invalid description mention spans.',
+            },
+          ],
+        },
+      );
+      expect((await readTask(camille, task.key)).version).toBe(task.version);
       const edited = await patchTask(
         camille,
         task.key,
@@ -4697,15 +4837,24 @@ describe('tasks', () => {
         { descriptionMentions: mentions },
         { 'If-Match': `"${String(edited.version)}"` },
       );
+      const repositioned = await patchTask(
+        camille,
+        task.key,
+        {
+          description: '@Hugo',
+          descriptionMentions: [{ userId: hugo.userId, start: 0, end: 5 }],
+        },
+        { 'If-Match': `"${String(restored.version)}"` },
+      );
       const cleared = await patchTask(
         camille,
         task.key,
         { description: 'No mentions' },
-        { 'If-Match': `"${String(restored.version)}"` },
+        { 'If-Match': `"${String(repositioned.version)}"` },
       );
       expect(cleared.descriptionMentions).toEqual([]);
       const events = await asSystem<{ readonly payload: unknown }>(
-        "select payload from outbox_events where organization_id = $1 and event_name = 'task.description-mentions-changed.v1' and payload ->> 'key' = $2 order by occurred_at",
+        "select payload from outbox_events where organization_id = $1 and event_name = 'task.description-mentions-changed.v1' and payload ->> 'key' = $2 order by (payload ->> 'version')::int",
         [atelierNordId, task.key],
       );
       expect(events).toHaveLength(4);
@@ -4715,6 +4864,16 @@ describe('tasks', () => {
       expect(
         conforms(taskEventSchemas['task.description-mentions-changed.v1'], events[1]?.payload),
       ).toMatchObject({ addedMentionUserIds: [], removedMentionUserIds: [hugo.userId] });
+      const last = conforms(
+        taskEventSchemas['task.description-mentions-changed.v1'],
+        events[3]?.payload,
+      );
+      expect(last).toMatchObject({
+        version: cleared.version,
+        addedMentionUserIds: [],
+        removedMentionUserIds: [hugo.userId],
+      });
+      expect(last).not.toHaveProperty('description');
     });
 
     it('lists eligible participants of a task for comment-capable users', async () => {
@@ -4724,6 +4883,50 @@ describe('tasks', () => {
       const page = conforms(ListTaskParticipantsInternalResponse, bodyOf(response));
       expect(page.items.map((item) => item.userId)).toContain(camille.userId);
     });
+
+    it('lists only readable current members of a private task and binds its cursor to that task', async () => {
+      const restricted = await createSpace(hugo, {
+        name: 'Participants access',
+        prefix: 'PTC',
+        visibility: 'private',
+      });
+      const grant = `/internal/v1/lists/${restricted.firstList.id}/grants`;
+      expectStatus(
+        await send('put', `${grant}/${camille.userId}`, hugo, { body: { role: 'view' } }),
+        200,
+      );
+      expectStatus(
+        await send('put', `${grant}/${nadia.userId}`, hugo, { body: { role: 'comment' } }),
+        200,
+      );
+      const task = await createTask(hugo, restricted.firstList.id, {
+        name: 'Private participants',
+      });
+      const other = await createTask(hugo, restricted.firstList.id, { name: 'Another task' });
+      const url = `/internal/v1/tasks/${task.key}/participants`;
+      expectProblem(await send('get', url, camille), 403, 'access.role-insufficient');
+      expectProblem(await send('get', url, ines), 404, 'task.not-found');
+      expectProblem(
+        await send('get', url, solene, { organizationId: atelierDeltaId }),
+        404,
+        'task.not-found',
+      );
+      const first = await send('get', `${url}?limit=2`, nadia);
+      expectStatus(first, 200);
+      const firstPage = conforms(ListTaskParticipantsInternalResponse, bodyOf(first));
+      expect(firstPage.items).toEqual([camille, hugo]);
+      if (firstPage.nextCursor === null) throw new Error('Expected another participant page.');
+      const query = `?limit=2&cursor=${encodeURIComponent(firstPage.nextCursor)}`;
+      const second = await send('get', `${url}${query}`, nadia);
+      expectStatus(second, 200);
+      expect(bodyOf(second)).toEqual({ items: [nadia], nextCursor: null });
+      expectProblem(
+        await send('get', `/internal/v1/tasks/${other.key}/participants${query}`, nadia),
+        400,
+        'request.invalid',
+      );
+    });
+
     it('reads watcher overrides only within the task tenant', async () => {
       const task = await createTask(camille, produitList.id, { name: 'Watcher repository' });
       const [stored] = await asSystem<{ readonly id: string }>(
@@ -4746,6 +4949,95 @@ describe('tasks', () => {
         { userId: hugo.userId, following: false },
       ]);
       expect(await read(atelierDeltaId, atelierNordId)).toEqual([]);
+    });
+  });
+
+  describe('task watcher routes', () => {
+    it('keeps an explicit opt-out after assignment and returns task-bound watcher pages', async () => {
+      const task = await createTask(camille, produitList.id, {
+        name: 'Watchers on a task',
+        assigneeIds: [hugo.userId],
+      });
+      const other = await createTask(camille, produitList.id, { name: 'Other watcher page' });
+      const url = `/internal/v1/tasks/${task.key}/watchers`;
+      const initial = await send('get', `${url}?limit=1`, camille);
+      expectStatus(initial, 200);
+      const page = conforms(ListTaskWatchersInternalResponse, bodyOf(initial));
+      expect(page).toMatchObject({ total: 2, callerFollows: true });
+      if (page.nextCursor === null) throw new Error('Expected a second watcher page.');
+      const cursor = encodeURIComponent(page.nextCursor);
+      const second = await send('get', `${url}?limit=1&cursor=${cursor}`, camille);
+      expectStatus(second, 200);
+      const last = conforms(ListTaskWatchersInternalResponse, bodyOf(second));
+      expect(last).toMatchObject({ total: 2, callerFollows: true, nextCursor: null });
+      expect([...page.items, ...last.items].map(({ userId }) => userId)).toEqual(
+        [camille.userId, hugo.userId].sort(),
+      );
+      expectProblem(
+        await send('get', `/internal/v1/tasks/${other.key}/watchers?cursor=${cursor}`, camille),
+        400,
+        'request.invalid',
+      );
+
+      const own = `${url}/${camille.userId}`;
+      const removed = await send('delete', own, camille, { headers: { 'If-Match': '"1"' } });
+      expectStatus(removed, 204);
+      expect(removed.headers.etag).toBe('"2"');
+      const repeated = await send('delete', own, camille, { headers: { 'If-Match': '"2"' } });
+      expectStatus(repeated, 204);
+      expect(repeated.headers.etag).toBe('"2"');
+      const assigned = await send(
+        'put',
+        `/internal/v1/tasks/${task.key}/assignees/${camille.userId}`,
+        camille,
+        { body: {}, headers: { 'If-Match': '"2"' } },
+      );
+      expectStatus(assigned, 200);
+      const current = await send('get', url, camille);
+      expectStatus(current, 200);
+      expect(bodyOf(current)).toEqual({
+        items: [{ userId: hugo.userId }],
+        nextCursor: null,
+        total: 1,
+        callerFollows: false,
+      });
+      expectProblem(await send('put', own, camille), 400, 'request.invalid');
+      expectProblem(
+        await send('put', own, camille, { body: { unexpected: true } }),
+        400,
+        'request.invalid',
+      );
+      const restored = await send('put', own, camille, {
+        body: {},
+        headers: { 'If-Match': '"3"' },
+      });
+      expectStatus(restored, 200);
+      expect(restored.headers.etag).toBe('"4"');
+      expect(conforms(FollowTaskWatcherInternalResponse, bodyOf(restored))).toEqual({
+        userId: camille.userId,
+      });
+      expectProblem(
+        await send('put', `${url}/${randomUUID()}`, camille, { body: {} }),
+        422,
+        'watcher.recipient-invalid',
+      );
+      const events = (await outboxOfKeys(task.key)).filter(
+        ({ event_name }) => event_name === 'task.watcher-changed.v1',
+      );
+      expect(events.map(({ payload }) => payload)).toEqual([
+        expect.objectContaining({
+          userId: camille.userId,
+          version: 2,
+          requested: 'unfollow',
+          effectiveFollowing: false,
+        }),
+        expect.objectContaining({
+          userId: camille.userId,
+          version: 4,
+          requested: 'follow',
+          effectiveFollowing: true,
+        }),
+      ]);
     });
   });
 });

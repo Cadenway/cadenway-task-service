@@ -31,11 +31,13 @@ cascades on purge. Migration `0008_collaboration.sql` creates the table.
 
 All routes require an internal gateway user and a visible task. An invisible task answers
 `task.not-found`; a missing, deleted or unrelated comment answers `comment.not-found`.
+A task in a restorable trash entry answers `task.trashed` with its entry details to an eligible
+editor. A comment patch requires a JSON body, including when the submitted patch is `{}`.
 
 ## Events emitted
 
 `comment.created.v1` through the outbox in the creation transaction, without text. Eligible human
-reply targets and unique mention recipients are included; the watcher audience remains deferred.
+reply targets, unique mention recipients and effective eligible watchers are included.
 `comment.updated.v1` carries added and removed mention IDs; `comment.deleted.v1` carries no text.
 The contract assigns suppression of the actor, including self mentions, to the planned notification
 consumer; this service does not send notifications.
@@ -52,10 +54,11 @@ role and author checks. Tombstones retain identity and reply references without 
 
 ## Transactions
 
-A write locks the acting membership, the supplied recipients in sorted order, the task, then the
-space and list. After these locks it checks recipient visibility; creation validates a reply and inserts
-the comment, activity and outbox fact in one transaction. A
-reply author is checked without taking a new membership lock after the task lock. An edit or
+A write locks the acting membership, recipient memberships in account order, the task, then the
+space and list. Creation includes watcher candidates and the human reply author in that preflight.
+It checks the final placement and repeats the preflight if a new candidate appears while it acquires
+the task lock. It then validates the reply and inserts the comment, activity and outbox fact in one
+transaction. An edit or
 deletion checks the role before author and comment version, updates the comment and its activity,
 and appends its event in the same transaction. The task lock serializes comment writes; no
 separate comment lock is acquired.

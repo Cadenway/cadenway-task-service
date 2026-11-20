@@ -1,4 +1,5 @@
 import type { TaskRefusalReason } from './task-refusal-reason.model.js';
+import type { TaskTrashedDetails } from '../trash/task-trashed-details.model.js';
 
 /**
  * Class TaskRefusal
@@ -27,6 +28,23 @@ export class TaskRefusal extends Error {
     super(`The request was refused: ${refusal.reason}.`);
     this.name = 'TaskRefusal';
     this.refusal = refusal;
+  }
+  // #endregion
+
+  // #region Methods
+  /** Serializes an already-authorized trash refusal for task and comment routes. */
+  public static trashDetails(
+    refusal: Extract<TaskRefusalReason, { readonly reason: 'task-trashed' }>,
+  ): TaskTrashedDetails {
+    return {
+      key: refusal.key,
+      name: refusal.name,
+      entryId: refusal.entryId,
+      rootKey: refusal.rootKey,
+      trashedAt: refusal.trashedAt.toISOString(),
+      trashedBy: { type: refusal.trashedBy.type, id: refusal.trashedBy.id },
+      purgeAt: refusal.purgeAt.toISOString(),
+    };
   }
   // #endregion
 }

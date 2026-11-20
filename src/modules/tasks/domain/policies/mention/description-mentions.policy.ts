@@ -1,4 +1,4 @@
-import { InvalidTaskError } from '../../errors/task/invalid-task.error.js';
+import { InvalidDescriptionMentionsError } from '../../errors/task/invalid-description-mentions.error.js';
 import type { DescriptionMention } from '../../value-objects/mention/description-mention.value-object.js';
 
 /**
@@ -12,8 +12,9 @@ export function validateDescriptionMentions(
   description: string | null,
   mentions: readonly DescriptionMention[],
 ): void {
+  if (mentions.length === 0) return;
+  if (mentions.length > 20) throw new InvalidDescriptionMentionsError();
   const points: readonly string[] = Array.from(description ?? '');
-  if (mentions.length > 20) throw new InvalidTaskError('description mentions');
   let previousEnd = 0;
   for (const span of [...mentions].sort((left, right) => left.start - right.start)) {
     if (
@@ -29,7 +30,7 @@ export function validateDescriptionMentions(
         .join('')
         .trim() === ''
     ) {
-      throw new InvalidTaskError('description mentions');
+      throw new InvalidDescriptionMentionsError();
     }
     previousEnd = span.end;
   }

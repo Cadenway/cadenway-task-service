@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
 import type { TaskState } from '../../../../../domain/value-objects/task/task-state.value-object.js';
@@ -171,7 +171,64 @@ describe('UpdateTask: the status, the cancellation and the completion', () => {
         version: 13,
         previousStatus: 'progress',
         actor: camille,
+        watcherIds: [CAMILLE, INES].sort(),
       },
+    ]);
+  });
+
+  it('uses the resulting list to determine the audience when a status patch also moves the task', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState()] });
+    const spaces = new InMemorySpaceDirectory({
+      lists: atelierNordLists().map((list) =>
+        list.id === BUGS ? { ...list, organizationAccess: false } : list,
+      ),
+      listGrants: { [BUGS]: { [CAMILLE]: 'edit' } },
+    });
+    await new UpdateTask(tasks, atelierNordMembers(), spaces).execute(
+      patchOf({ status: 'review', listId: BUGS }),
+    );
+
+    expect(tasks.events.find((event) => event.kind === 'statusChanged')).toMatchObject({
+      watcherIds: [CAMILLE],
+    });
+  });
+
+  it('retries an audience that gains a watcher after preflight and commits the status once', async () => {
+    const trace: string[] = [];
+    const tasks = new InMemoryTasks({ tasks: [taskState()], trace });
+    const members = atelierNordMembers([], trace);
+    const list = vi
+      .fn<TasksStore['watcherOverrides']['list']>()
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([{ userId: HUGO, following: true }]);
+    const unit: TasksUnitOfWork = {
+      run: (work) =>
+        tasks.run((store) =>
+          work({ ...store, watcherOverrides: { ...store.watcherOverrides, list } }),
+        ),
+      runReadOnly: (work, options) => tasks.runReadOnly(work, options),
+    };
+    const useCase = new UpdateTask(unit, members, new InMemorySpaceDirectory({ trace }));
+
+    expect(await useCase.execute(patchOf({ status: 'review' }))).toMatchObject({
+      status: 'review',
+      version: 13,
+    });
+
+    expect(list.mock.calls).toEqual(Array.from({ length: 4 }, () => [ATELIER_NORD, CAD_482]));
+    expect(trace.filter((entry) => entry === 'tasks.findByKey:lock')).toHaveLength(2);
+    expect(trace.filter((entry) => entry.startsWith(`members.roleOf:${HUGO}:`))).toEqual([
+      `members.roleOf:${HUGO}:lock`,
+    ]);
+    const acquired = trace.indexOf(`members.roleOf:${HUGO}:lock`);
+    expect(acquired).toBeGreaterThan(trace.indexOf('tasks.findByKey:lock'));
+    expect(acquired).toBeLessThan(trace.lastIndexOf('tasks.findByKey:lock'));
+    expect(trace.filter((entry) => entry === 'tasks.save')).toHaveLength(1);
+    expect(tasks.stored(CAD_482).version).toBe(13);
+    expect(tasks.entriesOf(CAD_482)).toHaveLength(1);
+    expect(tasks.events).toMatchObject([
+      { kind: 'updated', version: 13 },
+      { kind: 'statusChanged', version: 13, watcherIds: [CAMILLE, HUGO, INES].sort() },
     ]);
   });
 
@@ -1078,18 +1135,21 @@ describe('UpdateTask: the trash and the deleted lists in a move or an attachment
      * Records the hold and answers the list deleted when it is the one named.
      *
      * @param organizationId - The organization.
-     * @param listId - The list.
-     * @returns The list, deleted by Camille Martin, or as the usual directory holds it.
+     * @param listIds - The lists.
+     * @param mode - The mode of the lock.
+     * @param viewer - The acting member.
+     * @returns The held lists, including the one concurrently deleted.
      */
-    public override holdList(
+    public override async lockTrashLists(
       organizationId: string,
-      listId: string,
-    ): ReturnType<InMemorySpaceDirectory['holdList']> {
-      if (listId !== this.deletedOnHold) {
-        return super.holdList(organizationId, listId);
-      }
-      this.holdCalls.push(listId);
-      return Promise.resolve({ outcome: 'deleted', deletedBy: { type: 'user', id: CAMILLE } });
+      listIds: readonly string[],
+      mode: Parameters<InMemorySpaceDirectory['lockTrashLists']>[2],
+      viewer: Parameters<InMemorySpaceDirectory['lockTrashLists']>[3],
+    ): ReturnType<InMemorySpaceDirectory['lockTrashLists']> {
+      const held = await super.lockTrashLists(organizationId, listIds, mode, viewer);
+      return held.map((list) =>
+        list.listId === this.deletedOnHold ? { ...list, outcome: 'deleted' } : list,
+      );
     }
     // #endregion
   }
@@ -1103,7 +1163,7 @@ describe('UpdateTask: the trash and the deleted lists in a move or an attachment
         new UpdateTask(tasks, atelierNordMembers(), spaces).execute(patchOf({ listId: BUGS })),
       ),
     ).toEqual({ reason: 'list-invalid' });
-    expect(spaces.holdCalls).toEqual([SPRINT_14, BUGS]);
+    expect(spaces.lockTrashCalls[0]?.listIds).toEqual([SPRINT_14, BUGS]);
     expect(tasks.stored(CAD_482).listId).toBe(SPRINT_14);
   });
 
@@ -1116,7 +1176,7 @@ describe('UpdateTask: the trash and the deleted lists in a move or an attachment
         new UpdateTask(tasks, atelierNordMembers(), spaces).execute(patchOf({ listId: BUGS })),
       ),
     ).toEqual({ reason: 'task-not-found' });
-    expect(spaces.holdCalls).toEqual([SPRINT_14]);
+    expect(spaces.lockTrashCalls[0]?.listIds).toEqual([SPRINT_14, BUGS]);
     expect(tasks.stored(CAD_482).listId).toBe(SPRINT_14);
   });
 
@@ -1133,7 +1193,7 @@ describe('UpdateTask: the trash and the deleted lists in a move or an attachment
         ),
       ),
     ).toEqual({ reason: 'task-not-found' });
-    expect(spaces.holdCalls).toEqual([SPRINT_14]);
+    expect(spaces.lockTrashCalls[0]?.listIds).toEqual([SPRINT_14, BUGS]);
     expect(tasks.stored(CAD_490).parentId).toBeNull();
   });
 
@@ -1146,8 +1206,10 @@ describe('UpdateTask: the trash and the deleted lists in a move or an attachment
       patchOf({ listId: BUGS }),
     );
 
-    expect(trace.indexOf('spaces.holdList')).toBeGreaterThan(trace.lastIndexOf('tasks.lockByIds'));
-    expect(spaces.holdCalls).toEqual([SPRINT_14, BUGS]);
+    expect(trace.indexOf('spaces.lockTrashLists')).toBeGreaterThan(
+      trace.lastIndexOf('tasks.lockByIds'),
+    );
+    expect(spaces.lockTrashCalls[0]?.listIds).toEqual([SPRINT_14, BUGS]);
   });
 
   it('holds the two lists of a move in ascending list id, whichever it leaves', async () => {
@@ -1160,7 +1222,7 @@ describe('UpdateTask: the trash and the deleted lists in a move or an attachment
       ),
     ).toEqual({ reason: 'task-not-found' });
     // Sprint 14 sorts before Bugs: the target is held first, then the list the task leaves.
-    expect(spaces.holdCalls).toEqual([SPRINT_14, BUGS]);
+    expect(spaces.lockTrashCalls[0]?.listIds).toEqual([SPRINT_14, BUGS]);
     expect(tasks.stored(CAD_482).listId).toBe(BUGS);
   });
 
@@ -1173,6 +1235,7 @@ describe('UpdateTask: the trash and the deleted lists in a move or an attachment
     );
 
     expect(spaces.holdCalls).toEqual([]);
+    expect(spaces.lockTrashCalls).toEqual([]);
   });
 
   it('leaves the trash out of the subtree a move takes', async () => {

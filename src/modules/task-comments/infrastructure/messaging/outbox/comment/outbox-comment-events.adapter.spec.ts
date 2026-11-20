@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { OutboxCommentEvents } from './outbox-comment-events.adapter.js';
 
 describe('comment outbox', () => {
-  it('appends a contract-valid text-free event with deferred audiences', async () => {
+  it('appends a contract-valid text-free event with the eligible watcher audience', async () => {
     const append = vi.fn().mockResolvedValue(undefined);
     const events = new OutboxCommentEvents(
       {
@@ -23,10 +23,14 @@ describe('comment outbox', () => {
       listId: '019a7001-2b3c-7d4e-8f5a-6b7c8d9e0f12',
       commentId: '019a7003-4d5e-7f6a-8b9c-0d1e2f3a4b01',
       commentVersion: 1,
+      watcherIds: ['019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b30'],
     });
     expect(append).toHaveBeenCalledOnce();
     const payload: unknown = append.mock.calls[0]?.[3];
-    expect(payload).toMatchObject({ mentionedUserIds: [], watcherIds: [] });
+    expect(payload).toMatchObject({
+      mentionedUserIds: [],
+      watcherIds: ['019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b30'],
+    });
     expect(payload).not.toHaveProperty('body');
     expect(
       eventSchemas['comment.created.v1'].safeParse({

@@ -12,5 +12,11 @@ export interface BeginCommentInput {
 
   /** Mention recipients whose membership must remain stable through the write. */
   readonly recipientIds?: readonly string[];
+
+  /** Includes the effective watcher audience for a creation fact. */
+  readonly includeWatcherAudience?: boolean;
+
+  /** Reads a live reply's human author for this task in the caller's transaction. */
+  readonly findReplyAuthor?: (taskId: string) => Promise<string | null>;
   // #endregion
 }

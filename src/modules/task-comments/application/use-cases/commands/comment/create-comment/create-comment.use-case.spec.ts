@@ -36,6 +36,7 @@ const ready = {
   listId: 'list',
   version: 2,
   instant: new Date('2026-11-08T10:40:00Z'),
+  watcherIds: ['camille', 'hugo'],
 } as const;
 
 describe('create comment', () => {
@@ -51,7 +52,7 @@ describe('create comment', () => {
     const record = vi.fn().mockResolvedValue(undefined);
     const tasks: CommentTaskWriter = { begin, record, change: vi.fn(), canRead: vi.fn() };
     expect(await new CreateComment(unit, tasks).execute(input)).toBe(comment);
-    expect(begin).toHaveBeenCalledWith(input, []);
+    expect(begin).toHaveBeenCalledWith(input, [], true);
     expect(record).toHaveBeenCalledWith(input, 2, 'comment', 'Bonjour');
     expect(created).toHaveBeenCalledWith({
       organizationId: 'org',
@@ -63,6 +64,7 @@ describe('create comment', () => {
       commentId: 'comment',
       commentVersion: 1,
       mentionedUserIds: [],
+      watcherIds: ['camille', 'hugo'],
     });
   });
 
@@ -127,10 +129,17 @@ describe('create comment', () => {
     };
     const unit: CommentUnitOfWork = { read: vi.fn(), write: async (work) => work(store) };
     const tasks: CommentTaskWriter = {
-      begin: () => Promise.resolve(ready),
+      begin: vi
+        .fn<CommentTaskWriter['begin']>()
+        .mockImplementationOnce(async (_input, _ids, _includeWatchers, findReplyAuthor) => {
+          const author = await findReplyAuthor?.(ready.taskId);
+          expect(author).toBe('camille');
+          return { ...ready, replyRecipientId: 'camille' };
+        })
+        .mockResolvedValueOnce(ready),
       record: vi.fn().mockResolvedValue(undefined),
       change: vi.fn(),
-      canRead: vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false),
+      canRead: vi.fn(),
     };
     const useCase = new CreateComment(unit, tasks);
     await useCase.execute({ ...input, replyToCommentId: 'comment' });

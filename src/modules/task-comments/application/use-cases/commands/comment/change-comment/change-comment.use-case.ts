@@ -4,6 +4,7 @@ import {
   commentExcerpt,
   validateCommentText,
 } from '../../../../../domain/policies/comment/comment-text.policy.js';
+import { CommentTrashedTaskRefusal } from '../../../../models/comment/comment-trashed-task-refusal.model.js';
 import { CommentWriteRefusal } from '../../../../models/comment/comment-write-refusal.model.js';
 import type { CommentWriteStore } from '../../../../models/comment/comment-write-store.model.js';
 import type { CommentTaskWriter } from '../../../../ports/outbound/tasks/task/comment-task-writer.port.js';
@@ -34,6 +35,7 @@ export class ChangeComment {
       const supplied = input.mentions ?? [];
       const recipientIds = [...new Set(supplied.map((mention) => mention.userId.toLowerCase()))];
       const task = await this.tasks.begin(input, recipientIds);
+      if (task.outcome === 'task-trashed') throw new CommentTrashedTaskRefusal(task.details);
       if (task.outcome === 'role-insufficient')
         throw new CommentWriteRefusal(task.outcome, task.role);
       if (task.outcome !== 'ready') throw new CommentWriteRefusal(task.outcome);
@@ -64,7 +66,11 @@ export class ChangeComment {
         try {
           validateCommentText(body, mentions);
         } catch (error: unknown) {
-          if (error instanceof InvalidCommentError) throw new CommentWriteRefusal('invalid');
+          if (error instanceof InvalidCommentError) {
+            throw new CommentWriteRefusal(
+              error.path === 'mentions' ? 'invalid-mentions' : 'invalid',
+            );
+          }
           throw error;
         }
         if ((task.unavailableRecipientIds?.length ?? 0) > 0)

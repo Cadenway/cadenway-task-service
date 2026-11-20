@@ -20,9 +20,11 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   Res,
 } from '@nestjs/common';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
+import { CommentTrashedTaskRefusal } from '../../../../application/models/comment/comment-trashed-task-refusal.model.js';
 import { CommentWriteRefusal } from '../../../../application/models/comment/comment-write-refusal.model.js';
 import { ChangeComment } from '../../../../application/use-cases/commands/comment/change-comment/change-comment.use-case.js';
 import { UpdateCommentBody } from '../../dto/input/comment/update-comment-body.dto.js';
@@ -130,9 +132,20 @@ export class CommentsController {
     @Param() path: CommentPath,
     @Body() body: UpdateCommentBody,
     @Headers('if-match') ifMatch: string | undefined,
+    @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
   ): Promise<CommentBody> {
     try {
+      // The kit's JSON parser gives a declared zero-byte body the same value as a literal {}.
+      if (!request.is('application/json') || Number(request.headers['content-length']) === 0) {
+        throw new ProblemException({
+          status: 400,
+          code: 'request.invalid',
+          details: {
+            issues: [{ in: 'body', path: '', code: 'required', message: 'Expected a JSON body.' }],
+          },
+        });
+      }
       const comment = await this.changeComment.execute({
         ...toCommentReadInput(path.taskKey),
         commentId: path.commentId.toLowerCase(),
@@ -188,9 +201,31 @@ export class CommentsController {
 
 /** Maps comment read refusals to their contract problem codes. */
 function commentProblem(error: unknown, taskKey: string): unknown {
+  if (error instanceof CommentTrashedTaskRefusal) {
+    return new ProblemException({
+      status: 404,
+      code: 'task.trashed',
+      details: { ...error.details },
+    });
+  }
   if (error instanceof CommentWriteRefusal) {
-    if (error.reason === 'invalid')
-      return new ProblemException({ status: 400, code: 'request.invalid' });
+    if (error.reason === 'invalid' || error.reason === 'invalid-mentions') {
+      const path = error.reason === 'invalid-mentions' ? 'mentions' : 'body';
+      return new ProblemException({
+        status: 400,
+        code: 'request.invalid',
+        details: {
+          issues: [
+            {
+              in: 'body',
+              path,
+              code: 'invalid_value',
+              message: path === 'mentions' ? 'Invalid mention spans.' : 'Invalid comment text.',
+            },
+          ],
+        },
+      });
+    }
     if (error.reason === 'recipient-invalid')
       return new ProblemException({ status: 422, code: 'mention.recipient-invalid' });
     if (error.reason === 'role-insufficient')

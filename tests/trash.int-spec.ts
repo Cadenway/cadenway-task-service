@@ -2162,6 +2162,52 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
         taskKey: live.key,
       });
     });
+
+    it('applies the task trash visibility to every comment route before consulting the comment', async () => {
+      const root = await createTask(hugo, entretiens.id, { name: 'Comment visibility parent' });
+      const task = await createSubtask(root.key, { name: 'Comment visibility child' }, hugo);
+      const entry = await trashTask(root.key, hugo);
+      const path = `/internal/v1/tasks/${task.key}/comments`;
+      const item = `${path}/${randomUUID()}`;
+      const routes = [
+        { method: 'get', path },
+        { method: 'get', path: item },
+        { method: 'post', path, options: { body: { body: 'Do not store' } } },
+        {
+          method: 'patch',
+          path: item,
+          options: { body: { body: 'Do not store' }, headers: { 'If-Match': '"1"' } },
+        },
+        { method: 'delete', path: item },
+      ] as const;
+      const expectedDetails = {
+        key: task.key,
+        name: task.name,
+        entryId: entry.id,
+        rootKey: root.key,
+        trashedAt: entry.trashedAt,
+        trashedBy: { type: 'user', id: hugo.userId },
+        purgeAt: entry.purgeAt,
+      };
+      try {
+        const total = await outboxTotal();
+        const version = (await storedTask(task.key))?.version;
+        for (const route of routes) {
+          const options = 'options' in route ? route.options : undefined;
+          const restorable = await send(route.method, route.path, hugo, options);
+          expectProblem(restorable, 404, 'task.trashed', expectedDetails);
+          for (const actor of [lea, camille, chloe]) {
+            const hidden = await send(route.method, route.path, actor, options);
+            expectProblem(hidden, 404, 'task.not-found');
+            expect(bodyOf(hidden)).not.toHaveProperty('details');
+          }
+        }
+        expect(await outboxTotal()).toBe(total);
+        expect((await storedTask(task.key))?.version).toBe(version);
+      } finally {
+        await purgeEntry(entry.id, hugo);
+      }
+    });
   });
 
   describe('a task in the trash is left out of every collection and count, and of its parent', () => {

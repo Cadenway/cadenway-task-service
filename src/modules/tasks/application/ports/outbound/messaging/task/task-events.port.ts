@@ -1,4 +1,6 @@
+import type { DescriptionMentionChanges } from '../../../../../domain/value-objects/mention/description-mention-changes.value-object.js';
 import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
+import type { WatcherOverride } from '../../../../../domain/value-objects/watcher/watcher-override.value-object.js';
 import type { StatusKey } from '../../../../../domain/value-objects/task/status-key.value-object.js';
 import type { TaskField } from '../../../../../domain/value-objects/task/task-field.value-object.js';
 import type { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
@@ -15,6 +17,13 @@ import type { EventActor } from '../../../../models/actor/event-actor.model.js';
  */
 export interface TaskEvents {
   // #region Methods
+  /** Appends recipient ID changes for the task description in the write transaction. */
+  descriptionMentionsChanged(
+    task: Task,
+    change: DescriptionMentionChanges,
+    actor: EventActor,
+  ): Promise<void>;
+
   /**
    * Method taskCreated
    *
@@ -49,9 +58,15 @@ export interface TaskEvents {
    * @param {Task} task - The task after the change.
    * @param {StatusKey} previousStatus - Its status before the change.
    * @param {EventActor} actor - Who changed it.
+   * @param {readonly string[]} watcherIds - Eligible effective watchers of the resulting task.
    * @returns {Promise<void>} Resolves once appended.
    */
-  taskStatusChanged(task: Task, previousStatus: StatusKey, actor: EventActor): Promise<void>;
+  taskStatusChanged(
+    task: Task,
+    previousStatus: StatusKey,
+    actor: EventActor,
+    watcherIds: readonly string[],
+  ): Promise<void>;
 
   /**
    * Method taskAssigned
@@ -152,5 +167,8 @@ export interface TaskEvents {
    * @returns {Promise<void>} Resolves once appended.
    */
   taskPurged(task: Task, entryId: string, rootKey: TaskKey, actor: EventActor): Promise<void>;
+
+  /** Appends the committed change to an eligible account's explicit watcher override. */
+  taskWatcherChanged(task: Task, override: WatcherOverride, actor: EventActor): Promise<void>;
   // #endregion
 }

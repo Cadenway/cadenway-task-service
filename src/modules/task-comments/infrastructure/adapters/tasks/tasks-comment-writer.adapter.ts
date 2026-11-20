@@ -36,8 +36,15 @@ export class TasksCommentWriter implements CommentTaskWriter {
   public async begin(
     input: CommentReadInput,
     recipientIds: readonly string[] = [],
+    includeWatcherAudience = false,
+    findReplyAuthor?: (taskId: string) => Promise<string | null>,
   ): Promise<CommentWriteTask> {
-    return this.beginComment.execute({ ...input, recipientIds });
+    return this.beginComment.execute({
+      ...input,
+      recipientIds,
+      includeWatcherAudience,
+      ...(findReplyAuthor === undefined ? {} : { findReplyAuthor }),
+    });
   }
 
   /** Records comment activity. */
@@ -66,7 +73,7 @@ export class TasksCommentWriter implements CommentTaskWriter {
     });
   }
 
-  /** Checks whether the human reply target still sees the task. */
+  /** Checks whether a held mention recipient sees the task. */
   public async canRead(input: CommentReadInput, userId: string): Promise<boolean> {
     return (
       (await this.resolver.execute({ ...input, actorUserId: userId, joinWrite: true })).outcome ===

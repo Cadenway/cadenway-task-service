@@ -1,12 +1,10 @@
-import { effectiveWatchers } from '../../../../../domain/policies/watcher/watcher.policy.js';
-import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
-import type { WatcherOverride } from '../../../../../domain/value-objects/watcher/watcher-override.value-object.js';
 import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
 import { ViewerResolver } from '../../../../services/member/viewer-resolver.service.js';
 import { TaskLocator } from '../../../../services/task/task-locator.service.js';
+import { EffectiveWatchers } from '../../../../services/watcher/effective-watchers.service.js';
 import type { ListWatchersInput } from './list-watchers.input.js';
 import type { ListWatchersOutput } from './list-watchers.output.js';
 
@@ -16,11 +14,8 @@ export class ListWatchers {
   /** Tenant transaction. */
   private readonly unit: TasksUnitOfWork;
 
-  /** Current memberships. */
-  private readonly members: MemberDirectory;
-
-  /** List visibility. */
-  private readonly spaces: SpaceDirectory;
+  /** Subscriber policy and eligibility. */
+  private readonly watchers: EffectiveWatchers;
 
   /** Caller resolver. */
   private readonly viewers: ViewerResolver;
@@ -32,8 +27,7 @@ export class ListWatchers {
   /** Binds the task transaction and directories. */
   public constructor(unit: TasksUnitOfWork, members: MemberDirectory, spaces: SpaceDirectory) {
     this.unit = unit;
-    this.members = members;
-    this.spaces = spaces;
+    this.watchers = new EffectiveWatchers(members, spaces);
     this.viewers = new ViewerResolver(members);
     this.locator = new TaskLocator(spaces);
   }
@@ -53,43 +47,7 @@ export class ListWatchers {
           archived: 'allow',
           expectedVersions: null,
         });
-        const overrides: readonly WatcherOverride[] = await store.watcherOverrides.list(
-          input.organizationId,
-          task.snapshot.id,
-        );
-        const candidates = effectiveWatchers(
-          task.snapshot.createdBy,
-          task.snapshot.assigneeIds,
-          overrides,
-          new Set([
-            ...task.snapshot.assigneeIds,
-            task.snapshot.createdBy.id,
-            ...overrides.map((row) => row.userId),
-          ]),
-        );
-        const eligible = new Set<string>();
-        for (const userId of candidates) {
-          const role =
-            userId === viewer.userId.toLowerCase()
-              ? viewer.role
-              : await this.members.roleOf(input.organizationId, userId);
-          if (role === null) continue;
-          const member: Viewer = { userId, role };
-          if (
-            (await this.spaces.findVisibleList(
-              input.organizationId,
-              member,
-              task.snapshot.listId,
-            )) !== null
-          )
-            eligible.add(userId);
-        }
-        const all = effectiveWatchers(
-          task.snapshot.createdBy,
-          task.snapshot.assigneeIds,
-          overrides,
-          eligible,
-        );
+        const all = await this.watchers.forTask(store, task.snapshot);
         const page = all
           .filter((id) => input.after === null || id > input.after)
           .slice(0, input.limit + 1);

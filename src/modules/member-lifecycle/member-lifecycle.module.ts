@@ -28,8 +28,8 @@ import { cleanUpRemovedMemberProvider } from './composition/providers/use-cases/
  * (`CleanUpRemovedMemberHandler`), which hands the private spaces of the former member over to the
  * owner (`HandOverPrivateSpaces` of `SpacesModule`), removes their grants (`RemoveMemberGrants` of
  * `SpacesModule`), drops their access requests (`DropMemberAccessRequests` of
- * `AccessRequestsModule`), then removes them from the assignees of every task
- * (`UnassignRemovedMember` of `TasksModule`), batch after batch. It orchestrates these modules so
+ * `AccessRequestsModule`), then clears their task assignments and watcher overrides through
+ * `TasksModule`, batch after batch. It orchestrates these modules so
  * that none calls another: `SpacesModule`, `TasksModule` and `AccessRequestsModule` already read the
  * copy, so the copy calling them would close a module cycle. It owns no table, no route and no
  * export.

@@ -55,6 +55,7 @@ the archive and the deletion of a list; this module never writes a list.
 | ----------------------------------------------------- | -------------------------------------------------------------------- |
 | `tasks.module`                                        | member-lifecycle, access-requests, deletion-lifecycle, task-comments |
 | `public/assignee/unassign-removed-member`             | member-lifecycle                                                     |
+| `public/watcher/remove-member-watcher-overrides`      | member-lifecycle                                                     |
 | `public/task/record-comment-activity`                 | task-comments                                                        |
 | `public/task/begin-comment`                           | task-comments                                                        |
 | `public/task/resolve-comment-task`                    | task-comments                                                        |
@@ -99,6 +100,13 @@ member from their tasks, in a tenant transaction of its own of the organization 
 The clean-up job of member-lifecycle calls it once the private spaces of the former member were
 handed over, from `afterTaskId: null`, then after each `lastTaskId`, until `none-left` or
 `member-again`.
+
+`RemoveMemberWatcherOverrides` takes the same organization, account and task-id cursor. One
+tenant transaction locks up to 500 tasks with an explicit override for the account, in task-id
+order, including archived and trashed tasks. It reads membership after the locks, returns
+`member-again` if the account rejoined, or deletes that account's overrides. The next batch
+starts after the last locked task. The task and its version stay unchanged and cleanup emits no
+event: the membership copy already removes the former member from the effective audience.
 
 `TasksModule` exports the three batches of the deletion-lifecycle jobs; the first two join the
 tenant transaction of their caller (`TasksUnitOfWork.run`) or open their own:
@@ -154,14 +162,12 @@ Created by `migrations/0003_tasks.sql`, which forces the five policies by hand;
 `migrations/0004_task_queries.sql` adds the two indexes below, as plain `CREATE INDEX` (see Decisions);
 `migrations/0006_archives.sql` adds the archive of a task (expand only: every existing task stays
 live); `migrations/0007_trash.sql` adds the trash (expand only: every existing task stays out of
-it). `migrations/0008_collaboration.sql` adds the watcher override table, not yet used by a route.
+it). The collaboration migration adds the watcher override table.
 
 - `task_watcher_overrides`: one explicit follow or unfollow per account and task; the task foreign key
-  cascades on purge, and the tenant-first user index is intended for member cleanup. The watcher
-  policy computes defaults and overrides. An unfinished `ListWatchers` use case and bounded tenant
-  repository exist, but the use case is not wired to a route. Repository tenant-isolation coverage
-  is written but has not run in this environment.
-  Watcher writes, member cleanup and watcher events are not implemented.
+  cascades on purge, and the tenant-first user index supports member cleanup. The watcher policy
+  combines the human creator and active assignees with up to 100 explicit overrides. A candidate
+  counts only while their membership and list visibility permit a read.
 - `trash_entries`: one row per entry, a task and its subtasks deleted together. `root_task_id` and
   `list_id` carry no foreign key (the entry and its tasks are erased together; the lists belong to
   spaces); `parent_key` is the parent of the root as it read when deleted, `null` for a top-level
@@ -422,9 +428,12 @@ id)` (the `position` of the lists spaces answers), and its cursor carries that p
   id: a list restored from the archives goes to the end of its space, and is neither lost nor read
   twice between two pages.
 
-- `descriptionMentions` is accepted by the installed patch validator and requires `If-Match`, but
-  is mapped but not applied or persisted yet. A patch that supplies it with a valid header silently discards
-  the spans; it must not be relied on until the mention write is implemented.
+- Creation and `PATCH` store structured description mentions as Unicode code-point spans. A description
+  or spans patch requires `If-Match`. Changing the description without supplying replacement spans
+  clears them. Invalid spans give `400 request.invalid`. Supplied recipients, including guests, must
+  be current members who can read the resulting list. A recipient refusal gives
+  `422 mention.recipient-invalid` after the edit-role check. The stored spans carry a digest of the
+  text they annotate. Reads omit stale spans if a previous service version replaced that text.
 
 ### Collaboration operations in the installed contract
 
@@ -435,21 +444,34 @@ id)` (the `position` of the lists spaces answers), and its cursor carries that p
 | `GET /internal/v1/tasks/{taskKey}/comments/{commentId}`    | `task-comments/presentation/http/controllers/comment/comments.controller.ts` |
 | `PATCH /internal/v1/tasks/{taskKey}/comments/{commentId}`  | `task-comments/presentation/http/controllers/comment/comments.controller.ts` |
 | `DELETE /internal/v1/tasks/{taskKey}/comments/{commentId}` | `task-comments/presentation/http/controllers/comment/comments.controller.ts` |
-| `GET /internal/v1/tasks/{taskKey}/participants`            | Missing: no controller or use case.                                          |
-| `GET /internal/v1/tasks/{taskKey}/watchers`                | Missing: the read use case is not wired to a controller.                     |
-| `PUT /internal/v1/tasks/{taskKey}/watchers/{userId}`       | Missing: no controller or write use case.                                    |
-| `DELETE /internal/v1/tasks/{taskKey}/watchers/{userId}`    | Missing: no controller or write use case.                                    |
+| `GET /internal/v1/tasks/{taskKey}/participants`            | `tasks/presentation/http/controllers/task/task-participants.controller.ts`   |
+| `GET /internal/v1/tasks/{taskKey}/watchers`                | `tasks/presentation/http/controllers/watcher/task-watchers.controller.ts`    |
+| `PUT /internal/v1/tasks/{taskKey}/watchers/{userId}`       | `tasks/presentation/http/controllers/watcher/task-watchers.controller.ts`    |
+| `DELETE /internal/v1/tasks/{taskKey}/watchers/{userId}`    | `tasks/presentation/http/controllers/watcher/task-watchers.controller.ts`    |
 
-Paths in the table are relative to `src/modules/`. The two new integration cases for description
-mentions and participants express intended behavior; they are not yet satisfied by this service.
+Paths in the table are relative to `src/modules/`. The participants query requires `comment` or
+`edit`. It reads task visibility, list grants and current memberships in one tenant snapshot.
+It returns only `userId` and `memberId`, ordered by user ID, including guests with list read
+access. The cursor is bound to the tenant and task.
+
+Watcher pages are ordered by account ID in one tenant snapshot. Every page includes the total and
+whether the caller follows the task. A caller with comment or edit access can change their own
+override. Only an editor can change another account's override. The account needs current read
+access. PUT follows explicitly and DELETE opts out explicitly. Both honor the task's `If-Match`
+and return its ETag. Repeating an override preserves the version.
 
 ## Events emitted
 
-`task.watcher-changed.v1` and `task.description-mentions-changed.v1` are not emitted yet.
-`task.status-changed.v1` currently omits the optional `watcherIds` audience. The unfinished watcher
-reader checks candidate membership and list visibility one account at a time, up to the 100-override
-limit plus creator and assignees; its query cost and concurrency behavior need review before it is
-exposed.
+`task.description-mentions-changed.v1` is appended in the same transaction when the stored description
+recipient set changes. It carries account IDs and task placement, with no description or span text.
+
+A changed watcher override advances the task version and appends `task.updated.v1` with
+`changed: ['watchers']`, then `task.watcher-changed.v1`, in the same transaction. It creates no
+activity entry. The watcher fact states the requested override and its effective subscription.
+`task.status-changed.v1` includes the effective eligible `watcherIds` of the resulting task, including
+its new list when a patch changes its placement and status together. Status and comment creation
+snapshot the audience under task and placement locks. The notification consumer rechecks visibility
+before delivery and suppresses the actor.
 
 `task.created.v1`, `task.updated.v1` (with `changed`), `task.status-changed.v1`,
 `task.assigned.v1`, `task.archived.v1`, `task.unarchived.v1`, `task.trashed.v1`,
@@ -800,10 +822,23 @@ The task delete during purge cascades to watcher-override and comment rows; Post
 locks during that delete, after the task locks and before the subsequent space and list locks.
 A comment write holds the acting membership and supplied recipient memberships, then its task,
 then the task's space and list `FOR SHARE`. It subsequently inserts or updates the comment row,
-its activity and outbox. Every comment mutation holds the owning task first, so it cannot conflict
+its activity and outbox. A status change holds the task's space and list after its task lock.
+A patch moving a task holds both placements in global order and rereads the actor's role.
+Description-mention assignments lock supplied recipient memberships in user ID order before
+the task or list. They check recipient visibility on the resulting list while the actor's
+edit role and the placement are held.
+Status and comment creation pre-read watcher candidates and hold their current memberships in
+account order before the task. A reply's human author joins the same preflight. After locking the
+task and the resulting placement the write checks visibility under those locks. A newly found
+candidate rolls back the preflight savepoint and retries it, with at most three attempts. The
+savepoint keeps the caller's idempotency reservation and is released before writing or emitting.
+Every comment mutation holds the owning task before the comment row, so it cannot conflict
 on a child row with a purge that already holds that task; the purge cascades child rows before it
-locks spaces and lists. There is no watcher override write or cleanup use case yet, so its lock
-order is not verified.
+locks spaces and lists. Watcher cleanup locks task rows in ascending id, reads membership without
+a lock, then deletes the overrides under the owning task locks.
+An explicit watcher write holds the actor and target memberships before locking the task. It then
+holds the task's space and list, rechecks the actor's role and the target's read access, and writes
+the override, task version and outbox together.
 
 A row is locked in its final mode before the next level: no transaction takes a shared lock and
 strengthens it later (the one strengthening left, the `FOR NO KEY UPDATE` of a deleted space to

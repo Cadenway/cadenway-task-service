@@ -5,7 +5,12 @@ import type { CommentWriteTask } from '../../../../models/comment/comment-write-
 export interface CommentTaskWriter {
   // #region Methods
   /** Authorizes and locks the task, then advances its version in the current transaction. */
-  begin(input: CommentReadInput, recipientIds?: readonly string[]): Promise<CommentWriteTask>;
+  begin(
+    input: CommentReadInput,
+    recipientIds?: readonly string[],
+    includeWatcherAudience?: boolean,
+    findReplyAuthor?: (taskId: string) => Promise<string | null>,
+  ): Promise<CommentWriteTask>;
 
   /** Records the creation activity while the task lock remains held. */
   record(
@@ -23,7 +28,7 @@ export interface CommentTaskWriter {
     excerpt: string | null,
   ): Promise<void>;
 
-  /** Checks the reply author's current task visibility without acquiring new locks. */
+  /** Checks a held mention recipient's visibility without acquiring new locks. */
   canRead(input: CommentReadInput, userId: string): Promise<boolean>;
   // #endregion
 }

@@ -14,11 +14,10 @@ tenant transaction:
   then drops their access requests, pending or answered (`DropMemberAccessRequests` of
   access-requests), then
   removes the member from the assignees of every task, closed tasks included
-  (`UnassignRemovedMember` of tasks), batch after batch (`CleanUpRemovedMember`);
+  (`UnassignRemovedMember` of tasks), and clears their explicit watcher overrides
+  (`RemoveMemberWatcherOverrides` of tasks), batch after batch (`CleanUpRemovedMember`);
 - for a join or a role change that gives the role `owner`, hands the spaces awaiting an owner to
   that owner (`HandOverAwaitingSpaces` of spaces).
-
-The job does not yet remove watcher overrides; that cleanup has not been implemented.
 
 It owns no data, no route and no event of its own, and one job queue,
 `task.clean-up-removed-member`, with its dead-letter queue (`src/config/job-queues.ts`). A module of its own rather than a part of
@@ -49,7 +48,8 @@ None of its own. The clean-up job appends, through the outboxes of the other mod
 transaction of each of its batches, one `space.updated.v1` per private space it hands over
 (`changed: ['ownerUserId']`), one `space.access-changed.v1` or `list.access-changed.v1` per grant it
 removes, and one `task.updated.v1` per task it changes (`changed: ['assigneeIds']`), all by the
-actor `{ type: 'system', id: 'task-service' }`; a dropped access request emits nothing. A deleted
+actor `{ type: 'system', id: 'task-service' }`; dropping an access request or a watcher override
+emits nothing. A deleted
 space or list (a tombstone) and a task in the trash still change (owner, grants, assignees, each
 with its next version) but emit nothing: a consumer dropped them at `space.deleted.v1`,
 `list.deleted.v1` or `task.trashed.v1`, and their restoration event carries the state after it.
@@ -175,9 +175,9 @@ unapplied, with no later correction.
   hold; only a transient failure redelivers it.
 - A removal enqueues exactly one clean-up job per membership and version, in its transaction; the
   job hands the private spaces over, then removes the grants of the former member, then drops their
-  access requests, pending or answered, then removes them from every task, after the commit,
-  unless the copy holds them as a member again when a batch runs. A join or a role change enqueues
-  nothing, so a member who becomes a guest keeps the tasks, the grants and the requests they hold.
+  access requests, pending or answered, then removes their task assignments and explicit watcher
+  overrides after the commit, unless the copy holds them as a member again when a batch runs.
+  A join or a role change enqueues nothing.
 - A private space of a former member is seen by nobody until the job hands it over.
 
 ## Transactions
@@ -212,7 +212,10 @@ loops within the attempt, each batch in its own tenant transaction:
    pending or answered (the answered ones carry the free text the person wrote), and its attempts,
    without event, until a batch finds none;
 4. `UnassignRemovedMember` (tasks): up to 500 tasks after the last task id of the previous batch,
-   until a batch finds none.
+   until a batch finds none;
+5. `RemoveMemberWatcherOverrides` (tasks): up to 500 overrides after the last task id of the
+   previous batch, until a batch finds none. Its task locks serialize against watcher writes and
+   purge. It reads membership after the locks, then deletes only the former account's overrides.
 
 It stops only on an empty batch, never on a short one, and for good on a batch that finds the
 account a member again. It starts no batch once the signal of its attempt aborted (the 15-minute
@@ -220,11 +223,11 @@ expiration of the queue, or a shutdown past the 8 s `shutdownTimeoutMs` of the r
 10 s default grace period of Docker: a batch takes about a second, and the handler stops at a batch
 boundary). A failed batch (the database, a lock or statement timeout) rolls back alone: the batches
 before it stay committed, the attempt fails with a `CleanUpStepError` that names the step
-(`spaces`, `grants`, `requests` or `tasks`) and the batches committed before it, the error of the
+(`spaces`, `grants`, `requests`, `tasks` or `watchers`) and the batches committed before it, the error of the
 batch as its `cause`, and pg-boss retries the job 8 times with backoff from
 10 s, capped at 30 min (the last attempt starts 42 to 72 minutes after the first failure when the
-attempts fail fast). A retry starts again from the spaces, grants, requests and tasks still
-owned, held, left or assigned, so nothing is written twice. A permanent error (a malformed
+attempts fail fast). A retry starts again from the data each step still needs to clean up, so
+nothing is written twice. A permanent error (a malformed
 job, a defect) costs that whole schedule before its dead letter. After the last attempt the job
 becomes a dead letter of `task.clean-up-removed-member.dead-letter`, kept 14 days. The spaces module
 documents the cost of a space batch and of a grant batch, the access-requests module the four
@@ -248,7 +251,8 @@ after its expiration. The dead-letter watch logs an error with the count of reta
 logs `removed member clean-up job handled` (`CleanUpRemovedMemberHandler`) with the job id, the
 attempt, the outcome (`completed` or `member-again`), the numbers of spaces handed over and left
 awaiting (`spacesHandedOver`, `spacesAwaitingOwner`), of grants removed (`grantsRemoved`), of
-access requests dropped (`requestsDropped`), of tasks changed (`tasksUnassigned`) and of batches
+access requests dropped (`requestsDropped`), of tasks changed (`tasksUnassigned`), of watcher
+overrides removed (`watcherOverridesRemoved`) and of batches
 committed (`batches`, those that found something to process; the closing call of each step is not
 counted), no account. Not covered:
 

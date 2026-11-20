@@ -1,4 +1,7 @@
+import { createHash } from 'node:crypto';
+
 import { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
+import type { DescriptionMention } from '../../../../../domain/value-objects/mention/description-mention.value-object.js';
 import type { ChecklistItemState } from '../../../../../domain/value-objects/task/checklist-item-state.value-object.js';
 import type { TaskArchive } from '../../../../../domain/value-objects/task/task-archive.value-object.js';
 import type { TaskDraft } from '../../../../../domain/value-objects/task/task-draft.value-object.js';
@@ -17,6 +20,30 @@ import { toActorType, toCancelReason, toPriorityKey, toStatusKey } from './task-
  * @type {typeof tasks.$inferSelect}
  */
 export type TaskRow = typeof tasks.$inferSelect;
+
+/** Identifies the exact description version a set of mention spans describes. */
+function descriptionDigest(description: string): string {
+  return createHash('sha256').update(description).digest('hex');
+}
+
+/** Reads only spans tied to the current text, including after a legacy writer edits the text. */
+function readDescriptionMentions(row: TaskRow): readonly DescriptionMention[] {
+  const { description, descriptionMentions } = row;
+  if (description === null || descriptionMentions === null) return [];
+  return descriptionMentions.descriptionDigest === descriptionDigest(description)
+    ? descriptionMentions.spans
+    : [];
+}
+
+/** Keeps offsets and their source fingerprint together when a task writes the description. */
+function storeDescriptionMentions(
+  description: string | null,
+  spans: readonly DescriptionMention[],
+): TaskRow['descriptionMentions'] {
+  return description === null || spans.length === 0
+    ? null
+    : { descriptionDigest: descriptionDigest(description), spans };
+}
 
 /**
  * Function toTaskTrash
@@ -105,6 +132,7 @@ export function toTask(
     parentKey,
     name: row.name,
     description: row.description,
+    descriptionMentions: readDescriptionMentions(row),
     status: toStatusKey(row.status, subject),
     cancelReason: toCancelReason(row.cancelReason, subject),
     cancelNote: row.cancelNote,
@@ -147,6 +175,7 @@ export function toTaskInsert(draft: TaskDraft, key: TaskKey): typeof tasks.$infe
     parentId: draft.parentId,
     name: draft.name,
     description: draft.description,
+    descriptionMentions: storeDescriptionMentions(draft.description, draft.descriptionMentions),
     status: draft.status,
     cancelReason: draft.cancelReason,
     cancelNote: draft.cancelNote,
@@ -182,6 +211,7 @@ export function toTaskUpdate(task: Task): Partial<typeof tasks.$inferInsert> {
     parentId: state.parentId,
     name: state.name,
     description: state.description,
+    descriptionMentions: storeDescriptionMentions(state.description, state.descriptionMentions),
     status: state.status,
     cancelReason: state.cancelReason,
     cancelNote: state.cancelNote,

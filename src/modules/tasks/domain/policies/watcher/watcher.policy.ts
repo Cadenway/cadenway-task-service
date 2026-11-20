@@ -2,6 +2,9 @@ import type { AccessRole } from '../../value-objects/access/access-role.value-ob
 import type { TaskActor } from '../../value-objects/task/task-actor.value-object.js';
 import type { WatcherOverride } from '../../value-objects/watcher/watcher-override.value-object.js';
 
+/** Maximum number of explicit watcher overrides on one task. */
+export const WATCHER_OVERRIDE_LIMIT = 100;
+
 /**
  * Whether a caller may change the subject's override (P3b-2 decision 8). This decision must be
  * made before checking whether the subject is eligible.
@@ -39,6 +42,16 @@ export function effectiveWatchers(
   overrides: readonly WatcherOverride[],
   eligibleUserIds: ReadonlySet<string>,
 ): readonly string[] {
+  const eligible = new Set([...eligibleUserIds].map((id: string): string => id.toLowerCase()));
+  return watcherCandidates(creator, assignees, overrides).filter((id) => eligible.has(id));
+}
+
+/** Returns distinct candidate IDs, including explicit follows and excluding explicit opt-outs. */
+export function watcherCandidates(
+  creator: TaskActor,
+  assignees: readonly string[],
+  overrides: readonly WatcherOverride[],
+): readonly string[] {
   const chosen = new Set<string>(assignees.map((id: string): string => id.toLowerCase()));
   if (creator.type === 'user') {
     chosen.add(creator.id.toLowerCase());
@@ -51,6 +64,5 @@ export function effectiveWatchers(
       chosen.delete(id);
     }
   }
-  const eligible = new Set([...eligibleUserIds].map((id: string): string => id.toLowerCase()));
-  return [...chosen].filter((id: string): boolean => eligible.has(id)).sort();
+  return [...chosen].sort();
 }

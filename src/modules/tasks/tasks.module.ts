@@ -22,6 +22,7 @@ import { listArchivedTasksProvider } from './composition/providers/use-cases/arc
 import { unarchiveTaskProvider } from './composition/providers/use-cases/archive/unarchive-task.provider.js';
 import { assignTaskProvider } from './composition/providers/use-cases/assignee/assign-task.provider.js';
 import { unassignRemovedMemberProvider } from './composition/providers/use-cases/assignee/unassign-removed-member.provider.js';
+import { removeMemberWatcherOverridesProvider } from './composition/providers/use-cases/watcher/remove-member-watcher-overrides.provider.js';
 import { unassignTaskProvider } from './composition/providers/use-cases/assignee/unassign-task.provider.js';
 import { addChecklistItemProvider } from './composition/providers/use-cases/checklist/add-checklist-item.provider.js';
 import { updateChecklistItemProvider } from './composition/providers/use-cases/checklist/update-checklist-item.provider.js';
@@ -42,6 +43,7 @@ import { findTaskReferenceProvider } from './composition/providers/use-cases/tas
 import { findTaskReferencesProvider } from './composition/providers/use-cases/task/find-task-references.provider.js';
 import { getTaskDetailProvider } from './composition/providers/use-cases/task/get-task-detail.provider.js';
 import { getTaskProvider } from './composition/providers/use-cases/task/get-task.provider.js';
+import { listTaskParticipantsProvider } from './composition/providers/use-cases/task/list-task-participants.provider.js';
 import { updateTaskProvider } from './composition/providers/use-cases/task/update-task.provider.js';
 import { emptyTrashProvider } from './composition/providers/use-cases/trash/empty-trash.provider.js';
 import { listOrganizationsWithTrashToPurgeProvider } from './composition/providers/use-cases/trash/list-organizations-with-trash-to-purge.provider.js';
@@ -63,14 +65,19 @@ import { TaskActivityController } from './presentation/http/controllers/activity
 import { ArchivesController } from './presentation/http/controllers/archive/archives.controller.js';
 import { TaskArchiveController } from './presentation/http/controllers/archive/task-archive.controller.js';
 import { TaskAssigneesController } from './presentation/http/controllers/assignee/task-assignees.controller.js';
+import { TaskWatchersController } from './presentation/http/controllers/watcher/task-watchers.controller.js';
+import { listWatchersProvider } from './composition/providers/use-cases/watcher/list-watchers.provider.js';
+import { setTaskWatcherProvider } from './composition/providers/use-cases/watcher/set-task-watcher.provider.js';
 import { ChecklistItemsController } from './presentation/http/controllers/checklist/checklist-items.controller.js';
 import { TaskLabelsController } from './presentation/http/controllers/label/task-labels.controller.js';
 import { SubtasksController } from './presentation/http/controllers/subtask/subtasks.controller.js';
 import { ListTasksController } from './presentation/http/controllers/task/list-tasks.controller.js';
+import { TaskParticipantsController } from './presentation/http/controllers/task/task-participants.controller.js';
 import { TasksController } from './presentation/http/controllers/task/tasks.controller.js';
 import { TaskTrashController } from './presentation/http/controllers/trash/task-trash.controller.js';
 import { TrashController } from './presentation/http/controllers/trash/trash.controller.js';
 import { UnassignRemovedMember } from './public/assignee/unassign-removed-member.js';
+import { RemoveMemberWatcherOverrides } from './public/watcher/remove-member-watcher-overrides.js';
 import { FindTaskReference } from './public/task/find-task-reference.js';
 import { FindTaskReferences } from './public/task/find-task-references.js';
 import { ListOrganizationsWithTrashToPurge } from './public/trash/list-organizations-with-trash-to-purge.js';
@@ -146,6 +153,7 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
     UserTasksController,
     TasksController,
     TaskAssigneesController,
+    TaskWatchersController,
     TaskLabelsController,
     SubtasksController,
     ChecklistItemsController,
@@ -155,6 +163,7 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
     TaskTrashController,
     TrashController,
     TaskAccessController,
+    TaskParticipantsController,
   ],
   providers: [
     tasksUnitOfWorkProvider,
@@ -165,11 +174,15 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
     updateTaskProvider,
     getTaskProvider,
     getTaskDetailProvider,
+    listTaskParticipantsProvider,
     createSubtaskProvider,
     listSubtasksProvider,
     assignTaskProvider,
+    listWatchersProvider,
+    setTaskWatcherProvider,
     unassignTaskProvider,
     unassignRemovedMemberProvider,
+    removeMemberWatcherOverridesProvider,
     addTaskLabelProvider,
     removeTaskLabelProvider,
     addChecklistItemProvider,
@@ -206,6 +219,7 @@ markIdempotent(ChecklistItemsController.prototype, 'add');
   ],
   exports: [
     UnassignRemovedMember,
+    RemoveMemberWatcherOverrides,
     FindTaskReference,
     ResolveCommentTask,
     BeginComment,

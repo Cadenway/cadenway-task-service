@@ -3,6 +3,7 @@ import {
   commentExcerpt,
   validateCommentText,
 } from '../../../../../domain/policies/comment/comment-text.policy.js';
+import { CommentTrashedTaskRefusal } from '../../../../models/comment/comment-trashed-task-refusal.model.js';
 import { CommentWriteRefusal } from '../../../../models/comment/comment-write-refusal.model.js';
 import type { CommentWriteStore } from '../../../../models/comment/comment-write-store.model.js';
 import type { CommentTaskWriter } from '../../../../ports/outbound/tasks/task/comment-task-writer.port.js';
@@ -34,14 +35,29 @@ export class CreateComment {
     return this.unit.write(async (store: CommentWriteStore): Promise<CreateCommentOutput> => {
       const mentions = input.mentions ?? [];
       const recipientIds = [...new Set(mentions.map((mention) => mention.userId.toLowerCase()))];
-      const task = await this.tasks.begin(input, recipientIds);
+      const { replyToCommentId } = input;
+      const task =
+        replyToCommentId === null
+          ? await this.tasks.begin(input, recipientIds, true)
+          : await this.tasks.begin(input, recipientIds, true, async (taskId) => {
+              const reply = await store.comments.find(
+                input.organizationId,
+                taskId,
+                replyToCommentId,
+                false,
+              );
+              return reply?.snapshot.actorType === 'user' ? reply.snapshot.actorId : null;
+            });
+      if (task.outcome === 'task-trashed') throw new CommentTrashedTaskRefusal(task.details);
       if (task.outcome === 'role-insufficient')
         throw new CommentWriteRefusal(task.outcome, task.role);
       if (task.outcome !== 'ready') throw new CommentWriteRefusal(task.outcome);
       try {
         validateCommentText(input.body, mentions);
       } catch (error: unknown) {
-        if (error instanceof InvalidCommentError) throw new CommentWriteRefusal('invalid');
+        if (error instanceof InvalidCommentError) {
+          throw new CommentWriteRefusal(error.path === 'mentions' ? 'invalid-mentions' : 'invalid');
+        }
         throw error;
       }
       if ((task.unavailableRecipientIds?.length ?? 0) > 0)
@@ -64,8 +80,8 @@ export class CreateComment {
       const recipient =
         reply !== null &&
         reply.snapshot.actorType === 'user' &&
-        (await this.tasks.canRead(input, reply.snapshot.actorId))
-          ? { commentId: reply.snapshot.id, userId: reply.snapshot.actorId }
+        task.replyRecipientId === reply.snapshot.actorId.toLowerCase()
+          ? { commentId: reply.snapshot.id, userId: task.replyRecipientId }
           : undefined;
       const comment = await store.comments.insert({
         organizationId: input.organizationId,
@@ -87,6 +103,7 @@ export class CreateComment {
         commentId: comment.snapshot.id,
         commentVersion: comment.snapshot.version,
         mentionedUserIds: recipientIds,
+        watcherIds: task.watcherIds,
         ...(recipient === undefined ? {} : { reply: recipient }),
       });
       return comment;

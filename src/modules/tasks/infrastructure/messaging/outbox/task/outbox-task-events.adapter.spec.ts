@@ -315,12 +315,37 @@ describe('OutboxTaskEvents: the task.* events on the outbox, as the contract def
     });
   });
 
+  describe('task.watcher-changed.v1', () => {
+    it.each([true, false])(
+      'publishes the effective override %s with the task version',
+      async (following) => {
+        const task = Task.restore(taskState({ version: 13 }));
+        await events.taskWatcherChanged(task, { userId: HUGO, following }, camille);
+
+        expect(parsed(outbox.appends[0], 'task.watcher-changed.v1')).toStrictEqual({
+          id: EVENT_ID,
+          occurredAt: OCCURRED_AT,
+          organizationId: task.snapshot.organizationId,
+          version: 13,
+          key: 'CAD-482',
+          spaceId: task.snapshot.spaceId,
+          listId: task.snapshot.listId,
+          actor: camille,
+          userId: HUGO,
+          requested: following ? 'follow' : 'unfollow',
+          effectiveFollowing: following,
+        });
+      },
+    );
+  });
+
   describe('task.status-changed.v1', () => {
     it('carries the previous status, without cancel reason or note outside a cancellation', async () => {
       await events.taskStatusChanged(
         Task.restore(taskState({ version: 14, status: 'review' })),
         'progress',
         camille,
+        [CAMILLE, HUGO],
       );
 
       const expected: TaskStatusChangedV1 = {
@@ -331,12 +356,13 @@ describe('OutboxTaskEvents: the task.* events on the outbox, as the contract def
         status: 'review',
         previousStatus: 'progress',
         cancelNote: null,
+        watcherIds: [CAMILLE, HUGO],
       };
       expect(parsed(outbox.appends[0], 'task.status-changed.v1')).toStrictEqual(expected);
     });
 
     it('carries the cancel reason and the cancel note of a cancellation', async () => {
-      await events.taskStatusChanged(cancelledWithNote, 'progress', camille);
+      await events.taskStatusChanged(cancelledWithNote, 'progress', camille, []);
 
       const expected: TaskStatusChangedV1 = {
         id: EVENT_ID,
@@ -347,6 +373,7 @@ describe('OutboxTaskEvents: the task.* events on the outbox, as the contract def
         previousStatus: 'progress',
         cancelReason: 'duplicate',
         cancelNote: 'Doublon de CAD-470.',
+        watcherIds: [],
       };
       expect(parsed(outbox.appends[0], 'task.status-changed.v1')).toStrictEqual(expected);
     });
@@ -356,6 +383,7 @@ describe('OutboxTaskEvents: the task.* events on the outbox, as the contract def
         Task.restore(taskState({ version: 13, status: 'cancelled', cancelReason: 'obsolete' })),
         'todo',
         camille,
+        [],
       );
 
       expect(parsed(outbox.appends[0], 'task.status-changed.v1')).toMatchObject({
@@ -377,6 +405,7 @@ describe('OutboxTaskEvents: the task.* events on the outbox, as the contract def
         ),
         'review',
         camille,
+        [],
       );
 
       expect(parsed(outbox.appends[0], 'task.status-changed.v1')).toMatchObject({
@@ -564,7 +593,7 @@ describe('OutboxTaskEvents: the task.* events on the outbox, as the contract def
         ['status', 'cancelReason', 'cancelNote'],
         camille,
       );
-      await events.taskStatusChanged(cancelledWithNote, 'progress', camille);
+      await events.taskStatusChanged(cancelledWithNote, 'progress', camille, []);
       await events.taskAssigned(cancelledWithNote, CAMILLE, camille);
 
       expect(outbox.appends.map((append) => append.name)).toEqual([
@@ -591,7 +620,7 @@ describe('OutboxTaskEvents: the task.* events on the outbox, as the contract def
       const task: Task = Task.restore(taskState({ version: 13 }));
 
       await events.taskUpdated(task, ['status'], camille);
-      await events.taskStatusChanged(task, 'todo', camille);
+      await events.taskStatusChanged(task, 'todo', camille, []);
       await events.taskAssigned(task, INES, camille);
 
       expect(log).toEqual([

@@ -24,15 +24,10 @@ export interface CommentMention {
  */
 export function validateCommentText(body: string, mentions: readonly CommentMention[]): void {
   const points: string[] = Array.from(body);
-  if (
-    points.length < 1 ||
-    points.length > 5000 ||
-    !/\S/u.test(body) ||
-    body.includes('\0') ||
-    mentions.length > 20
-  ) {
+  if (points.length < 1 || points.length > 5000 || !/\S/u.test(body) || body.includes('\0')) {
     throw new InvalidCommentError();
   }
+  if (mentions.length > 20) throw new InvalidCommentError('mentions');
   const sorted: CommentMention[] = [...mentions].sort((a, b) => a.start - b.start);
   let previousEnd: number = 0;
   for (const span of sorted) {
@@ -49,7 +44,7 @@ export function validateCommentText(body: string, mentions: readonly CommentMent
         .join('')
         .trim() === ''
     ) {
-      throw new InvalidCommentError();
+      throw new InvalidCommentError('mentions');
     }
     previousEnd = span.end;
   }

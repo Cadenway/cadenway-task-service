@@ -2,7 +2,7 @@
 export class InvalidCommentError extends Error {
   // #region Constructor
   /** Creates a content-free description of the invalid input. */
-  public constructor() {
+  public constructor(public readonly path: 'body' | 'mentions' = 'body') {
     super('The comment body or mention spans are invalid.');
     this.name = 'InvalidCommentError';
   }

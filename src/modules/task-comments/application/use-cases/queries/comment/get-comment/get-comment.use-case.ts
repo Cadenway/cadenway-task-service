@@ -1,3 +1,4 @@
+import { CommentTrashedTaskRefusal } from '../../../../models/comment/comment-trashed-task-refusal.model.js';
 import { CommentReadRefusal } from '../../../../models/comment/comment-read-refusal.model.js';
 import type { CommentStore } from '../../../../models/comment/comment-store.model.js';
 import type { CommentTaskDirectory } from '../../../../ports/outbound/tasks/task/comment-task-directory.port.js';
@@ -28,6 +29,7 @@ export class GetComment {
   public async execute(input: GetCommentInput): Promise<GetCommentOutput> {
     return this.unit.read(async (store: CommentStore): Promise<GetCommentOutput> => {
       const task = await this.tasks.resolve(input);
+      if (task.outcome === 'task-trashed') throw new CommentTrashedTaskRefusal(task.details);
       if (task.outcome !== 'found') throw new CommentReadRefusal(task.outcome);
       const comment = await store.comments.find(
         input.organizationId,

@@ -11,7 +11,8 @@ export class CommentWriteRefusal extends Error {
     | 'author-required'
     | 'version-mismatch'
     | 'recipient-invalid'
-    | 'invalid';
+    | 'invalid'
+    | 'invalid-mentions';
 
   /** Caller role when insufficient. */
   public readonly role: 'view' | 'comment' | 'edit' | null;
@@ -32,7 +33,8 @@ export class CommentWriteRefusal extends Error {
       | 'author-required'
       | 'version-mismatch'
       | 'recipient-invalid'
-      | 'invalid',
+      | 'invalid'
+      | 'invalid-mentions',
     role: 'view' | 'comment' | 'edit' | null = null,
     version: number | null = null,
   ) {
