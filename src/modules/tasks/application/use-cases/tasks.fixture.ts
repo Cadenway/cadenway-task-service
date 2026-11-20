@@ -3013,9 +3013,22 @@ export class InMemoryTasks implements TasksUnitOfWork {
               : { live: isLiveState(row), inTrash: row.trash !== null, listId: row.listId },
           );
         },
-        insert: (draft: TaskDraft, key: TaskKey): Promise<Task> => {
+        insert: (
+          draft: TaskDraft,
+          key: TaskKey,
+          checklist: readonly ChecklistItemDraft[] = [],
+        ): Promise<Task> => {
           this.trace.push('tasks.insert');
-          return Promise.resolve(Task.restore(insertDraft(draft, key)));
+          const state: TaskState = insertDraft(draft, key);
+          const created: TaskState = {
+            ...state,
+            checklist: checklist.map((item: ChecklistItemDraft): ChecklistItemState => ({
+              ...item,
+              id: this.nextId('019a7300'),
+            })),
+          };
+          tasks.set(state.id, created);
+          return Promise.resolve(Task.restore(created));
         },
         insertMany: (
           drafts: readonly TaskDraft[],

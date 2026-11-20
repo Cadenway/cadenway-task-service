@@ -2,6 +2,7 @@ import { ActivityEntry } from '../../../../../domain/aggregates/activity/activit
 import { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
 import type { AssigneeCandidate } from '../../../../../domain/value-objects/member/assignee-candidate.value-object.js';
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
+import type { ChecklistItemDraft } from '../../../../../domain/value-objects/task/checklist-item-draft.value-object.js';
 import type { TaskActor } from '../../../../../domain/value-objects/task/task-actor.value-object.js';
 import type { TaskDraft } from '../../../../../domain/value-objects/task/task-draft.value-object.js';
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
@@ -182,6 +183,9 @@ export class CreateTask {
           now,
         ),
       );
+      const checklist: readonly ChecklistItemDraft[] = this.rules.apply(() =>
+        Task.draftInitialChecklist(input.checklistTexts ?? []),
+      );
       if (recipients.length === 0) {
         const held: HeldList = await this.spaces.holdList(input.organizationId, placement.list.id);
         if (held.outcome !== 'live') throw new TaskRefusal({ reason: 'list-not-found' });
@@ -210,7 +214,11 @@ export class CreateTask {
         1 + input.subtaskNames.length,
       );
 
-      const task: Task = await store.tasks.insert(draft, TaskKey.of(keys.prefix, keys.firstNumber));
+      const task: Task = await store.tasks.insert(
+        draft,
+        TaskKey.of(keys.prefix, keys.firstNumber),
+        checklist,
+      );
       const firstAssignee: readonly AssigneeCandidate[] = candidates.slice(0, 1);
       const subtaskDrafts: readonly TaskDraft[] = input.subtaskNames.map(
         (name: string, index: number): TaskDraft =>

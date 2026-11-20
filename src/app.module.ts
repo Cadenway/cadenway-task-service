@@ -21,10 +21,19 @@ import type { AppConfig } from './config/app-config.js';
 import { jobQueues } from './config/job-queues.js';
 import { AccessRequestsModule } from './modules/access-requests/access-requests.module.js';
 import { DeletionLifecycleModule } from './modules/deletion-lifecycle/deletion-lifecycle.module.js';
+import { FavoritesModule, FavoritesStorageModule } from './modules/favorites/favorites.module.js';
 import { MemberLifecycleModule } from './modules/member-lifecycle/member-lifecycle.module.js';
 import { OrganizationMembersModule } from './modules/organization-members/organization-members.module.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
+import {
+  SavedViewsModule,
+  SavedViewsStorageModule,
+} from './modules/saved-views/saved-views.module.js';
 import { SpacesModule } from './modules/spaces/spaces.module.js';
+import {
+  TaskTemplatesModule,
+  TaskTemplatesStorageModule,
+} from './modules/task-templates/task-templates.module.js';
 import { TasksModule } from './modules/tasks/tasks.module.js';
 import { TaskCommentsModule } from './modules/task-comments/task-comments.module.js';
 
@@ -194,12 +203,20 @@ function runJobInOrganization(
     }),
     PlatformModule,
     OrganizationMembersModule,
+    // Register only the lifecycle ports globally so the owning capabilities can clean up
+    // in the caller's transaction without importing the modules that depend on their reads.
+    FavoritesStorageModule,
+    SavedViewsStorageModule,
+    TaskTemplatesStorageModule,
     SpacesModule,
     TasksModule,
     TaskCommentsModule,
     AccessRequestsModule,
     MemberLifecycleModule,
     DeletionLifecycleModule,
+    TaskTemplatesModule,
+    SavedViewsModule,
+    FavoritesModule,
   ],
 })
 export class AppModule {}

@@ -7,6 +7,7 @@ import type { SpaceHandoverBatch } from '../../../../models/clean-up/space-hando
 import type { TaskUnassignmentBatch } from '../../../../models/clean-up/task-unassignment-batch.model.js';
 import type { WatcherOverrideRemovalBatch } from '../../../../models/clean-up/watcher-override-removal-batch.model.js';
 import type { MemberAccessRequests } from '../../../../ports/outbound/access-requests/access-request/member-access-requests.port.js';
+import type { MemberFavorites } from '../../../../ports/outbound/favorites/member/member-favorites.port.js';
 import type { MemberGrants } from '../../../../ports/outbound/spaces/access/member-grants.port.js';
 import type { PrivateSpaceHandover } from '../../../../ports/outbound/spaces/space/private-space-handover.port.js';
 import type { TaskAssignments } from '../../../../ports/outbound/tasks/assignee/task-assignments.port.js';
@@ -35,6 +36,9 @@ const NOTHING = {
 /** The scripted answers of the cleanup steps. */
 interface Scripts {
   // #region Properties
+  /** An injected favorite cleanup failure. */
+  readonly favorites?: Error;
+
   /** The answers of the handover of the spaces. */
   readonly spaces?: readonly (SpaceHandoverBatch | Error)[];
 
@@ -119,7 +123,18 @@ function scripted(scripts: Scripts, onCall: (call: string) => void = () => undef
       return next<WatcherOverrideRemovalBatch>(watcherAnswers, { outcome: 'none-left' });
     },
   };
-  return { calls, useCase: new CleanUpRemovedMember(spaces, grants, requests, assignments) };
+  const favorites: MemberFavorites = {
+    purge: (organizationId: string, userId: string) => {
+      record(`favorites:${organizationId}:${userId}`);
+      return scripts.favorites === undefined
+        ? Promise.resolve()
+        : Promise.reject(scripts.favorites);
+    },
+  };
+  return {
+    calls,
+    useCase: new CleanUpRemovedMember(spaces, grants, requests, assignments, favorites),
+  };
 }
 
 /**
@@ -170,6 +185,7 @@ describe('CleanUpRemovedMember: spaces, then grants, then access requests, then 
       `spaces:${ATELIER_NORD}:${HUGO}`,
       `spaces:${ATELIER_NORD}:${HUGO}`,
       `spaces:${ATELIER_NORD}:${HUGO}`,
+      `favorites:${ATELIER_NORD}:${HUGO}`,
       `grants:${ATELIER_NORD}:${HUGO}`,
       `grants:${ATELIER_NORD}:${HUGO}`,
       `grants:${ATELIER_NORD}:${HUGO}`,
@@ -196,6 +212,7 @@ describe('CleanUpRemovedMember: spaces, then grants, then access requests, then 
 
     expect([...new Set(stepsOf(calls))]).toEqual([
       'spaces',
+      'favorites',
       'grants',
       'requests',
       'tasks',
@@ -223,6 +240,7 @@ describe('CleanUpRemovedMember: spaces, then grants, then access requests, then 
     expect(stepsOf(calls)).toEqual([
       'spaces',
       'spaces',
+      'favorites',
       'grants',
       'grants',
       'grants',
@@ -258,6 +276,7 @@ describe('CleanUpRemovedMember: spaces, then grants, then access requests, then 
     expect(output).toEqual({ ...NOTHING, outcome: 'completed' });
     expect(calls).toEqual([
       `spaces:${ATELIER_NORD}:${HUGO}`,
+      `favorites:${ATELIER_NORD}:${HUGO}`,
       `grants:${ATELIER_NORD}:${HUGO}`,
       `requests:${ATELIER_NORD}:${HUGO}`,
       `tasks:${ATELIER_NORD}:${HUGO}:first`,
@@ -302,7 +321,7 @@ describe('CleanUpRemovedMember: the job stops for good once the person is a memb
       grantsRemoved: 100,
       batches: 1,
     });
-    expect(stepsOf(calls)).toEqual(['spaces', 'grants', 'grants']);
+    expect(stepsOf(calls)).toEqual(['spaces', 'favorites', 'grants', 'grants']);
   });
 
   it('stops at a request batch that finds the account a member again, before the tasks', async () => {
@@ -319,7 +338,7 @@ describe('CleanUpRemovedMember: the job stops for good once the person is a memb
       requestsDropped: 500,
       batches: 1,
     });
-    expect(stepsOf(calls)).toEqual(['spaces', 'grants', 'requests', 'requests']);
+    expect(stepsOf(calls)).toEqual(['spaces', 'favorites', 'grants', 'requests', 'requests']);
   });
 
   it('keeps the task batches committed before a re-join and asks for no more', async () => {
@@ -359,6 +378,18 @@ describe('CleanUpRemovedMember: the job stops for good once the person is a memb
 });
 
 describe('CleanUpRemovedMember: a failed batch fails the attempt, says where, and the next one resumes', () => {
+  it('retries favorite cleanup after a failure without starting later steps', async () => {
+    const failure = new Error('favorite cleanup failed');
+    const { calls, useCase } = scripted({ favorites: failure });
+
+    await expect(useCase.execute(input)).rejects.toMatchObject({
+      step: 'favorites',
+      batches: 0,
+      cause: failure,
+    });
+    expect(stepsOf(calls)).toEqual(['spaces', 'favorites']);
+  });
+
   it('rejects with the step, the batches committed and the cause, and asks for nothing after it', async () => {
     const failure = new Error('lock timeout');
     const { calls, useCase } = scripted({
@@ -387,7 +418,7 @@ describe('CleanUpRemovedMember: a failed batch fails the attempt, says where, an
     await expect(useCase.execute(input)).rejects.toThrow(
       'grants batch failed after 2 committed batches: statement timeout',
     );
-    expect(stepsOf(calls)).toEqual(['spaces', 'spaces', 'grants', 'grants']);
+    expect(stepsOf(calls)).toEqual(['spaces', 'spaces', 'favorites', 'grants', 'grants']);
   });
 
   it('names the requests step, and unassigns no task', async () => {
@@ -397,7 +428,7 @@ describe('CleanUpRemovedMember: a failed batch fails the attempt, says where, an
     await expect(useCase.execute(input)).rejects.toThrow(
       expect.objectContaining({ step: 'requests', batches: 0 }) as CleanUpStepError,
     );
-    expect(stepsOf(calls)).toEqual(['spaces', 'grants', 'requests']);
+    expect(stepsOf(calls)).toEqual(['spaces', 'favorites', 'grants', 'requests']);
   });
 
   it('names the tasks step with the batches before it', async () => {
@@ -469,6 +500,6 @@ describe('CleanUpRemovedMember: no batch starts once the signal of the attempt a
     await expect(useCase.execute({ ...input, signal: attempt.signal })).rejects.toThrow(
       'The attempt expired.',
     );
-    expect(stepsOf(calls)).toEqual(['spaces', 'spaces', 'grants']);
+    expect(stepsOf(calls)).toEqual(['spaces', 'spaces', 'favorites', 'grants']);
   });
 });

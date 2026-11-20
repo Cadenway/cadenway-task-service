@@ -92,4 +92,18 @@ describe('the body of a task creation', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('rejects blank checklist text and allows only 100 initial items', () => {
+    const blank = CreateTaskBody.schema.safeParse({ name: 'a', checklist: [{ text: ' ' }] });
+    expect(blank.success).toBe(false);
+    if (!blank.success) {
+      expect(blank.error.issues.map((issue) => issue.path)).toEqual([['checklist', 0, 'text']]);
+    }
+    expect(
+      CreateTaskBody.schema.safeParse({
+        name: 'a',
+        checklist: Array.from({ length: 101 }, () => ({ text: 'Verify' })),
+      }).success,
+    ).toBe(false);
+  });
 });

@@ -3,6 +3,10 @@ import { JobProducer } from '@cadenway/nest-jobs/runtime';
 import { OutboxRelay, OutboxWriter } from '@cadenway/nest-messaging/outbox';
 import type { FactoryProvider } from '@nestjs/common';
 
+import { PurgeTargetFavorites } from '../../../../../favorites/public/purge/purge-target-favorites.js';
+import { RemoveListSavedViews } from '../../../../../saved-views/public/view/remove-list-saved-views.js';
+import { RemoveSpaceTaskTemplates } from '../../../../../task-templates/public/template/remove-space-task-templates.js';
+import type { SpaceLibraryCleanup } from '../../../../application/ports/outbound/library/space/space-library-cleanup.port.js';
 import type { SpacesUnitOfWork } from '../../../../application/ports/outbound/transactions/space/spaces-unit-of-work.port.js';
 import { TenantSpacesUnitOfWork } from '../../../../infrastructure/persistence/drizzle/transactions/space/tenant-spaces.unit-of-work.js';
 import { SPACES_UNIT_OF_WORK } from '../../../tokens/space/spaces-unit-of-work.token.js';
@@ -20,11 +24,34 @@ import { SPACES_UNIT_OF_WORK } from '../../../tokens/space/spaces-unit-of-work.t
  */
 export const spacesUnitOfWorkProvider: FactoryProvider<SpacesUnitOfWork> = {
   provide: SPACES_UNIT_OF_WORK,
-  inject: [TenantTransactionRunner, OutboxWriter, OutboxRelay, JobProducer],
+  inject: [
+    TenantTransactionRunner,
+    OutboxWriter,
+    OutboxRelay,
+    JobProducer,
+    RemoveListSavedViews,
+    RemoveSpaceTaskTemplates,
+    PurgeTargetFavorites,
+  ],
   useFactory: (
     runner: TenantTransactionRunner,
     outbox: OutboxWriter,
     relay: OutboxRelay,
     jobs: JobProducer,
-  ): SpacesUnitOfWork => new TenantSpacesUnitOfWork(runner, outbox, relay, jobs),
+    views: RemoveListSavedViews,
+    templates: RemoveSpaceTaskTemplates,
+    favorites: PurgeTargetFavorites,
+  ): SpacesUnitOfWork => {
+    const libraryCleanup: SpaceLibraryCleanup = {
+      async removeListViews(organizationId, listIds): Promise<void> {
+        const targetIds = await views.execute({ organizationId, listIds });
+        await favorites.execute({ organizationId, kind: 'saved-view', targetIds });
+      },
+      removeSpaceTemplates: (organizationId, spaceId): Promise<void> =>
+        templates.execute(organizationId, spaceId),
+      purgeTargetFavorites: (organizationId, kind, targetIds): Promise<void> =>
+        favorites.execute({ organizationId, kind, targetIds }),
+    };
+    return new TenantSpacesUnitOfWork(runner, outbox, relay, jobs, libraryCleanup);
+  },
 };

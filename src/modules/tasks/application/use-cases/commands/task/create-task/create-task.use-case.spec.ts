@@ -103,6 +103,31 @@ describe('CreateTask: a member creates a task in a list they see', () => {
     ]);
   });
 
+  it('creates ordered unchecked checklist items with new IDs at version one', async () => {
+    const { tasks, useCase } = atelierNord();
+    const input = createTask({ checklistTexts: [' First ', 'Second'] });
+    const first = await useCase.execute(input);
+    const second = await useCase.execute(input);
+
+    expect(first.version).toBe(1);
+    expect(first.checklist).toEqual([
+      expect.objectContaining({ text: 'First', done: false }),
+      expect.objectContaining({ text: 'Second', done: false }),
+    ]);
+    expect(tasks.stored(first.id).checklist).toEqual([
+      { ...first.checklist[0], position: 0 },
+      { ...first.checklist[1], position: 1 },
+    ]);
+    const ids: string[] = [...first.checklist, ...second.checklist].map((item) => item.id);
+    expect(new Set(ids).size).toBe(4);
+    expect(tasks.events.map((event) => event.kind)).toEqual([
+      'created',
+      'assigned',
+      'created',
+      'assigned',
+    ]);
+  });
+
   it('appends task.created.v1 then one task.assigned.v1 per assignee', async () => {
     const { tasks, useCase } = atelierNord();
 
@@ -116,14 +141,21 @@ describe('CreateTask: a member creates a task in a list they see', () => {
     ]);
   });
 
-  it('stores the spans and appends a recipient fact after the task is created', async () => {
+  it('creates the checklist and stores mentions before appending the recipient fact', async () => {
     const { tasks, useCase } = atelierNord();
     const descriptionMentions = [{ userId: HUGO, start: 2, end: 7 }];
     const view = await useCase.execute(
-      createTask({ description: '😀 @Hugo', descriptionMentions }),
+      createTask({
+        description: '😀 @Hugo',
+        descriptionMentions,
+        checklistTexts: ['Verify access'],
+      }),
     );
 
     expect(tasks.stored(view.id).descriptionMentions).toEqual(descriptionMentions);
+    expect(tasks.stored(view.id).checklist).toEqual([
+      expect.objectContaining({ text: 'Verify access', done: false, position: 0 }),
+    ]);
     expect(tasks.events.at(-1)).toEqual({
       kind: 'descriptionMentionsChanged',
       key: view.key,

@@ -76,14 +76,15 @@ export interface TaskRepository {
    * Method insert
    *
    * @description
-   * Stores a new task under a key, at version 1 with an empty checklist, and its assignees and
-   * labels in order. The database gives the id and the creation instant.
+   * Stores a new task under a key at version 1 with its ordered assignees, labels and initial
+   * checklist. The database gives the task and checklist items their own IDs.
    *
    * @param {TaskDraft} draft - The task the domain created.
    * @param {TaskKey} key - The key allocated for it.
+   * @param {readonly ChecklistItemDraft[]} [checklist] - The task's initial checklist.
    * @returns {Promise<Task>} The stored task.
    */
-  insert(draft: TaskDraft, key: TaskKey): Promise<Task>;
+  insert(draft: TaskDraft, key: TaskKey, checklist?: readonly ChecklistItemDraft[]): Promise<Task>;
 
   /**
    * Method insertMany

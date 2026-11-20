@@ -1,4 +1,5 @@
 import type { TrashDeletedTasksQueue } from '../../ports/outbound/jobs/trash/trash-deleted-tasks-queue.port.js';
+import type { SpaceLibraryCleanup } from '../../ports/outbound/library/space/space-library-cleanup.port.js';
 import type { SpaceEvents } from '../../ports/outbound/messaging/space/space-events.port.js';
 import type { GrantRepository } from '../../ports/outbound/persistence/access/grant-repository.port.js';
 import type { TaskListRepository } from '../../ports/outbound/persistence/list/task-list-repository.port.js';
@@ -15,6 +16,9 @@ import type { TransactionClock } from '../../ports/outbound/time/transaction/tra
  */
 export interface SpacesStore {
   // #region Properties
+  /** Library cleanup bound to the same transaction as the space or list change. */
+  readonly libraryCleanup: SpaceLibraryCleanup;
+
   /**
    * Property spaces
    *

@@ -524,6 +524,17 @@ export class InMemoryMembers implements MemberDirectory {
  */
 export class InMemorySpaces implements SpacesUnitOfWork {
   // #region Properties
+  /** Cleanup operations committed with the transaction. */
+  public libraryCleanupCalls: {
+    readonly operation: 'views' | 'templates' | 'favorites';
+    readonly organizationId: string;
+    readonly targetIds: readonly string[];
+    readonly kind?: 'list' | 'space';
+  }[] = [];
+
+  /** A failure injected into library cleanup to exercise rollback. */
+  public libraryCleanupError: Error | null = null;
+
   /**
    * Property spaces
    *
@@ -1279,6 +1290,7 @@ export class InMemorySpaces implements SpacesUnitOfWork {
     const lastNumbers = new Map<string, number>(this.lastNumbers);
     const events: RecordedEvent[] = [...this.events];
     const jobs: RecordedTrashJob[] = [...this.jobs];
+    const libraryCleanupCalls = [...this.libraryCleanupCalls];
     const findAnySpace = (organizationId: string, id: string): Space | null => {
       const state: SpaceState | undefined = spaces.get(id);
       return state?.organizationId === organizationId ? Space.restore(state) : null;
@@ -1412,6 +1424,16 @@ export class InMemorySpaces implements SpacesUnitOfWork {
         },
         listAllVisible: (organizationId: string, viewer: Viewer): Promise<SpaceWithGrants[]> =>
           Promise.resolve(visibleSpaces(organizationId, viewer)),
+        findVisibleByIds: (
+          organizationId: string,
+          viewer: Viewer,
+          ids: readonly string[],
+        ): Promise<SpaceWithGrants[]> =>
+          Promise.resolve(
+            visibleSpaces(organizationId, viewer).filter((row): boolean =>
+              ids.includes(row.space.snapshot.id),
+            ),
+          ),
         lockPrivateOwnedBy: (
           organizationId: string,
           ownerUserId: string,
@@ -1762,8 +1784,8 @@ export class InMemorySpaces implements SpacesUnitOfWork {
           spaceId: string,
           by: ListActor,
           at: Date,
-        ): Promise<number> => {
-          let marked: number = 0;
+        ): Promise<readonly string[]> => {
+          const marked: string[] = [];
           for (const row of [...lists.values()]) {
             if (row.organizationId !== organizationId || row.spaceId !== spaceId) {
               continue;
@@ -1772,7 +1794,7 @@ export class InMemorySpaces implements SpacesUnitOfWork {
             const next: TaskList = list.deleteWithSpace(by, at);
             if (next !== list) {
               lists.set(row.id, next.snapshot);
-              marked += 1;
+              marked.push(row.id);
             }
           }
           return Promise.resolve(marked);
@@ -2208,6 +2230,31 @@ export class InMemorySpaces implements SpacesUnitOfWork {
           return Promise.resolve(true);
         },
       },
+      libraryCleanup: {
+        removeListViews: (organizationId: string, targetIds: readonly string[]): Promise<void> => {
+          if (this.libraryCleanupError !== null) return Promise.reject(this.libraryCleanupError);
+          libraryCleanupCalls.push({ operation: 'views', organizationId, targetIds });
+          return Promise.resolve();
+        },
+        removeSpaceTemplates: (organizationId: string, spaceId: string): Promise<void> => {
+          if (this.libraryCleanupError !== null) return Promise.reject(this.libraryCleanupError);
+          libraryCleanupCalls.push({
+            operation: 'templates',
+            organizationId,
+            targetIds: [spaceId],
+          });
+          return Promise.resolve();
+        },
+        purgeTargetFavorites: (
+          organizationId: string,
+          kind: 'list' | 'space',
+          targetIds: readonly string[],
+        ): Promise<void> => {
+          if (this.libraryCleanupError !== null) return Promise.reject(this.libraryCleanupError);
+          libraryCleanupCalls.push({ operation: 'favorites', organizationId, kind, targetIds });
+          return Promise.resolve();
+        },
+      },
     };
     const result: TResult = await work(store);
     this.spaces = spaces;
@@ -2217,6 +2264,7 @@ export class InMemorySpaces implements SpacesUnitOfWork {
     this.lastNumbers = lastNumbers;
     this.events = events;
     this.jobs = jobs;
+    this.libraryCleanupCalls = libraryCleanupCalls;
     return result;
   }
 

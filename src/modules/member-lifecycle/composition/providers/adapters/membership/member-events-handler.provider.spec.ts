@@ -11,6 +11,9 @@ import type { TestingModule } from '@nestjs/testing';
 import type { Mock } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { FavoritesStorageModule } from '../../../../../favorites/favorites.module.js';
+import { SavedViewsStorageModule } from '../../../../../saved-views/saved-views.module.js';
+import { TaskTemplatesStorageModule } from '../../../../../task-templates/task-templates.module.js';
 import { MemberLifecycleModule } from '../../../../member-lifecycle.module.js';
 import { MEMBER_EVENTS_REDELIVERY } from '../../../tokens/membership/member-events-redelivery.token.js';
 
@@ -82,7 +85,15 @@ describe('MemberLifecycleModule composition of the member event consumers', () =
   beforeEach(async () => {
     subscribe.mockReset();
     subscribe.mockResolvedValue(undefined);
-    moduleRef = await Test.createTestingModule({ imports: [KitDoubles, MemberLifecycleModule] })
+    moduleRef = await Test.createTestingModule({
+      imports: [
+        KitDoubles,
+        FavoritesStorageModule,
+        SavedViewsStorageModule,
+        TaskTemplatesStorageModule,
+        MemberLifecycleModule,
+      ],
+    })
       .setLogger({ log: () => undefined, error: () => undefined, warn: () => undefined })
       .compile();
     await moduleRef.init();

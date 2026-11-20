@@ -6,6 +6,7 @@ import type { SpaceHandoverBatch } from '../../../../models/clean-up/space-hando
 import type { TaskUnassignmentBatch } from '../../../../models/clean-up/task-unassignment-batch.model.js';
 import type { WatcherOverrideRemovalBatch } from '../../../../models/clean-up/watcher-override-removal-batch.model.js';
 import type { MemberAccessRequests } from '../../../../ports/outbound/access-requests/access-request/member-access-requests.port.js';
+import type { MemberFavorites } from '../../../../ports/outbound/favorites/member/member-favorites.port.js';
 import type { MemberGrants } from '../../../../ports/outbound/spaces/access/member-grants.port.js';
 import type { PrivateSpaceHandover } from '../../../../ports/outbound/spaces/space/private-space-handover.port.js';
 import type { TaskAssignments } from '../../../../ports/outbound/tasks/assignee/task-assignments.port.js';
@@ -44,21 +45,22 @@ interface Progress {
  * @description
  * The work of the clean-up job that `ApplyMemberEvent` enqueued with a removal
  * (`member.removed.v1`; "Members" of `openapi/internal/task-service.yaml`). It runs in the
- * organization context of the job, outside the transaction of the removal, and orchestrates three
+ * organization context of the job, outside the transaction of the removal, and orchestrates
  * modules, each batch in its own tenant transaction that the module opens:
  *
  * 1. the private spaces of the former member, in batches of 100 (`HandOverPrivateSpaces` of
  *    spaces), until a batch finds none left: each passes to the owner of the organization
  *    (`space.updated.v1`, system actor), or awaits one while the copy does not hold that owner;
- * 2. then their grants of spaces and lists, in batches of 100 (`RemoveMemberGrants` of spaces),
+ * 2. then their private favorites, after a locked membership recheck (`PurgeMemberFavorites`);
+ * 3. then their grants of spaces and lists, in batches of 100 (`RemoveMemberGrants` of spaces),
  *    until a batch finds none left (`space.access-changed.v1` or `list.access-changed.v1`, system
  *    actor; "A person who leaves the organization loses their grants" of
  *    `openapi/public/access.yaml`);
- * 3. then their access requests, pending or answered, and their attempts, in batches of 500
+ * 4. then their access requests, pending or answered, and their attempts, in batches of 500
  *    (`DropMemberAccessRequests` of access-requests), until a batch finds none left, without event;
- * 4. then their assignments, in batches of 500 after the last task id of the previous batch
+ * 5. then their assignments, in batches of 500 after the last task id of the previous batch
  *    (`UnassignRemovedMember` of tasks), until a batch finds none left;
- * 5. then their watcher overrides in batches of 500 after the last task id of the previous
+ * 6. then their watcher overrides in batches of 500 after the last task id of the previous
  *    batch (`RemoveMemberWatcherOverrides` of tasks), without changing the task or emitting an event.
  *
  * The spaces come first, since a private space of a former member is seen by nobody until it is
@@ -77,6 +79,9 @@ export class CleanUpRemovedMember {
   /** The handover of the private spaces, one batch per call. */
   private readonly spaces: PrivateSpaceHandover;
 
+  /** The removal of a departed member's private favorites. */
+  private readonly favorites: MemberFavorites;
+
   /** The removal of the grants, one batch per call. */
   private readonly grants: MemberGrants;
 
@@ -92,12 +97,13 @@ export class CleanUpRemovedMember {
    * Constructor
    *
    * @description
-   * Takes the four outbound ports.
+   * Takes the five outbound ports.
    *
    * @param {PrivateSpaceHandover} spaces - The handover of the private spaces.
    * @param {MemberGrants} grants - The removal of the grants.
    * @param {MemberAccessRequests} requests - The dropping of the access requests.
    * @param {TaskAssignments} assignments - The task unassignment and watcher cleanup.
+   * @param {MemberFavorites} favorites - The removal of personal favorites.
    * @constructor
    */
   public constructor(
@@ -105,11 +111,13 @@ export class CleanUpRemovedMember {
     grants: MemberGrants,
     requests: MemberAccessRequests,
     assignments: TaskAssignments,
+    favorites: MemberFavorites,
   ) {
     this.spaces = spaces;
     this.grants = grants;
     this.requests = requests;
     this.assignments = assignments;
+    this.favorites = favorites;
   }
   // #endregion
 
@@ -156,6 +164,10 @@ export class CleanUpRemovedMember {
       progress.spacesHandedOver += batch.handedOver;
       progress.spacesAwaitingOwner += batch.awaitingOwner;
     }
+    input.signal?.throwIfAborted();
+    await this.batch('favorites', progress, () =>
+      this.favorites.purge(input.organizationId, input.userId),
+    );
     for (;;) {
       input.signal?.throwIfAborted();
       const batch: GrantRemovalBatch = await this.batch('grants', progress, () =>

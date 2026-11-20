@@ -52,20 +52,21 @@ the archive and the deletion of a list; this module never writes a list.
 
 ## Public entry points
 
-| Entry point                                           | Consumers                                                            |
-| ----------------------------------------------------- | -------------------------------------------------------------------- |
-| `tasks.module`                                        | member-lifecycle, access-requests, deletion-lifecycle, task-comments |
-| `public/assignee/unassign-removed-member`             | member-lifecycle                                                     |
-| `public/watcher/remove-member-watcher-overrides`      | member-lifecycle                                                     |
-| `public/task/record-comment-activity`                 | task-comments                                                        |
-| `public/task/begin-comment`                           | task-comments                                                        |
-| `public/task/resolve-comment-task`                    | task-comments                                                        |
-| `public/task/find-task-reference`                     | access-requests                                                      |
-| `public/task/find-task-references`                    | access-requests                                                      |
-| `public/trash/trash-deleted-list-tasks`               | deletion-lifecycle                                                   |
-| `public/trash/purge-trash-batch`                      | deletion-lifecycle                                                   |
-| `public/trash/list-organizations-with-trash-to-purge` | deletion-lifecycle                                                   |
-| `public/trash/list-untrashed-task-ids`                | deletion-lifecycle                                                   |
+| Entry point                                           | Consumers                                                                            |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `tasks.module`                                        | access-requests, deletion-lifecycle, member-lifecycle, task-comments, task-templates |
+| `public/assignee/unassign-removed-member`             | member-lifecycle                                                                     |
+| `public/watcher/remove-member-watcher-overrides`      | member-lifecycle                                                                     |
+| `public/task/record-comment-activity`                 | task-comments                                                                        |
+| `public/task/begin-comment`                           | task-comments                                                                        |
+| `public/task/resolve-comment-task`                    | task-comments                                                                        |
+| `public/task/find-task-reference`                     | access-requests                                                                      |
+| `public/task/find-task-references`                    | access-requests                                                                      |
+| `public/trash/trash-deleted-list-tasks`               | deletion-lifecycle                                                                   |
+| `public/trash/purge-trash-batch`                      | deletion-lifecycle                                                                   |
+| `public/trash/list-organizations-with-trash-to-purge` | deletion-lifecycle                                                                   |
+| `public/trash/list-untrashed-task-ids`                | deletion-lifecycle                                                                   |
+| `public/task/read-task-template-source`               | task-templates                                                                       |
 
 `BeginComment` and `RecordCommentActivity` are exported to task-comments for an authorized task
 version advance and comment activity creation, excerpt update or removal inside the caller's transaction.
@@ -320,6 +321,10 @@ where archived_at is null` is not used by "Mes tâches". To revisit by replacing
   a new migration (a merged migration is never edited).
 
 ## API
+
+Normal task creation accepts an optional initial checklist. Its items are created in request
+order with fresh IDs and are unchecked. The items share the new task's version 1 and its
+creation transaction. Subtask creation still uses its separate contract.
 
 Dependency routes under `/internal/v1/tasks/{taskKey}` use the verified API gateway user and
 organization. `GET /dependencies` pages visible dependencies by creation time and id.

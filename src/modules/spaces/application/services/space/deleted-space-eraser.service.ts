@@ -48,6 +48,8 @@ export class DeletedSpaceEraser {
     if (await store.lists.anyOfSpace(organizationId, spaceId)) {
       return 'not-empty';
     }
+    await store.libraryCleanup.removeSpaceTemplates(organizationId, spaceId);
+    await store.libraryCleanup.purgeTargetFavorites(organizationId, 'space', [spaceId]);
     await store.grants.eraseOfSpace(organizationId, spaceId);
     await store.spaces.erase(organizationId, spaceId);
     return 'purged';

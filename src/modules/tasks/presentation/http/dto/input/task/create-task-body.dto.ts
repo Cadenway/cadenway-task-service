@@ -27,6 +27,9 @@ function checkTaskCreation(
   body.labels.forEach((label: string, index: number): void => {
     refuseBlankName(context, ['labels', index], label, 'a label');
   });
+  body.checklist?.forEach(({ text }, index: number): void => {
+    refuseBlankName(context, ['checklist', index, 'text'], text, 'a text');
+  });
   refuseUnstorableValues(context, body);
 }
 

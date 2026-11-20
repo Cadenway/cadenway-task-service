@@ -50,6 +50,7 @@ import { createTaskProvider } from './composition/providers/use-cases/task/creat
 import { findTaskReferenceProvider } from './composition/providers/use-cases/task/find-task-reference.provider.js';
 import { findTaskReferencesProvider } from './composition/providers/use-cases/task/find-task-references.provider.js';
 import { getTaskDetailProvider } from './composition/providers/use-cases/task/get-task-detail.provider.js';
+import { readTaskTemplateSourceProvider } from './composition/providers/use-cases/task/read-task-template-source.provider.js';
 import { getTaskProvider } from './composition/providers/use-cases/task/get-task.provider.js';
 import { listTaskParticipantsProvider } from './composition/providers/use-cases/task/list-task-participants.provider.js';
 import { updateTaskProvider } from './composition/providers/use-cases/task/update-task.provider.js';
@@ -82,6 +83,7 @@ import { ChecklistItemsController } from './presentation/http/controllers/checkl
 import { TaskDependenciesController } from './presentation/http/controllers/dependency/task-dependencies.controller.js';
 import { TaskLabelsController } from './presentation/http/controllers/label/task-labels.controller.js';
 import { SubtasksController } from './presentation/http/controllers/subtask/subtasks.controller.js';
+import { ReadTaskTemplateSource } from './public/task/read-task-template-source.js';
 import { ListTasksController } from './presentation/http/controllers/task/list-tasks.controller.js';
 import { TaskParticipantsController } from './presentation/http/controllers/task/task-participants.controller.js';
 import { TasksController } from './presentation/http/controllers/task/tasks.controller.js';
@@ -198,6 +200,7 @@ markIdempotent(BulkTaskActionsController.prototype, 'execute');
     bulkTaskActionProvider,
     getTaskProvider,
     getTaskDetailProvider,
+    readTaskTemplateSourceProvider,
     listTaskParticipantsProvider,
     createSubtaskProvider,
     listSubtasksProvider,
@@ -244,6 +247,7 @@ markIdempotent(BulkTaskActionsController.prototype, 'execute');
     listUntrashedTaskIdsProvider,
   ],
   exports: [
+    ReadTaskTemplateSource,
     UnassignRemovedMember,
     RemoveMemberWatcherOverrides,
     FindTaskReference,

@@ -150,6 +150,13 @@ compatible task-service image as the rollback floor after either field is used. 
 writers can apply an invalid status or dates to a milestone, or complete a recurring task
 without creating its successor.
 
+### Library rollout
+
+Roll out task-service with `0011_task_library.sql` to all replicas and workers before exposing
+the template, saved-view and favorite routes through the gateway. Record this release as
+the rollback floor after library writes begin. List and space deletion and membership
+cleanup must continue to remove related library data in the same transactions.
+
 ### Calling the service locally
 
 Every route but `/health/*` requires an internal token. The key in `.env.example` is a placeholder

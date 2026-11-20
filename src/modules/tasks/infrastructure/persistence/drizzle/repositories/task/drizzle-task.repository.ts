@@ -9,7 +9,7 @@ import type { TrashTaskWrite } from '../../../../../application/models/trash/tra
 import type { TrashTreeNode } from '../../../../../application/models/trash/trash-tree-node.model.js';
 import type { TaskRepository } from '../../../../../application/ports/outbound/persistence/task/task-repository.port.js';
 import type { TaskLocation } from '../../../../../application/projections/task/task-location.projection.js';
-import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
+import { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
 import type { SubtreeShape } from '../../../../../domain/value-objects/subtask/subtree-shape.value-object.js';
 import type { ChecklistItemDraft } from '../../../../../domain/value-objects/task/checklist-item-draft.value-object.js';
 import type { ChecklistItemState } from '../../../../../domain/value-objects/task/checklist-item-state.value-object.js';
@@ -251,20 +251,33 @@ export class DrizzleTaskRepository implements TaskRepository {
    * Method insert
    *
    * @description
-   * Stores one new task: `insertMany` of a single draft.
+   * Stores one new task and, when supplied, its entire initial checklist in one extra insert.
    *
    * @param {TaskDraft} draft - The task the domain created.
    * @param {TaskKey} key - The key allocated for it.
+   * @param {readonly ChecklistItemDraft[]} [checklist] - The task's initial checklist.
    * @returns {Promise<Task>} The stored task.
    * @throws {Error} When no row came back.
    */
-  public async insert(draft: TaskDraft, key: TaskKey): Promise<Task> {
+  public async insert(
+    draft: TaskDraft,
+    key: TaskKey,
+    checklist: readonly ChecklistItemDraft[] = [],
+  ): Promise<Task> {
     const stored: readonly Task[] = await this.insertMany([draft], [key]);
     const task: Task | undefined = stored[0];
     if (task === undefined) {
       throw new Error(`The task ${key.format()} of space ${draft.spaceId} was not stored.`);
     }
-    return task;
+    if (checklist.length === 0) {
+      return task;
+    }
+    const items: readonly ChecklistItemState[] = await this.insertChecklistItems(
+      draft.organizationId,
+      task.snapshot.id,
+      checklist,
+    );
+    return Task.restore({ ...task.snapshot, checklist: items });
   }
 
   /**
@@ -391,23 +404,26 @@ export class DrizzleTaskRepository implements TaskRepository {
     taskId: string,
     draft: ChecklistItemDraft,
   ): Promise<ChecklistItemState> {
-    const rows: ChecklistItemRow[] = await this.db
-      .insert(checklistItems)
-      .values({
-        organizationId,
-        taskId,
-        text: draft.text,
-        done: draft.done,
-        position: draft.position,
-      })
-      .returning();
-    const row: ChecklistItemRow | undefined = rows[0];
-    if (row === undefined) {
+    const [item] = await this.insertChecklistItems(organizationId, taskId, [draft]);
+    if (item === undefined) {
       throw new Error(
         `The checklist item at position ${String(draft.position)} of task ${taskId} was not stored.`,
       );
     }
-    return toChecklistItem(row);
+    return item;
+  }
+
+  /** Writes a nonempty batch and returns the items in checklist order. */
+  private async insertChecklistItems(
+    organizationId: string,
+    taskId: string,
+    drafts: readonly ChecklistItemDraft[],
+  ): Promise<readonly ChecklistItemState[]> {
+    const rows: ChecklistItemRow[] = await this.db
+      .insert(checklistItems)
+      .values(drafts.map((draft: ChecklistItemDraft) => ({ organizationId, taskId, ...draft })))
+      .returning();
+    return rows.map(toChecklistItem).sort((left, right) => left.position - right.position);
   }
 
   /**

@@ -83,12 +83,14 @@ const publicTables = [
   'activity_entries',
   'checklist_items',
   'event_versions',
+  'favorites',
   'idempotency_keys',
   'list_grants',
   'lists',
   'organization_members',
   'outbox_events',
   'processed_events',
+  'saved_views',
   'space_grants',
   'space_prefixes',
   'spaces',
@@ -96,6 +98,7 @@ const publicTables = [
   'task_comments',
   'task_dependencies',
   'task_labels',
+  'task_templates',
   'task_watcher_overrides',
   'tasks',
   'trash_entries',
@@ -105,9 +108,10 @@ const publicTables = [
  * Migrations of the journal: the platform tables, the copy of the memberships, the spaces and their
  * lists, then the tasks, then the two indexes of the task queries, then the grants, the switch of
  * the lists and the access requests, then the archives of lists and tasks, then the trash and the
- * deletion of lists and spaces, then the trash root snapshot and task collaboration.
+ * deletion of lists and spaces, then the trash root snapshot, collaboration, planning and the
+ * task library.
  */
-const appliedMigrations = 11;
+const appliedMigrations = 12;
 
 /**
  * Runs `docker compose` on the throwaway project.
@@ -460,13 +464,17 @@ describe('task-service wiring', () => {
       }>(
         `select relname, relrowsecurity, relforcerowsecurity from pg_class
           where relnamespace = 'public'::regnamespace
-            and relname in ('task_comments', 'task_dependencies', 'task_watcher_overrides')
+            and relname in ('favorites', 'saved_views', 'task_comments', 'task_dependencies',
+                            'task_templates', 'task_watcher_overrides')
           order by relname`,
       );
       expect(journal.rows).toEqual([{ applied: appliedMigrations }]);
       expect(security.rows).toEqual([
+        { relname: 'favorites', relrowsecurity: true, relforcerowsecurity: true },
+        { relname: 'saved_views', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'task_comments', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'task_dependencies', relrowsecurity: true, relforcerowsecurity: true },
+        { relname: 'task_templates', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'task_watcher_overrides', relrowsecurity: true, relforcerowsecurity: true },
       ]);
     } finally {
@@ -691,12 +699,14 @@ describe('task-service wiring', () => {
       { relname: 'activity_entries', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'checklist_items', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'event_versions', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'favorites', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'idempotency_keys', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'list_grants', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'lists', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'organization_members', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'outbox_events', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'processed_events', relrowsecurity: false, relforcerowsecurity: false },
+      { relname: 'saved_views', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'space_grants', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'space_prefixes', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'spaces', relrowsecurity: true, relforcerowsecurity: true },
@@ -704,6 +714,7 @@ describe('task-service wiring', () => {
       { relname: 'task_comments', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_dependencies', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_labels', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'task_templates', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_watcher_overrides', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'tasks', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'trash_entries', relrowsecurity: true, relforcerowsecurity: true },
@@ -717,6 +728,7 @@ describe('task-service wiring', () => {
       { tablename: 'activity_entries', policyname: 'activity_entries_organization_isolation' },
       { tablename: 'checklist_items', policyname: 'checklist_items_organization_isolation' },
       { tablename: 'event_versions', policyname: 'event_versions_organization_isolation' },
+      { tablename: 'favorites', policyname: 'favorites_organization_isolation' },
       { tablename: 'idempotency_keys', policyname: 'idempotency_keys_organization_isolation' },
       { tablename: 'list_grants', policyname: 'list_grants_organization_isolation' },
       { tablename: 'lists', policyname: 'lists_organization_isolation' },
@@ -725,6 +737,7 @@ describe('task-service wiring', () => {
         policyname: 'organization_members_organization_isolation',
       },
       { tablename: 'outbox_events', policyname: 'outbox_events_organization_isolation' },
+      { tablename: 'saved_views', policyname: 'saved_views_organization_isolation' },
       { tablename: 'space_grants', policyname: 'space_grants_organization_isolation' },
       { tablename: 'space_prefixes', policyname: 'space_prefixes_organization_isolation' },
       { tablename: 'spaces', policyname: 'spaces_organization_isolation' },
@@ -732,6 +745,7 @@ describe('task-service wiring', () => {
       { tablename: 'task_comments', policyname: 'task_comments_organization_isolation' },
       { tablename: 'task_dependencies', policyname: 'task_dependencies_organization_isolation' },
       { tablename: 'task_labels', policyname: 'task_labels_organization_isolation' },
+      { tablename: 'task_templates', policyname: 'task_templates_organization_isolation' },
       {
         tablename: 'task_watcher_overrides',
         policyname: 'task_watcher_overrides_organization_isolation',

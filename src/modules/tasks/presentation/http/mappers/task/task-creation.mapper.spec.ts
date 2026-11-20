@@ -57,6 +57,7 @@ describe('toCreateTaskInput', () => {
       estimateMinutes: null,
       labels: [],
       subtaskNames: [],
+      checklistTexts: [],
     });
   });
 
@@ -74,6 +75,7 @@ describe('toCreateTaskInput', () => {
       estimateMinutes: 480,
       labels: ['auth'],
       subtasks: [{ name: 'Relire les messages' }, { name: 'Tester le lien expiré' }],
+      checklist: [{ text: 'Valider le formulaire' }, { text: 'Vérifier le courriel' }],
     });
 
     expect(toCreateTaskInput(CALLER, LIST.toUpperCase(), body)).toStrictEqual({
@@ -91,6 +93,7 @@ describe('toCreateTaskInput', () => {
       estimateMinutes: 480,
       labels: ['auth'],
       subtaskNames: ['Relire les messages', 'Tester le lien expiré'],
+      checklistTexts: ['Valider le formulaire', 'Vérifier le courriel'],
     });
   });
 });

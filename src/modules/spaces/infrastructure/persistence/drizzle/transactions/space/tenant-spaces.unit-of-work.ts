@@ -3,6 +3,7 @@ import type { JobProducer } from '@cadenway/nest-jobs/runtime';
 import type { OutboxRelay, OutboxWriter } from '@cadenway/nest-messaging/outbox';
 
 import type { SpacesStore } from '../../../../../application/models/transactions/spaces-store.model.js';
+import type { SpaceLibraryCleanup } from '../../../../../application/ports/outbound/library/space/space-library-cleanup.port.js';
 import type { SpacesUnitOfWork } from '../../../../../application/ports/outbound/transactions/space/spaces-unit-of-work.port.js';
 import { PostgresqlTransactionClock } from '../../../../adapters/postgresql/transaction-clock.adapter.js';
 import { JobsTrashDeletedTasksQueue } from '../../../../jobs/pg-boss/trash/jobs-trash-deleted-tasks-queue.adapter.js';
@@ -72,6 +73,9 @@ export class TenantSpacesUnitOfWork implements SpacesUnitOfWork {
    * @readonly
    */
   private readonly jobs: JobProducer;
+
+  /** The downstream cleanup operations that join the transaction of the space or list. */
+  private readonly libraryCleanup: SpaceLibraryCleanup;
   // #endregion
 
   // #region Constructor
@@ -85,6 +89,7 @@ export class TenantSpacesUnitOfWork implements SpacesUnitOfWork {
    * @param {OutboxWriter} outbox - The outbox writer.
    * @param {OutboxRelay} relay - The outbox relay.
    * @param {JobProducer} jobs - The job producer.
+   * @param {SpaceLibraryCleanup} libraryCleanup - Library entries and favorites affected by deletion.
    * @constructor
    */
   public constructor(
@@ -92,11 +97,13 @@ export class TenantSpacesUnitOfWork implements SpacesUnitOfWork {
     outbox: OutboxWriter,
     relay: OutboxRelay,
     jobs: JobProducer,
+    libraryCleanup: SpaceLibraryCleanup,
   ) {
     this.runner = runner;
     this.outbox = outbox;
     this.relay = relay;
     this.jobs = jobs;
+    this.libraryCleanup = libraryCleanup;
   }
   // #endregion
 
@@ -125,6 +132,7 @@ export class TenantSpacesUnitOfWork implements SpacesUnitOfWork {
           }),
           clock: new PostgresqlTransactionClock(transaction.db),
           trashQueue: new JobsTrashDeletedTasksQueue(transaction, this.jobs),
+          libraryCleanup: this.libraryCleanup,
         }),
     );
     if (appends.count > 0) {

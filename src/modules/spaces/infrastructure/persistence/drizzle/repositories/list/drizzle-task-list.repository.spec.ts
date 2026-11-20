@@ -373,14 +373,14 @@ describe('DrizzleTaskListRepository: a tombstone answers as an unknown list, but
   it('deletes the lists of a deleted space in one statement, at their versions, skipping the tombstones', async () => {
     const { lists, texts, values } = capturing();
 
-    const marked: number = await lists.markDeletedWithSpace(
+    const marked: readonly string[] = await lists.markDeletedWithSpace(
       ORGANIZATION,
       '019a7000-0000-7000-8000-000000000001',
       { type: 'user', id: LEA },
       new Date('2026-11-08T16:10:00.000Z'),
     );
 
-    expect(marked).toBe(0);
+    expect(marked).toEqual([]);
     expect(texts).toHaveLength(1);
     const text: string = texts[0] ?? '';
     expect(
