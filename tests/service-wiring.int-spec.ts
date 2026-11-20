@@ -67,11 +67,9 @@ const legacyActivityId = '01938f6e-0000-7000-8000-000000000104';
 /** The tables of the platform module, as the kit names them. */
 const platformTables = [
   'event_versions',
-  'favorites',
   'idempotency_keys',
   'outbox_events',
   'processed_events',
-  'saved_views',
 ] as const;
 
 /**
@@ -85,12 +83,14 @@ const publicTables = [
   'activity_entries',
   'checklist_items',
   'event_versions',
+  'favorites',
   'idempotency_keys',
   'list_grants',
   'lists',
   'organization_members',
   'outbox_events',
   'processed_events',
+  'saved_views',
   'space_grants',
   'space_prefixes',
   'spaces',

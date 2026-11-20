@@ -8,6 +8,9 @@ import { Test } from '@nestjs/testing';
 import type { TestingModule } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { FavoritesStorageModule } from '../../../../../favorites/favorites.module.js';
+import { SavedViewsStorageModule } from '../../../../../saved-views/saved-views.module.js';
+import { TaskTemplatesStorageModule } from '../../../../../task-templates/task-templates.module.js';
 import { DeletionLifecycleModule } from '../../../../deletion-lifecycle.module.js';
 
 /** The queues whose workers `DeletionLifecycleModule` registered, in order. */
@@ -71,7 +74,15 @@ describe('DeletionLifecycleModule composition of the workers and the schedule', 
   beforeEach(async () => {
     workedQueues.length = 0;
     schedules.length = 0;
-    moduleRef = await Test.createTestingModule({ imports: [KitDoubles, DeletionLifecycleModule] })
+    moduleRef = await Test.createTestingModule({
+      imports: [
+        KitDoubles,
+        FavoritesStorageModule,
+        SavedViewsStorageModule,
+        TaskTemplatesStorageModule,
+        DeletionLifecycleModule,
+      ],
+    })
       .setLogger({ log: () => undefined, error: () => undefined, warn: () => undefined })
       .compile();
     await moduleRef.init();
