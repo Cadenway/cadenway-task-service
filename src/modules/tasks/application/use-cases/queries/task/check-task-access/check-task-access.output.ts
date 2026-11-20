@@ -18,6 +18,9 @@ export interface CheckTaskAccessOutput {
   /** The list of the task. */
   readonly listId: string;
 
+  /** The stable task UUID for room selection. */
+  readonly taskId: string;
+
   /** The key of the task, as `CAD-482`. */
   readonly taskKey: string;
   // #endregion

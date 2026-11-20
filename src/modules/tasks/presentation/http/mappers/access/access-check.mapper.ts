@@ -8,7 +8,7 @@ import type { CheckTaskAccessOutput } from '../../../../application/use-cases/qu
  * @description
  * Maps the access of the actor to a task to the `AccessCheck` of
  * `openapi/internal/task-service.yaml`: the role of the actor on the list of the task, the space,
- * the list and the key of the task.
+ * the list, the stable id and the key of the task.
  *
  * @param {CheckTaskAccessOutput} access - The access.
  * @returns {AccessCheck} The body of the contract.
@@ -18,6 +18,7 @@ export function toAccessCheck(access: CheckTaskAccessOutput): AccessCheck {
     role: access.role,
     spaceId: access.spaceId,
     listId: access.listId,
+    taskId: access.taskId,
     taskKey: access.taskKey,
   };
 }

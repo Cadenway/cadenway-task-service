@@ -89,6 +89,7 @@ export class CheckTaskAccess {
         role: placement.list.callerRole,
         spaceId: placement.list.spaceId,
         listId: placement.list.id,
+        taskId: location.id,
         taskKey: location.key,
       };
     };

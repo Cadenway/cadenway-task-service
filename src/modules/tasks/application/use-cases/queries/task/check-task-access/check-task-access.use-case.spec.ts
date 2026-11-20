@@ -70,6 +70,7 @@ describe('CheckTaskAccess: the role of the actor on the list of the task', () =>
       role: 'edit',
       spaceId: PRODUIT,
       listId: SPRINT_14,
+      taskId: taskState().id,
       taskKey: 'CAD-482',
     });
   });
@@ -90,6 +91,7 @@ describe('CheckTaskAccess: the role of the actor on the list of the task', () =>
       role: 'edit',
       spaceId: DESIGN,
       listId: MAQUETTES,
+      taskId: '019a7200-0000-7000-8000-000000000601',
       taskKey: 'DES-1',
     });
   });
