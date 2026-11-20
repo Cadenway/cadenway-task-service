@@ -25,21 +25,24 @@ import { z } from 'zod';
  *   them.
  * - `INTERNAL_TOKEN_AUDIENCE` and `INTERNAL_TOKEN_TRUSTED_ISSUERS`: the `aud` this service accepts
  *   and the public keys of the backends allowed to call it. A hosted environment can pass the
- *   Document issuer's keys separately in `DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS`.
+ *   Document and Search issuer keys separately in `DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS`
+ *   and `SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS`. The explicit issuer map takes precedence.
+ * - `SEARCH_PROJECTION_CURSOR_SECRET`: optional 32-byte base64url key shared by Task replicas
+ *   to authenticate Search export cursors.
  *
  * - `TRASH_WRITES_ENABLED` (`TrashConfig`): whether the writes that put something in the trash or
  *   make a tombstone are served ("Supprimer la tâche", `DELETE` of a list and of a space, "Vider la
  *   corbeille"); `false` by default.
  *
  * `OTEL_EXPORTER_OTLP_ENDPOINT` is read by `telemetry.ts`, before the application exists.
- *
- * @type {BaseConfig & DatabaseConfig & MessagingConfig & InternalTokenVerifierConfig & TrashConfig}
  */
 export type AppConfig = BaseConfig &
   DatabaseConfig &
   MessagingConfig &
   InternalTokenVerifierConfig &
-  TrashConfig;
+  TrashConfig & {
+    readonly SEARCH_PROJECTION_CURSOR_SECRET?: string;
+  };
 
 /**
  * Interface TrashConfig
@@ -72,23 +75,40 @@ export interface TrashConfig {
   // #endregion
 }
 
-/** Parses the optional hosted Document key list with the kit's public issuer rules. */
-const documentIssuerConfig = z
+/** Parses an optional hosted key list with the kit's public issuer rules. */
+function optionalIssuerConfig(issuer: 'document-service' | 'search-service') {
+  return z
+    .string()
+    .trim()
+    .optional()
+    .transform((input, context): InternalTokenVerifierConfig['INTERNAL_TOKEN_TRUSTED_ISSUERS'] => {
+      if (input === undefined || input === '' || input === 'null') return {};
+      try {
+        const keys: unknown = JSON.parse(`[${input}]`);
+        const parsed = internalTokenVerifierConfigShape.INTERNAL_TOKEN_TRUSTED_ISSUERS.safeParse(
+          JSON.stringify({ [issuer]: keys }),
+        );
+        if (parsed.success) return parsed.data;
+      } catch {
+        // Report the variable without its contents.
+      }
+      context.addIssue({
+        code: 'custom',
+        message: 'Expected comma-separated public Ed25519 JWKs.',
+      });
+      return z.NEVER;
+    });
+}
+
+const searchProjectionCursorSecret = z
   .string()
-  .trim()
   .optional()
-  .transform((input, context): InternalTokenVerifierConfig['INTERNAL_TOKEN_TRUSTED_ISSUERS'] => {
-    if (input === undefined || input === '' || input === 'null') return {};
-    try {
-      const keys: unknown = JSON.parse(`[${input}]`);
-      const parsed = internalTokenVerifierConfigShape.INTERNAL_TOKEN_TRUSTED_ISSUERS.safeParse(
-        JSON.stringify({ 'document-service': keys }),
-      );
-      if (parsed.success) return parsed.data;
-    } catch {
-      // Report the variable without its contents.
+  .transform((input, context): string | undefined => {
+    if (input === undefined || input === '') return undefined;
+    if (input.length === 43 && Buffer.from(input, 'base64url').toString('base64url') === input) {
+      return input;
     }
-    context.addIssue({ code: 'custom', message: 'Expected comma-separated public Ed25519 JWKs.' });
+    context.addIssue({ code: 'custom', message: 'Expected 32 bytes in canonical base64url.' });
     return z.NEVER;
   });
 
@@ -109,16 +129,25 @@ export const appConfigSchema: z.ZodType<AppConfig> = z
     ...databaseConfigShape,
     ...messagingConfigShape,
     ...internalTokenVerifierConfigShape,
-    DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: documentIssuerConfig,
+    DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: optionalIssuerConfig('document-service'),
+    SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: optionalIssuerConfig('search-service'),
+    SEARCH_PROJECTION_CURSOR_SECRET: searchProjectionCursorSecret,
     TRASH_WRITES_ENABLED: z.stringbool().default(false),
   })
-  .transform(({ DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS, ...config }): AppConfig => ({
-    ...config,
-    INTERNAL_TOKEN_TRUSTED_ISSUERS: {
-      ...DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS,
-      ...config.INTERNAL_TOKEN_TRUSTED_ISSUERS,
-    },
-  }));
+  .transform(
+    ({
+      DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS,
+      SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS,
+      ...config
+    }): AppConfig => ({
+      ...config,
+      INTERNAL_TOKEN_TRUSTED_ISSUERS: {
+        ...DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS,
+        ...SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS,
+        ...config.INTERNAL_TOKEN_TRUSTED_ISSUERS,
+      },
+    }),
+  );
 
 /**
  * Interface MigrationConfig

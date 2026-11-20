@@ -39,6 +39,8 @@ the removal committed.
   reads `FindOrganizationMember` for the role of the actor and the eligibility of the people it
   assigns; the access-requests module reads it for the role of the requester or of the person who
   answers, and for whether a former member joined again (the clean-up of their requests).
+  Its `stamp` method returns the identity, role and version of the same selected membership for
+  the tasks module to compare with Organization's Search membership proof.
 - `ListActiveMembers` pages only `userId` and `memberId` in user ID order. It selects each
   account's least privileged active membership before applying the list reader audience.
 - `FindOrganizationMemberRoles` applies the same least-privileged rule in a single batch. The

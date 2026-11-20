@@ -30,7 +30,7 @@ access-requests module.
 | Entry point                                 | Consumers                                                                                                                                                |
 | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `spaces.module`                             | access-requests, deletion-lifecycle, favorites, goals, intake, member-lifecycle, onboarding, saved-views, task-templates, tasks, notification-visibility |
-| `public/goal/resolve-goal-spaces`           | goals                                                                                                                                                    |
+| `public/goal/resolve-goal-spaces`           | goals, tasks                                                                                                                                             |
 | `public/space/provision-onboarding-space`   | onboarding                                                                                                                                               |
 | `public/space/hand-over-private-spaces`     | member-lifecycle                                                                                                                                         |
 | `public/space/hand-over-awaiting-spaces`    | member-lifecycle                                                                                                                                         |
@@ -58,7 +58,7 @@ access-requests module.
 | `public/access/list-managed-access-targets` | access-requests                                                                                                                                          |
 | `public/access/grant-requested-access`      | access-requests                                                                                                                                          |
 | `public/access/remove-member-grants`        | member-lifecycle                                                                                                                                         |
-| `public/space/find-favorite-spaces`         | favorites, notification-visibility                                                                                                                       |
+| `public/space/find-favorite-spaces`         | favorites, notification-visibility, tasks                                                                                                                |
 | `public/space/resolve-task-template-space`  | task-templates                                                                                                                                           |
 | `public/space/resolve-custom-field-space`   | tasks                                                                                                                                                    |
 | `public/reporting/list-prior-sprints`       | tasks                                                                                                                                                    |
@@ -190,6 +190,10 @@ its authorization until the caller's tenant transaction commits.
   returned, not thrown, and writes nothing.
 
 ## Owned tables
+
+The Tasks Search projection joins the list and space lifecycle columns in a bounded,
+organization-scoped read transaction. Spaces remains responsible for mutations and access
+resolution for its resources.
 
 | Table                 | Key                                    | Organization scoping                                     |
 | --------------------- | -------------------------------------- | -------------------------------------------------------- |

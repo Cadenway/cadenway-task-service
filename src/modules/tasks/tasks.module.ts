@@ -93,6 +93,10 @@ import { UserTasksController } from './presentation/http/controllers/user/user-t
 import { ListActivityController } from './presentation/http/controllers/activity/list-activity.controller.js';
 import { TaskAccessController } from './presentation/http/controllers/access/task-access.controller.js';
 import { TaskAttachmentAccessController } from './presentation/http/controllers/access/task-attachment-access.controller.js';
+import { taskSearchProjectionProviders } from './composition/providers/use-cases/search-projection/task-search-projection.provider.js';
+import { resolveTaskSearchAccessProvider } from './composition/providers/use-cases/search-access/resolve-task-search-access.provider.js';
+import { TaskSearchAccessController } from './presentation/http/controllers/search-access/task-search-access.controller.js';
+import { TaskSearchProjectionController } from './presentation/http/controllers/search-projection/task-search-projection.controller.js';
 import { TaskActivityController } from './presentation/http/controllers/activity/task-activity.controller.js';
 import { TaskTimeController } from './presentation/http/controllers/time/task-time.controller.js';
 import { ListReportsController } from './presentation/http/controllers/reporting/list-reports.controller.js';
@@ -224,9 +228,13 @@ markIdempotent(TaskTimeController.prototype, 'create');
     TrashController,
     TaskAccessController,
     TaskAttachmentAccessController,
+    TaskSearchAccessController,
+    TaskSearchProjectionController,
     TaskParticipantsController,
   ],
   providers: [
+    ...taskSearchProjectionProviders,
+    resolveTaskSearchAccessProvider,
     {
       provide: FIRST_ONBOARDING_TASK,
       inject: [RecordFirstOnboardingTask],

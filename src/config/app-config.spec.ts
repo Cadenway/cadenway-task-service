@@ -89,6 +89,80 @@ describe('appConfigSchema', () => {
     ).toThrow(/DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS/u);
   });
 
+  it('adds the hosted Search verification keys alongside Document and Gateway', () => {
+    const first = {
+      kty: 'OKP',
+      crv: 'Ed25519',
+      x: 'MVZQc5h6AXxnMpaBTaYw5kI-yWWawl6zp8Srhuf5NK0',
+      kid: 'fixture-search-current',
+    };
+    const second = { ...first, kid: 'fixture-search-next' };
+    const document = { ...first, kid: 'fixture-document' };
+    const options = {
+      ...complete,
+      DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: JSON.stringify(document),
+      SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: [first, second]
+        .map((key) => JSON.stringify(key))
+        .join(','),
+    };
+
+    expect(loadConfig(appConfigSchema, options).INTERNAL_TOKEN_TRUSTED_ISSUERS).toMatchObject({
+      'api-gateway': [{ kid: 'local-placeholder' }],
+      'document-service': [document],
+      'search-service': [first, second],
+    });
+    const explicit = { ...first, kid: 'fixture-search-explicit' };
+    expect(
+      loadConfig(appConfigSchema, {
+        ...options,
+        INTERNAL_TOKEN_TRUSTED_ISSUERS: JSON.stringify({ 'search-service': [explicit] }),
+      }).INTERNAL_TOKEN_TRUSTED_ISSUERS,
+    ).toEqual({ 'document-service': [document], 'search-service': [explicit] });
+  });
+
+  it('keeps hosted Search trust disabled when the list is unset and rejects private JWKs', () => {
+    for (const disabled of ['', 'null']) {
+      expect(
+        loadConfig(appConfigSchema, {
+          ...complete,
+          SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: disabled,
+        }).INTERNAL_TOKEN_TRUSTED_ISSUERS,
+      ).not.toHaveProperty('search-service');
+    }
+    const invalid = () =>
+      loadConfig(appConfigSchema, {
+        ...complete,
+        SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: 'invalid-search-fixture',
+      });
+    expect(invalid).toThrow(/SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS/u);
+    expect(invalid).not.toThrow(/invalid-search-fixture/u);
+    const privateJwk = JSON.parse(
+      trustedIssuers.replace('"kid"', `"d":"${'A'.repeat(43)}","kid"`),
+    ) as {
+      readonly 'api-gateway': readonly unknown[];
+    };
+    expect(() =>
+      loadConfig(appConfigSchema, {
+        ...complete,
+        SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: JSON.stringify(privateJwk['api-gateway'][0]),
+      }),
+    ).toThrow(/SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS/u);
+  });
+
+  it('accepts only canonical unpadded base64url for the optional Search cursor key', () => {
+    const key = Buffer.alloc(32).toString('base64url');
+    const config = (value: string) =>
+      loadConfig(appConfigSchema, { ...complete, SEARCH_PROJECTION_CURSOR_SECRET: value });
+
+    expect(config(key).SEARCH_PROJECTION_CURSOR_SECRET).toBe(key);
+    expect(config('').SEARCH_PROJECTION_CURSOR_SECRET).toBeUndefined();
+    expect(loadConfig(appConfigSchema, complete).SEARCH_PROJECTION_CURSOR_SECRET).toBeUndefined();
+    for (const invalid of [`${key}=`, `${key.slice(0, -1)}B`, key.slice(1), `${key}\n`]) {
+      expect(() => config(invalid)).toThrow(/SEARCH_PROJECTION_CURSOR_SECRET/u);
+    }
+    expect(() => config('invalid-cursor-fixture')).not.toThrow(/invalid-cursor-fixture/u);
+  });
+
   it('serves the writes of the trash only when TRASH_WRITES_ENABLED says true', () => {
     expect(
       loadConfig(appConfigSchema, { ...complete, TRASH_WRITES_ENABLED: 'true' }),
