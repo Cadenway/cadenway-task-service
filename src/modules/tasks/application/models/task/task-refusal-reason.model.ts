@@ -41,6 +41,8 @@ import type { TaskActor } from '../../../domain/value-objects/task/task-actor.va
 export type TaskRefusalReason =
   | { readonly reason: 'organization-not-found' }
   | { readonly reason: 'task-not-found' }
+  | { readonly reason: 'time-entry-not-found' }
+  | { readonly reason: 'time-entry-author-required' }
   | { readonly reason: 'list-not-found' }
   | { readonly reason: 'space-not-found' }
   | { readonly reason: 'user-not-found' }
@@ -49,6 +51,7 @@ export type TaskRefusalReason =
   | { readonly reason: 'dependency-cycle' }
   | { readonly reason: 'dependency-already-exists' }
   | { readonly reason: 'dependency-limit-reached' }
+  | { readonly reason: 'custom-field-value-invalid' }
   | { readonly reason: 'list-duplicate-limit-reached' }
   | {
       readonly reason: 'role-insufficient';

@@ -75,21 +75,24 @@ export class GetTask {
    * @throws {TaskRefusal} `organization-not-found` or `task-not-found`.
    */
   public async execute(input: GetTaskInput): Promise<GetTaskOutput> {
-    return this.unitOfWork.runReadOnly(async (store: TasksStore): Promise<GetTaskOutput> => {
-      const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
-      const { task }: LocatedTask = await this.locator.locate(store, {
-        organizationId: input.organizationId,
-        viewer,
-        taskKey: input.taskKey,
-        edit: false,
-        lock: false,
-        archived: 'allow',
-        expectedVersions: null,
-      });
-      const view = await this.views.build(store.reader, task);
-      const nextOccurrenceKey = await this.successor.keyOf(store, task, viewer);
-      return nextOccurrenceKey === undefined ? view : { ...view, nextOccurrenceKey };
-    });
+    return this.unitOfWork.runReadOnly(
+      async (store: TasksStore): Promise<GetTaskOutput> => {
+        const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
+        const { task }: LocatedTask = await this.locator.locate(store, {
+          organizationId: input.organizationId,
+          viewer,
+          taskKey: input.taskKey,
+          edit: false,
+          lock: false,
+          archived: 'allow',
+          expectedVersions: null,
+        });
+        const view = await this.views.build(store.reader, task);
+        const nextOccurrenceKey = await this.successor.keyOf(store, task, viewer);
+        return nextOccurrenceKey === undefined ? view : { ...view, nextOccurrenceKey };
+      },
+      { snapshot: true },
+    );
   }
   // #endregion
 }

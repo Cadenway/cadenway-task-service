@@ -63,6 +63,7 @@ export const activityEntries = pgTable(
     occurredAt: timestamp('occurred_at', { withTimezone: true, precision: 3 }).notNull(),
     statusFrom: text('status_from'),
     statusTo: text('status_to'),
+    initialStatus: text('initial_status'),
     priorityFrom: text('priority_from'),
     priorityTo: text('priority_to'),
     dueFrom: date('due_from', { mode: 'string' }),
@@ -103,6 +104,10 @@ export const activityEntries = pgTable(
     check(
       'activity_entries_status_check',
       sql`(${table.kind} = 'status') = (${table.statusFrom} is not null) and (${table.kind} = 'status') = (${table.statusTo} is not null) and (${table.statusFrom} is null or ${table.statusFrom} in (${sql.raw(toSqlList(STATUS_KEYS))})) and (${table.statusTo} is null or ${table.statusTo} in (${sql.raw(toSqlList(STATUS_KEYS))}))`,
+    ),
+    check(
+      'activity_entries_initial_status_check',
+      sql`${table.initialStatus} is null or (${table.kind} = 'create' and ${table.initialStatus} in (${sql.raw(toSqlList(STATUS_KEYS))}))`,
     ),
     check(
       'activity_entries_priority_check',

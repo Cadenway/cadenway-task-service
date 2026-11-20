@@ -105,7 +105,7 @@ describe('ListSubtasks: what the actor does not see is not found', () => {
 });
 
 describe('ListSubtasks: the read runs in one read-only transaction', () => {
-  it('opens a single read-only run, with the default isolation, with no snapshot', async () => {
+  it('opens a single repeatable-read snapshot for authorization and projected values', async () => {
     const tasks = new InMemoryTasks({ tasks: [taskState()] });
 
     await new ListSubtasks(tasks, atelierNordMembers(), new InMemorySpaceDirectory()).execute(
@@ -114,7 +114,7 @@ describe('ListSubtasks: the read runs in one read-only transaction', () => {
 
     expect(tasks.runs).toBe(1);
     expect(tasks.readOnlyRuns).toBe(1);
-    expect(tasks.snapshotRuns).toBe(0);
+    expect(tasks.snapshotRuns).toBe(1);
   });
 });
 

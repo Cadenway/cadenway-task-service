@@ -60,9 +60,9 @@ const LOCATION_COLUMNS: {
  * `TaskReader` on `tasks`, `task_assignees`, `task_labels` and `checklist_items`, in the
  * transaction of its unit of work, without a lock. Every query names `organization_id`. The counts,
  * the references and the locations are one grouped or `= ANY($ids)` query for any number of tasks; a page of
- * subtasks costs six queries however many rows it holds: the page (served by
+ * subtasks costs seven queries however many rows it holds: the page (served by
  * `tasks_parent_created_index`, bounded by the `limit` of the caller), then the assignees, the
- * labels, the subtask counts, the checklist counts and the parent key of its rows.
+ * labels, the subtask counts, the checklist counts, parent keys and custom field values of its rows.
  */
 export class DrizzleTaskReader implements TaskReader {
   // #region Properties
@@ -106,6 +106,18 @@ export class DrizzleTaskReader implements TaskReader {
   // #endregion
 
   // #region Methods
+  /** Reads fields only for the placements associated with the authorized task rows. */
+  public async customFieldValues(
+    organizationId: string,
+    tasks: readonly {
+      readonly taskId: string;
+      readonly spaceId: string;
+      readonly listId: string;
+    }[],
+  ): Promise<ReadonlyMap<string, Readonly<Record<string, string | number>>>> {
+    return this.collections.customFieldValuesOf(organizationId, tasks);
+  }
+
   /**
    * Method subtaskCounts
    *

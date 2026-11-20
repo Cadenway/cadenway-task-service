@@ -18,7 +18,9 @@ export interface SavedViewPatch {
     presentation?: {
       hiddenBoardStatusKeys?: string[] | null;
       hiddenSheetColumns?: string[] | null;
+      hiddenCustomFieldIds?: string[] | null;
       sheetSort?: { column?: string; direction?: string } | null;
+      customFieldSort?: { fieldId?: string; direction?: 'asc' | 'desc' } | null;
     } | null;
   };
   // #endregion

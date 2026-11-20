@@ -39,7 +39,27 @@ describe('ActivityEntry.forCreation: one create entry per task created', () => {
       actor: CAMILLE_ACTOR,
       occurredAt: NOW,
       change: { kind: 'create' },
+      initialStatus: 'progress',
     });
+  });
+
+  it('keeps legacy creation entries without claiming the initial status', () => {
+    const legacy = ActivityEntry.restore({
+      id: 'legacy-creation',
+      organizationId: ATELIER_NORD,
+      taskId: CAD_482,
+      listId: SPRINT_14,
+      actor: CAMILLE_ACTOR,
+      occurredAt: NOW,
+      change: { kind: 'create' },
+    });
+    expect(legacy.snapshot).not.toHaveProperty('initialStatus');
+  });
+
+  it('refuses a creation status on activity other than creation', () => {
+    expect(() => ActivityEntry.restore({ ...priorityEntry({}), initialStatus: 'todo' })).toThrow(
+      InvalidTaskError,
+    );
   });
 
   it('refuses an actor without an id', () => {

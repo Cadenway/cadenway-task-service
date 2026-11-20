@@ -297,6 +297,56 @@ describe('shared saved-view routes and PostgreSQL storage', () => {
     }
   });
 
+  it('persists, merges and clears custom field presentation settings', async () => {
+    const { path } = await createList('Préférences', 'PREF');
+    const view = await createView(path, 'Colonnes personnalisées');
+    const item = `${path}/${view.id}`;
+    const fieldId = '019a7000-0000-7000-8000-000000000901';
+    const incomplete = await send('patch', item, {
+      body: { configuration: { presentation: { customFieldSort: { direction: 'asc' } } } },
+    });
+    expectProblem(incomplete, 400, 'request.invalid');
+    expect(incomplete.body as unknown).toMatchObject({
+      details: { issues: [{ path: 'configuration.presentation.customFieldSort' }] },
+    });
+    const created = await send('patch', item, {
+      headers: { 'If-Match': '"1"' },
+      body: {
+        configuration: {
+          presentation: {
+            hiddenCustomFieldIds: [fieldId],
+            customFieldSort: { fieldId, direction: 'asc' },
+          },
+        },
+      },
+    });
+    expect(created.status, created.text).toBe(200);
+    expect(created.headers.etag).toBe('"2"');
+    const after = await send('patch', item, {
+      body: { configuration: { presentation: { customFieldSort: { direction: 'desc' } } } },
+    });
+    expect(after.status, after.text).toBe(200);
+    const updated = UpdateSavedViewInternalResponse.parse(after.body);
+    expect(updated.configuration.presentation).toEqual({
+      ...configuration.presentation,
+      hiddenCustomFieldIds: [fieldId],
+      customFieldSort: { fieldId, direction: 'desc' },
+    });
+    const unchanged = await send('patch', item, {
+      body: { configuration: { presentation: { customFieldSort: { direction: 'desc' } } } },
+    });
+    expect(unchanged.headers.etag).toBe(after.headers.etag);
+    const cleared = await send('patch', item, {
+      body: {
+        configuration: { presentation: { hiddenCustomFieldIds: null, customFieldSort: null } },
+      },
+    });
+    expect(cleared.status, cleared.text).toBe(200);
+    expect(UpdateSavedViewInternalResponse.parse(cleared.body).configuration.presentation).toEqual(
+      configuration.presentation,
+    );
+  });
+
   it('inserts a duplicate after the source, preserves the cursor anchor and replays the original creation', async () => {
     const { path } = await createList('Ordre', 'ORD');
     const first = await createView(path, '🧪'.repeat(80));

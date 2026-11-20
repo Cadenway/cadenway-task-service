@@ -27,7 +27,8 @@ export type TaskField =
   | 'approvals'
   | 'milestone'
   | 'recurrence'
-  | 'nextOccurrenceKey';
+  | 'nextOccurrenceKey'
+  | 'customFieldValues';
 
 /**
  * Constant TASK_FIELDS
@@ -58,4 +59,5 @@ export const TASK_FIELDS: readonly TaskField[] = Object.freeze([
   'milestone',
   'recurrence',
   'nextOccurrenceKey',
+  'customFieldValues',
 ]);

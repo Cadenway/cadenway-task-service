@@ -3,6 +3,7 @@ import { zodDto } from '@cadenway/nest-common';
 
 import { refuseBlankName } from '../../../validation/name/blank-name.validator.js';
 import { refuseUnstorableValues } from '../../../validation/text/storable-value.validator.js';
+import { refuseMalformedCustomFieldText } from '../../../validation/custom-field/custom-field-text.validator.js';
 
 /**
  * Class UpdateTaskBody
@@ -19,5 +20,10 @@ export class UpdateTaskBody extends zodDto(
   UpdateTaskInternalBody.superRefine((body, context) => {
     refuseBlankName(context, ['name'], body.name);
     refuseUnstorableValues(context, body);
+    for (const [fieldId, value] of Object.entries(body.customFieldValues ?? {})) {
+      if (typeof value === 'string') {
+        refuseMalformedCustomFieldText(context, value, ['customFieldValues', fieldId]);
+      }
+    }
   }),
 ) {}

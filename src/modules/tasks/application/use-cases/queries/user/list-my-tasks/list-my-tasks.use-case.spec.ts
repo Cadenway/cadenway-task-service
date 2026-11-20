@@ -245,7 +245,7 @@ describe('ListMyTasks: only the tasks of the actor', () => {
 });
 
 describe('ListMyTasks: the read runs in one read-only transaction', () => {
-  it('opens a single read-only run, with the default isolation, with no snapshot', async () => {
+  it('opens a single repeatable-read snapshot for authorization and projected values', async () => {
     const tasks = atelierNord();
 
     await new ListMyTasks(tasks, atelierNordMembers(), new InMemorySpaceDirectory()).execute(
@@ -254,7 +254,7 @@ describe('ListMyTasks: the read runs in one read-only transaction', () => {
 
     expect(tasks.runs).toBe(1);
     expect(tasks.readOnlyRuns).toBe(1);
-    expect(tasks.snapshotRuns).toBe(0);
+    expect(tasks.snapshotRuns).toBe(1);
   });
 });
 

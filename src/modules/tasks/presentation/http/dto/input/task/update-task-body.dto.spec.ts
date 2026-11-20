@@ -3,6 +3,18 @@ import { describe, expect, it } from 'vitest';
 import { UpdateTaskBody } from './update-task-body.dto.js';
 
 describe('the body of a task patch', () => {
+  it('rejects custom values that PostgreSQL cannot preserve', () => {
+    const key = '019a700a-1234-7567-89ab-cdef01234567';
+    expect(
+      UpdateTaskBody.schema.safeParse({ customFieldValues: { [key]: 'a\u0000b' } }).success,
+    ).toBe(false);
+    expect(
+      UpdateTaskBody.schema.safeParse({ customFieldValues: { [key]: '\ud800' } }).success,
+    ).toBe(false);
+    expect(UpdateTaskBody.schema.safeParse({ customFieldValues: { [key]: '😀' } }).success).toBe(
+      true,
+    );
+  });
   it('keeps a member left out absent and a member sent as null', () => {
     expect(UpdateTaskBody.schema.parse({})).toStrictEqual({});
     expect(UpdateTaskBody.schema.parse({ description: null, parentKey: null })).toStrictEqual({

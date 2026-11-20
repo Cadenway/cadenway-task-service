@@ -17,6 +17,8 @@ import { duplicateTaskProvider } from './composition/providers/use-cases/task/du
 import { ListDuplicateController } from './presentation/http/controllers/duplicate/list-duplicate.controller.js';
 import { TaskDuplicateController } from './presentation/http/controllers/duplicate/task-duplicate.controller.js';
 import { RequiredDuplicateBodyGuard } from './presentation/http/guards/duplicate/required-duplicate-body.guard.js';
+import { CustomFieldReplayAccessGuard } from './presentation/http/guards/custom-field/custom-field-replay-access.guard.js';
+import { TimeEntryReplayAccessGuard } from './presentation/http/guards/time/time-entry-replay-access.guard.js';
 import { tasksUnitOfWorkProvider } from './composition/providers/adapters/task/tasks-unit-of-work.provider.js';
 import { trashSystemUnitOfWorkProvider } from './composition/providers/adapters/trash/trash-system-unit-of-work.provider.js';
 import { listListActivityProvider } from './composition/providers/use-cases/activity/list-list-activity.provider.js';
@@ -24,6 +26,7 @@ import { taskApprovalProviders } from './composition/providers/use-cases/approva
 import { ChangeTaskApproval } from './public/approval/change-task-approval.js';
 import { ReadTaskApproval } from './public/approval/read-task-approval.js';
 import { listTaskActivityProvider } from './composition/providers/use-cases/activity/list-task-activity.provider.js';
+import { taskTimeProviders } from './composition/providers/use-cases/time/task-time.provider.js';
 import { archiveTaskProvider } from './composition/providers/use-cases/archive/archive-task.provider.js';
 import { listArchivedListsProvider } from './composition/providers/use-cases/archive/list-archived-lists.provider.js';
 import { listArchivedTasksProvider } from './composition/providers/use-cases/archive/list-archived-tasks.provider.js';
@@ -36,6 +39,7 @@ import { bulkTaskActionProvider } from './composition/providers/use-cases/bulk/b
 import { addChecklistItemProvider } from './composition/providers/use-cases/checklist/add-checklist-item.provider.js';
 import { updateChecklistItemProvider } from './composition/providers/use-cases/checklist/update-checklist-item.provider.js';
 import { taskDependencyProviders } from './composition/providers/use-cases/dependency/task-dependency.provider.js';
+import { customFieldProviders } from './composition/providers/use-cases/custom-field/custom-field.provider.js';
 import { countListTaskGroupsProvider } from './composition/providers/use-cases/list/count-list-task-groups.provider.js';
 import { getListCountsProvider } from './composition/providers/use-cases/list/get-list-counts.provider.js';
 import { listListTasksProvider } from './composition/providers/use-cases/list/list-list-tasks.provider.js';
@@ -75,6 +79,7 @@ import { UserTasksController } from './presentation/http/controllers/user/user-t
 import { ListActivityController } from './presentation/http/controllers/activity/list-activity.controller.js';
 import { TaskAccessController } from './presentation/http/controllers/access/task-access.controller.js';
 import { TaskActivityController } from './presentation/http/controllers/activity/task-activity.controller.js';
+import { TaskTimeController } from './presentation/http/controllers/time/task-time.controller.js';
 import { ArchivesController } from './presentation/http/controllers/archive/archives.controller.js';
 import { TaskArchiveController } from './presentation/http/controllers/archive/task-archive.controller.js';
 import { TaskAssigneesController } from './presentation/http/controllers/assignee/task-assignees.controller.js';
@@ -84,6 +89,8 @@ import { listWatchersProvider } from './composition/providers/use-cases/watcher/
 import { setTaskWatcherProvider } from './composition/providers/use-cases/watcher/set-task-watcher.provider.js';
 import { ChecklistItemsController } from './presentation/http/controllers/checklist/checklist-items.controller.js';
 import { TaskDependenciesController } from './presentation/http/controllers/dependency/task-dependencies.controller.js';
+import { ListCustomFieldsController } from './presentation/http/controllers/custom-field/list-custom-fields.controller.js';
+import { SpaceCustomFieldsController } from './presentation/http/controllers/custom-field/space-custom-fields.controller.js';
 import { TaskLabelsController } from './presentation/http/controllers/label/task-labels.controller.js';
 import { SubtasksController } from './presentation/http/controllers/subtask/subtasks.controller.js';
 import { ReadTaskTemplateSource } from './public/task/read-task-template-source.js';
@@ -135,6 +142,8 @@ markIdempotent(TaskDependenciesController.prototype, 'create');
 markIdempotent(ListDuplicateController.prototype, 'duplicate');
 markIdempotent(TaskDuplicateController.prototype, 'duplicate');
 markIdempotent(BulkTaskActionsController.prototype, 'execute');
+markIdempotent(SpaceCustomFieldsController.prototype, 'create');
+markIdempotent(TaskTimeController.prototype, 'create');
 
 /**
  * Class TasksModule
@@ -164,6 +173,8 @@ markIdempotent(BulkTaskActionsController.prototype, 'execute');
 @Module({
   imports: [OrganizationMembersModule, SpacesModule],
   controllers: [
+    ListCustomFieldsController,
+    SpaceCustomFieldsController,
     ListTasksController,
     ListActivityController,
     TaskGroupsController,
@@ -183,6 +194,7 @@ markIdempotent(BulkTaskActionsController.prototype, 'execute');
     TaskDuplicateController,
     ListDuplicateController,
     TaskActivityController,
+    TaskTimeController,
     TaskArchiveController,
     ArchivesController,
     TaskTrashController,
@@ -191,6 +203,9 @@ markIdempotent(BulkTaskActionsController.prototype, 'execute');
     TaskParticipantsController,
   ],
   providers: [
+    CustomFieldReplayAccessGuard,
+    ...customFieldProviders,
+    TimeEntryReplayAccessGuard,
     ...taskApprovalProviders,
     RequiredDuplicateBodyGuard,
     tasksUnitOfWorkProvider,
@@ -220,6 +235,7 @@ markIdempotent(BulkTaskActionsController.prototype, 'execute');
     updateChecklistItemProvider,
     ...taskDependencyProviders,
     listTaskActivityProvider,
+    ...taskTimeProviders,
     listListActivityProvider,
     listListTasksProvider,
     countListTaskGroupsProvider,

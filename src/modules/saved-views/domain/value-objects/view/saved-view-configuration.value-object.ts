@@ -17,7 +17,9 @@ export interface SavedViewConfiguration {
   presentation?: {
     hiddenBoardStatusKeys?: string[];
     hiddenSheetColumns?: string[];
+    hiddenCustomFieldIds?: string[];
     sheetSort?: { column: string; direction: string };
+    customFieldSort?: { fieldId: string; direction: 'asc' | 'desc' };
   };
   // #endregion
 }

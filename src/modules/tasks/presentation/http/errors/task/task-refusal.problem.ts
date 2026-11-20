@@ -83,6 +83,10 @@ function shapeOf(refusal: TaskRefusalReason): ProblemShape {
       return { status: 404, code: 'user.not-found' };
     case 'checklist-item-not-found':
       return { status: 404, code: 'checklist-item.not-found' };
+    case 'time-entry-not-found':
+      return { status: 404, code: 'time-entry.not-found' };
+    case 'time-entry-author-required':
+      return { status: 403, code: 'time-entry.author-required' };
     case 'dependency-not-found':
       return { status: 404, code: 'dependency.not-found' };
     case 'dependency-cycle':
@@ -91,6 +95,8 @@ function shapeOf(refusal: TaskRefusalReason): ProblemShape {
       return { status: 409, code: 'dependency.already-exists' };
     case 'dependency-limit-reached':
       return { status: 422, code: 'dependency.limit-reached' };
+    case 'custom-field-value-invalid':
+      return { status: 422, code: 'custom-field.value-invalid' };
     case 'role-insufficient':
       return {
         status: 403,
