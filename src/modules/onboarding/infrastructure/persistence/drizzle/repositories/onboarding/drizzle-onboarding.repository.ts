@@ -98,6 +98,5 @@ export class DrizzleOnboardingRepository {
       .returning({ userId: onboardingStates.userId });
     return rows.length === 1;
   }
-
   // #endregion
 }
