@@ -1,0 +1,225 @@
+import { execFileSync } from 'node:child_process';
+
+import { drizzle } from 'drizzle-orm/node-postgres';
+import pg from 'pg';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import type { TaskFilter } from '../../../../../application/models/query/task-filter.model.js';
+import { DrizzleReportingReader } from './drizzle-reporting-reader.repository.js';
+
+const org = '01938f6e-6d1a-7c3e-9a51-2f0c4b8d7e10';
+const otherOrg = '01938f6e-6d1a-7c3e-9a51-2f0c4b8d7e20';
+const space = '019a7000-0000-7000-8000-000000000001';
+const list = '019a7001-0000-7000-8000-000000000001';
+const otherList = '019a7001-0000-7000-8000-000000000002';
+const user = '019a7001-0000-7000-8000-000000000003';
+const first = '019a7002-0000-7000-8000-000000000001';
+const second = '019a7002-0000-7000-8000-000000000002';
+const third = '019a7002-0000-7000-8000-000000000003';
+const field = '019a7003-0000-7000-8000-000000000001';
+const filter: TaskFilter = {
+  statuses: null,
+  priorities: null,
+  assignees: null,
+  labelKeys: null,
+  search: null,
+  dueFrom: null,
+  dueTo: null,
+  rootsOnly: false,
+};
+
+describe('DrizzleReportingReader', () => {
+  let container = '';
+  let pool: pg.Pool | null = null;
+  let reader: DrizzleReportingReader;
+
+  beforeAll(async () => {
+    container = execFileSync(
+      'docker',
+      [
+        'run',
+        '-d',
+        '--rm',
+        '-e',
+        'POSTGRES_PASSWORD=fixture',
+        '-p',
+        '127.0.0.1::5432',
+        'postgres:18.6-alpine@sha256:9ba53c7d41ea093baf5c1ba635ba5434c4f979880527d49bb7d9237d3193085b',
+      ],
+      { encoding: 'utf8' },
+    ).trim();
+    const address = execFileSync('docker', ['port', container, '5432/tcp'], {
+      encoding: 'utf8',
+    }).trim();
+    pool = new pg.Pool({
+      host: '127.0.0.1',
+      port: Number(address.slice(address.lastIndexOf(':') + 1)),
+      user: 'postgres',
+      password: 'fixture',
+    });
+    let ready = false;
+    for (let attempt = 0; attempt < 60 && !ready; attempt += 1) {
+      try {
+        await pool.query('select 1');
+        ready = true;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    }
+    if (!ready) throw new Error('The disposable PostgreSQL did not start.');
+    await pool.query(`
+      create table tasks (
+        organization_id uuid not null, id uuid not null, key_prefix text not null, key_number integer not null,
+        space_id uuid not null, list_id uuid not null, parent_id uuid, name text not null, status text not null,
+        cancel_reason text, priority text not null, due_date date, start_date date, estimate_minutes integer,
+        milestone boolean not null default false, recurrence text not null default 'none', completed_at timestamptz(3),
+        created_at timestamptz(3) not null default now(), version integer not null default 1,
+        archived_at timestamptz(3), archive_root_id uuid, trash_entry_id uuid,
+        primary key (organization_id, id)
+      );
+      create table task_assignees (organization_id uuid, task_id uuid, user_id uuid, position integer);
+      create table task_labels (organization_id uuid, task_id uuid, label_key text, name text, position integer);
+      create table checklist_items (organization_id uuid, task_id uuid, done boolean);
+      create table task_time_entries (organization_id uuid, id uuid, task_id uuid, author_user_id uuid, minutes integer, work_date date);
+      create table activity_entries (organization_id uuid, id uuid, task_id uuid, kind text, status_to text, occurred_at timestamptz);
+      create table space_custom_fields (organization_id uuid, id uuid, space_id uuid, name text, type text,
+        position integer, sprint_points boolean, version integer, retired_at timestamptz);
+      create table task_custom_field_values (organization_id uuid, task_id uuid, field_id uuid, number_value float8, text_value text);
+    `);
+    await pool.query(
+      `
+      insert into tasks (organization_id,id,key_prefix,key_number,space_id,list_id,name,status,priority,due_date,estimate_minutes)
+      values ($1,$2,'CAD',1,$5,$6,'First','todo','haute','2026-11-25',120),
+             ($1,$3,'CAD',2,$5,$6,'Second','progress','basse','2026-11-26',60),
+             ($1,$4,'CAD',3,$5,$7,'Hidden','todo','moyenne',null,null),
+             ($8,$2,'OTH',1,$5,$6,'Other tenant','todo','moyenne',null,null)
+    `,
+      [org, first, second, third, space, list, otherList, otherOrg],
+    );
+    await pool.query(`insert into task_assignees values ($1,$2,$3,0)`, [org, first, user]);
+    await pool.query(
+      `insert into task_time_entries values
+      ($1,'019a7004-0000-7000-8000-000000000001',$2,$4,30,'2026-11-23'),
+      ($1,'019a7004-0000-7000-8000-000000000002',$3,$4,45,'2026-11-24'),
+      ($5,'019a7004-0000-7000-8000-000000000003',$2,$4,90,'2026-11-23')`,
+      [org, first, second, user, otherOrg],
+    );
+    await pool.query(
+      `insert into activity_entries values
+      ($1,'019a7005-0000-7000-8000-000000000001',$2,'status','done','2026-11-24T10:00Z'),
+      ($1,'019a7005-0000-7000-8000-000000000002',$3,'status','done','2026-11-24T10:00Z'),
+      ($1,'019a7005-0000-7000-8000-000000000003',$4,'status','done','2026-11-24T10:00Z')`,
+      [org, first, second, third],
+    );
+    await pool.query(
+      `insert into space_custom_fields values ($1,$2,$3,'Points','number',0,true,1,null)`,
+      [org, field, space],
+    );
+    await pool.query(
+      `insert into task_custom_field_values values ($1,$2,$3,3,null),($1,$4,$3,1,null)`,
+      [org, first, field, second],
+    );
+    reader = new DrizzleReportingReader(drizzle(pool));
+  });
+
+  afterAll(async () => {
+    await pool?.end();
+    if (container !== '') execFileSync('docker', ['rm', '-f', container], { stdio: 'ignore' });
+  });
+
+  it('pages filtered workload and keeps tenant and list scope', async () => {
+    const page = await reader.workloadTasks(org, list, filter, null, 1);
+    expect(page.items.map((task) => task.key.format())).toEqual(['CAD-1']);
+    expect(page.next).toBe(first);
+    expect(
+      (await reader.workloadTasks(org, list, filter, page.next, 1)).items.map((task) =>
+        task.key.format(),
+      ),
+    ).toEqual(['CAD-2']);
+    expect(
+      (await reader.workloadTasks(otherOrg, list, filter, null, 10)).items.map((task) =>
+        task.key.format(),
+      ),
+    ).toEqual(['OTH-1']);
+  });
+
+  it('pages weekly entries and respects current task placement', async () => {
+    const page = await reader.timesheetEntries(org, list, '2026-11-23', null, 1);
+    expect(page.items.map((entry) => entry.minutes)).toEqual([30]);
+    expect(
+      (await reader.timesheetEntries(org, list, '2026-11-23', page.next, 1)).items.map(
+        (entry) => entry.minutes,
+      ),
+    ).toEqual([45]);
+    expect((await reader.timesheetEntries(org, otherList, '2026-11-23', null, 10)).items).toEqual(
+      [],
+    );
+  });
+
+  it('pages dashboard tasks and completion facts over visible lists only', async () => {
+    expect((await reader.dashboardTasks(org, [list], null, 1)).next).toBe(first);
+    const page = await reader.dashboardTransitions(
+      org,
+      [list],
+      new Date('2026-11-20T00:00:00Z'),
+      new Date('2026-11-25T00:00:00Z'),
+      null,
+      1,
+    );
+    expect(page.items.map((entry) => entry.taskId)).toEqual([first]);
+    expect(
+      (
+        await reader.dashboardTransitions(
+          org,
+          [list],
+          new Date('2026-11-20T00:00:00Z'),
+          new Date('2026-11-25T00:00:00Z'),
+          page.next,
+          1,
+        )
+      ).items.map((entry) => entry.taskId),
+    ).toEqual([second]);
+    expect(
+      (
+        await reader.dashboardTransitions(
+          org,
+          [list],
+          new Date('2026-11-25T00:00:00Z'),
+          new Date('2026-11-26T00:00:00Z'),
+          null,
+          10,
+        )
+      ).items,
+    ).toEqual([]);
+  });
+
+  it('sorts active field values, rejects unknown fields, and retains headers for an empty list', async () => {
+    const order = { key: 'manual', descending: false } as const;
+    const result = await reader.exportRows(org, list, space, filter, order, {
+      column: field,
+      direction: 'asc',
+    });
+    expect(result.rows.map((row) => row.taskKey)).toEqual(['CAD-2', 'CAD-1']);
+    expect(result.rows[0]?.customValues[field]).toBe(1);
+    expect(
+      (
+        await reader.exportRows(org, list, space, filter, order, {
+          column: third,
+          direction: 'asc',
+        })
+      ).invalidSort,
+    ).toBe(true);
+    expect(
+      (
+        await reader.exportRows(
+          org,
+          otherList,
+          space,
+          { ...filter, statuses: ['done'] },
+          order,
+          null,
+        )
+      ).fields,
+    ).toEqual([{ id: field, name: 'Points' }]);
+  });
+});

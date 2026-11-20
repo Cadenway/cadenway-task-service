@@ -34,6 +34,8 @@ import { lockDeletedListProvider } from './composition/providers/use-cases/list/
 import { lockTrashListsProvider } from './composition/providers/use-cases/list/lock-trash-lists.provider.js';
 import { listArchivedListsProvider } from './composition/providers/use-cases/list/list-archived-lists.provider.js';
 import { listCurrentSprintsProvider } from './composition/providers/use-cases/list/list-current-sprints.provider.js';
+import { listPriorSprintsProvider } from './composition/providers/use-cases/reporting/list-prior-sprints.provider.js';
+import { resolveSprintLifetimesProvider } from './composition/providers/use-cases/reporting/resolve-sprint-lifetimes.provider.js';
 import { listDeletedSpaceListsProvider } from './composition/providers/use-cases/list/list-deleted-space-lists.provider.js';
 import { listListsProvider } from './composition/providers/use-cases/list/list-lists.provider.js';
 import { listSidebarListsProvider } from './composition/providers/use-cases/list/list-sidebar-lists.provider.js';
@@ -76,6 +78,8 @@ import { LockDeletedList } from './public/list/lock-deleted-list.js';
 import { LockTrashLists } from './public/list/lock-trash-lists.js';
 import { ListArchivedLists } from './public/list/list-archived-lists.js';
 import { ListCurrentSprints } from './public/list/list-current-sprints.js';
+import { ListPriorSprints } from './public/reporting/list-prior-sprints.js';
+import { ResolveSprintLifetimes } from './public/reporting/resolve-sprint-lifetimes.js';
 import { ListDeletedSpaceLists } from './public/list/list-deleted-space-lists.js';
 import { ListSidebarLists } from './public/list/list-sidebar-lists.js';
 import { ListTrashLists } from './public/list/list-trash-lists.js';
@@ -131,8 +135,9 @@ markIdempotent(SpaceListsController.prototype, 'create');
  * `HandOverPrivateSpaces` and `RemoveMemberGrants`, which the clean-up job runs batch after batch
  * once a member left the organization, and `HandOverAwaitingSpaces`, which it runs when the copy
  * learns the owner; for the tasks module `FindVisibleList`, `FindVisibleLists`,
- * `FindVisibleSpaceLists`, `ListCurrentSprints`, `ListSidebarLists`, `ListVisibleListIds`,
- * `ListArchivedLists`, `RestoreArchivedList`, `AllocateTaskKeys`, and for the trash
+ * `FindVisibleSpaceLists`, `ListCurrentSprints`, `ListPriorSprints`, `ResolveSprintLifetimes`,
+ * `ListSidebarLists`, `ListVisibleListIds`, `ListArchivedLists`, `RestoreArchivedList`,
+ * `AllocateTaskKeys`, and for the trash
  * `ListTrashLists`, `FindTrashList`, `RestoreDeletedList`, `PurgeDeletedList`, `HoldList`,
  * `LockDeletedList` and `LockTrashLists`; for the deletion-lifecycle module
  * `ListDeletedSpaceLists` and `PurgeDeletedSpace`; for the access-requests module
@@ -174,6 +179,8 @@ markIdempotent(SpaceListsController.prototype, 'create');
     findVisibleListsProvider,
     findVisibleSpaceListsProvider,
     listCurrentSprintsProvider,
+    listPriorSprintsProvider,
+    resolveSprintLifetimesProvider,
     listSidebarListsProvider,
     listVisibleListIdsProvider,
     listArchivedListsProvider,
@@ -215,6 +222,8 @@ markIdempotent(SpaceListsController.prototype, 'create');
     FindVisibleLists,
     FindVisibleSpaceLists,
     ListCurrentSprints,
+    ListPriorSprints,
+    ResolveSprintLifetimes,
     ListSidebarLists,
     ListVisibleListIds,
     ListArchivedLists,

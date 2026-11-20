@@ -39,6 +39,8 @@ access-requests module.
 | `public/list/find-visible-lists`            | favorites, saved-views, tasks                                                                        |
 | `public/list/find-visible-space-lists`      | tasks                                                                                                |
 | `public/list/list-current-sprints`          | tasks                                                                                                |
+| `public/reporting/list-prior-sprints`       | tasks                                                                                                |
+| `public/reporting/resolve-sprint-lifetimes` | tasks                                                                                                |
 | `public/list/list-sidebar-lists`            | tasks                                                                                                |
 | `public/list/list-visible-list-ids`         | tasks                                                                                                |
 | `public/list/list-archived-lists`           | tasks                                                                                                |
@@ -60,10 +62,13 @@ access-requests module.
 | `public/space/resolve-task-template-space`  | task-templates                                                                                       |
 | `public/space/resolve-custom-field-space`   | tasks                                                                                                |
 
-`SpacesModule` exports these providers; each runs in `SpacesUnitOfWork.run`, which joins the
-tenant transaction of its caller, or opens one for the batches of the clean-up job. Inputs carry
-the organization and, for the readings, the member and their role as the caller read them from the
-copy of the memberships.
+`SpacesModule` exports these providers. They join the caller's tenant transaction or open one for
+the batches of the clean-up job. Inputs carry the organization and, for the readings, the member
+and their role as the caller read them from the copy of the memberships.
+
+`ListPriorSprints` limits the completed sprints in the current space after applying list
+visibility. `ResolveSprintLifetimes` rechecks visibility and reads historical list periods for
+the selected sprints. Both join the report's read-only `REPEATABLE READ` transaction.
 
 `ResolveCustomFieldSpace` returns the viewer's space role and management permission. A mutation
 holds the space until its caller commits so that access and field order cannot change underneath it.
@@ -178,13 +183,17 @@ holds the space until its caller commits so that access and field order cannot c
 
 ## Owned tables
 
-| Table            | Key                                    | Organization scoping                                     |
-| ---------------- | -------------------------------------- | -------------------------------------------------------- |
-| `spaces`         | `(organization_id, id)`                | `organization_id`, policy of the kit, enabled and forced |
-| `space_prefixes` | `(organization_id, prefix)`            | `organization_id`, policy of the kit, enabled and forced |
-| `lists`          | `(organization_id, id)`                | `organization_id`, policy of the kit, enabled and forced |
-| `space_grants`   | `(organization_id, space_id, user_id)` | `organization_id`, policy of the kit, enabled and forced |
-| `list_grants`    | `(organization_id, list_id, user_id)`  | `organization_id`, policy of the kit, enabled and forced |
+| Table                 | Key                                    | Organization scoping                                     |
+| --------------------- | -------------------------------------- | -------------------------------------------------------- |
+| `spaces`              | `(organization_id, id)`                | `organization_id`, policy of the kit, enabled and forced |
+| `space_prefixes`      | `(organization_id, prefix)`            | `organization_id`, policy of the kit, enabled and forced |
+| `lists`               | `(organization_id, id)`                | `organization_id`, policy of the kit, enabled and forced |
+| `space_grants`        | `(organization_id, space_id, user_id)` | `organization_id`, policy of the kit, enabled and forced |
+| `list_grants`         | `(organization_id, list_id, user_id)`  | `organization_id`, policy of the kit, enabled and forced |
+| `sprint_list_history` | `(organization_id, sequence)`          | `organization_id`, policy of the kit, enabled and forced |
+
+Sprint list history records the list's scope, sprint dates and deletion transitions. A physical
+list purge deletes its facts through the tenant-scoped foreign key.
 
 Created by `migrations/0002_spaces_and_lists.sql`, `migrations/0005_access_grants.sql`
 (`lists.organization_access` and the two grant tables), which force the policies by hand, and
@@ -445,10 +454,11 @@ gives an organization its owner.
 
 ## Transactions
 
-Every use case runs in one tenant transaction of the organization of the context
-(`TenantSpacesUnitOfWork`), joined to the one of the `Idempotency-Key` interceptor, of the
-deduplicator or of the calling module; what it writes and its outbox rows commit together, and a
-refusal rolls it back. The readings of the copy join the same transaction.
+Space writes use the tenant transaction of the organization of the context
+(`TenantSpacesUnitOfWork`). It joins the transaction of the `Idempotency-Key` interceptor, the
+deduplicator or the calling module. Writes and their outbox rows commit together, and a refusal
+rolls them back. The readings of the membership copy join that transaction. The reporting
+providers join the report's read-only tenant snapshot through the same tenant runner.
 
 Locks are always taken in the global lock order of the service ("Global lock order" in the
 Transactions of `src/modules/tasks/MODULE.md`): memberships `FOR SHARE`, then (for a caller of the tasks module)

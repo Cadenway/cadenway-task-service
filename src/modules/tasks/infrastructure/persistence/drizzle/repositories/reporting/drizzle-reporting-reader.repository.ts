@@ -1,0 +1,320 @@
+import type { TransactionDatabase } from '@cadenway/nest-common/database';
+import { sql } from 'drizzle-orm';
+import type { SQL } from 'drizzle-orm';
+
+import type { TaskFilter } from '../../../../../application/models/query/task-filter.model.js';
+import type { TaskOrder } from '../../../../../application/models/query/task-order.model.js';
+import type { ReportingBatch } from '../../../../../application/models/reporting/reporting-batch.model.js';
+import type { ReportingExportRows } from '../../../../../application/models/reporting/reporting-export-rows.model.js';
+import type { ReportingReader } from '../../../../../application/ports/outbound/persistence/reporting/reporting-reader.port.js';
+import type { TaskSummaryView } from '../../../../../application/projections/task/task-summary.projection.js';
+import type { buildTeamDashboard } from '../../../../../domain/policies/reporting/dashboard.policy.js';
+import type { buildTimesheet } from '../../../../../domain/policies/reporting/timesheet.policy.js';
+import type { buildWorkload } from '../../../../../domain/policies/reporting/workload.policy.js';
+import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
+import { anyOf } from '../../mappers/page/any-of.mapper.js';
+import { taskFilterCondition } from '../../mappers/query/task-filter.mapper.js';
+import { orderTerms, sortValueExpression } from '../../mappers/query/task-order.mapper.js';
+import { taskPageColumns } from '../../mappers/query/task-page-row.mapper.js';
+import { liveTask } from '../../mappers/task/live-task.mapper.js';
+import { toStatusKey } from '../../mappers/task/task-values.mapper.js';
+import { activityEntries } from '../../schemas/activity/activity-entry.schema.js';
+import { taskCustomFieldValues } from '../../schemas/custom-field/task-custom-field-value.schema.js';
+import { taskAssignees } from '../../schemas/task/task-assignee.schema.js';
+import { taskLabels } from '../../schemas/task/task-label.schema.js';
+import { tasks } from '../../schemas/task/task.schema.js';
+import { taskTimeEntries } from '../../schemas/time/task-time-entry.schema.js';
+import { DrizzleTaskPageLoader } from '../task/task-page-loader.repository.js';
+import { DrizzleCustomFieldRepository } from '../custom-field/drizzle-custom-field.repository.js';
+
+type WorkloadTask = Parameters<typeof buildWorkload>[1][number];
+type TimesheetEntry = Parameters<typeof buildTimesheet>[1][number];
+type DashboardTask = Parameters<typeof buildTeamDashboard>[1][number] & {
+  readonly summary: TaskSummaryView;
+};
+type DashboardTransition = Parameters<typeof buildTeamDashboard>[2][number];
+
+/** Bounds every keyset page, even when called by another internal consumer. */
+function pageLimit(limit: number): number {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+    throw new Error('Report pages must contain between 1 and 500 rows.');
+  }
+  return limit;
+}
+
+function batch<T extends { readonly id: string }, TResult>(
+  rows: readonly T[],
+  limit: number,
+  map: (row: T) => TResult,
+): ReportingBatch<TResult> {
+  const selected = rows.slice(0, limit);
+  return {
+    items: selected.map(map),
+    next: rows.length > limit ? (selected.at(-1)?.id ?? null) : null,
+  };
+}
+
+function after(column: SQL, id: string | null): SQL {
+  return id === null ? sql`` : sql` and ${column} > ${id}::uuid`;
+}
+
+/** Tenant-scoped reporting reads. All methods join the unit of work's stable snapshot. */
+export class DrizzleReportingReader implements ReportingReader {
+  // #region Properties
+  /** Loads summaries and their collections for one bounded page. */
+  private readonly pages: DrizzleTaskPageLoader;
+  // #endregion
+
+  // #region Constructor
+  /** Binds reads to the caller's tenant transaction. */
+  public constructor(private readonly db: TransactionDatabase) {
+    this.pages = new DrizzleTaskPageLoader(db);
+  }
+  // #endregion
+
+  // #region Methods
+  /** Reads one page of tasks matching the list filters. */
+  public async workloadTasks(
+    organizationId: string,
+    listId: string,
+    filter: TaskFilter,
+    afterId: string | null,
+    limit: number,
+  ): Promise<ReportingBatch<WorkloadTask>> {
+    pageLimit(limit);
+    const rows = await this.pages.load(
+      organizationId,
+      sql`
+      select ${taskPageColumns()}, null as "sortValue" from ${tasks}
+      where ${taskFilterCondition(organizationId, listId, filter)}${after(sql`${tasks.id}`, afterId)}
+      order by ${tasks.id} limit ${limit + 1}`,
+    );
+    return batch(
+      rows.map(({ task }) => task),
+      limit,
+      (task) => ({
+        key: TaskKey.parse(task.key),
+        name: task.name,
+        status: task.status,
+        startDate: task.startDate,
+        dueDate: task.dueDate,
+        estimateMinutes: task.estimateMinutes,
+        assigneeIds: task.assigneeIds,
+      }),
+    );
+  }
+
+  /** Reads one page of entries in the requested work-date week. */
+  public async timesheetEntries(
+    organizationId: string,
+    listId: string,
+    weekStart: string,
+    afterId: string | null,
+    limit: number,
+  ): Promise<ReportingBatch<TimesheetEntry>> {
+    pageLimit(limit);
+    const rows = await this.db.execute<{
+      id: string;
+      keyPrefix: string;
+      keyNumber: number;
+      name: string;
+      status: string;
+      authorUserId: string;
+      workDate: string;
+      minutes: number;
+    }>(sql`
+      select ${taskTimeEntries.id} as "id", ${tasks.keyPrefix} as "keyPrefix",
+        ${tasks.keyNumber} as "keyNumber", ${tasks.name} as "name", ${tasks.status} as "status",
+        ${taskTimeEntries.authorUserId} as "authorUserId", ${taskTimeEntries.workDate}::text as "workDate",
+        ${taskTimeEntries.minutes} as "minutes"
+      from ${taskTimeEntries} join ${tasks} on ${tasks.organizationId} = ${taskTimeEntries.organizationId}
+        and ${tasks.id} = ${taskTimeEntries.taskId}
+      where ${taskTimeEntries.organizationId} = ${organizationId}::uuid
+        and ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.listId} = ${listId}::uuid
+        and ${liveTask()} and ${taskTimeEntries.workDate} >= ${weekStart}::date
+        and ${taskTimeEntries.workDate} < (${weekStart}::date + 7)${after(sql`${taskTimeEntries.id}`, afterId)}
+      order by ${taskTimeEntries.id} limit ${limit + 1}`);
+    return batch(rows.rows, limit, (row) => ({
+      authorUserId: row.authorUserId,
+      workDate: row.workDate,
+      minutes: row.minutes,
+      task: {
+        key: TaskKey.of(row.keyPrefix, row.keyNumber),
+        name: row.name,
+        status: toStatusKey(row.status, `task ${row.id}`),
+      },
+    }));
+  }
+
+  /** Reads one page of currently visible live tasks. */
+  public async dashboardTasks(
+    organizationId: string,
+    visibleListIds: readonly string[],
+    afterId: string | null,
+    limit: number,
+  ): Promise<ReportingBatch<DashboardTask>> {
+    pageLimit(limit);
+    if (visibleListIds.length === 0) return { items: [], next: null };
+    const rows = await this.pages.load(
+      organizationId,
+      sql`
+      select ${taskPageColumns()}, null as "sortValue" from ${tasks}
+      where ${tasks.organizationId} = ${organizationId}::uuid
+        and ${anyOf(tasks.listId, visibleListIds, 'uuid')} and ${liveTask()}${after(sql`${tasks.id}`, afterId)}
+      order by ${tasks.id} limit ${limit + 1}`,
+    );
+    return batch(
+      rows.map(({ task }) => task),
+      limit,
+      (task) => ({
+        id: task.id,
+        key: TaskKey.parse(task.key),
+        status: task.status,
+        dueDate: task.dueDate,
+        assigneeIds: task.assigneeIds,
+        summary: task,
+      }),
+    );
+  }
+
+  /** Reads completion transitions for currently visible live tasks. */
+  public async dashboardTransitions(
+    organizationId: string,
+    visibleListIds: readonly string[],
+    from: Date,
+    observedAt: Date,
+    afterId: string | null,
+    limit: number,
+  ): Promise<ReportingBatch<DashboardTransition>> {
+    pageLimit(limit);
+    if (visibleListIds.length === 0) return { items: [], next: null };
+    const rows = await this.db.execute<{ id: string; taskId: string; occurredAt: Date }>(sql`
+      select ${activityEntries.id} as "id", ${activityEntries.taskId} as "taskId",
+        ${activityEntries.occurredAt} as "occurredAt"
+      from ${activityEntries} join ${tasks} on ${tasks.organizationId} = ${activityEntries.organizationId}
+        and ${tasks.id} = ${activityEntries.taskId}
+      where ${activityEntries.organizationId} = ${organizationId}::uuid
+        and ${tasks.organizationId} = ${organizationId}::uuid
+        and ${anyOf(tasks.listId, visibleListIds, 'uuid')} and ${liveTask()}
+        and ${activityEntries.kind} = 'status' and ${activityEntries.statusTo} = 'done'
+        and ${activityEntries.occurredAt} >= ${from}::timestamptz
+        and ${activityEntries.occurredAt} <= ${observedAt}::timestamptz${after(sql`${activityEntries.id}`, afterId)}
+      order by ${activityEntries.id} limit ${limit + 1}`);
+    return batch(rows.rows, limit, (row) => ({
+      taskId: row.taskId,
+      to: 'done',
+      occurredAt: row.occurredAt,
+    }));
+  }
+
+  /** Reads a bounded export with active custom fields and the requested sort. */
+  public async exportRows(
+    organizationId: string,
+    listId: string,
+    spaceId: string,
+    filter: TaskFilter,
+    order: TaskOrder,
+    sheetSort: { readonly column: string; readonly direction: 'asc' | 'desc' } | null,
+  ): Promise<ReportingExportRows> {
+    const customFields = new DrizzleCustomFieldRepository(this.db);
+    const definitions = await customFields.activeDefinitions(organizationId, spaceId);
+    const builtins = [
+      'name',
+      'status',
+      'priority',
+      'people',
+      'due',
+      'estimate',
+      'spent',
+      'labels',
+      'list',
+      'points',
+      'client',
+    ];
+    const requestedField = definitions.find((field) => field.id === sheetSort?.column);
+    if (
+      sheetSort !== null &&
+      !builtins.includes(sheetSort.column) &&
+      requestedField === undefined
+    ) {
+      return { fields: [], rows: [], invalidSort: true };
+    }
+    const pointsField = definitions.find((field) => field.sprintPoints);
+    const clientField = definitions.find(
+      (field) => field.type === 'text' && field.name.toLowerCase() === 'client',
+    );
+    const field =
+      requestedField ??
+      (sheetSort?.column === 'points'
+        ? pointsField
+        : sheetSort?.column === 'client'
+          ? clientField
+          : undefined);
+    const fieldValue =
+      field === undefined
+        ? sql`(${tasks.id} is null)`
+        : sql`(select ${field.type === 'number' ? taskCustomFieldValues.numberValue : taskCustomFieldValues.textValue}
+      from ${taskCustomFieldValues} where ${taskCustomFieldValues.organizationId} = ${organizationId}::uuid
+      and ${taskCustomFieldValues.taskId} = ${tasks.id} and ${taskCustomFieldValues.fieldId} = ${field.id}::uuid)`;
+    const keys: Readonly<Record<string, SQL>> = {
+      name: sql`${tasks.name} collate "C"`,
+      status: sql`array_position(array['triage','backlog','todo','progress','review','testing','waiting','blocked','done','cancelled']::text[], ${tasks.status})`,
+      priority: sql`array_position(array['urgente','haute','moyenne','basse']::text[], ${tasks.priority})`,
+      people: sql`(select ${taskAssignees.userId}::text from ${taskAssignees} where ${taskAssignees.organizationId} = ${organizationId}::uuid and ${taskAssignees.taskId} = ${tasks.id} order by ${taskAssignees.position}, ${taskAssignees.userId} limit 1)`,
+      due: sql`${tasks.dueDate}`,
+      estimate: sql`coalesce(${tasks.estimateMinutes}, 0)`,
+      spent: sql`(select coalesce(sum(${taskTimeEntries.minutes}), 0) from ${taskTimeEntries} where ${taskTimeEntries.organizationId} = ${organizationId}::uuid and ${taskTimeEntries.taskId} = ${tasks.id})`,
+      labels: sql`(select ${taskLabels.name} from ${taskLabels} where ${taskLabels.organizationId} = ${organizationId}::uuid and ${taskLabels.taskId} = ${tasks.id} order by ${taskLabels.position}, ${taskLabels.labelKey} limit 1)`,
+      list: sql`${tasks.listId}`,
+      points: fieldValue,
+      client: fieldValue,
+    };
+    const primaryOrder =
+      sheetSort === null
+        ? sql``
+        : sql`${keys[sheetSort.column] ?? fieldValue} ${sql.raw(sheetSort.direction === 'desc' ? 'desc' : 'asc')} nulls last, `;
+    const rows: ReportingExportRows['rows'][number][] = [];
+    for (let offset = 0; offset <= 10000; offset += 500) {
+      const limit = Math.min(500, 10001 - offset);
+      const page = await this.pages.load(
+        organizationId,
+        sql`
+        select ${taskPageColumns()}, ${sortValueExpression(order)} as "sortValue" from ${tasks}
+        where ${taskFilterCondition(organizationId, listId, filter)} and ${tasks.spaceId} = ${spaceId}::uuid
+        order by ${primaryOrder}${orderTerms(order)} limit ${limit} offset ${offset}`,
+      );
+      const values = await customFields.valuesForTaskPage(
+        organizationId,
+        page.map(({ task }) => ({
+          taskId: task.id,
+          spaceId: task.spaceId,
+          listId: task.listId,
+        })),
+      );
+      const valuesByTask = new Map<string, Record<string, string | number>>();
+      for (const value of values) {
+        let fields = valuesByTask.get(value.taskId);
+        if (fields === undefined) {
+          fields = {};
+          valuesByTask.set(value.taskId, fields);
+        }
+        fields[value.fieldId] = value.value;
+      }
+      rows.push(
+        ...page.map(({ task }) => ({
+          taskKey: task.key,
+          name: task.name,
+          status: task.status,
+          priority: task.priority,
+          assignees: task.assigneeIds,
+          dueDate: task.dueDate,
+          labels: task.labels,
+          customValues: valuesByTask.get(task.id) ?? {},
+        })),
+      );
+      if (page.length < limit) break;
+    }
+    return { fields: definitions.map(({ id, name }) => ({ id, name })), rows, invalidSort: false };
+  }
+  // #endregion
+}

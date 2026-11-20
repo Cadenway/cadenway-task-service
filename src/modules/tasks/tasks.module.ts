@@ -24,6 +24,8 @@ import { trashSystemUnitOfWorkProvider } from './composition/providers/adapters/
 import { listListActivityProvider } from './composition/providers/use-cases/activity/list-list-activity.provider.js';
 import { listTaskActivityProvider } from './composition/providers/use-cases/activity/list-task-activity.provider.js';
 import { taskTimeProviders } from './composition/providers/use-cases/time/task-time.provider.js';
+import { taskReportingProviders } from './composition/providers/use-cases/reporting/task-reporting.provider.js';
+import { getSprintReportProvider } from './composition/providers/use-cases/reporting/get-sprint-report.provider.js';
 import { archiveTaskProvider } from './composition/providers/use-cases/archive/archive-task.provider.js';
 import { listArchivedListsProvider } from './composition/providers/use-cases/archive/list-archived-lists.provider.js';
 import { listArchivedTasksProvider } from './composition/providers/use-cases/archive/list-archived-tasks.provider.js';
@@ -232,6 +234,8 @@ markIdempotent(TaskTimeController.prototype, 'create');
     ...taskDependencyProviders,
     listTaskActivityProvider,
     ...taskTimeProviders,
+    ...taskReportingProviders,
+    getSprintReportProvider,
     listListActivityProvider,
     listListTasksProvider,
     countListTaskGroupsProvider,
