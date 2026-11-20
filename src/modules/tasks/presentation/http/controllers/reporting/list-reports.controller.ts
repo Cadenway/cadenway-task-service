@@ -1,11 +1,11 @@
 import {
-  ExportListTasksInternalResponse,
   GetListTimesheetInternalResponse,
   GetListWorkloadInternalResponse,
   GetSprintReportInternalResponse,
 } from '@cadenway/contracts/validators/internal/task-service';
 import { InternalAccess } from '@cadenway/nest-common';
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Controller, Get, Param, Query, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import type { z } from 'zod';
 
 import { ExportListTasks } from '../../../../application/use-cases/queries/reporting/export-list-tasks/export-list-tasks.use-case.js';
@@ -32,6 +32,7 @@ import {
   sprintReportCursor,
   sprintReportPosition,
 } from '../../mappers/reporting/sprint-report-cursor.mapper.js';
+import { writeTaskExport } from '../../mappers/reporting/task-export-response.mapper.js';
 
 /** Reports and export projections for a list visible to the verified caller. */
 @Controller('internal/v1/lists')
@@ -151,20 +152,27 @@ export class ListReportsController {
   public async export(
     @Param() path: ListTasksPath,
     @Query() query: ExportQuery,
-  ): Promise<z.output<typeof ExportListTasksInternalResponse>> {
-    const result = await answerReportingRefusals(() =>
-      this.exportQuery.execute({
-        ...toCaller(),
-        listId: path.listId.toLowerCase(),
-        filter: toTaskFilterInput(query),
-        order: toTaskOrder(query.sort),
-        sheetSort:
-          query.sheetSortColumn === undefined
-            ? null
-            : { column: query.sheetSortColumn, direction: query.sheetSortDirection ?? 'asc' },
-      }),
+    @Res() response: Response,
+  ): Promise<void> {
+    const caller = toCaller();
+    await writeTaskExport(response, (sink, signal) =>
+      answerReportingRefusals(() =>
+        this.exportQuery.execute(
+          {
+            ...caller,
+            listId: path.listId.toLowerCase(),
+            filter: toTaskFilterInput(query),
+            order: toTaskOrder(query.sort),
+            sheetSort:
+              query.sheetSortColumn === undefined
+                ? null
+                : { column: query.sheetSortColumn, direction: query.sheetSortDirection ?? 'asc' },
+            signal,
+          },
+          sink,
+        ),
+      ),
     );
-    return ExportListTasksInternalResponse.parse(result);
   }
   // #endregion
 }

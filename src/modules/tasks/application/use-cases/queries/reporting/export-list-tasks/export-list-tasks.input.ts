@@ -11,5 +11,8 @@ export interface ExportListTasksInput {
   readonly filter: TaskFilterInput;
   readonly order: TaskOrder;
   readonly sheetSort: { readonly column: string; readonly direction: 'asc' | 'desc' } | null;
+
+  /** Stops reading the snapshot when its consumer disconnects or exceeds its deadline. */
+  readonly signal?: AbortSignal;
   // #endregion
 }

@@ -50,16 +50,15 @@ export interface ReportingReader {
     limit: number,
   ): Promise<ReportingBatch<Parameters<typeof buildTeamDashboard>[2][number]>>;
 
-  /** Reads ordered matching live rows and active field definitions. Return at most 10,001 rows.
-   * The people sort is resolved after name lookup, so its rows arrive in ordinary task order.
-   */
-  exportRows(
+  /** Selects at most 10,001 ordered task IDs and loads the active fields in the current snapshot. */
+  prepareExport(
     organizationId: string,
     listId: string,
     spaceId: string,
     filter: TaskFilter,
     order: TaskOrder,
     sheetSort: { readonly column: string; readonly direction: 'asc' | 'desc' } | null,
+    limit: number,
   ): Promise<ReportingExportRows>;
   // #endregion
 }

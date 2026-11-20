@@ -5,7 +5,9 @@ import { BeginComment } from './public/task/begin-comment.js';
 import { resolveCommentTaskProvider } from './composition/providers/use-cases/task/resolve-comment-task.provider.js';
 import { ResolveCommentTask } from './public/task/resolve-comment-task.js';
 import { Idempotent } from '@cadenway/nest-common/database';
-import { Module } from '@nestjs/common';
+import { requestDeadlineMiddleware } from '@cadenway/nest-common';
+import { Module, RequestMethod } from '@nestjs/common';
+import type { MiddlewareConsumer, NestModule } from '@nestjs/common';
 
 import { OrganizationMembersModule } from '../organization-members/organization-members.module.js';
 import { RecordFirstOnboardingTask } from '../onboarding/public/onboarding/record-first-onboarding-task.js';
@@ -318,4 +320,14 @@ markIdempotent(TaskTimeController.prototype, 'create');
     ListUntrashedTaskIds,
   ],
 })
-export class TasksModule {}
+export class TasksModule implements NestModule {
+  // #region Methods
+  /** Gives the export time to transmit large valid selections while honoring the gateway budget. */
+  public configure(consumer: MiddlewareConsumer): void {
+    const path = 'internal/v1/lists/:listId/tasks/export';
+    consumer
+      .apply(requestDeadlineMiddleware({ budgetMs: 120_000, acceptIncoming: true }))
+      .forRoutes({ path, method: RequestMethod.GET }, { path, method: RequestMethod.HEAD });
+  }
+  // #endregion
+}
