@@ -866,6 +866,34 @@ export class Task {
   }
 
   /**
+   * Includes a real change to separately stored custom values in the task's single update.
+   * The task PATCH contract advances the version and names `customFieldValues` in `changed`
+   * without conveying the values. A move can use the same operation when it clears values.
+   */
+  public markCustomFieldValuesChanged(update: TaskUpdate, now: Date): TaskUpdate {
+    this.requireChangeable();
+    requireInstant(now);
+    if (update.task === this && update.changed.length === 0) {
+      return this.next({}, new Set<TaskField>(['customFieldValues']), now);
+    }
+
+    const next = update.task.snapshot;
+    if (
+      next.organizationId !== this.state.organizationId ||
+      next.id !== this.state.id ||
+      next.version !== this.state.version + 1 ||
+      next.updatedAt.getTime() !== now.getTime() ||
+      update.changed.length === 0
+    ) {
+      throw new InvalidTaskError('custom field values share the same task update');
+    }
+    if (update.changed.includes('customFieldValues')) {
+      return update;
+    }
+    return { ...update, changed: Object.freeze([...update.changed, 'customFieldValues']) };
+  }
+
+  /**
    * Method followMove
    *
    * @description

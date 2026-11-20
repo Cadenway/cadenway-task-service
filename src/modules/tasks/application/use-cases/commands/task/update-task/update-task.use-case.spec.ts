@@ -5,6 +5,7 @@ import type { TaskState } from '../../../../../domain/value-objects/task/task-st
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
+import type { CustomFieldRepository } from '../../../../ports/outbound/persistence/custom-field/custom-field-repository.port.js';
 import {
   ARCHIVES,
   ATELIER_NORD,
@@ -103,6 +104,125 @@ function atelierNord(stored: readonly TaskState[] = [taskState()]): {
 }
 
 const camille = { type: 'user', id: CAMILLE } as const;
+
+describe('UpdateTask custom field values', () => {
+  const fieldId = '019a7000-0000-7000-8000-000000001001';
+  const definition = {
+    id: fieldId,
+    spaceId: PRODUIT,
+    name: 'Points',
+    type: 'number',
+    position: 0,
+    sprintPoints: true,
+    version: 1,
+  } as const;
+
+  function setup(initial?: number) {
+    let value = initial;
+    const cleared: string[] = [];
+    const customFields: CustomFieldRepository = {
+      allocateId: () => Promise.resolve(fieldId),
+      activeDefinitions: (_organizationId, spaceId) =>
+        Promise.resolve(spaceId === PRODUIT ? [definition] : []),
+      create: () => Promise.resolve(),
+      saveDefinitions: () => Promise.resolve(),
+      retire: () => Promise.resolve(),
+      hasNegativeValues: () => Promise.resolve(false),
+      valuesForTasks: (_organizationId, spaceId, ids) =>
+        Promise.resolve(
+          spaceId === PRODUIT && value !== undefined && ids.includes(CAD_482)
+            ? [{ taskId: CAD_482, fieldId, value }]
+            : [],
+        ),
+      valuesForTaskPage: () =>
+        Promise.resolve(value === undefined ? [] : [{ taskId: CAD_482, fieldId, value }]),
+      applyValues: (_organizationId, _taskId, changes) => {
+        const next = changes[0]?.value;
+        if (typeof next === 'number') value = next;
+        if (next === null) value = undefined;
+        return Promise.resolve();
+      },
+      clearTasks: (_organizationId, ids) => {
+        cleared.push(...ids);
+        if (ids.includes(CAD_482)) value = undefined;
+        return Promise.resolve();
+      },
+    };
+    const tasks = new InMemoryTasks({ tasks: tree(), customFields });
+    const spaces = new InMemorySpaceDirectory();
+    return {
+      tasks,
+      spaces,
+      customFields,
+      cleared,
+      value: () => value,
+      useCase: new UpdateTask(tasks, atelierNordMembers(), spaces),
+    };
+  }
+
+  it('saves a value-only patch once and keeps a repeated patch as a no-op', async () => {
+    const { tasks, spaces, useCase, value } = setup();
+    const hold = vi.spyOn(spaces, 'lockTrashLists');
+    expect((await useCase.execute(patchOf({ customFieldValues: { [fieldId]: 0 } }))).version).toBe(
+      13,
+    );
+    expect(value()).toBe(0);
+    expect(hold).toHaveBeenCalled();
+    expect(tasks.events).toEqual([
+      {
+        kind: 'updated',
+        key: 'CAD-482',
+        version: 13,
+        changed: ['customFieldValues'],
+        actor: camille,
+      },
+    ]);
+    expect((await useCase.execute(patchOf({ customFieldValues: { [fieldId]: 0 } }))).version).toBe(
+      13,
+    );
+    expect(tasks.events).toHaveLength(1);
+  });
+
+  it('refuses a negative sprint value before saving or publishing', async () => {
+    const { tasks, useCase } = setup();
+    expect(
+      await refusalOf(useCase.execute(patchOf({ customFieldValues: { [fieldId]: -1 } }))),
+    ).toEqual({
+      reason: 'custom-field-value-invalid',
+    });
+    expect(tasks.stored(CAD_482).version).toBe(12);
+    expect(tasks.events).toEqual([]);
+  });
+
+  it('removes values from every moved task and includes the changed marker only where needed', async () => {
+    const { tasks, useCase, value, cleared } = setup(3);
+    await useCase.execute(patchOf({ listId: CLOTURES }));
+    expect(value()).toBeUndefined();
+    expect(cleared).toEqual(expect.arrayContaining([CAD_482, CAD_483, CAD_484]));
+    expect(tasks.events[0]).toMatchObject({ changed: ['listId', 'spaceId', 'customFieldValues'] });
+    expect(tasks.events[1]).toMatchObject({ changed: ['listId', 'spaceId'] });
+  });
+
+  it('validates a move and value patch against the destination definitions', async () => {
+    const { tasks, useCase, customFields, value } = setup(3);
+    const destinationFieldId = '019a7000-0000-7000-8000-000000001002';
+    vi.spyOn(customFields, 'activeDefinitions').mockImplementation((_organizationId, spaceId) =>
+      Promise.resolve(
+        spaceId === ARCHIVES ? [{ ...definition, id: destinationFieldId, spaceId }] : [],
+      ),
+    );
+
+    const result = await useCase.execute(
+      patchOf({ listId: CLOTURES, customFieldValues: { [destinationFieldId]: 7 } }),
+    );
+
+    expect(result).toMatchObject({ spaceId: ARCHIVES, version: 13 });
+    expect(value()).toBe(7);
+    expect(tasks.events[0]).toMatchObject({
+      changed: ['listId', 'spaceId', 'customFieldValues'],
+    });
+  });
+});
 
 describe('UpdateTask: a patch changes what it names and nothing else', () => {
   it('renames the task, takes the next version and appends task.updated.v1', async () => {

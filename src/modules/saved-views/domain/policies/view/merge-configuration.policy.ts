@@ -20,6 +20,11 @@ type SavedViewPresentationPatch = NonNullable<SavedViewConfigurationPatch['prese
 /** The client-side sheet sort, independent of the server sort. */
 type SavedViewPresentationValueSheetSort = NonNullable<SavedViewPresentationValue['sheetSort']>;
 
+/** The custom field sort takes precedence over the sheet sort when its field is active. */
+type SavedViewPresentationValueCustomFieldSort = NonNullable<
+  SavedViewPresentationValue['customFieldSort']
+>;
+
 /** Replaces a nullable setting, preserving the current value for an omitted key. */
 function mergeSetting<T>(current: T | undefined, patch: T | null | undefined): T | undefined {
   return patch === null ? undefined : (patch ?? current);
@@ -54,6 +59,24 @@ function mergeSheetSort(
   return { column, direction };
 }
 
+/** Merges the nested sort from SavedViewPresentationPatch, keeping a retired field ID as a preference. */
+function mergeCustomFieldSort(
+  current: SavedViewPresentationValueCustomFieldSort | undefined,
+  patch: SavedViewPresentationPatch['customFieldSort'],
+): SavedViewPresentationValueCustomFieldSort | undefined {
+  if (patch === undefined) return current === undefined ? undefined : { ...current };
+  if (patch === null) return undefined;
+  const fieldId = patch.fieldId ?? current?.fieldId;
+  const direction = patch.direction ?? current?.direction;
+  if (fieldId === undefined || direction === undefined) {
+    throw new IncompleteSheetSort(
+      'A custom field sort requires both field ID and direction.',
+      'customFieldSort',
+    );
+  }
+  return { fieldId, direction };
+}
+
 /** Merges the client-only settings independently of the server query. */
 function mergePresentation(
   current: SavedViewPresentationValue | undefined,
@@ -67,10 +90,17 @@ function mergePresentation(
     patch.hiddenBoardStatusKeys,
   );
   const hiddenSheetColumns = mergeSetting(current?.hiddenSheetColumns, patch.hiddenSheetColumns);
+  const hiddenCustomFieldIds = mergeSetting(
+    current?.hiddenCustomFieldIds,
+    patch.hiddenCustomFieldIds,
+  );
   const sheetSort = mergeSheetSort(current?.sheetSort, patch.sheetSort);
+  const customFieldSort = mergeCustomFieldSort(current?.customFieldSort, patch.customFieldSort);
   if (hiddenBoardStatusKeys !== undefined) result.hiddenBoardStatusKeys = hiddenBoardStatusKeys;
   if (hiddenSheetColumns !== undefined) result.hiddenSheetColumns = hiddenSheetColumns;
+  if (hiddenCustomFieldIds !== undefined) result.hiddenCustomFieldIds = [...hiddenCustomFieldIds];
   if (sheetSort !== undefined) result.sheetSort = sheetSort;
+  if (customFieldSort !== undefined) result.customFieldSort = customFieldSort;
   return result;
 }
 

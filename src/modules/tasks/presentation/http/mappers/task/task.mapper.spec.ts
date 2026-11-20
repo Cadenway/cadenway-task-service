@@ -50,6 +50,24 @@ const CAD_482: TaskView = {
 };
 
 describe('toTask', () => {
+  it('preserves sparse custom field values on details and summaries', () => {
+    const values = {
+      '019a700a-1234-7567-89ab-cdef01234567': 0,
+      '019a700a-1234-7567-89ab-cdef01234568': '',
+    };
+    const view = { ...CAD_482, customFieldValues: values };
+    expect(toTask(view).customFieldValues).toEqual(values);
+    expect(toTaskSummary(view).customFieldValues).toEqual(values);
+    expect(() => CreateTaskInternalResponse.parse(toTask(view))).not.toThrow();
+    expect(() =>
+      ListSubtasksInternalResponse.parse({
+        items: [toTaskSummary(view)],
+        nextCursor: null,
+        total: 1,
+      }),
+    ).not.toThrow();
+  });
+
   it('carries scheduling fields and a visible successor supplied by the projection', () => {
     const scheduled = { ...CAD_482, milestone: false, recurrence: 'none' as const };
     expect(toTask(scheduled)).toMatchObject({ milestone: false, recurrence: 'none' });

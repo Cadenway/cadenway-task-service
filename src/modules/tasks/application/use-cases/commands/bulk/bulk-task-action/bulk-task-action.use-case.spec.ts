@@ -7,10 +7,12 @@ import type { TasksStore } from '../../../../models/transactions/tasks-store.mod
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
 import {
   ATELIER_NORD,
+  ARCHIVES,
   BUGS,
   CAD_482,
   CAD_483,
   CAMILLE,
+  CLOTURES,
   HUGO,
   INES,
   InMemorySpaceDirectory,
@@ -92,6 +94,42 @@ describe('BulkTaskAction', () => {
     expect(tasks.stored(CAD_482).version).toBe(12);
     expect(tasks.events).toHaveLength(0);
     expect(tasks.activity.size).toBe(0);
+  });
+
+  it('clears values for every task moved to another space inside the batch', async () => {
+    const original = fixture();
+    const base = await original.tasks.run((store) => Promise.resolve(store.customFields));
+    const cleared: string[] = [];
+    const customFields = {
+      ...base,
+      valuesForTaskPage: (_organizationId: string, tasks: readonly { readonly taskId: string }[]) =>
+        Promise.resolve(
+          tasks.some(({ taskId }) => taskId === CAD_483)
+            ? [{ taskId: CAD_483, fieldId: '019a7000-0000-7000-8000-000000001001', value: 3 }]
+            : [],
+        ),
+      clearTasks: (_organizationId: string, ids: readonly string[]) => {
+        cleared.push(...ids);
+        return Promise.resolve();
+      },
+    };
+    const tasks = new InMemoryTasks({ tasks: [taskState(), subtaskState()], customFields });
+    const useCase = new BulkTaskAction(
+      TRASH_WRITES_ON,
+      tasks,
+      atelierNordMembers(),
+      new InMemorySpaceDirectory(),
+    );
+
+    await useCase.execute(request({ type: 'move', listId: CLOTURES }));
+
+    expect(cleared).toEqual(expect.arrayContaining([CAD_482, CAD_483]));
+    expect(tasks.stored(CAD_482).spaceId).toBe(ARCHIVES);
+    expect(tasks.stored(CAD_483).spaceId).toBe(ARCHIVES);
+    expect(tasks.events).toMatchObject([
+      { key: 'CAD-482', changed: ['listId', 'spaceId'] },
+      { key: 'CAD-483', changed: ['listId', 'spaceId', 'customFieldValues'] },
+    ]);
   });
 
   it('rechecks source and destination visibility under the placement locks', async () => {

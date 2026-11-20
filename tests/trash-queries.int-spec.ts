@@ -61,6 +61,7 @@ import { DrizzleActivityRepository } from '../src/modules/tasks/infrastructure/p
 import { DrizzleArchiveReader } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/archive/drizzle-archive-reader.repository.js';
 import { DrizzleAssignedTaskReader } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/assignee/drizzle-assigned-task-reader.repository.js';
 import { DrizzleTaskCounter } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/count/drizzle-task-counter.repository.js';
+import { DrizzleCustomFieldRepository } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/custom-field/drizzle-custom-field.repository.js';
 import { DrizzleLabelReader } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/label/drizzle-label-reader.repository.js';
 import { DrizzleTaskQueryReader } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/query/drizzle-task-query-reader.repository.js';
 import { DrizzleTaskReader } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/task/drizzle-task-reader.repository.js';
@@ -2612,6 +2613,7 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
         savepoint: (work) => work(),
         dependencies: new DrizzleTaskDependencyRepository(db),
         tasks: new DrizzleTaskRepository(db),
+        customFields: new DrizzleCustomFieldRepository(db),
         time: new DrizzleTaskTimeRepository(db),
         copies: new DrizzleTaskCopiesRepository(db),
         watcherOverrides: new DrizzleWatcherOverrideRepository(db),

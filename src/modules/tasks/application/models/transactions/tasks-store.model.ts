@@ -5,6 +5,7 @@ import type { ActivityRepository } from '../../ports/outbound/persistence/activi
 import type { ArchiveReader } from '../../ports/outbound/persistence/archive/archive-reader.port.js';
 import type { AssignedTaskReader } from '../../ports/outbound/persistence/assignee/assigned-task-reader.port.js';
 import type { TaskCounter } from '../../ports/outbound/persistence/count/task-counter.port.js';
+import type { CustomFieldRepository } from '../../ports/outbound/persistence/custom-field/custom-field-repository.port.js';
 import type { TaskDependencyRepository } from '../../ports/outbound/persistence/dependency/task-dependency-repository.port.js';
 import type { LabelReader } from '../../ports/outbound/persistence/label/label-reader.port.js';
 import type { TaskQueryReader } from '../../ports/outbound/persistence/query/task-query-reader.port.js';
@@ -31,6 +32,9 @@ export interface TasksStore {
   // #region Properties
   /** The tasks with their assignees, labels and checklist. */
   readonly tasks: TaskRepository;
+
+  /** Custom field definitions and sparse task values in this transaction. */
+  readonly customFields: CustomFieldRepository;
 
   /** The task work logs and status history. */
   readonly time: TaskTimeRepository;

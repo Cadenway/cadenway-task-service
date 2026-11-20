@@ -92,6 +92,13 @@
       "when": 1795172572164,
       "tag": "0012_task_time_entries",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1795174564485,
+      "tag": "0013_task_custom_fields",
+      "breakpoints": true
     }
   ]
 }

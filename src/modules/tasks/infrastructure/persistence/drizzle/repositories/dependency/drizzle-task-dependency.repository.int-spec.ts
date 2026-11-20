@@ -82,6 +82,8 @@ describe('DrizzleTaskDependencyRepository', () => {
       );
       create table task_assignees (organization_id uuid, task_id uuid, user_id uuid, position integer);
       create table task_labels (organization_id uuid, task_id uuid, label_key text, name text, position integer);
+      create table space_custom_fields (organization_id uuid, id uuid, space_id uuid, retired_at timestamptz);
+      create table task_custom_field_values (organization_id uuid, task_id uuid, field_id uuid, number_value float8, text_value text);
       create table checklist_items (
         organization_id uuid, id uuid default uuidv7(), task_id uuid, text text,
         done boolean, position integer, created_at timestamptz default now()

@@ -22,13 +22,17 @@ function refusal(failure: SavedViewFailure): ProblemException {
       return new ProblemException({ status: 409, code: 'saved-view.list-archived' });
     case 'limit-reached':
       return new ProblemException({ status: 422, code: 'saved-view.limit-reached' });
-    case 'incomplete-sheet-sort':
+    case 'incomplete-sheet-sort': {
+      const field = failure.field ?? 'sheetSort';
       return invalidRequest(
         'body',
-        'configuration.presentation.sheetSort',
+        `configuration.presentation.${field}`,
         'invalid_type',
-        'A sheet sort requires both column and direction.',
+        field === 'sheetSort'
+          ? 'A sheet sort requires both column and direction.'
+          : 'A custom field sort requires both fieldId and direction.',
       );
+    }
     case 'version-mismatch':
       return new ProblemException({
         status: 412,

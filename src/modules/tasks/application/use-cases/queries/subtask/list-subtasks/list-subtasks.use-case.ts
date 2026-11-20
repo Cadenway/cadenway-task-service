@@ -73,34 +73,37 @@ export class ListSubtasks {
    * @throws {TaskRefusal} `organization-not-found` or `task-not-found`.
    */
   public async execute(input: ListSubtasksInput): Promise<ListSubtasksOutput> {
-    return this.unitOfWork.runReadOnly(async (store: TasksStore): Promise<ListSubtasksOutput> => {
-      const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
-      const { task }: LocatedTask = await this.locator.locate(store, {
-        organizationId: input.organizationId,
-        viewer,
-        taskKey: input.taskKey,
-        edit: false,
-        lock: false,
-        archived: 'allow',
-        expectedVersions: null,
-      });
-      const rows: readonly TaskSummaryView[] = await store.reader.childrenOf(
-        input.organizationId,
-        task.snapshot.id,
-        input.after,
-        input.limit + 1,
-      );
-      const page: Slice<TaskSummaryView, PagePosition> = this.pages.slice(
-        rows,
-        input.limit,
-        (row: TaskSummaryView): PagePosition => ({ createdAt: row.createdAt, id: row.id }),
-      );
-      const total: number = await store.reader.countChildren(
-        input.organizationId,
-        task.snapshot.id,
-      );
-      return { items: page.items, next: page.next, total };
-    });
+    return this.unitOfWork.runReadOnly(
+      async (store: TasksStore): Promise<ListSubtasksOutput> => {
+        const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
+        const { task }: LocatedTask = await this.locator.locate(store, {
+          organizationId: input.organizationId,
+          viewer,
+          taskKey: input.taskKey,
+          edit: false,
+          lock: false,
+          archived: 'allow',
+          expectedVersions: null,
+        });
+        const rows: readonly TaskSummaryView[] = await store.reader.childrenOf(
+          input.organizationId,
+          task.snapshot.id,
+          input.after,
+          input.limit + 1,
+        );
+        const page: Slice<TaskSummaryView, PagePosition> = this.pages.slice(
+          rows,
+          input.limit,
+          (row: TaskSummaryView): PagePosition => ({ createdAt: row.createdAt, id: row.id }),
+        );
+        const total: number = await store.reader.countChildren(
+          input.organizationId,
+          task.snapshot.id,
+        );
+        return { items: page.items, next: page.next, total };
+      },
+      { snapshot: true },
+    );
   }
   // #endregion
 }

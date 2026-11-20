@@ -50,6 +50,9 @@ export interface TaskSummaryView {
   /** Current recurrence cadence. */
   readonly recurrence?: Recurrence;
 
+  /** Sparse active custom field values in the task's current space. */
+  readonly customFieldValues?: Readonly<Record<string, string | number>>;
+
   /** The labels, in the order they were added. */
   readonly labels: readonly string[];
 
