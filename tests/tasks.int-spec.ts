@@ -2330,8 +2330,12 @@ describe('tasks', () => {
       expect(repeated).toEqual(commas);
       expect(single).toMatchObject({ total: 1 });
       expect(single.items.map((entry) => entry.kind)).toEqual(['create']);
+      expect(await activityOf(camille, task.key, '?kind=comment')).toMatchObject({
+        items: [],
+        total: 0,
+      });
       expectProblem(
-        await send('get', `/internal/v1/tasks/${task.key}/activity?kind=comment`, camille),
+        await send('get', `/internal/v1/tasks/${task.key}/activity?kind=unknown`, camille),
         400,
         'request.invalid',
       );
