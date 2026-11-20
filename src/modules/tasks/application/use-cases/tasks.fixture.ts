@@ -39,6 +39,7 @@ import { TaskKey } from '../../domain/value-objects/task/task-key.value-object.j
 import type { TaskActor } from '../../domain/value-objects/task/task-actor.value-object.js';
 import type { TaskState } from '../../domain/value-objects/task/task-state.value-object.js';
 import type { TrashHandOver } from '../../domain/value-objects/trash/trash-hand-over.value-object.js';
+import type { DescriptionMentionChanges } from '../../domain/value-objects/mention/description-mention-changes.value-object.js';
 import type { EventActor } from '../models/actor/event-actor.model.js';
 import type { ArchivePosition } from '../models/archive/archive-position.model.js';
 import type { ActivityPosition } from '../models/activity/activity-position.model.js';
@@ -152,6 +153,13 @@ export const CLOTURES = '019a7100-0000-7000-8000-000000000005';
 /** An event the use cases appended to the outbox, as plain data. */
 export type RecordedEvent =
   | {
+      readonly kind: 'descriptionMentionsChanged';
+      readonly key: string;
+      readonly version: number;
+      readonly change: DescriptionMentionChanges;
+      readonly actor: EventActor;
+    }
+  | {
       readonly kind: 'created';
       readonly key: string;
       readonly version: number;
@@ -170,6 +178,7 @@ export type RecordedEvent =
       readonly version: number;
       readonly previousStatus: StatusKey;
       readonly actor: EventActor;
+      readonly watcherIds: readonly string[];
     }
   | {
       readonly kind: 'assigned';
@@ -3234,6 +3243,13 @@ export class InMemoryTasks implements TasksUnitOfWork {
           );
         },
       },
+      watcherOverrides: {
+        list: () => Promise.resolve([]),
+        set: () => Promise.resolve(),
+        lockTaskIdsForMember: () => Promise.resolve([]),
+        removeForMember: () => Promise.resolve(0),
+      },
+      savepoint: (work) => work(),
       activity: {
         latestOfKind: (
           organizationId: string,
@@ -3264,6 +3280,29 @@ export class InMemoryTasks implements TasksUnitOfWork {
         },
         remove: (_organizationId: string, entryId: string): Promise<void> => {
           activity.delete(entryId);
+          return Promise.resolve();
+        },
+        changeComment: (
+          organizationId: string,
+          taskId: string,
+          commentId: string,
+          excerpt: string | null,
+        ): Promise<void> => {
+          for (const entry of activity.values()) {
+            if (
+              entry.organizationId === organizationId &&
+              entry.taskId === taskId &&
+              entry.change.kind === 'comment' &&
+              entry.change.commentId === commentId
+            ) {
+              if (excerpt === null) activity.delete(entry.id);
+              else
+                activity.set(entry.id, {
+                  ...entry,
+                  change: { ...entry.change, commentExcerpt: excerpt },
+                });
+            }
+          }
           return Promise.resolve();
         },
         pageOfTask: (
@@ -3341,6 +3380,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
           task: Task,
           previousStatus: StatusKey,
           actor: EventActor,
+          watcherIds: readonly string[],
         ): Promise<void> => {
           events.push({
             kind: 'statusChanged',
@@ -3348,6 +3388,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
             version: task.snapshot.version,
             previousStatus,
             actor,
+            watcherIds,
           });
           return Promise.resolve();
         },
@@ -3424,6 +3465,18 @@ export class InMemoryTasks implements TasksUnitOfWork {
           });
           return Promise.resolve();
         },
+        descriptionMentionsChanged: (task, change, actor): Promise<void> => {
+          this.trace.push('events.descriptionMentionsChanged');
+          events.push({
+            kind: 'descriptionMentionsChanged',
+            key: task.snapshot.key.format(),
+            version: task.snapshot.version,
+            change,
+            actor,
+          });
+          return Promise.resolve();
+        },
+        taskWatcherChanged: () => Promise.resolve(),
         taskPurged: (
           task: Task,
           entryId: string,

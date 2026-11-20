@@ -16,8 +16,8 @@ import { PRIVATE_SPACE_HANDOVER } from '../../../tokens/space/private-space-hand
  * @description
  * Builds the work of the clean-up job of a removed member on the batch handover of the private
  * spaces, the batch removal of the grants, the batch dropping of the access requests and
- * the batch unassignment from the tasks, each batch in a tenant transaction of its own in the
- * organization context of the job.
+ * the batch cleanup of task assignments and watcher overrides. Each batch uses its own tenant
+ * transaction in the organization context of the job.
  *
  * @type {FactoryProvider<CleanUpRemovedMember>}
  */

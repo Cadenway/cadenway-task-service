@@ -35,8 +35,8 @@ describe('the query of the activity of a list', () => {
     }
   });
 
-  it('refuses a kind that is not one of the five, on kind', () => {
-    const result = ListActivityQuery.schema.safeParse({ kind: 'status,comment' });
+  it('refuses a kind that is not one of the six, on kind', () => {
+    const result = ListActivityQuery.schema.safeParse({ kind: 'status,unknown' });
 
     expect(result.success).toBe(false);
     if (!result.success) {

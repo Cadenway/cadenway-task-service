@@ -11,7 +11,7 @@ import type { IfMatchCondition } from '@cadenway/nest-common';
  * (`invalid_format`); a header that is required and absent answers `400 request.invalid` with one
  * issue `{ in: 'header', path: 'If-Match', code: 'invalid_type' }`. Both are raised by the kit,
  * which words the problems and never quotes the header. `PATCH /internal/v1/tasks/{taskKey}`
- * requires the header when its body has a `description`, the one member that edits a long text.
+ * requires the header when its body has `description` or `descriptionMentions`.
  *
  * @param {string | undefined} header - The `If-Match` header.
  * @param {boolean} required - Whether the request must carry the header.

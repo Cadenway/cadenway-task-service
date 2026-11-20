@@ -48,6 +48,7 @@ function rowOf(
 
 const CHANGES: readonly ActivityChange[] = [
   { kind: 'create' },
+  { kind: 'comment', commentId: '019a7003-4d5e-7f6a-8b9c-0d1e2f3a4b01', commentExcerpt: 'Bonjour' },
   { kind: 'status', status: { from: 'todo', to: 'progress' } },
   { kind: 'priority', priority: { from: 'moyenne', to: 'haute' } },
   { kind: 'due', dueDate: { from: null, to: '2026-11-12' } },
@@ -73,8 +74,8 @@ describe('toActivityEntry: a stored row becomes the entry it stores', () => {
     expect(toActivityEntry(rowOf(entry)).actor).toEqual({ type: 'system', id: 'task-service' });
   });
 
-  it('refuses a stored kind outside the five kinds', () => {
-    expect(() => toActivityEntry(rowOf(priorityEntry(), { kind: 'comment' }))).toThrow(
+  it('refuses a stored kind outside the known kinds', () => {
+    expect(() => toActivityEntry(rowOf(priorityEntry(), { kind: 'unknown' }))).toThrow(
       'The stored activity entry 019a7400-0000-7000-8000-000000000001 of task 019a7200-0000-7000-8000-000000000482 has a kind outside the kinds.',
     );
   });
@@ -139,6 +140,8 @@ describe('toActivityDetail: only the columns of the kind hold values', () => {
       dueTo: null,
       assigneeUserId: null,
       assigneeAdded: null,
+      commentId: null,
+      commentExcerpt: null,
     });
   });
 
@@ -152,6 +155,8 @@ describe('toActivityDetail: only the columns of the kind hold values', () => {
       dueTo: null,
       assigneeUserId: null,
       assigneeAdded: null,
+      commentId: null,
+      commentExcerpt: null,
     });
   });
 });
@@ -183,6 +188,8 @@ describe('toActivityEntryInsert: a draft becomes the columns of a new entry', ()
       dueTo: null,
       assigneeUserId: INES,
       assigneeAdded: true,
+      commentId: null,
+      commentExcerpt: null,
     });
     expect(insert).not.toHaveProperty('id');
   });

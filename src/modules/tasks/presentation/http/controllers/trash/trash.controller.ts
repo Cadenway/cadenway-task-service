@@ -16,6 +16,7 @@ import { RestoreTrashEntry } from '../../../../application/use-cases/commands/tr
 import type { ListTrashEntriesOutput } from '../../../../application/use-cases/queries/trash/list-trash-entries/list-trash-entries.output.js';
 import { ListTrashEntries } from '../../../../application/use-cases/queries/trash/list-trash-entries/list-trash-entries.use-case.js';
 import { EmptyTrashBody } from '../../dto/input/trash/empty-trash-body.dto.js';
+import { RestoreTrashEntryQuery } from '../../dto/input/trash/restore-trash-entry-query.dto.js';
 import { RestoreTrashEntryBody } from '../../dto/input/trash/restore-trash-entry-body.dto.js';
 import { TrashEntriesQuery } from '../../dto/input/trash/trash-entries-query.dto.js';
 import { TrashEntryPath } from '../../dto/input/trash/trash-entry-path.dto.js';
@@ -134,6 +135,7 @@ export class TrashController {
    *
    * @param {RestoreTrashEntryBody} _body - The empty object of the contract, validated, not read.
    * @param {TrashEntryPath} path - The entry.
+   * @param {RestoreTrashEntryQuery} query - Whether to report a pending deletion.
    * @returns {Promise<TrashRestored>} What came back.
    * @throws {ProblemException} `404 trash-entry.not-found`, `404 organization.not-found`.
    */
@@ -142,10 +144,15 @@ export class TrashController {
   public async restore(
     @Body() _body: RestoreTrashEntryBody,
     @Param() path: TrashEntryPath,
+    @Query() query: RestoreTrashEntryQuery,
   ): Promise<TrashRestored> {
     const caller: Caller = toCaller();
     const restored: RestoreTrashEntryOutput = await answerRefusals(() =>
-      this.restoreTrashEntry.execute({ ...caller, entryId: path.entryId }),
+      this.restoreTrashEntry.execute({
+        ...caller,
+        entryId: path.entryId,
+        reportNotReady: query.reportNotReady,
+      }),
     );
     return toTrashRestored(restored);
   }

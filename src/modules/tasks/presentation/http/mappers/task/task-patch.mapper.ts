@@ -5,14 +5,14 @@ import type { UpdateTaskBody } from '../../dto/input/task/update-task-body.dto.j
  * Function editsDescription
  *
  * @description
- * Whether a patch names `description`, even as `null` or with the value the task already has: the
- * one member that edits a long text, for which `If-Match` is required.
+ * Whether a patch names `description` or `descriptionMentions`: either requires `If-Match`,
+ * even when the text is null or the spans are empty.
  *
  * @param {UpdateTaskBody} body - The patch as sent.
  * @returns {boolean} `true` when the member is present.
  */
 export function editsDescription(body: UpdateTaskBody): boolean {
-  return body.description !== undefined;
+  return body.description !== undefined || body.descriptionMentions !== undefined;
 }
 
 /**
@@ -32,6 +32,14 @@ export function toTaskChange(body: UpdateTaskBody): TaskChange {
   return {
     ...(body.name === undefined ? {} : { name: body.name }),
     ...(body.description === undefined ? {} : { description: body.description }),
+    ...(body.descriptionMentions === undefined
+      ? {}
+      : {
+          descriptionMentions: body.descriptionMentions.map((mention) => ({
+            ...mention,
+            userId: mention.userId.toLowerCase(),
+          })),
+        }),
     ...(body.status === undefined ? {} : { status: body.status }),
     ...(body.cancelReason === undefined ? {} : { cancelReason: body.cancelReason }),
     ...(body.cancelNote === undefined ? {} : { cancelNote: body.cancelNote }),

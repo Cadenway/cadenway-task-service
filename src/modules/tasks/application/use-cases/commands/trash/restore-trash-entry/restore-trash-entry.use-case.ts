@@ -52,10 +52,8 @@ import type { RestoreTrashEntryOutput } from './restore-trash-entry.output.js';
  * through the spaces module (`LockDeletedList`: a deleted list has its space, then itself, locked
  * `FOR UPDATE`, which waits for a batch of its deletion job holding it `FOR SHARE`), under which a
  * deleted list that still holds a task out of the trash refuses the restoration with
- * `trash-entry-not-found`, writing nothing: those tasks are the pending work of its deletion job
- * (no task enters or leaves a deleted list), and the entry is restorable once the job finished,
- * within minutes (a decision beyond the contract, to report to cadenway-api-contracts: a code of
- * its own would say it); then `RestoreDeletedList`, always called, which decides on the locked
+ * `trash-entry-not-found`, or `trash-entry-not-restorable-yet` when requested, writing nothing:
+ * those tasks are the pending work of its deletion job (no task enters or leaves a deleted list); then `RestoreDeletedList`, always called, which decides on the locked
  * rows and brings back a deleted space and list, appending `space.restored.v1` and
  * `list.restored.v1` first (a refusal of it answers `trash-entry-not-found`). When it answers
  * `listRestored` for a list `LockDeletedList` read live (deleted in between, so not locked by
@@ -166,7 +164,21 @@ export class RestoreTrashEntry {
         throw new Error(`The trash entry ${entry.id} has no root ${entry.rootTaskId}.`);
       }
       const keepsParent: boolean = await this.keepsParent(store, root, members);
-      await this.requireDeletionDone(store, organizationId, entry.listId);
+      const locked: LockedDeletedList = await this.spaces.lockDeletedList(
+        organizationId,
+        entry.listId,
+      );
+      if (locked.outcome === 'deleted') {
+        if ((await this.entries.findRestorable(store, organizationId, viewer, entry.id)) === null) {
+          throw new TaskRefusal({ reason: 'trash-entry-not-found' });
+        }
+        await this.refuseWhilePending(
+          store,
+          organizationId,
+          entry.listId,
+          input.reportNotReady === true,
+        );
+      }
       const restoration: DeletedListRestoration = await this.spaces.restoreDeletedList(
         organizationId,
         viewer,
@@ -177,7 +189,12 @@ export class RestoreTrashEntry {
       }
       if (restoration.listRestored) {
         // The list was read live before, and deleted since: RestoreDeletedList now holds it.
-        await this.refuseWhilePending(store, organizationId, entry.listId);
+        await this.refuseWhilePending(
+          store,
+          organizationId,
+          entry.listId,
+          input.reportNotReady === true,
+        );
       }
       const now: Date = await store.clock.now();
       const by: TaskActor = { type: 'user', id: input.actorUserId };
@@ -291,32 +308,6 @@ export class RestoreTrashEntry {
   }
 
   /**
-   * Method requireDeletionDone
-   *
-   * @description
-   * Locks the list of the entry when it is deleted (`LockDeletedList`) and, under that lock,
-   * refuses the restoration while the list still holds a task out of the trash: the deletion job of
-   * the list has not moved it yet, and a restoration would expose it. A live list, and an unknown
-   * one (which `RestoreDeletedList` refuses), pass.
-   *
-   * @param {TasksStore} store - The store of the transaction.
-   * @param {string} organizationId - The organization of the transaction.
-   * @param {string} listId - The list of the entry.
-   * @returns {Promise<void>} Resolves when the restoration may go on.
-   * @throws {TaskRefusal} `trash-entry-not-found` while the deletion job of the list is not done.
-   */
-  private async requireDeletionDone(
-    store: TasksStore,
-    organizationId: string,
-    listId: string,
-  ): Promise<void> {
-    const locked: LockedDeletedList = await this.spaces.lockDeletedList(organizationId, listId);
-    if (locked.outcome === 'deleted') {
-      await this.refuseWhilePending(store, organizationId, listId);
-    }
-  }
-
-  /**
    * Method refuseWhilePending
    *
    * @description
@@ -328,6 +319,7 @@ export class RestoreTrashEntry {
    * @param {TasksStore} store - The store of the transaction.
    * @param {string} organizationId - The organization of the transaction.
    * @param {string} listId - The list of the entry, locked.
+   * @param {boolean} reportNotReady - Whether to report the pending deletion.
    * @returns {Promise<void>} Resolves when no task of the list is out of the trash.
    * @throws {TaskRefusal} `trash-entry-not-found` otherwise.
    */
@@ -335,12 +327,15 @@ export class RestoreTrashEntry {
     store: TasksStore,
     organizationId: string,
     listId: string,
+    reportNotReady: boolean,
   ): Promise<void> {
     const pending: ReadonlySet<string> = await store.tasks.listsWithUntrashedTasks(organizationId, [
       listId,
     ]);
     if (pending.has(listId)) {
-      throw new TaskRefusal({ reason: 'trash-entry-not-found' });
+      throw new TaskRefusal({
+        reason: reportNotReady ? 'trash-entry-not-restorable-yet' : 'trash-entry-not-found',
+      });
     }
   }
 

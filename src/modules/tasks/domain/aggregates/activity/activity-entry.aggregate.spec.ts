@@ -168,7 +168,7 @@ describe('ActivityEntry.restore: a stored entry has exactly the member of its ki
       'an assign entry without an account',
       { kind: 'assign', assignee: { userId: '', added: true } },
     ],
-    ['an unknown kind', { kind: 'comment' } as unknown as ActivityChange],
+    ['an unknown kind', { kind: 'unknown' } as unknown as ActivityChange],
   ])('refuses %s', (_case: string, change: ActivityChange) => {
     expect(() => ActivityEntry.restore(priorityEntry({ change }))).toThrow(InvalidTaskError);
   });

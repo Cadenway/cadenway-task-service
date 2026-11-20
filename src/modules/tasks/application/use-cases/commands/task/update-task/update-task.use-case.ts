@@ -1,4 +1,5 @@
 import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
+import type { MemberRole } from '../../../../../domain/value-objects/member/member-role.value-object.js';
 import { InvalidTaskError } from '../../../../../domain/errors/task/invalid-task.error.js';
 import { canWriteTasksOf } from '../../../../../domain/policies/task/task-write.policy.js';
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
@@ -19,11 +20,35 @@ import { ViewerResolver } from '../../../../services/member/viewer-resolver.serv
 import { TaskChangeWriter } from '../../../../services/task/task-change-writer.service.js';
 import { TaskLocator } from '../../../../services/task/task-locator.service.js';
 import { TaskMovePlanner } from '../../../../services/task/task-move-planner.service.js';
+import { DescriptionMentionGuard } from '../../../../services/mention/description-mention-guard.service.js';
+import { appendDescriptionMentionChange } from '../../../../services/mention/description-mention-event.service.js';
 import { TaskSubtreeLocker } from '../../../../services/task/task-subtree-locker.service.js';
 import { TaskRuleGuard } from '../../../../services/task/task-rule-guard.service.js';
 import { TaskViewBuilder } from '../../../../services/task/task-view-builder.service.js';
+import { EffectiveWatchers } from '../../../../services/watcher/effective-watchers.service.js';
+import { withWatcherAudienceRetry } from '../../../../services/watcher/watcher-audience-retry.service.js';
 import type { UpdateTaskInput } from './update-task.input.js';
 import type { UpdateTaskOutput } from './update-task.output.js';
+
+/** The task change and audience after its membership, task and placement locks are held. */
+interface PreparedUpdate {
+  // #region Properties
+  /** Source task read from the locked row. */
+  readonly task: Task;
+
+  /** Locked descendants of a move or attachment. */
+  readonly descendants: readonly Task[];
+
+  /** Final task and changed fields. */
+  readonly update: TaskUpdate;
+
+  /** Transaction instant. */
+  readonly now: Date;
+
+  /** Effective status-change event audience. */
+  readonly watcherIds: readonly string[];
+  // #endregion
+}
 
 /** Releases task locks before retrying a changed moving tree. */
 class RetryMoveTree extends Error {}
@@ -71,6 +96,12 @@ export class UpdateTask {
   /** Writes the changes. */
   private readonly writer: TaskChangeWriter;
 
+  /** Computes the status-change audience under the task and placement locks. */
+  private readonly watchers: EffectiveWatchers;
+
+  /** Locks and checks newly supplied description recipients. */
+  private readonly descriptionMentions: DescriptionMentionGuard;
+
   /** Builds the view of the task. */
   private readonly views: TaskViewBuilder;
   // #endregion
@@ -99,7 +130,9 @@ export class UpdateTask {
     this.trees = new TaskSubtreeLocker();
     this.spaces = spaces;
     this.rules = new TaskRuleGuard();
+    this.descriptionMentions = new DescriptionMentionGuard(members, spaces);
     this.writer = new TaskChangeWriter();
+    this.watchers = new EffectiveWatchers(members, spaces);
     this.views = new TaskViewBuilder();
   }
   // #endregion
@@ -124,51 +157,39 @@ export class UpdateTask {
   public async execute(input: UpdateTaskInput): Promise<UpdateTaskOutput> {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        return await this.unitOfWork.run(async (store: TasksStore): Promise<UpdateTaskOutput> => {
-          const viewer: Viewer = await this.viewers.resolve(
-            input.organizationId,
-            input.actorUserId,
-            true,
-          );
-          const request: LocateRequest = {
-            organizationId: input.organizationId,
-            viewer,
-            taskKey: input.taskKey,
-            edit: true,
-            lock: false,
-            archived: 'refuse',
-            expectedVersions: input.expectedVersions,
-          };
-          const moving: boolean =
-            input.patch.listId !== undefined || input.patch.parentKey !== undefined;
-          const move = moving ? await this.locateMove(store, viewer, request, input) : null;
-          const located: LocatedTask =
-            move?.located ?? (await this.locator.locate(store, { ...request, lock: true }));
-          const { task } = located;
-          const plan: PlannedChange = await this.planner.plan(
-            store,
-            viewer,
-            located,
-            input.patch,
-            move?.subtree ?? null,
-          );
-          const now: Date = await store.clock.now();
-          const update: TaskUpdate = this.rules.apply((): TaskUpdate =>
-            task.update(plan.patch, plan.statuses, now),
-          );
-          if (update.changed.length > 0) {
-            await this.writer.commit(store, task, update, input.actorUserId, now);
-            if (update.changed.includes('listId') || update.changed.includes('spaceId')) {
-              await this.moveDescendants(store, plan.descendants, update.task, input, now);
-            }
-          }
-          return this.views.build(store.reader, update.task);
-        });
+        return await this.unitOfWork.run((store) => this.apply(store, input));
       } catch (error: unknown) {
         if (!(error instanceof RetryMoveTree)) throw error;
       }
     }
     throw new Error(`The task ${input.taskKey} kept leaving its tree while it was locked.`);
+  }
+
+  /** Writes the prepared change, activity and events while the preflight's locks remain held. */
+  private async apply(store: TasksStore, input: UpdateTaskInput): Promise<UpdateTaskOutput> {
+    const prepare = (): Promise<PreparedUpdate> => this.prepare(store, input);
+    const { task, descendants, update, now, watcherIds } =
+      input.patch.status === undefined
+        ? await prepare()
+        : await withWatcherAudienceRetry(store, prepare);
+    if (update.changed.length > 0) {
+      await this.writer.commit(store, task, update, input.actorUserId, now, watcherIds);
+      if (update.changed.includes('descriptionMentions')) {
+        await appendDescriptionMentionChange(
+          store.events,
+          task.snapshot.descriptionMentions,
+          update.task,
+          {
+            type: 'user',
+            id: input.actorUserId,
+          },
+        );
+      }
+      if (update.changed.includes('listId') || update.changed.includes('spaceId')) {
+        await this.moveDescendants(store, descendants, update.task, input, now);
+      }
+    }
+    return this.views.build(store.reader, update.task);
   }
 
   /** Acquires the moving tree and any new parent before locking their placements. */
@@ -257,6 +278,72 @@ export class UpdateTask {
         throw new TaskRefusal({ reason: 'role-insufficient', role: list.role });
     }
     return { located: confirmed, subtree: locked };
+  }
+
+  /** Acquires and verifies the write's locks before any task, activity or outbox write. */
+  private async prepare(store: TasksStore, input: UpdateTaskInput): Promise<PreparedUpdate> {
+    const viewer: Viewer = await this.viewers.resolve(
+      input.organizationId,
+      input.actorUserId,
+      true,
+    );
+    const recipients = await this.descriptionMentions.lockRecipients(
+      input.organizationId,
+      viewer,
+      input.patch.descriptionMentions ?? [],
+    );
+    const request: LocateRequest = {
+      organizationId: input.organizationId,
+      viewer,
+      taskKey: input.taskKey,
+      edit: true,
+      lock: false,
+      archived: 'refuse',
+      expectedVersions: input.expectedVersions,
+    };
+    const heldRoles =
+      input.patch.status === undefined
+        ? new Map<string, MemberRole | null>()
+        : await this.watchers.holdCandidates(
+            store,
+            (
+              await this.locator.locate(store, {
+                ...request,
+                lock: false,
+                archived: 'allow',
+                expectedVersions: null,
+              })
+            ).task.snapshot,
+            viewer,
+          );
+    const moving = input.patch.listId !== undefined || input.patch.parentKey !== undefined;
+    const move = moving ? await this.locateMove(store, viewer, request, input) : null;
+    const located: LocatedTask =
+      move?.located ?? (await this.locator.locate(store, { ...request, lock: true }));
+    const { task } = located;
+    const plan: PlannedChange = await this.planner.plan(
+      store,
+      viewer,
+      located,
+      input.patch,
+      move?.subtree ?? null,
+    );
+    const now: Date = await store.clock.now();
+    const update: TaskUpdate = this.rules.apply((): TaskUpdate =>
+      task.update(plan.patch, plan.statuses, now),
+    );
+    const statusChanged = update.changed.includes('status');
+    const { listId } = update.task.snapshot;
+    if (move === null && (statusChanged || recipients.length > 0)) {
+      await this.planner.holdPlacement(input.organizationId, viewer, listId);
+    }
+    if (recipients.length > 0) {
+      await this.descriptionMentions.requireEligible(input.organizationId, listId, recipients);
+    }
+    const watcherIds = statusChanged
+      ? await this.watchers.forHeldTask(store, update.task.snapshot, heldRoles)
+      : [];
+    return { task, descendants: plan.descendants, update, now, watcherIds };
   }
 
   /**

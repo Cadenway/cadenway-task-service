@@ -7,6 +7,7 @@ import { CancelReasonRequiredError } from '../../../domain/errors/task/cancel-re
 import { CancelReasonUnexpectedError } from '../../../domain/errors/task/cancel-reason-unexpected.error.js';
 import { ChecklistItemNotFoundError } from '../../../domain/errors/task/checklist-item-not-found.error.js';
 import { ChecklistLimitReachedError } from '../../../domain/errors/task/checklist-limit-reached.error.js';
+import { InvalidDescriptionMentionsError } from '../../../domain/errors/task/invalid-description-mentions.error.js';
 import { LabelLimitReachedError } from '../../../domain/errors/task/label-limit-reached.error.js';
 import { ListInvalidError } from '../../../domain/errors/task/list-invalid.error.js';
 import { StartDateInvalidError } from '../../../domain/errors/task/start-date-invalid.error.js';
@@ -64,6 +65,9 @@ export class TaskRuleGuard {
 
     if (error instanceof StatusHiddenError) {
       return new TaskRefusal({ reason: 'status-hidden', status: error.status });
+    }
+    if (error instanceof InvalidDescriptionMentionsError) {
+      return new TaskRefusal({ reason: 'description-mentions-invalid' });
     }
     if (error instanceof AssigneeInvalidError) {
       return new TaskRefusal({ reason: 'assignee-invalid', userIds: error.userIds });

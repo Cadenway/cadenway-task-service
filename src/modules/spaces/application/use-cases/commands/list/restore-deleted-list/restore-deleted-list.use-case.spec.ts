@@ -118,6 +118,7 @@ describe('RestoreDeletedList: a deleted list comes back with a restored entry', 
     expect(spaces.lists.get(BACKLOG)?.deletedAt).toEqual(DELETED_AT);
     expect(spaces.events.map((event) => event.kind)).toEqual([
       'spaceRestored',
+      'spaceAccessRepublished',
       'listRestored',
       'listAccessChanged',
     ]);
@@ -152,12 +153,12 @@ describe('RestoreDeletedList: a deleted list comes back with a restored entry', 
 
     expect(spaces.events.map((event) => event.kind)).toEqual([
       'spaceRestored',
-      'spaceAccessChanged',
+      'spaceAccessRepublished',
       'listRestored',
       'listAccessChanged',
     ]);
     expect(spaces.events[1]).toEqual({
-      kind: 'spaceAccessChanged',
+      kind: 'spaceAccessRepublished',
       spaceId: PRODUIT,
       version: 7,
       grants: [
@@ -180,12 +181,14 @@ describe('RestoreDeletedList: a deleted list comes back with a restored entry', 
     });
   });
 
-  it('appends no space.access-changed for a restored space that holds no grant, the contract needing one person', async () => {
+  it('republishes an empty access snapshot for a restored space without grants', async () => {
     const spaces = produitDeleted();
 
     await new RestoreDeletedList(spaces).execute(restoreSprint());
 
-    expect(spaces.events.map((event) => event.kind)).not.toContain('spaceAccessChanged');
+    expect(spaces.events).toContainEqual(
+      expect.objectContaining({ kind: 'spaceAccessRepublished', grants: [], changedUserIds: [] }),
+    );
   });
 
   it('decides on the unlocked rows first: a member without a role answers not-found without any lock', async () => {

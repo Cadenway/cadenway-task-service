@@ -1,3 +1,4 @@
+import type { DescriptionMention } from '../mention/description-mention.value-object.js';
 import type { AssigneeCandidate } from '../member/assignee-candidate.value-object.js';
 import type { SubtaskParent } from '../subtask/subtask-parent.value-object.js';
 import type { CancelReason } from './cancel-reason.value-object.js';
@@ -76,6 +77,9 @@ export interface NewTask {
    * @readonly
    */
   readonly description: string | null;
+
+  /** Structured Unicode code-point spans supplied with the description. */
+  readonly descriptionMentions?: readonly DescriptionMention[];
 
   /**
    * Property status
