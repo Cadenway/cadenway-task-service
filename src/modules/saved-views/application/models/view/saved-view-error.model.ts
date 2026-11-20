@@ -3,7 +3,7 @@ export type SavedViewFailure =
   | { reason: 'missing-organization' | 'missing-list' | 'missing-view' }
   | { reason: 'role-insufficient'; role: 'comment' | 'view' }
   | { reason: 'list-archived' | 'limit-reached' }
-  | { reason: 'incomplete-sheet-sort' }
+  | { reason: 'incomplete-sheet-sort'; field?: 'sheetSort' | 'customFieldSort' }
   | { reason: 'version-mismatch'; version: number };
 
 /** A refused operation, mapped to the published problem by the HTTP adapter. */

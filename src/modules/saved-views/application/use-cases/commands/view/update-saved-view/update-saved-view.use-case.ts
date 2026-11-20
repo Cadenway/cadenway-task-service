@@ -15,8 +15,9 @@ function applyPatch(view: SavedView, patch: SavedViewUpdate): SavedView {
   try {
     return patchSavedView(view, patch);
   } catch (error: unknown) {
-    if (error instanceof IncompleteSheetSort)
-      throw new SavedViewError({ reason: 'incomplete-sheet-sort' });
+    if (error instanceof IncompleteSheetSort) {
+      throw new SavedViewError({ reason: 'incomplete-sheet-sort', field: error.field });
+    }
     throw error;
   }
 }

@@ -36,31 +36,27 @@ export class TaskCustomFieldValues {
     }
   }
 
-  /** Finds moved tasks with visible values using one bounded query per source space. */
+  /** Finds moved tasks with visible values in bounded pages across all source spaces. */
   public async movedWithValues(
     store: TasksStore,
     tasks: readonly Task[],
     destinationSpaceId: string,
   ): Promise<ReadonlySet<string>> {
-    const bySpace = new Map<string, Task[]>();
-    for (const task of tasks) {
-      if (task.snapshot.spaceId === destinationSpaceId) continue;
-      const group = bySpace.get(task.snapshot.spaceId) ?? [];
-      group.push(task);
-      bySpace.set(task.snapshot.spaceId, group);
-    }
+    const moved = tasks.filter((task) => task.snapshot.spaceId !== destinationSpaceId);
     const result = new Set<string>();
-    for (const [spaceId, group] of bySpace) {
-      const first = group[0];
+    for (let offset = 0; offset < moved.length; offset += 500) {
+      const batch = moved.slice(offset, offset + 500);
+      const first = batch[0];
       if (first === undefined) continue;
-      for (let offset = 0; offset < group.length; offset += 500) {
-        const values = await store.customFields.valuesForTasks(
-          first.snapshot.organizationId,
-          spaceId,
-          group.slice(offset, offset + 500).map((task) => task.snapshot.id),
-        );
-        for (const value of values) result.add(value.taskId);
-      }
+      const values = await store.customFields.valuesForTaskPage(
+        first.snapshot.organizationId,
+        batch.map(({ snapshot }) => ({
+          taskId: snapshot.id,
+          spaceId: snapshot.spaceId,
+          listId: snapshot.listId,
+        })),
+      );
+      for (const value of values) result.add(value.taskId);
     }
     return result;
   }

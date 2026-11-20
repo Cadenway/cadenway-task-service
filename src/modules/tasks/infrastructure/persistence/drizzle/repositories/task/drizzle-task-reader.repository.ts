@@ -106,10 +106,14 @@ export class DrizzleTaskReader implements TaskReader {
   // #endregion
 
   // #region Methods
-  /** Reads fields only for the spaces associated with the authorized task rows. */
+  /** Reads fields only for the placements associated with the authorized task rows. */
   public async customFieldValues(
     organizationId: string,
-    tasks: readonly { readonly taskId: string; readonly spaceId: string }[],
+    tasks: readonly {
+      readonly taskId: string;
+      readonly spaceId: string;
+      readonly listId: string;
+    }[],
   ): Promise<ReadonlyMap<string, Readonly<Record<string, string | number>>>> {
     return this.collections.customFieldValuesOf(organizationId, tasks);
   }

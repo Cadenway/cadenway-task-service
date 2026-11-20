@@ -88,10 +88,14 @@ export class DrizzleTaskCollections {
   // #endregion
 
   // #region Methods
-  /** Loads fields for the authorized task and space pairs in one tenant-scoped query. */
+  /** Loads fields for the authorized task placements in one tenant-scoped query. */
   public async customFieldValuesOf(
     organizationId: string,
-    tasks: readonly { readonly taskId: string; readonly spaceId: string }[],
+    tasks: readonly {
+      readonly taskId: string;
+      readonly spaceId: string;
+      readonly listId: string;
+    }[],
   ): Promise<ReadonlyMap<string, Readonly<Record<string, string | number>>>> {
     const grouped = new Map<string, Record<string, string | number>>();
     const rows = await new DrizzleCustomFieldRepository(this.db).valuesForTaskPage(
@@ -386,7 +390,7 @@ export class DrizzleTaskCollections {
     const parents = await this.parentsOf(organizationId, parentIds);
     const customFields = await this.customFieldValuesOf(
       organizationId,
-      rows.map((row) => ({ taskId: row.id, spaceId: row.spaceId })),
+      rows.map((row) => ({ taskId: row.id, spaceId: row.spaceId, listId: row.listId })),
     );
     return rows.map((row: TaskSummaryRow): TaskSummaryView => {
       let parentKey: string | null = null;

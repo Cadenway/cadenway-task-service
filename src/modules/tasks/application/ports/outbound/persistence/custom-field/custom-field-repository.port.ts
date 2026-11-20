@@ -37,7 +37,11 @@ export interface CustomFieldRepository {
   >;
   valuesForTaskPage(
     organizationId: string,
-    tasks: readonly { readonly taskId: string; readonly spaceId: string }[],
+    tasks: readonly {
+      readonly taskId: string;
+      readonly spaceId: string;
+      readonly listId: string;
+    }[],
   ): Promise<
     readonly {
       readonly taskId: string;

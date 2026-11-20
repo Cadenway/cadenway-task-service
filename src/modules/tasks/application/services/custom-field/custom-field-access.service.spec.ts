@@ -9,18 +9,16 @@ function fixture() {
   const roleOf = vi.fn().mockResolvedValue('member');
   const resolve = vi.fn().mockResolvedValue({ canManage: true });
   const findVisibleList = vi.fn().mockResolvedValue({ list: { spaceId: 'space' } });
-  const access = new CustomFieldAccess(
-    { roleOf },
-    { resolve },
-    { findVisibleList } as unknown as SpaceDirectory,
-  );
+  const access = new CustomFieldAccess({ roleOf }, { resolve }, {
+    findVisibleList,
+  } as unknown as SpaceDirectory);
   return { roleOf, resolve, findVisibleList, access };
 }
 
 describe('CustomFieldAccess', () => {
   it('holds membership and space and requires actual management for writes', async () => {
     const { access, roleOf, resolve } = fixture();
-    await access.space(actor, 'space', true);
+    await access.space(actor, 'space', 'write');
     expect(roleOf).toHaveBeenCalledWith('organization', 'actor', true);
     expect(resolve).toHaveBeenCalledWith(
       'organization',
@@ -29,12 +27,28 @@ describe('CustomFieldAccess', () => {
       true,
     );
     resolve.mockResolvedValueOnce({ canManage: false });
-    await expect(access.space(actor, 'space', true)).rejects.toMatchObject({
+    await expect(access.space(actor, 'space', 'write')).rejects.toMatchObject({
       reason: 'manage-forbidden',
     });
     resolve.mockResolvedValueOnce(null);
-    await expect(access.space(actor, 'hidden', true)).rejects.toMatchObject({
+    await expect(access.space(actor, 'hidden', 'write')).rejects.toMatchObject({
       refusal: { reason: 'space-not-found' },
+    });
+  });
+
+  it('previews current management without holding the membership or space lock', async () => {
+    const { access, roleOf, resolve } = fixture();
+    await access.space(actor, 'space', 'preview-write');
+    expect(roleOf).toHaveBeenCalledWith('organization', 'actor', false);
+    expect(resolve).toHaveBeenCalledWith(
+      'organization',
+      'space',
+      { userId: 'actor', role: 'member' },
+      false,
+    );
+    resolve.mockResolvedValueOnce({ canManage: false });
+    await expect(access.space(actor, 'space', 'preview-write')).rejects.toMatchObject({
+      reason: 'manage-forbidden',
     });
   });
 

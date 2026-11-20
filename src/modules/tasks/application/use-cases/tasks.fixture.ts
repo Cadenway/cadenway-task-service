@@ -1575,6 +1575,7 @@ export interface InMemoryTasksSeed {
 
   /** Custom field adapter supplied by specs that exercise field writes. */
   readonly customFields?: CustomFieldRepository;
+
   /** Work-log adapter supplied by time operation specs. */
   readonly time?: TasksStore['time'];
   // #endregion
@@ -3363,8 +3364,11 @@ export class InMemoryTasks implements TasksUnitOfWork {
       reader: {
         customFieldValues: async (organizationId, scopes) => {
           const grouped = new Map<string, Record<string, string | number>>();
-          const existingIds = new Set(inOrganization(organizationId).map((row) => row.id));
-          const matching = scopes.filter((scope) => existingIds.has(scope.taskId));
+          const current = new Map(inOrganization(organizationId).map((row) => [row.id, row]));
+          const matching = scopes.filter((scope) => {
+            const row = current.get(scope.taskId);
+            return row?.spaceId === scope.spaceId && row.listId === scope.listId;
+          });
           for (const spaceId of new Set(matching.map((scope) => scope.spaceId))) {
             const ids = matching
               .filter((scope) => scope.spaceId === spaceId)

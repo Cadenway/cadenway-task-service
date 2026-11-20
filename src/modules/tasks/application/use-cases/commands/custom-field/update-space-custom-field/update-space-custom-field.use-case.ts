@@ -23,7 +23,7 @@ export class UpdateSpaceCustomField {
   /** Runs the requested field operation. */
   public async execute(input: UpdateSpaceCustomFieldInput): Promise<UpdateSpaceCustomFieldOutput> {
     return this.work.run(async (store) => {
-      await this.access.space(input, input.spaceId, true);
+      await this.access.space(input, input.spaceId, 'write');
       return this.definitions.update(
         store,
         input.organizationId,

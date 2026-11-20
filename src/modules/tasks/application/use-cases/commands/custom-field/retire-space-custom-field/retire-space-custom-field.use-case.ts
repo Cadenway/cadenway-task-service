@@ -22,7 +22,7 @@ export class RetireSpaceCustomField {
   /** Runs the requested field operation. */
   public async execute(input: RetireSpaceCustomFieldInput): Promise<void> {
     await this.work.run(async (store) => {
-      await this.access.space(input, input.spaceId, true);
+      await this.access.space(input, input.spaceId, 'write');
       await this.definitions.retire(
         store,
         input.organizationId,

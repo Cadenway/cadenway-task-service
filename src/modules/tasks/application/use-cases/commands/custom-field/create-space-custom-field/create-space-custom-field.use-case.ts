@@ -24,7 +24,7 @@ export class CreateSpaceCustomField {
   /** Runs the requested field operation. */
   public async execute(input: CreateSpaceCustomFieldInput): Promise<CreateSpaceCustomFieldOutput> {
     return this.work.run(async (store) => {
-      await this.access.space(input, input.spaceId, true);
+      await this.access.space(input, input.spaceId, 'write');
       return this.definitions.create(store, input.organizationId, input.spaceId, {
         name: input.name,
         type: input.type,
@@ -36,7 +36,9 @@ export class CreateSpaceCustomField {
   public async assertCanReplay(
     input: CustomFieldActor & { readonly spaceId: string },
   ): Promise<void> {
-    await this.work.run(async () => this.access.space(input, input.spaceId, true));
+    await this.work.runReadOnly(async () =>
+      this.access.space(input, input.spaceId, 'preview-write'),
+    );
   }
   // #endregion
 }

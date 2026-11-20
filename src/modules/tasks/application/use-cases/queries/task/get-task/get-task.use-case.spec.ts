@@ -66,8 +66,9 @@ function atelierNord(stored = [taskState()]): {
 }
 
 describe('GetTask: a member reads a task of a list they see', () => {
-  it('keeps the authorized space when the task is subsequently moved', async () => {
+  it('does not read field values after a task moves away from its authorized placement', async () => {
     const oldSpace = taskState().spaceId;
+    const oldList = taskState().listId;
     const oldField = '019a700a-1234-7567-89ab-cdef01234567';
     const hiddenField = '019a700a-1234-7567-89ab-cdef01234568';
     const customFields: CustomFieldRepository = {
@@ -91,10 +92,22 @@ describe('GetTask: a member reads a task of a list they see', () => {
     });
 
     const values = await tasks.run((store) =>
-      store.reader.customFieldValues(ATELIER_NORD, [{ taskId: CAD_482, spaceId: oldSpace }]),
+      store.reader.customFieldValues(ATELIER_NORD, [
+        { taskId: CAD_482, spaceId: oldSpace, listId: oldList },
+      ]),
     );
 
-    expect(values.get(CAD_482)).toEqual({ [oldField]: 1 });
+    expect(values.get(CAD_482)).toBeUndefined();
+    const movedWithinSpace = new InMemoryTasks({
+      tasks: [taskState({ listId: BUGS })],
+      customFields,
+    });
+    const staleListValues = await movedWithinSpace.run((store) =>
+      store.reader.customFieldValues(ATELIER_NORD, [
+        { taskId: CAD_482, spaceId: oldSpace, listId: oldList },
+      ]),
+    );
+    expect(staleListValues.get(CAD_482)).toBeUndefined();
   });
 
   it('loads active custom field values for the visible task', async () => {
@@ -256,14 +269,14 @@ describe('GetTask: what the actor does not see is not found', () => {
 });
 
 describe('GetTask: the read runs in one read-only transaction', () => {
-  it('opens a single read-only run, with the default isolation, with no snapshot', async () => {
+  it('opens a single repeatable-read snapshot for authorization and projected values', async () => {
     const tasks = new InMemoryTasks({ tasks: [taskState()] });
 
     await new GetTask(tasks, atelierNordMembers(), new InMemorySpaceDirectory()).execute(read());
 
     expect(tasks.runs).toBe(1);
     expect(tasks.readOnlyRuns).toBe(1);
-    expect(tasks.snapshotRuns).toBe(0);
+    expect(tasks.snapshotRuns).toBe(1);
   });
 });
 

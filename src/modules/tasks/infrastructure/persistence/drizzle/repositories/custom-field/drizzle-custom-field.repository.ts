@@ -184,15 +184,20 @@ export class DrizzleCustomFieldRepository implements CustomFieldRepository {
     });
   }
 
-  /** Loads values only for the task and space pairs authorized in the original task page. */
+  /** Loads values only for the task placements authorized in the original task page. */
   public async valuesForTaskPage(
     organizationId: string,
-    authorizedTasks: readonly { readonly taskId: string; readonly spaceId: string }[],
+    authorizedTasks: readonly {
+      readonly taskId: string;
+      readonly spaceId: string;
+      readonly listId: string;
+    }[],
   ): Promise<readonly StoredCustomFieldValue[]> {
     if (authorizedTasks.length === 0) return [];
     if (authorizedTasks.length > 500) throw new Error('Too many tasks in a custom field page.');
     const taskIds = authorizedTasks.map((task) => task.taskId);
     const spaceIds = authorizedTasks.map((task) => task.spaceId);
+    const listIds = authorizedTasks.map((task) => task.listId);
     const rows = await this.db
       .select({
         taskId: taskCustomFieldValues.taskId,
@@ -224,10 +229,11 @@ export class DrizzleCustomFieldRepository implements CustomFieldRepository {
           sql`${taskCustomFieldValues.taskId} = any(${sql.param(taskIds)}::uuid[])`,
           sql`exists (
             select 1
-              from unnest(${sql.param(taskIds)}::uuid[], ${sql.param(spaceIds)}::uuid[])
-                   as authorized(task_id, space_id)
+              from unnest(${sql.param(taskIds)}::uuid[], ${sql.param(spaceIds)}::uuid[], ${sql.param(listIds)}::uuid[])
+                   as authorized(task_id, space_id, list_id)
              where authorized.task_id = ${taskCustomFieldValues.taskId}
                and authorized.space_id = ${spaceCustomFields.spaceId}
+               and authorized.list_id = ${tasks.listId}
           )`,
           isNull(spaceCustomFields.retiredAt),
         ),

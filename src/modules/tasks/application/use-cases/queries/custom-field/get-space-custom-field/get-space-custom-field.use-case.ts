@@ -23,7 +23,7 @@ export class GetSpaceCustomField {
   /** Runs the requested field operation. */
   public async execute(input: GetSpaceCustomFieldInput): Promise<GetSpaceCustomFieldOutput> {
     return this.work.runReadOnly(async (store) => {
-      await this.access.space(input, input.spaceId, false);
+      await this.access.space(input, input.spaceId, 'read');
       return this.definitions.get(store, input.organizationId, input.spaceId, input.fieldId);
     });
   }

@@ -102,9 +102,9 @@ describe('BulkTaskAction', () => {
     const cleared: string[] = [];
     const customFields = {
       ...base,
-      valuesForTasks: (_organizationId: string, _spaceId: string, ids: readonly string[]) =>
+      valuesForTaskPage: (_organizationId: string, tasks: readonly { readonly taskId: string }[]) =>
         Promise.resolve(
-          ids.includes(CAD_483)
+          tasks.some(({ taskId }) => taskId === CAD_483)
             ? [{ taskId: CAD_483, fieldId: '019a7000-0000-7000-8000-000000001001', value: 3 }]
             : [],
         ),

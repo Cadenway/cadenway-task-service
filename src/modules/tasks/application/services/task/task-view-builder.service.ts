@@ -43,11 +43,13 @@ export class TaskViewBuilder {
     task: Task,
     parent?: TaskReferenceInListView | null,
   ): Promise<TaskView> {
-    const { id, organizationId, spaceId } = task.snapshot;
+    const { id, organizationId, spaceId, listId } = task.snapshot;
     const counts: ReadonlyMap<string, SubtaskCounts> = await reader.subtaskCounts(organizationId, [
       id,
     ]);
-    const values = await reader.customFieldValues(organizationId, [{ taskId: id, spaceId }]);
+    const values = await reader.customFieldValues(organizationId, [
+      { taskId: id, spaceId, listId },
+    ]);
     const parentKey: string | null = await this.parentKeyOf(reader, task, parent);
     return {
       ...this.toView(task.snapshot, counts.get(id) ?? { total: 0, closed: 0 }, parentKey),

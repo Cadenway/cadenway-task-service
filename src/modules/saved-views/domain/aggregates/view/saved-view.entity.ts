@@ -75,8 +75,11 @@ function settingsFingerprint(configuration: SavedViewConfiguration): string {
       : [
           presentation.hiddenBoardStatusKeys,
           presentation.hiddenSheetColumns,
+          presentation.hiddenCustomFieldIds,
           presentation.sheetSort?.column,
           presentation.sheetSort?.direction,
+          presentation.customFieldSort?.fieldId,
+          presentation.customFieldSort?.direction,
         ];
   return JSON.stringify([
     layout,

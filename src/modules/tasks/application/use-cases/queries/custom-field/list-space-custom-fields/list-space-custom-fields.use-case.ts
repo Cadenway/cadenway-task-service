@@ -23,7 +23,7 @@ export class ListSpaceCustomFields {
   /** Runs the requested field operation. */
   public async execute(input: ListSpaceCustomFieldsInput): Promise<ListSpaceCustomFieldsOutput> {
     return this.work.runReadOnly(async (store) => {
-      await this.access.space(input, input.spaceId, false);
+      await this.access.space(input, input.spaceId, 'read');
       return this.definitions.page(
         store,
         input.organizationId,

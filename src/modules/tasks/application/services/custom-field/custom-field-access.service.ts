@@ -29,7 +29,12 @@ export class CustomFieldAccess {
   // #region Methods
   /** Runs the requested field operation. */
 
-  public async space(actor: CustomFieldActor, spaceId: string, write: boolean): Promise<void> {
+  public async space(
+    actor: CustomFieldActor,
+    spaceId: string,
+    mode: 'read' | 'preview-write' | 'write',
+  ): Promise<void> {
+    const write = mode === 'write';
     const viewer: Viewer = await this.viewers.resolve(
       actor.organizationId,
       actor.actorUserId,
@@ -37,7 +42,7 @@ export class CustomFieldAccess {
     );
     const access = await this.fields.resolve(actor.organizationId, spaceId, viewer, write);
     if (access === null) throw new TaskRefusal({ reason: 'space-not-found' });
-    if (write && !access.canManage) throw new CustomFieldRefusal('manage-forbidden');
+    if (mode !== 'read' && !access.canManage) throw new CustomFieldRefusal('manage-forbidden');
   }
 
   public async list(actor: CustomFieldActor, listId: string): Promise<string> {

@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 
 import {
   CreateSpaceInternalResponse,
+  CreateListInternalResponse,
   CreateSubtaskInternalResponse,
   CreateTaskInternalResponse,
   CreateSpaceCustomFieldInternalResponse,
@@ -188,6 +189,48 @@ describe('custom fields with PostgreSQL and NATS', () => {
   }
 
   describe('space definitions require management and survive idempotent replay', () => {
+    it('returns an in-flight conflict while the first creation waits for the space lock', async () => {
+      if (db === undefined) throw new Error('Database did not start');
+      const path = `/internal/v1/spaces/${spaceId}/custom-fields`;
+      const headers = { 'Idempotency-Key': 'champ-en-cours' };
+      const body = { name: 'Suivi de la conception', type: 'text' };
+      const client = await db.connect();
+      let first: Promise<request.Response> | undefined;
+      try {
+        await client.query('begin');
+        await client.query("select set_config('app.system_access', 'on', true)");
+        await client.query(
+          'select id from spaces where organization_id = $1 and id = $2 for no key update',
+          [organizationId, spaceId],
+        );
+        first = send('post', path, { body, headers });
+        await expect
+          .poll(
+            async () => {
+              const locks = await query<{ waiting: string }>(
+                'select count(*)::text as waiting from pg_locks where not granted',
+              );
+              return Number(locks[0]?.waiting ?? 0);
+            },
+            { timeout: 3_000, interval: 50 },
+          )
+          .toBeGreaterThan(0);
+        const conflict = await send('post', path, { body, headers });
+        expect(conflict.status, conflict.text).toBe(409);
+        expect((conflict.body as { code: string }).code).toBe('idempotency.request-in-progress');
+        await client.query('commit');
+      } finally {
+        await client.query('rollback');
+        client.release();
+      }
+      const created = await first;
+      expect(created.status, created.text).toBe(201);
+      const replay = await send('post', path, { body, headers });
+      expect(replay.status, replay.text).toBe(201);
+      expect(replay.body).toEqual(created.body);
+      expect(replay.headers.location).toBe(created.headers.location);
+    }, 30_000);
+
     it('returns a stable creation and checks current visibility before replay', async () => {
       const path = `/internal/v1/spaces/${spaceId}/custom-fields`;
       const headers = { 'Idempotency-Key': 'champs-cad-482' };
@@ -389,8 +432,8 @@ describe('custom fields with PostgreSQL and NATS', () => {
       try {
         await client.query('begin isolation level read committed');
         await client.query("select set_config('app.organization_id', $1, true)", [organizationId]);
-        const page = await client.query<{ id: string; space_id: string }>(
-          `select id, space_id from tasks where organization_id = $1
+        const page = await client.query<{ id: string; space_id: string; list_id: string }>(
+          `select id, space_id, list_id from tasks where organization_id = $1
            and key_prefix = 'CAD' and key_number = $2`,
           [organizationId, Number(key.split('-')[1])],
         );
@@ -408,23 +451,84 @@ describe('custom fields with PostgreSQL and NATS', () => {
         const repository = new DrizzleCustomFieldRepository(drizzle({ client }));
         expect(
           await repository.valuesForTaskPage(organizationId, [
-            { taskId: authorized.id, spaceId: authorized.space_id },
+            { taskId: authorized.id, spaceId: authorized.space_id, listId: authorized.list_id },
           ]),
         ).toEqual([]);
         expect(
           await repository.valuesForTaskPage(organizationId, [
-            { taskId: authorized.id, spaceId: otherSpace.space.id },
+            {
+              taskId: authorized.id,
+              spaceId: otherSpace.space.id,
+              listId: otherSpace.firstList.id,
+            },
           ]),
         ).toEqual([{ taskId: authorized.id, fieldId: field.id, value: 'Données confidentielles' }]);
         expect(
           await repository.valuesForTaskPage(randomUUID(), [
-            { taskId: authorized.id, spaceId: otherSpace.space.id },
+            {
+              taskId: authorized.id,
+              spaceId: otherSpace.space.id,
+              listId: otherSpace.firstList.id,
+            },
           ]),
         ).toEqual([]);
       } finally {
         await client.query('rollback');
         client.release();
         await application.end();
+      }
+    });
+
+    it('does not expose values when a task moves between lists of the same space after authorization', async () => {
+      const field = await createField('Contexte privé', 'text');
+      const key = await task('Préparer la réunion client');
+      const destination = await send('post', `/internal/v1/spaces/${spaceId}/lists`, {
+        body: { name: 'Accès limité' },
+      });
+      expect(destination.status, destination.text).toBe(201);
+      const destinationList = CreateListInternalResponse.parse(destination.body as unknown);
+      const grant = await send('put', `/internal/v1/lists/${listId}/grants/${hugo}`, {
+        body: { role: 'view' },
+      });
+      expect(grant.status, grant.text).toBe(200);
+      expect((await send('get', `/internal/v1/tasks/${key}`, { actor: hugo })).status).toBe(200);
+      const application = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+      const client = await application.connect();
+      try {
+        await client.query('begin isolation level read committed');
+        await client.query("select set_config('app.organization_id', $1, true)", [organizationId]);
+        const page = await client.query<{ id: string; space_id: string; list_id: string }>(
+          `select id, space_id, list_id from tasks where organization_id = $1
+           and key_prefix = 'CAD' and key_number = $2`,
+          [organizationId, Number(key.split('-')[1])],
+        );
+        const authorized = page.rows[0];
+        if (authorized === undefined)
+          throw new Error('The task was not found in the original page');
+        const moved = await send('patch', `/internal/v1/tasks/${key}`, {
+          body: {
+            listId: destinationList.id,
+            customFieldValues: { [field]: 'Données confidentielles' },
+          },
+        });
+        expect(moved.status, moved.text).toBe(200);
+        expect((await send('get', `/internal/v1/tasks/${key}`, { actor: hugo })).status).toBe(404);
+        const repository = new DrizzleCustomFieldRepository(drizzle({ client }));
+        expect(
+          await repository.valuesForTaskPage(organizationId, [
+            { taskId: authorized.id, spaceId: authorized.space_id, listId: authorized.list_id },
+          ]),
+        ).toEqual([]);
+        expect(
+          await repository.valuesForTaskPage(organizationId, [
+            { taskId: authorized.id, spaceId: authorized.space_id, listId: destinationList.id },
+          ]),
+        ).toEqual([{ taskId: authorized.id, fieldId: field, value: 'Données confidentielles' }]);
+      } finally {
+        await client.query('rollback');
+        client.release();
+        await application.end();
+        await send('delete', `/internal/v1/lists/${listId}/grants/${hugo}`);
       }
     });
 

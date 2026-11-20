@@ -14,10 +14,14 @@ import type { TaskSummaryView } from '../../../../projections/task/task-summary.
  */
 export interface TaskReader {
   // #region Methods
-  /** Reads active values only from the spaces authorized with the task rows, grouped by task ID. */
+  /** Reads values only for the task placements authorized with the rows, grouped by task ID. */
   customFieldValues(
     organizationId: string,
-    tasks: readonly { readonly taskId: string; readonly spaceId: string }[],
+    tasks: readonly {
+      readonly taskId: string;
+      readonly spaceId: string;
+      readonly listId: string;
+    }[],
   ): Promise<ReadonlyMap<string, Readonly<Record<string, string | number>>>>;
 
   /**
