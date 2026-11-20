@@ -114,6 +114,12 @@ function checkDraft(draft: ActivityEntryDraft): void {
   if (Number.isNaN(draft.occurredAt.getTime())) {
     throw invalid('the instant is a valid date');
   }
+  if (
+    draft.initialStatus !== undefined &&
+    (draft.change.kind !== 'create' || !STATUS_KEYS.includes(draft.initialStatus))
+  ) {
+    throw invalid('only a creation entry can name a known initial status');
+  }
   checkChange(draft.change);
 }
 
@@ -196,7 +202,8 @@ export class ActivityEntry {
    * @description
    * The `create` entry of a task just created, the task and each subtask of a creation, or a
    * subtask created alone (`openapi/public/tasks.yaml:119-120` and 838). The initial assignees get
-   * no `assign` entry (`openapi/internal/task-service.yaml:520-521`).
+   * no `assign` entry (`openapi/internal/task-service.yaml:520-521`). The initial status is kept
+   * for the elapsed-time history (`getTaskStatusDurationsInternal`).
    *
    * @param {TaskState} task - The stored task.
    * @param {TaskActor} actor - Who created it.
@@ -216,6 +223,7 @@ export class ActivityEntry {
       actor,
       occurredAt,
       change: { kind: 'create' },
+      initialStatus: task.status,
     };
     checkDraft(draft);
     return draft;

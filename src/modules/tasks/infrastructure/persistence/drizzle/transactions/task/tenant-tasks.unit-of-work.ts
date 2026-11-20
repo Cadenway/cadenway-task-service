@@ -22,6 +22,7 @@ import { DrizzleTaskQueryReader } from '../../repositories/query/drizzle-task-qu
 import { DrizzleTaskReader } from '../../repositories/task/drizzle-task-reader.repository.js';
 import { DrizzleTaskCopiesRepository } from '../../repositories/task/drizzle-task-copies.repository.js';
 import { DrizzleTaskRepository } from '../../repositories/task/drizzle-task.repository.js';
+import { DrizzleTaskTimeRepository } from '../../repositories/time/drizzle-task-time.repository.js';
 import { DrizzleTrashEntryRepository } from '../../repositories/trash/drizzle-trash-entry.repository.js';
 import { DrizzleWatcherOverrideRepository } from '../../repositories/watcher/drizzle-watcher-override.repository.js';
 import { DrizzleTaskDependencyRepository } from '../../repositories/dependency/drizzle-task-dependency.repository.js';
@@ -197,6 +198,7 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
           savepoint: (attempt) => withTaskSavepoint(transaction, attempt),
           tasks: new DrizzleTaskRepository(transaction.db),
           customFields: new DrizzleCustomFieldRepository(transaction.db),
+          time: new DrizzleTaskTimeRepository(transaction.db),
           copies: new DrizzleTaskCopiesRepository(transaction.db),
           watcherOverrides: new DrizzleWatcherOverrideRepository(transaction.db),
           reader: new DrizzleTaskReader(transaction.db),

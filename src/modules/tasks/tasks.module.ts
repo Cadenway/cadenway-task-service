@@ -18,10 +18,12 @@ import { ListDuplicateController } from './presentation/http/controllers/duplica
 import { TaskDuplicateController } from './presentation/http/controllers/duplicate/task-duplicate.controller.js';
 import { RequiredDuplicateBodyGuard } from './presentation/http/guards/duplicate/required-duplicate-body.guard.js';
 import { CustomFieldReplayAccessGuard } from './presentation/http/guards/custom-field/custom-field-replay-access.guard.js';
+import { TimeEntryReplayAccessGuard } from './presentation/http/guards/time/time-entry-replay-access.guard.js';
 import { tasksUnitOfWorkProvider } from './composition/providers/adapters/task/tasks-unit-of-work.provider.js';
 import { trashSystemUnitOfWorkProvider } from './composition/providers/adapters/trash/trash-system-unit-of-work.provider.js';
 import { listListActivityProvider } from './composition/providers/use-cases/activity/list-list-activity.provider.js';
 import { listTaskActivityProvider } from './composition/providers/use-cases/activity/list-task-activity.provider.js';
+import { taskTimeProviders } from './composition/providers/use-cases/time/task-time.provider.js';
 import { archiveTaskProvider } from './composition/providers/use-cases/archive/archive-task.provider.js';
 import { listArchivedListsProvider } from './composition/providers/use-cases/archive/list-archived-lists.provider.js';
 import { listArchivedTasksProvider } from './composition/providers/use-cases/archive/list-archived-tasks.provider.js';
@@ -74,6 +76,7 @@ import { UserTasksController } from './presentation/http/controllers/user/user-t
 import { ListActivityController } from './presentation/http/controllers/activity/list-activity.controller.js';
 import { TaskAccessController } from './presentation/http/controllers/access/task-access.controller.js';
 import { TaskActivityController } from './presentation/http/controllers/activity/task-activity.controller.js';
+import { TaskTimeController } from './presentation/http/controllers/time/task-time.controller.js';
 import { ArchivesController } from './presentation/http/controllers/archive/archives.controller.js';
 import { TaskArchiveController } from './presentation/http/controllers/archive/task-archive.controller.js';
 import { TaskAssigneesController } from './presentation/http/controllers/assignee/task-assignees.controller.js';
@@ -137,6 +140,7 @@ markIdempotent(ListDuplicateController.prototype, 'duplicate');
 markIdempotent(TaskDuplicateController.prototype, 'duplicate');
 markIdempotent(BulkTaskActionsController.prototype, 'execute');
 markIdempotent(SpaceCustomFieldsController.prototype, 'create');
+markIdempotent(TaskTimeController.prototype, 'create');
 
 /**
  * Class TasksModule
@@ -187,6 +191,7 @@ markIdempotent(SpaceCustomFieldsController.prototype, 'create');
     TaskDuplicateController,
     ListDuplicateController,
     TaskActivityController,
+    TaskTimeController,
     TaskArchiveController,
     ArchivesController,
     TaskTrashController,
@@ -197,6 +202,7 @@ markIdempotent(SpaceCustomFieldsController.prototype, 'create');
   providers: [
     CustomFieldReplayAccessGuard,
     ...customFieldProviders,
+    TimeEntryReplayAccessGuard,
     RequiredDuplicateBodyGuard,
     tasksUnitOfWorkProvider,
     memberDirectoryProvider,
@@ -225,6 +231,7 @@ markIdempotent(SpaceCustomFieldsController.prototype, 'create');
     updateChecklistItemProvider,
     ...taskDependencyProviders,
     listTaskActivityProvider,
+    ...taskTimeProviders,
     listListActivityProvider,
     listListTasksProvider,
     countListTaskGroupsProvider,

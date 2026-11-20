@@ -41,6 +41,7 @@ function rowOf(
     actorType: entry.actor.type,
     actorId: entry.actor.id,
     occurredAt: entry.occurredAt,
+    initialStatus: entry.initialStatus ?? null,
     ...toActivityDetail(entry.change),
   };
   return Object.assign(row, overrides);
@@ -72,6 +73,19 @@ describe('toActivityEntry: a stored row becomes the entry it stores', () => {
     });
 
     expect(toActivityEntry(rowOf(entry)).actor).toEqual({ type: 'system', id: 'task-service' });
+  });
+
+  it('round-trips the initial status of a creation and leaves legacy creations unknown', () => {
+    const entry: ActivityEntryState = priorityEntry({
+      change: { kind: 'create' },
+      initialStatus: 'todo',
+    });
+
+    expect(toActivityEntry(rowOf(entry))).toEqual(entry);
+    expect(toActivityEntry(rowOf(entry, { initialStatus: null }))).not.toHaveProperty(
+      'initialStatus',
+    );
+    expect(toActivityEntryInsert(entry).initialStatus).toBe('todo');
   });
 
   it('refuses a stored kind outside the known kinds', () => {
@@ -180,6 +194,7 @@ describe('toActivityEntryInsert: a draft becomes the columns of a new entry', ()
       actorType: 'user',
       actorId: CAMILLE,
       occurredAt: NOW,
+      initialStatus: null,
       statusFrom: null,
       statusTo: null,
       priorityFrom: null,

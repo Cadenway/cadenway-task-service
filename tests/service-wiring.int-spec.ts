@@ -99,6 +99,7 @@ const publicTables = [
   'task_dependencies',
   'task_labels',
   'task_templates',
+  'task_time_entries',
   'task_watcher_overrides',
   'tasks',
   'trash_entries',
@@ -111,7 +112,7 @@ const publicTables = [
  * deletion of lists and spaces, then the trash root snapshot, collaboration, planning and the
  * task library.
  */
-const appliedMigrations = 12;
+const appliedMigrations = 13;
 
 /**
  * Runs `docker compose` on the throwaway project.
@@ -465,7 +466,7 @@ describe('task-service wiring', () => {
         `select relname, relrowsecurity, relforcerowsecurity from pg_class
           where relnamespace = 'public'::regnamespace
             and relname in ('favorites', 'saved_views', 'task_comments', 'task_dependencies',
-                            'task_templates', 'task_watcher_overrides')
+                            'task_templates', 'task_time_entries', 'task_watcher_overrides')
           order by relname`,
       );
       expect(journal.rows).toEqual([{ applied: appliedMigrations }]);
@@ -475,6 +476,7 @@ describe('task-service wiring', () => {
         { relname: 'task_comments', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'task_dependencies', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'task_templates', relrowsecurity: true, relforcerowsecurity: true },
+        { relname: 'task_time_entries', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'task_watcher_overrides', relrowsecurity: true, relforcerowsecurity: true },
       ]);
     } finally {
@@ -489,7 +491,8 @@ describe('task-service wiring', () => {
       tenant.run((tx) =>
         tx.client.query(
           `select task.description, task.description_mentions, activity.kind,
-                  activity.status_from, activity.status_to, activity.comment_id, activity.comment_excerpt
+                  activity.status_from, activity.status_to, activity.comment_id,
+                  activity.comment_excerpt, activity.initial_status
              from tasks as task
              join activity_entries as activity on activity.organization_id = task.organization_id
                   and activity.task_id = task.id
@@ -508,6 +511,7 @@ describe('task-service wiring', () => {
         status_to: 'progress',
         comment_id: null,
         comment_excerpt: null,
+        initial_status: null,
       },
     ]);
   });
@@ -715,6 +719,7 @@ describe('task-service wiring', () => {
       { relname: 'task_dependencies', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_labels', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_templates', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'task_time_entries', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_watcher_overrides', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'tasks', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'trash_entries', relrowsecurity: true, relforcerowsecurity: true },
@@ -746,6 +751,7 @@ describe('task-service wiring', () => {
       { tablename: 'task_dependencies', policyname: 'task_dependencies_organization_isolation' },
       { tablename: 'task_labels', policyname: 'task_labels_organization_isolation' },
       { tablename: 'task_templates', policyname: 'task_templates_organization_isolation' },
+      { tablename: 'task_time_entries', policyname: 'task_time_entries_organization_isolation' },
       {
         tablename: 'task_watcher_overrides',
         policyname: 'task_watcher_overrides_organization_isolation',

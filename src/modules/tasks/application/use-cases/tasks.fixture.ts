@@ -1541,6 +1541,17 @@ const emptyCustomFields: CustomFieldRepository = {
   clearTasks: () => Promise.resolve(),
 };
 
+/** Fixtures of unrelated operations do not use work logs. */
+const unavailableTime: TasksStore['time'] = {
+  create: dependencyFixtureMissing,
+  find: dependencyFixtureMissing,
+  remove: dependencyFixtureMissing,
+  page: dependencyFixtureMissing,
+  totals: dependencyFixtureMissing,
+  statusHistoryPage: dependencyFixtureMissing,
+  observationTime: dependencyFixtureMissing,
+};
+
 /** What a spec seeds in the fake store. */
 export interface InMemoryTasksSeed {
   // #region Properties
@@ -1564,6 +1575,8 @@ export interface InMemoryTasksSeed {
 
   /** Custom field adapter supplied by specs that exercise field writes. */
   readonly customFields?: CustomFieldRepository;
+  /** Work-log adapter supplied by time operation specs. */
+  readonly time?: TasksStore['time'];
   // #endregion
 }
 
@@ -2342,6 +2355,8 @@ export class InMemoryTasks implements TasksUnitOfWork {
   /** Custom fields supplied by a spec, or the empty adapter. */
   private readonly customFields: CustomFieldRepository;
 
+  private readonly time: TasksStore['time'];
+
   /**
    * The ids of the tasks another transaction holds `FOR NO KEY UPDATE` or `FOR UPDATE` (a change
    * or a deletion under way): `shareLocationUnlessLocked` leaves them out, as
@@ -2377,6 +2392,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
     this.trace = seed.trace ?? [];
     this.dependencies = seed.dependencies ?? unavailableDependencies;
     this.customFields = seed.customFields ?? emptyCustomFields;
+    this.time = seed.time ?? unavailableTime;
     this.trashEntries = new Map(
       (seed.trashEntries ?? []).map((row: StoredTrashEntry): [string, StoredTrashEntry] => [
         row.id,
@@ -2951,6 +2967,7 @@ export class InMemoryTasks implements TasksUnitOfWork {
       trash,
       dependencies: this.dependencies,
       customFields: this.customFields,
+      time: this.time,
       copies: {
         listSources: (
           organizationId: string,

@@ -14,6 +14,7 @@ import type { TaskCopies } from '../../ports/outbound/persistence/task/task-copi
 import type { TaskRepository } from '../../ports/outbound/persistence/task/task-repository.port.js';
 import type { TrashEntryRepository } from '../../ports/outbound/persistence/trash/trash-entry-repository.port.js';
 import type { TransactionClock } from '../../ports/outbound/time/transaction/transaction-clock.port.js';
+import type { TaskTimeRepository } from '../../ports/outbound/persistence/time/task-time-repository.port.js';
 
 /**
  * Interface TasksStore
@@ -34,6 +35,9 @@ export interface TasksStore {
 
   /** Custom field definitions and sparse task values in this transaction. */
   readonly customFields: CustomFieldRepository;
+
+  /** The task work logs and status history. */
+  readonly time: TaskTimeRepository;
 
   /** The bounded source snapshots and initial checklists of task copies. */
   readonly copies: TaskCopies;
