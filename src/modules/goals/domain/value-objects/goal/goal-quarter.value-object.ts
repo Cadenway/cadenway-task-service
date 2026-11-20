@@ -4,7 +4,7 @@ import { InvalidGoalError } from '../../errors/goal/invalid-goal.error.js';
 const quarterPattern = /^(?!0000)[0-9]{4}-Q[1-4]$/;
 
 /** ISO calendar date supported by the goal contract. */
-const datePattern = /^(?!0000)[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
+const datePattern = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
 
 /** Calendar quarter that fixes the deadline interval and the elapsed progress reference. */
 export class GoalQuarter {

@@ -183,6 +183,7 @@ describe('GoalQuarter', () => {
 
   it('accepts the supported date range without calendar rollover', () => {
     expect(GoalQuarter.parse('0001-Q1').expectedProgress('0001-01-01')).toBe(0);
+    expect(GoalQuarter.parse('0001-Q1').expectedProgress('0000-02-29')).toBe(0);
     expect(GoalQuarter.parse('9999-Q4').expectedProgress('9999-12-31')).toBe(100);
     expect(() => GoalQuarter.parse('2026-Q4').expectedProgress('2026-13-01')).toThrow(
       InvalidGoalError,

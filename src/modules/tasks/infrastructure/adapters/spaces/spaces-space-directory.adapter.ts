@@ -852,6 +852,7 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
    * @param {readonly string[]} listIds - The lists.
    * @param {'hold' | 'erase'} mode - How the caller holds them.
    * @param {Viewer | null} viewer - The member whose role is read again, `null` for the service.
+   * @param {readonly string[]} [additionalSpaceIds] - Other spaces held in the same order.
    * @returns {Promise<readonly TrashListLock[]>} What the lock found for each list.
    */
   public async lockTrashLists(
@@ -859,12 +860,14 @@ export class SpacesSpaceDirectory implements SpaceDirectory {
     listIds: readonly string[],
     mode: 'hold' | 'erase',
     viewer: Viewer | null,
+    additionalSpaceIds?: readonly string[],
   ): Promise<readonly TrashListLock[]> {
     const output = await this.lockTrashListsOperation.execute({
       organizationId,
       listIds: [...listIds],
       mode,
       viewer: viewer === null ? null : { userId: viewer.userId, role: viewer.role },
+      additionalSpaceIds,
     });
     return output.lists.map((lock: SpacesTrashListLock): TrashListLock => ({
       listId: lock.listId,

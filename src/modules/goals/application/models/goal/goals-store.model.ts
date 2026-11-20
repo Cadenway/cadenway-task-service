@@ -3,6 +3,7 @@ import type { GoalResult } from '../../../domain/value-objects/goal/goal-result.
 import type { GoalRepository } from '../../ports/outbound/persistence/goal/goal-repository.port.js';
 import type { GoalCaller } from './goal-caller.model.js';
 import type { GoalViewer } from './goal-viewer.model.js';
+import type { NewGoalResult } from './new-goal-result.model.js';
 
 /** Transaction-bound persistence and access checks for goal operations. */
 export interface GoalsStore {
@@ -37,8 +38,9 @@ export interface GoalsStore {
    * remain eligible when ordinary reads expose them. List counts exclude deleted and cancelled tasks. */
   measureLinks(
     viewer: GoalViewer,
-    results: readonly GoalResult[],
+    results: readonly (GoalResult | NewGoalResult)[],
     lock: boolean,
+    scopeSpaceId?: string | null,
   ): Promise<GoalLinkMeasurements>;
   // #endregion
 }

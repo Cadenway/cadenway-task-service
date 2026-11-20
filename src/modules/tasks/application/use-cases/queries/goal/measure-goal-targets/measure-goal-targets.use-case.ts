@@ -18,7 +18,7 @@ export class MeasureGoalTargets {
   /** Keeps inaccessible and deleted targets out of the resulting maps. */
   public execute(input: MeasureGoalTargetsInput): Promise<MeasureGoalTargetsOutput> {
     const work = async (reader: GoalTargetReader): Promise<MeasureGoalTargetsOutput> => {
-      const listIds = [...new Set(input.listIds)];
+      const listIds = [...new Set(input.listIds.map((id) => id.toLowerCase()))];
       const keys = [...new Set(input.milestoneKeys)];
       let milestones =
         keys.length === 0 ? [] : await reader.milestones(input.organizationId, keys, false);
@@ -32,7 +32,7 @@ export class MeasureGoalTargets {
         );
         for (const list of lists) visible.add(list.id);
       }
-      if (input.lock && visible.size > 0) {
+      if (input.lock && (visible.size > 0 || input.scopeSpaceId != null)) {
         const visibleKeys = milestones
           .filter((target) => visible.has(target.listId))
           .map((target) => target.key);
@@ -51,6 +51,7 @@ export class MeasureGoalTargets {
           candidates,
           'hold',
           input.viewer,
+          ...(input.scopeSpaceId == null ? [] : [[input.scopeSpaceId]]),
         );
         visible.clear();
         for (const list of held) {

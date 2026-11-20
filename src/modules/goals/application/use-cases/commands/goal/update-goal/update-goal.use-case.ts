@@ -1,3 +1,4 @@
+import { rethrowGoalFailure } from '../../../../services/goal/goal-failure.service.js';
 import type { GoalsUnitOfWork } from '../../../../ports/outbound/transactions/goal/goals-unit-of-work.port.js';
 import {
   requireEligibleOwner,
@@ -19,19 +20,21 @@ export class UpdateGoal {
   // #region Methods
   /** Checks permissions and version before invoking the aggregate. */
   public execute(input: UpdateGoalInput): Promise<UpdateGoalOutput> {
-    return this.work.run(async (store) => {
-      const viewer = await requireViewer(store, input, true);
-      const previous = await requireGoal(store, viewer, input.goalId, true);
-      requireVersion(previous, input);
-      const goal = previous.update(input.patch);
-      await requireEligibleOwner(store, goal);
-      if (goal !== previous) await store.goals.save(goal);
-      return projectGoal(
-        goal,
-        input.today,
-        await store.measureLinks(viewer, goal.snapshot.results, false),
-      );
-    });
+    return this.work
+      .run(async (store) => {
+        const viewer = await requireViewer(store, input, true);
+        const previous = await requireGoal(store, viewer, input.goalId, true);
+        requireVersion(previous, input);
+        const goal = previous.update(input.patch);
+        await requireEligibleOwner(store, goal);
+        if (goal !== previous) await store.goals.save(goal);
+        return projectGoal(
+          goal,
+          input.today,
+          await store.measureLinks(viewer, goal.snapshot.results, false),
+        );
+      })
+      .catch(rethrowGoalFailure);
   }
   // #endregion
 }

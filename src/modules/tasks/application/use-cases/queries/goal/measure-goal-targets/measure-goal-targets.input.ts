@@ -12,5 +12,8 @@ export interface MeasureGoalTargetsInput {
 
   /** Hold target rows and placement permissions until the enclosing write commits. */
   readonly lock: boolean;
+
+  /** Include the goal's own space in the ordered placement locks. */
+  readonly scopeSpaceId?: string | null;
   // #endregion
 }

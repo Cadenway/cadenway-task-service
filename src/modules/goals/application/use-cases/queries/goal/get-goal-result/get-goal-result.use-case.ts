@@ -1,3 +1,4 @@
+import { rethrowGoalFailure } from '../../../../services/goal/goal-failure.service.js';
 import type { GoalsUnitOfWork } from '../../../../ports/outbound/transactions/goal/goals-unit-of-work.port.js';
 import { requireGoal, requireViewer } from '../../../../services/goal/goal-access.service.js';
 import { projectResult } from '../../../../services/goal/goal-result.service.js';
@@ -14,14 +15,16 @@ export class GetGoalResult {
   // #region Methods
   /** Projects the result and its parent's stored version. */
   public execute(input: GetGoalResultInput): Promise<GetGoalResultOutput> {
-    return this.work.read(async (store) => {
-      const viewer = await requireViewer(store, input, false);
-      const goal = await requireGoal(store, viewer, input.goalId, false);
-      return {
-        result: await projectResult(store, viewer, goal, input.resultId),
-        version: goal.snapshot.version,
-      };
-    });
+    return this.work
+      .read(async (store) => {
+        const viewer = await requireViewer(store, input, false);
+        const goal = await requireGoal(store, viewer, input.goalId, false);
+        return {
+          result: await projectResult(store, viewer, goal, input.resultId),
+          version: goal.snapshot.version,
+        };
+      })
+      .catch(rethrowGoalFailure);
   }
   // #endregion
 }

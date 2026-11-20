@@ -12,6 +12,17 @@ export class GoalError extends Error {
           readonly reason:
             'organization-role-forbidden' | 'owner-ineligible' | 'result-target-invalid';
         }
+      | {
+          readonly reason:
+            | 'invalid-goal'
+            | 'invalid-quarter'
+            | 'invalid-date'
+            | 'invalid-result'
+            | 'result-not-found'
+            | 'due-date-outside-quarter'
+            | 'result-limit-reached'
+            | 'result-patch-invalid';
+        }
       | { readonly reason: 'role-insufficient'; readonly role: 'comment' | 'view' }
       | { readonly reason: 'version-mismatch'; readonly version: number },
   ) {

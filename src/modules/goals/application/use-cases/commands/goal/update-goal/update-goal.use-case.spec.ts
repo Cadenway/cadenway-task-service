@@ -98,4 +98,14 @@ describe('UpdateGoal', () => {
     });
     expect(save).not.toHaveBeenCalled();
   });
+
+  it('exposes a rejected due date through the application error without saving', async () => {
+    const { operation, save } = fixture('owner');
+    await expect(
+      operation.execute({ ...input, patch: { dueDate: '2027-01-01' } }),
+    ).rejects.toMatchObject<Partial<GoalError>>({
+      failure: { reason: 'due-date-outside-quarter' },
+    });
+    expect(save).not.toHaveBeenCalled();
+  });
 });

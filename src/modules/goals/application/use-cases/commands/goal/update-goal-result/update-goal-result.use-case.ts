@@ -1,3 +1,4 @@
+import { rethrowGoalFailure } from '../../../../services/goal/goal-failure.service.js';
 import type { GoalsUnitOfWork } from '../../../../ports/outbound/transactions/goal/goals-unit-of-work.port.js';
 import {
   requireGoal,
@@ -18,18 +19,20 @@ export class UpdateGoalResult {
   // #region Methods
   /** Holds the current target through the write and skips persistence for no change. */
   public execute(input: UpdateGoalResultInput): Promise<UpdateGoalResultOutput> {
-    return this.work.run(async (store) => {
-      const viewer = await requireViewer(store, input, true);
-      const previous = await requireGoal(store, viewer, input.goalId, true);
-      await requireResult(store, viewer, previous, input.resultId, true);
-      requireVersion(previous, input);
-      const goal = previous.updateResult(input.resultId, input.patch);
-      if (goal !== previous) await store.goals.save(goal);
-      return {
-        result: await projectResult(store, viewer, goal, input.resultId),
-        version: goal.snapshot.version,
-      };
-    });
+    return this.work
+      .run(async (store) => {
+        const viewer = await requireViewer(store, input, true);
+        const previous = await requireGoal(store, viewer, input.goalId, true, false);
+        await requireResult(store, viewer, previous, input.resultId, true);
+        requireVersion(previous, input);
+        const goal = previous.updateResult(input.resultId, input.patch);
+        if (goal !== previous) await store.goals.save(goal);
+        return {
+          result: await projectResult(store, viewer, goal, input.resultId),
+          version: goal.snapshot.version,
+        };
+      })
+      .catch(rethrowGoalFailure);
   }
   // #endregion
 }
