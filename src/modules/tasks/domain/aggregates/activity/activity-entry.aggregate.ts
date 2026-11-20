@@ -55,6 +55,11 @@ function checkChange(change: ActivityChange): void {
   switch (change.kind) {
     case 'create':
       return;
+    case 'comment':
+      if (change.commentId === '' || Array.from(change.commentExcerpt).length > 240) {
+        throw invalid('a comment entry has an id and an excerpt of at most 240 code points');
+      }
+      return;
     case 'status':
       if (
         !STATUS_KEYS.includes(change.status.from) ||
@@ -211,6 +216,36 @@ export class ActivityEntry {
       actor,
       occurredAt,
       change: { kind: 'create' },
+    };
+    checkDraft(draft);
+    return draft;
+  }
+
+  /**
+   * Drafts the activity entry of a newly posted comment (P3b-2 decision 24).
+   *
+   * @param task - The task after its version advances.
+   * @param actor - The person who posted.
+   * @param occurredAt - Transaction instant.
+   * @param commentId - Database-assigned comment ID.
+   * @param commentExcerpt - At most 240 Unicode code points of Markdown.
+   * @returns The validated entry.
+   * @throws {InvalidTaskError} When a value breaks an activity invariant.
+   */
+  public static forComment(
+    task: TaskState,
+    actor: TaskActor,
+    occurredAt: Date,
+    commentId: string,
+    commentExcerpt: string,
+  ): ActivityEntryDraft {
+    const draft: ActivityEntryDraft = {
+      organizationId: task.organizationId,
+      taskId: task.id,
+      listId: task.listId,
+      actor,
+      occurredAt,
+      change: { kind: 'comment', commentId, commentExcerpt },
     };
     checkDraft(draft);
     return draft;

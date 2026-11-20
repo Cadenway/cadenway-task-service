@@ -1,3 +1,4 @@
+import { DrizzleWatcherOverrideRepository } from '../../repositories/watcher/drizzle-watcher-override.repository.js';
 import type {
   TenantTransactionRunner,
   TransactionOptions,
@@ -21,6 +22,23 @@ import { DrizzleTaskQueryReader } from '../../repositories/query/drizzle-task-qu
 import { DrizzleTaskReader } from '../../repositories/task/drizzle-task-reader.repository.js';
 import { DrizzleTaskRepository } from '../../repositories/task/drizzle-task.repository.js';
 import { DrizzleTrashEntryRepository } from '../../repositories/trash/drizzle-trash-entry.repository.js';
+
+/** Rolls back only the attempt's work, keeping the caller's outer tenant transaction intact. */
+async function withTaskSavepoint<TResult>(
+  transaction: TransactionScope,
+  work: () => Promise<TResult>,
+): Promise<TResult> {
+  await transaction.client.query('SAVEPOINT task_write_preflight');
+  try {
+    const result = await work();
+    await transaction.client.query('RELEASE SAVEPOINT task_write_preflight');
+    return result;
+  } catch (error: unknown) {
+    await transaction.client.query('ROLLBACK TO SAVEPOINT task_write_preflight');
+    await transaction.client.query('RELEASE SAVEPOINT task_write_preflight');
+    throw error;
+  }
+}
 
 /**
  * Class TenantTasksUnitOfWork
@@ -173,7 +191,9 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
     const result: TResult = await this.runner.run(
       (transaction: TransactionScope): Promise<TResult> =>
         work({
+          savepoint: (attempt) => withTaskSavepoint(transaction, attempt),
           tasks: new DrizzleTaskRepository(transaction.db),
+          watcherOverrides: new DrizzleWatcherOverrideRepository(transaction.db),
           reader: new DrizzleTaskReader(transaction.db),
           activity: new DrizzleActivityRepository(transaction.db),
           queries: new DrizzleTaskQueryReader(transaction.db),

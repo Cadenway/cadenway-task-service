@@ -110,6 +110,14 @@ export interface SpaceEvents {
     actor: EventActor,
   ): Promise<void>;
 
+  /** Appends the complete access snapshot after a space restoration. */
+  spaceAccessRepublished(
+    space: Space,
+    grants: readonly GrantEntry[],
+    changedUserIds: readonly string[],
+    actor: EventActor,
+  ): Promise<void>;
+
   /**
    * Method listAccessChanged
    *

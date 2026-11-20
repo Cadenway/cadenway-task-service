@@ -21,6 +21,8 @@ import { AssigneeChecker } from '../../../../services/member/assignee-checker.se
 import { ViewerResolver } from '../../../../services/member/viewer-resolver.service.js';
 import { TaskAnnouncer } from '../../../../services/task/task-announcer.service.js';
 import { TaskEditGuard } from '../../../../services/task/task-edit-guard.service.js';
+import { DescriptionMentionGuard } from '../../../../services/mention/description-mention-guard.service.js';
+import { appendDescriptionMentionChange } from '../../../../services/mention/description-mention-event.service.js';
 import { TaskRuleGuard } from '../../../../services/task/task-rule-guard.service.js';
 import { TaskViewBuilder } from '../../../../services/task/task-view-builder.service.js';
 import type { CreateTaskInput } from './create-task.input.js';
@@ -63,6 +65,9 @@ export class CreateTask {
   /** Reads and locks the memberships of the assignees. */
   private readonly assignees: AssigneeChecker;
 
+  /** Locks and checks newly supplied description recipients. */
+  private readonly descriptionMentions: DescriptionMentionGuard;
+
   /** Maps the refusals of the domain. */
   private readonly rules: TaskRuleGuard;
 
@@ -101,6 +106,7 @@ export class CreateTask {
     this.viewers = new ViewerResolver(members);
     this.assignees = new AssigneeChecker(members);
     this.rules = new TaskRuleGuard();
+    this.descriptionMentions = new DescriptionMentionGuard(members, spaces);
     this.editing = new TaskEditGuard();
     this.recorder = new ActivityRecorder();
     this.announcer = new TaskAnnouncer();
@@ -143,6 +149,11 @@ export class CreateTask {
         input.assigneeIds,
         true,
       );
+      const recipients = await this.descriptionMentions.lockRecipients(
+        input.organizationId,
+        viewer,
+        input.descriptionMentions ?? [],
+      );
       const now: Date = await store.clock.now();
       const creator: TaskActor = { type: 'user', id: input.actorUserId };
       const where: TaskPlacement = { listId: placement.list.id, spaceId: placement.space.id };
@@ -154,6 +165,7 @@ export class CreateTask {
             parent: null,
             name: input.name,
             description: input.description,
+            descriptionMentions: input.descriptionMentions ?? [],
             status: input.status,
             cancelReason: input.cancelReason,
             cancelNote: input.cancelNote,
@@ -172,9 +184,27 @@ export class CreateTask {
       const checklist: readonly ChecklistItemDraft[] = this.rules.apply(() =>
         Task.draftInitialChecklist(input.checklistTexts ?? []),
       );
-      const held: HeldList = await this.spaces.holdList(input.organizationId, placement.list.id);
-      if (held.outcome !== 'live') {
-        throw new TaskRefusal({ reason: 'list-not-found' });
+      if (recipients.length === 0) {
+        const held: HeldList = await this.spaces.holdList(input.organizationId, placement.list.id);
+        if (held.outcome !== 'live') throw new TaskRefusal({ reason: 'list-not-found' });
+      } else {
+        const [held] = await this.spaces.lockTrashLists(
+          input.organizationId,
+          [placement.list.id],
+          'hold',
+          viewer,
+        );
+        if (held?.outcome !== 'live' || held.role === null) {
+          throw new TaskRefusal({ reason: 'list-not-found' });
+        }
+        if (held.role !== 'edit') {
+          throw new TaskRefusal({ reason: 'role-insufficient', role: held.role });
+        }
+        await this.descriptionMentions.requireEligible(
+          input.organizationId,
+          placement.list.id,
+          recipients,
+        );
       }
       const keys: KeyAllocation = await this.spaces.allocateKeys(
         input.organizationId,
@@ -232,6 +262,7 @@ export class CreateTask {
       for (const made of created) {
         await this.announcer.created(store.events, made, actor);
       }
+      await appendDescriptionMentionChange(store.events, [], task, actor);
       return this.views.build(store.reader, task);
     });
   }

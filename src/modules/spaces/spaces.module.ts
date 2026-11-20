@@ -22,6 +22,7 @@ import { createListProvider } from './composition/providers/use-cases/list/creat
 import { deleteListProvider } from './composition/providers/use-cases/list/delete-list.provider.js';
 import { findTrashListProvider } from './composition/providers/use-cases/list/find-trash-list.provider.js';
 import { findVisibleListProvider } from './composition/providers/use-cases/list/find-visible-list.provider.js';
+import { findListReaderAudienceProvider } from './composition/providers/use-cases/list/find-list-reader-audience.provider.js';
 import { findVisibleListsProvider } from './composition/providers/use-cases/list/find-visible-lists.provider.js';
 import { findVisibleSpaceListsProvider } from './composition/providers/use-cases/list/find-visible-space-lists.provider.js';
 import { getListProvider } from './composition/providers/use-cases/list/get-list.provider.js';
@@ -63,6 +64,7 @@ import { ListManagedAccessTargets } from './public/access/list-managed-access-ta
 import { RemoveMemberGrants } from './public/access/remove-member-grants.js';
 import { FindTrashList } from './public/list/find-trash-list.js';
 import { FindVisibleList } from './public/list/find-visible-list.js';
+import { FindListReaderAudience } from './public/list/find-list-reader-audience.js';
 import { FindVisibleLists } from './public/list/find-visible-lists.js';
 import { FindVisibleSpaceLists } from './public/list/find-visible-space-lists.js';
 import { HoldList } from './public/list/hold-list.js';
@@ -163,6 +165,7 @@ markIdempotent(SpaceListsController.prototype, 'create');
     unarchiveListProvider,
     deleteListProvider,
     findVisibleListProvider,
+    findListReaderAudienceProvider,
     findVisibleListsProvider,
     findVisibleSpaceListsProvider,
     listCurrentSprintsProvider,
@@ -200,6 +203,7 @@ markIdempotent(SpaceListsController.prototype, 'create');
     HandOverAwaitingSpaces,
     RemoveMemberGrants,
     FindVisibleList,
+    FindListReaderAudience,
     FindVisibleLists,
     FindVisibleSpaceLists,
     ListCurrentSprints,

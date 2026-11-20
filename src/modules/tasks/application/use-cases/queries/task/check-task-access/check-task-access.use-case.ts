@@ -72,28 +72,27 @@ export class CheckTaskAccess {
    * @throws {TaskRefusal} `organization-not-found` or `task-not-found`.
    */
   public async execute(input: CheckTaskAccessInput): Promise<CheckTaskAccessOutput> {
-    return this.unitOfWork.runReadOnly(
-      async (store: TasksStore): Promise<CheckTaskAccessOutput> => {
-        const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
-        const location: TaskLocation | null = await store.reader.locationByKey(
-          input.organizationId,
-          this.parse(input.taskKey),
-        );
-        const placement: ListPlacement | null =
-          location === null
-            ? null
-            : await this.spaces.findVisibleList(input.organizationId, viewer, location.listId);
-        if (location === null || placement === null) {
-          throw new TaskRefusal({ reason: 'task-not-found' });
-        }
-        return {
-          role: placement.list.callerRole,
-          spaceId: placement.list.spaceId,
-          listId: placement.list.id,
-          taskKey: location.key,
-        };
-      },
-    );
+    const work = async (store: TasksStore): Promise<CheckTaskAccessOutput> => {
+      const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
+      const location: TaskLocation | null = await store.reader.locationByKey(
+        input.organizationId,
+        this.parse(input.taskKey),
+      );
+      const placement: ListPlacement | null =
+        location === null
+          ? null
+          : await this.spaces.findVisibleList(input.organizationId, viewer, location.listId);
+      if (location === null || placement === null) {
+        throw new TaskRefusal({ reason: 'task-not-found' });
+      }
+      return {
+        role: placement.list.callerRole,
+        spaceId: placement.list.spaceId,
+        listId: placement.list.id,
+        taskKey: location.key,
+      };
+    };
+    return input.joinWrite === true ? this.unitOfWork.run(work) : this.unitOfWork.runReadOnly(work);
   }
 
   /**

@@ -142,7 +142,7 @@ export class TasksController {
    * @description
    * `PATCH /internal/v1/tasks/{taskKey}`: `200` with the task after the merge patch, the same
    * version when nothing changed. `If-Match` is optional, except when the body has a
-   * `description`, the one member that edits a long text: without the header, `400 request.invalid`
+   * `description` or `descriptionMentions`: without the header, `400 request.invalid`
    * with one issue on `If-Match` (`invalid_type`). `404 task.not-found`, `412
    * request.version-mismatch` with `details.version` and the `422` refusals of a task come from
    * the use case.

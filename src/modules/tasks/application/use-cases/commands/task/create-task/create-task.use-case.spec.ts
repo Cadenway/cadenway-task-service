@@ -141,6 +141,45 @@ describe('CreateTask: a member creates a task in a list they see', () => {
     ]);
   });
 
+  it('creates the checklist and stores mentions before appending the recipient fact', async () => {
+    const { tasks, useCase } = atelierNord();
+    const descriptionMentions = [{ userId: HUGO, start: 2, end: 7 }];
+    const view = await useCase.execute(
+      createTask({
+        description: '😀 @Hugo',
+        descriptionMentions,
+        checklistTexts: ['Verify access'],
+      }),
+    );
+
+    expect(tasks.stored(view.id).descriptionMentions).toEqual(descriptionMentions);
+    expect(tasks.stored(view.id).checklist).toEqual([
+      expect.objectContaining({ text: 'Verify access', done: false, position: 0 }),
+    ]);
+    expect(tasks.events.at(-1)).toEqual({
+      kind: 'descriptionMentionsChanged',
+      key: view.key,
+      version: 1,
+      change: { added: [HUGO], removed: [] },
+      actor: { type: 'user', id: CAMILLE },
+    });
+  });
+
+  it('refuses unavailable recipients before allocating a task key', async () => {
+    const { tasks, useCase } = atelierNord();
+    const result = await refusalOf(
+      useCase.execute(
+        createTask({
+          description: '@Unknown',
+          descriptionMentions: [{ userId: STRANGER, start: 0, end: 8 }],
+        }),
+      ),
+    );
+    expect(result).toEqual({ reason: 'mention-recipient-invalid' });
+    expect(tasks.trace).not.toContain('spaces.allocateKeys');
+    expect(tasks.events).toEqual([]);
+  });
+
   it('counts an account named twice once', async () => {
     const { useCase } = atelierNord();
 

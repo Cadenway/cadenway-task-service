@@ -51,9 +51,8 @@ function entriesOf(grants: readonly StoredGrant[]): GrantEntry[] {
  * `restoredAt` = the instant of the transaction, the next version, `space.restored.v1`), then a
  * deleted list (`TaskList.restoreFromTrash`: the same, back live at the end of its space,
  * `list.restored.v1`). Each restored one then republishes who reaches it, at the version it took
- * (one change, one version): `space.access-changed.v1` with every grant of the space as it stands
- * (`changedUserIds` every person who holds one, the members the contract requires; none when the
- * space holds no grant, which the contract cannot carry), and `list.access-changed.v1` with the
+ * (one change, one version): `space.access-republished.v1` with every grant of the space as it stands
+ * (`changedUserIds` every person who holds one, possibly empty), and `list.access-changed.v1` with the
  * switch and every grant of the list (`changed: ['grants', 'organizationAccess']`,
  * `changedUserIds: []`), so a consumer that kept the grants of before the deletion replaces them by
  * the current set, which no longer holds a grant the clean-up of a member removed silently
@@ -220,8 +219,8 @@ export class RestoreDeletedList {
    * Method restoreSpace
    *
    * @description
-   * Writes a space back from the trash, appends `space.restored.v1`, then `space.access-changed.v1`
-   * with every grant of the space at the same version, when it holds one.
+   * Writes a space back from the trash, appends `space.restored.v1`, then `space.access-republished.v1`
+   * with every grant of the space at the same version.
    *
    * @param {SpacesStore} store - The store of the transaction.
    * @param {Space} space - The space after `restoreFromTrash`.
@@ -237,16 +236,12 @@ export class RestoreDeletedList {
         spaceId: space.snapshot.id,
       }),
     );
-    // `changedUserIds` of `space.access-changed.v1` holds one person at least: a space without a
-    // grant has none to name (a misfit of the contract, reported).
-    if (grants.length > 0) {
-      await store.events.spaceAccessChanged(
-        space,
-        grants,
-        grants.map((grant: GrantEntry): string => grant.userId),
-        actor,
-      );
-    }
+    await store.events.spaceAccessRepublished(
+      space,
+      grants,
+      grants.map((grant: GrantEntry): string => grant.userId),
+      actor,
+    );
   }
 
   /**

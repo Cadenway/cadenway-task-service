@@ -452,6 +452,18 @@ describe('RestoreTrashEntry: an entry comes back to its list, its root and every
     expect(tasks.events).toEqual([]);
   });
 
+  it('reports a pending deletion only when requested for a restorable entry', async () => {
+    const { useCase } = atelierNord(
+      [...trashedTree(), cad490State()],
+      undefined,
+      (trace: string[]) =>
+        new InMemorySpaceDirectory({ trace, deletedLists: { [SPRINT_14]: camille } }),
+    );
+    expect(await refusalOf(useCase.execute({ ...restore(), reportNotReady: true }))).toEqual({
+      reason: 'trash-entry-not-restorable-yet',
+    });
+  });
+
   it('restores an entry of a deleted list once its job has moved every task, under the lock of the list', async () => {
     const { tasks, useCase } = atelierNord(
       [...trashedTree(), cad490State({ trash: trashIn(BUGS_ENTRY), version: 2 })],

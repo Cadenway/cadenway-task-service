@@ -21,6 +21,7 @@ export function toTask(view: TaskView): Task {
     key: view.key,
     name: view.name,
     description: view.description,
+    descriptionMentions: [...view.descriptionMentions],
     status: view.status,
     cancelReason: view.cancelReason,
     cancelNote: view.cancelNote,

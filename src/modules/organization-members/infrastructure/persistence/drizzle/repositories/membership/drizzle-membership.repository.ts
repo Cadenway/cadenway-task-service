@@ -1,8 +1,11 @@
 import type { TransactionDatabase } from '@cadenway/nest-common/database';
-import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 
 import type { MembershipRepository } from '../../../../../application/ports/outbound/persistence/membership/membership-repository.port.js';
+import type { ListActiveMembersInput } from '../../../../../application/use-cases/queries/membership/list-active-members/list-active-members.input.js';
+import type { ListActiveMembersOutput } from '../../../../../application/use-cases/queries/membership/list-active-members/list-active-members.output.js';
 import type { Membership } from '../../../../../domain/aggregates/membership/membership.aggregate.js';
+import { privilegeOf } from '../../../../../domain/policies/membership/least-privileged-membership.policy.js';
 import { toMembership } from '../../mappers/membership/organization-member.mapper.js';
 import type { OrganizationMemberRow } from '../../mappers/membership/organization-member.mapper.js';
 import { organizationMembers } from '../../schemas/membership/organization-member.schema.js';
@@ -160,6 +163,55 @@ export class DrizzleMembershipRepository implements MembershipRepository {
       .limit(activeMembershipsCap);
     const rows: OrganizationMemberRow[] = lock ? await query.for('share') : await query;
     return rows.map(toMembership);
+  }
+
+  /** Selects one active membership per account before applying the audience and page limit. */
+  public async listActivePage(
+    input: ListActiveMembersInput,
+  ): Promise<readonly ListActiveMembersOutput[]> {
+    const explicit = [...new Set([...input.nonGuestIds, ...input.guestIds])];
+    const rank = sql`case ${organizationMembers.role} ${sql.join(
+      Object.entries(privilegeOf).map(
+        ([role, weight]) => sql`when ${role} then ${weight}::integer`,
+      ),
+      sql` `,
+    )} end`;
+    const members = this.db
+      .selectDistinctOn([organizationMembers.userId], {
+        userId: organizationMembers.userId,
+        memberId: organizationMembers.id,
+        role: organizationMembers.role,
+      })
+      .from(organizationMembers)
+      .where(
+        and(
+          eq(organizationMembers.organizationId, input.organizationId),
+          isNull(organizationMembers.removedAt),
+          input.after === null ? undefined : gt(organizationMembers.userId, input.after),
+          input.allNonGuests ? undefined : inArray(organizationMembers.userId, explicit),
+        ),
+      )
+      .orderBy(
+        asc(organizationMembers.userId),
+        rank,
+        desc(organizationMembers.createdAt),
+        desc(organizationMembers.id),
+      )
+      .as('current_members');
+    return this.db
+      .select({ userId: members.userId, memberId: members.memberId })
+      .from(members)
+      .where(
+        or(
+          and(
+            ne(members.role, 'guest'),
+            input.allNonGuests ? undefined : inArray(members.userId, input.nonGuestIds),
+          ),
+          and(eq(members.role, 'guest'), inArray(members.userId, input.guestIds)),
+        ),
+      )
+      .orderBy(asc(members.userId))
+      .limit(input.limit);
   }
 
   /**

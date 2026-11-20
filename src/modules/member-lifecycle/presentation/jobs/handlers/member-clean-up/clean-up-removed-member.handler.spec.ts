@@ -28,6 +28,7 @@ const COMPLETED: CleanUpRemovedMemberOutput = {
   grantsRemoved: 5,
   requestsDropped: 3,
   tasksUnassigned: 700,
+  watcherOverridesRemoved: 3,
   batches: 6,
 };
 
@@ -152,6 +153,7 @@ describe('CleanUpRemovedMemberHandler: each job cleans up after one former membe
         grantsRemoved: 5,
         requestsDropped: 3,
         tasksUnassigned: 700,
+        watcherOverridesRemoved: 3,
         batches: 6,
       },
       expect.any(String),

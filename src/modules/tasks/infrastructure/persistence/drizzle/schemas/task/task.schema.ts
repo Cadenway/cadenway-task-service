@@ -7,6 +7,7 @@ import {
   foreignKey,
   index,
   integer,
+  jsonb,
   pgTable,
   primaryKey,
   text,
@@ -15,6 +16,7 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 
+import type { DescriptionMention } from '../../../../../domain/value-objects/mention/description-mention.value-object.js';
 import { CANCEL_REASONS } from '../../../../../domain/value-objects/task/cancel-reason.value-object.js';
 import { PRIORITY_KEYS } from '../../../../../domain/value-objects/task/priority-key.value-object.js';
 import { STATUS_KEYS } from '../../../../../domain/value-objects/task/status-key.value-object.js';
@@ -96,6 +98,10 @@ export const tasks = pgTable(
     parentId: uuid('parent_id'),
     name: text('name').notNull(),
     description: text('description'),
+    descriptionMentions: jsonb('description_mentions').$type<{
+      readonly descriptionDigest: string;
+      readonly spans: readonly DescriptionMention[];
+    }>(),
     status: text('status').notNull(),
     cancelReason: text('cancel_reason'),
     cancelNote: text('cancel_note'),

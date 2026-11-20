@@ -29,6 +29,7 @@ import { SavedViewsModule, SavedViewsStorageModule } from './modules/saved-views
 import { SpacesModule } from './modules/spaces/spaces.module.js';
 import { TaskTemplatesModule, TaskTemplatesStorageModule } from './modules/task-templates/task-templates.module.js';
 import { TasksModule } from './modules/tasks/tasks.module.js';
+import { TaskCommentsModule } from './modules/task-comments/task-comments.module.js';
 
 /**
  * Function runJobInOrganization
@@ -202,6 +203,7 @@ function runJobInOrganization(
     TaskTemplatesStorageModule,
     SpacesModule,
     TasksModule,
+    TaskCommentsModule,
     AccessRequestsModule,
     MemberLifecycleModule,
     DeletionLifecycleModule,

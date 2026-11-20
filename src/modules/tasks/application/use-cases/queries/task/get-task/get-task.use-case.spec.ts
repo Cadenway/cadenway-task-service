@@ -83,6 +83,7 @@ describe('GetTask: a member reads a task of a list they see', () => {
       key: 'CAD-482',
       name: 'Refondre l’écran de connexion SSO',
       description: 'Remplacer l’écran actuel par la connexion d’entreprise.',
+      descriptionMentions: [],
       status: 'progress',
       cancelReason: null,
       cancelNote: null,

@@ -4,6 +4,7 @@ import type { GrantRemovalBatch } from '../../../../models/clean-up/grant-remova
 import type { RequestDropBatch } from '../../../../models/clean-up/request-drop-batch.model.js';
 import type { SpaceHandoverBatch } from '../../../../models/clean-up/space-handover-batch.model.js';
 import type { TaskUnassignmentBatch } from '../../../../models/clean-up/task-unassignment-batch.model.js';
+import type { WatcherOverrideRemovalBatch } from '../../../../models/clean-up/watcher-override-removal-batch.model.js';
 import type { MemberAccessRequests } from '../../../../ports/outbound/access-requests/access-request/member-access-requests.port.js';
 import type { MemberFavorites } from '../../../../ports/outbound/favorites/member/member-favorites.port.js';
 import type { MemberGrants } from '../../../../ports/outbound/spaces/access/member-grants.port.js';
@@ -30,6 +31,9 @@ interface Progress {
   /** The tasks the account was removed from. */
   tasksUnassigned: number;
 
+  /** The explicit task watcher overrides removed. */
+  watcherOverridesRemoved: number;
+
   /** The batches committed. */
   batches: number;
   // #endregion
@@ -55,7 +59,9 @@ interface Progress {
  * 4. then their access requests, pending or answered, and their attempts, in batches of 500
  *    (`DropMemberAccessRequests` of access-requests), until a batch finds none left, without event;
  * 5. then their assignments, in batches of 500 after the last task id of the previous batch
- *    (`UnassignRemovedMember` of tasks), until a batch finds none left.
+ *    (`UnassignRemovedMember` of tasks), until a batch finds none left;
+ * 6. then their watcher overrides in batches of 500 after the last task id of the previous
+ *    batch (`RemoveMemberWatcherOverrides` of tasks), without changing the task or emitting an event.
  *
  * The spaces come first, since a private space of a former member is seen by nobody until it is
  * handed over; the grants before the requests, since a grant still gives access while a pending
@@ -65,7 +71,7 @@ interface Progress {
  * and starts no batch once the signal of its attempt aborted. A failed batch rolls back alone: the
  * batches before it stay committed, the attempt fails with a `CleanUpStepError` naming the step
  * and the batches committed before it, and the next attempt starts again from what is still owned,
- * granted, asked for or assigned, so nothing is written twice. A run that finds
+ * granted, asked for, assigned or overridden, so nothing is written twice. A run that finds
  * nothing left changes nothing, which makes the job idempotent.
  */
 export class CleanUpRemovedMember {
@@ -82,7 +88,7 @@ export class CleanUpRemovedMember {
   /** The dropping of the access requests, one batch per call. */
   private readonly requests: MemberAccessRequests;
 
-  /** The unassignment from the tasks, one batch per call. */
+  /** The task unassignment and watcher cleanup, one batch per call. */
   private readonly assignments: TaskAssignments;
   // #endregion
 
@@ -96,7 +102,7 @@ export class CleanUpRemovedMember {
    * @param {PrivateSpaceHandover} spaces - The handover of the private spaces.
    * @param {MemberGrants} grants - The removal of the grants.
    * @param {MemberAccessRequests} requests - The dropping of the access requests.
-   * @param {TaskAssignments} assignments - The unassignment from the tasks.
+   * @param {TaskAssignments} assignments - The task unassignment and watcher cleanup.
    * @param {MemberFavorites} favorites - The removal of personal favorites.
    * @constructor
    */
@@ -121,12 +127,13 @@ export class CleanUpRemovedMember {
    *
    * @description
    * Hands the private spaces of the former member over, removes their grants, drops their pending
-   * access requests, then removes them from their tasks, one committed batch after another.
+   * access requests, then removes their task assignments and watcher overrides, one committed
+   * batch after another.
    *
    * @param {CleanUpRemovedMemberInput} input - The organization, the former member and the signal
    * of the attempt.
    * @returns {Promise<CleanUpRemovedMemberOutput>} How the run ended, with its counts; a space, a
-   * grant, a request or a task a batch found already as wanted is not counted.
+   * grant, a request, an assignment or an override a batch found already as wanted is not counted.
    * @throws {CleanUpStepError} When a batch fails (the database, a lock or statement timeout):
    * that batch rolls back, the earlier ones stay, and the job is retried; the error names the step
    * and the batches committed before it, with the failure as its cause.
@@ -139,6 +146,7 @@ export class CleanUpRemovedMember {
       grantsRemoved: 0,
       requestsDropped: 0,
       tasksUnassigned: 0,
+      watcherOverridesRemoved: 0,
       batches: 0,
     };
     for (;;) {
@@ -199,10 +207,27 @@ export class CleanUpRemovedMember {
         return { outcome: 'member-again', ...progress };
       }
       if (batch.outcome === 'none-left') {
-        return { outcome: 'completed', ...progress };
+        break;
       }
       progress.batches += 1;
       progress.tasksUnassigned += batch.unassigned;
+      afterTaskId = batch.lastTaskId;
+    }
+    afterTaskId = null;
+    for (;;) {
+      input.signal?.throwIfAborted();
+      const after: string | null = afterTaskId;
+      const batch: WatcherOverrideRemovalBatch = await this.batch('watchers', progress, () =>
+        this.assignments.clearWatcherOverridesBatch(input.organizationId, input.userId, after),
+      );
+      if (batch.outcome === 'member-again') {
+        return { outcome: 'member-again', ...progress };
+      }
+      if (batch.outcome === 'none-left') {
+        return { outcome: 'completed', ...progress };
+      }
+      progress.batches += 1;
+      progress.watcherOverridesRemoved += batch.removed;
       afterTaskId = batch.lastTaskId;
     }
   }

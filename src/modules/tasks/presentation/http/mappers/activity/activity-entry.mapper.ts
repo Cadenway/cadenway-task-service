@@ -28,6 +28,12 @@ export function toActivityEntry(view: ActivityEntryView): ActivityEntry {
   switch (view.change.kind) {
     case 'create':
       return entry;
+    case 'comment':
+      return {
+        ...entry,
+        commentId: view.change.commentId,
+        commentExcerpt: view.change.commentExcerpt,
+      };
     case 'status':
       return { ...entry, status: { from: view.change.status.from, to: view.change.status.to } };
     case 'priority':

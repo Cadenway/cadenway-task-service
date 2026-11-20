@@ -334,6 +334,39 @@ export class OutboxSpaceEvents implements SpaceEvents {
   }
 
   /**
+   * Method spaceAccessRepublished
+   *
+   * @description
+   * Appends `space.access-republished.v1`: every grant of the space after the change, in the order
+   * they were first given, the people whose grant changed, and the version of the space.
+   *
+   * @param {Space} space - The space at its version after the change.
+   * @param {readonly GrantEntry[]} grants - Every grant of the space after the change.
+   * @param {readonly string[]} changedUserIds - The people whose grant changed.
+   * @param {EventActor} actor - Who changed it: a member, or task-service.
+   * @returns {Promise<void>} Resolves once appended.
+   * @throws {Error} When the payload does not match the schema of the contract: a defect, which
+   * rolls the transaction back.
+   */
+  public async spaceAccessRepublished(
+    space: Space,
+    grants: readonly GrantEntry[],
+    changedUserIds: readonly string[],
+    actor: EventActor,
+  ): Promise<void> {
+    const state: SpaceState = space.snapshot;
+    await this.outbox.append(this.transaction, eventSchemas, 'space.access-republished.v1', {
+      organizationId: state.organizationId,
+      actor: { type: actor.type, id: actor.id },
+      version: state.version,
+      spaceId: state.id,
+      grants: grants.map((grant: GrantEntry) => ({ userId: grant.userId, role: grant.role })),
+      changedUserIds: [...changedUserIds],
+    });
+    this.onAppend();
+  }
+
+  /**
    * Method listAccessChanged
    *
    * @description

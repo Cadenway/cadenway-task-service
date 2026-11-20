@@ -32,6 +32,11 @@ function toActivityChange(row: ActivityEntryRow): ActivityChange {
   switch (row.kind) {
     case 'create':
       return { kind: 'create' };
+    case 'comment':
+      if (row.commentId === null || row.commentExcerpt === null) {
+        throw new Error(`The stored comment activity ${row.id} has no comment detail.`);
+      }
+      return { kind: 'comment', commentId: row.commentId, commentExcerpt: row.commentExcerpt };
     case 'status':
       if (row.statusFrom === null || row.statusTo === null) {
         throw new Error(`The stored status entry ${row.id} of task ${row.taskId} has no status.`);
@@ -117,6 +122,8 @@ export function toActivityDetail(
     | 'dueTo'
     | 'assigneeUserId'
     | 'assigneeAdded'
+    | 'commentId'
+    | 'commentExcerpt'
   >
 > {
   return {
@@ -128,6 +135,8 @@ export function toActivityDetail(
     dueTo: change.kind === 'due' ? change.dueDate.to : null,
     assigneeUserId: change.kind === 'assign' ? change.assignee.userId : null,
     assigneeAdded: change.kind === 'assign' ? change.assignee.added : null,
+    commentId: change.kind === 'comment' ? change.commentId : null,
+    commentExcerpt: change.kind === 'comment' ? change.commentExcerpt : null,
   };
 }
 

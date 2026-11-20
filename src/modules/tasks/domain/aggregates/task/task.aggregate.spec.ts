@@ -169,6 +169,7 @@ describe('Task.create: a new task in a list the caller sees', () => {
       parentKey: null,
       name: 'Configurer le domaine vérifié',
       description: '  Markdown **gras**  ',
+      descriptionMentions: [],
       status: 'todo',
       cancelReason: null,
       cancelNote: null,
@@ -181,6 +182,20 @@ describe('Task.create: a new task in a list the caller sees', () => {
       completedAt: null,
       createdBy: CAMILLE_ACTOR,
     });
+  });
+
+  it('versions a spans-only edit and clears spans when the description is replaced', () => {
+    const task = Task.restore(taskState({ description: '😀 @Hugo' }));
+    const spans = [{ userId: HUGO, start: 2, end: 7 }];
+
+    const edit = task.update({ descriptionMentions: spans }, ALL_STATUSES, NOW);
+    expect(edit.changed).toEqual(['descriptionMentions']);
+    expect(edit.task.snapshot.descriptionMentions).toEqual(spans);
+    expect(edit.task.update({ descriptionMentions: spans }, ALL_STATUSES, NOW).changed).toEqual([]);
+
+    const replacement = edit.task.update({ description: 'Different text' }, ALL_STATUSES, NOW);
+    expect(replacement.changed).toEqual(['description', 'descriptionMentions']);
+    expect(replacement.task.snapshot.descriptionMentions).toEqual([]);
   });
 
   it('sets completedAt when the task is created done', () => {

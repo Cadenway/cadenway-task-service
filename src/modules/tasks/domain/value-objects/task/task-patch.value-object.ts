@@ -1,3 +1,4 @@
+import type { DescriptionMention } from '../mention/description-mention.value-object.js';
 import type { TaskAttachment } from '../subtask/task-attachment.value-object.js';
 import type { CancelReason } from './cancel-reason.value-object.js';
 import type { PriorityKey } from './priority-key.value-object.js';
@@ -37,6 +38,9 @@ export interface TaskPatch {
    * @readonly
    */
   readonly description?: string | null;
+
+  /** Replacement spans, independent of a description replacement. */
+  readonly descriptionMentions?: readonly DescriptionMention[];
 
   /**
    * Property status
