@@ -3438,6 +3438,16 @@ export class InMemoryTasks implements TasksUnitOfWork {
                 ]),
             ),
           ),
+        attachmentLocationByKey: (organizationId: string, key: TaskKey) => {
+          this.trace.push('reader.attachmentLocationByKey');
+          const row = inOrganization(organizationId).find(
+            (candidate: TaskState): boolean =>
+              candidate.key.equals(key) && candidate.trash === null,
+          );
+          return Promise.resolve(
+            row === undefined ? null : { ...locationOf(row), archived: row.archive !== null },
+          );
+        },
         locationByKey: (organizationId: string, key: TaskKey): Promise<TaskLocation | null> => {
           this.trace.push('reader.locationByKey');
           // A task in the trash is left out (`trash_entry_id is null`).

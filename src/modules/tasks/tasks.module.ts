@@ -58,6 +58,7 @@ import { removeTaskLabelProvider } from './composition/providers/use-cases/label
 import { createSubtaskProvider } from './composition/providers/use-cases/subtask/create-subtask.provider.js';
 import { listSubtasksProvider } from './composition/providers/use-cases/subtask/list-subtasks.provider.js';
 import { checkTaskAccessProvider } from './composition/providers/use-cases/task/check-task-access.provider.js';
+import { checkTaskAttachmentAccessProvider } from './composition/providers/use-cases/task/check-task-attachment-access.provider.js';
 import { createTaskProvider } from './composition/providers/use-cases/task/create-task.provider.js';
 import { createIntakeTaskProvider } from './composition/providers/use-cases/intake/create-intake-task.provider.js';
 import { resolveIntakeContactTaskProvider } from './composition/providers/use-cases/intake/resolve-intake-contact-task.provider.js';
@@ -90,6 +91,7 @@ import { TaskGroupsController } from './presentation/http/controllers/query/task
 import { UserTasksController } from './presentation/http/controllers/user/user-tasks.controller.js';
 import { ListActivityController } from './presentation/http/controllers/activity/list-activity.controller.js';
 import { TaskAccessController } from './presentation/http/controllers/access/task-access.controller.js';
+import { TaskAttachmentAccessController } from './presentation/http/controllers/access/task-attachment-access.controller.js';
 import { TaskActivityController } from './presentation/http/controllers/activity/task-activity.controller.js';
 import { TaskTimeController } from './presentation/http/controllers/time/task-time.controller.js';
 import { ListReportsController } from './presentation/http/controllers/reporting/list-reports.controller.js';
@@ -219,6 +221,7 @@ markIdempotent(TaskTimeController.prototype, 'create');
     TaskTrashController,
     TrashController,
     TaskAccessController,
+    TaskAttachmentAccessController,
     TaskParticipantsController,
   ],
   providers: [
@@ -279,6 +282,7 @@ markIdempotent(TaskTimeController.prototype, 'create');
     listMyTasksProvider,
     getHomeProvider,
     checkTaskAccessProvider,
+    checkTaskAttachmentAccessProvider,
     resolveCommentTaskProvider,
     beginCommentProvider,
     recordCommentActivityProvider,
