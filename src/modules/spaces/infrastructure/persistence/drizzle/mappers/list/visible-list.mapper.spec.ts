@@ -109,7 +109,7 @@ describe('the join of the grant of the viewer on the lists', () => {
     );
 
     expect(text).toBe(
-      `"viewer_list_grant"."organization_id" = $1 and "viewer_list_grant"."list_id" = "lists"."id" and "viewer_list_grant"."user_id" = $2`,
+      `"viewer_list_grant"."organization_id" = $1 and "viewer_list_grant"."list_id" = "lists"."id" and "viewer_list_grant"."user_id" = $2 and public.organization_member_grant_is_effective("viewer_list_grant"."organization_id", "viewer_list_grant"."user_id", "viewer_list_grant"."member_id", "viewer_list_grant"."granted_at")`,
     );
     expect(params).toEqual([ORGANIZATION, 'viewer']);
   });

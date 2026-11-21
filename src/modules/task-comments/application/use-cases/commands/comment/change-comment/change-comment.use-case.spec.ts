@@ -64,6 +64,7 @@ function fixture(canModerateAutomationComment = false) {
     canModerateAutomationComment,
   });
   const tasks: CommentTaskWriter = {
+    authorizeUser: vi.fn(),
     authorizeAutomation: vi.fn(),
     begin,
     record: vi.fn(),

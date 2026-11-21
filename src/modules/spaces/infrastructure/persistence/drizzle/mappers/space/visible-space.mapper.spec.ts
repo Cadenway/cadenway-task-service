@@ -54,7 +54,7 @@ describe('the joins of the grants of the viewer on the spaces', () => {
     );
 
     expect(text).toBe(
-      `"viewer_space_grant"."organization_id" = $1 and "viewer_space_grant"."space_id" = "spaces"."id" and "viewer_space_grant"."user_id" = $2`,
+      `"viewer_space_grant"."organization_id" = $1 and "viewer_space_grant"."space_id" = "spaces"."id" and "viewer_space_grant"."user_id" = $2 and public.organization_member_grant_is_effective("viewer_space_grant"."organization_id", "viewer_space_grant"."user_id", "viewer_space_grant"."member_id", "viewer_space_grant"."granted_at")`,
     );
     expect(params).toEqual([ORGANIZATION, 'viewer']);
   });
@@ -64,7 +64,7 @@ describe('the joins of the grants of the viewer on the spaces', () => {
     const join = new PgDialect().sqlToQuery(viewerListSpacesJoin());
 
     expect(subquery.sql).toBe(
-      `(select distinct "list_grants"."space_id" from "list_grants" inner join "lists" on "lists"."organization_id" = "list_grants"."organization_id" and "lists"."id" = "list_grants"."list_id" where "list_grants"."organization_id" = $1 and "list_grants"."user_id" = $2 and "lists"."deleted_at" is null) as "viewer_list_spaces"`,
+      `(select distinct "list_grants"."space_id" from "list_grants" inner join "lists" on "lists"."organization_id" = "list_grants"."organization_id" and "lists"."id" = "list_grants"."list_id" where "list_grants"."organization_id" = $1 and "list_grants"."user_id" = $2 and public.organization_member_grant_is_effective("list_grants"."organization_id", "list_grants"."user_id", "list_grants"."member_id", "list_grants"."granted_at") and "lists"."deleted_at" is null) as "viewer_list_spaces"`,
     );
     expect(subquery.params).toEqual([ORGANIZATION, 'viewer']);
     expect(join.sql).toBe(`"viewer_list_spaces"."space_id" = "spaces"."id"`);

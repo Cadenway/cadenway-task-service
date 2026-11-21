@@ -4,6 +4,7 @@ import {
   validateCommentText,
 } from '../../../../../domain/policies/comment/comment-text.policy.js';
 import type { AutomationCommentInput } from '../../../../models/comment/automation-comment-input.model.js';
+import type { CommentReadInput } from '../../../../models/comment/comment-read-input.model.js';
 import type { CommentCreated } from '../../../../models/comment/comment-created.model.js';
 import { CommentTrashedTaskRefusal } from '../../../../models/comment/comment-trashed-task-refusal.model.js';
 import { CommentWriteRefusal } from '../../../../models/comment/comment-write-refusal.model.js';
@@ -60,6 +61,16 @@ export class CreateComment {
       actorUserId: input.ruleAuthorUserId,
       taskKey: input.taskKey,
     });
+  }
+
+  /** Rechecks a human author's current task access before replaying a receipt. */
+  public async authorizeUser(input: CommentReadInput): Promise<void> {
+    const task = await this.tasks.authorizeUser(input);
+    if (task.outcome === 'authorized') return;
+    if (task.outcome === 'task-trashed') throw new CommentTrashedTaskRefusal(task.details);
+    if (task.outcome === 'role-insufficient')
+      throw new CommentWriteRefusal(task.outcome, task.role);
+    throw new CommentWriteRefusal(task.outcome);
   }
 
   /** Shares the comment write, task activity and event transaction across author types. */

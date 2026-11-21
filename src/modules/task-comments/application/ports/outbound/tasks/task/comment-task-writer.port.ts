@@ -7,6 +7,11 @@ export interface CommentTaskWriter {
   /** Checks current authority for a delegated comment without advancing the task version. */
   authorizeAutomation(input: CommentReadInput): Promise<boolean>;
 
+  /** Checks a human commenter's current authority without changing the task. */
+  authorizeUser(
+    input: CommentReadInput,
+  ): Promise<Exclude<CommentWriteTask, { outcome: 'ready' }> | { readonly outcome: 'authorized' }>;
+
   /** Authorizes and locks the task, then advances its version in the current transaction. */
   begin(
     input: CommentReadInput & {

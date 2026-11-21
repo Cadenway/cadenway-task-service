@@ -13,6 +13,9 @@ export interface CleanUpRemovedMemberInput {
   /** The account of the member who left, in lower case. */
   readonly userId: string;
 
+  /** Membership that ended, absent on jobs created before membership-scoped grants. */
+  readonly memberId?: string;
+
   /**
    * Aborted when the attempt can no longer succeed (expired, or abandoned at shutdown): the use
    * case starts no batch after it, and rejects with its reason.

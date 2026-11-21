@@ -33,18 +33,22 @@ const ID_PATTERN: RegExp = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
  *
  * @description
  * A clean-up job: the organization of the transaction that enqueued it, and the account in its
- * payload, with the `traceparent` of the removal when there was a trace. Other members are
- * ignored, so a field added later does not fail an older reader.
+ * payload, the membership generation when available, and the removal's `traceparent`.
+ * Old jobs omit the membership generation. Other fields are ignored.
  *
- * @type {z.ZodType<{ readonly organizationId: string; readonly payload: { readonly userId: string; readonly traceparent?: string | undefined } }>}
  */
 const jobSchema: z.ZodType<{
   readonly organizationId: string;
-  readonly payload: { readonly userId: string; readonly traceparent?: string | undefined };
+  readonly payload: {
+    readonly userId: string;
+    readonly memberId?: string | undefined;
+    readonly traceparent?: string | undefined;
+  };
 }> = z.object({
   organizationId: z.string().regex(ID_PATTERN),
   payload: z.object({
     userId: z.string().regex(ID_PATTERN),
+    memberId: z.string().regex(ID_PATTERN).optional(),
     traceparent: z.string().optional(),
   }),
 });
@@ -182,10 +186,7 @@ export class CleanUpRemovedMemberHandler implements OnApplicationBootstrap {
   public async handle(job: Job): Promise<void> {
     const {
       organizationId,
-      payload: { userId, traceparent },
-    }: {
-      readonly organizationId: string;
-      readonly payload: { readonly userId: string; readonly traceparent?: string | undefined };
+      payload: { userId, memberId, traceparent },
     } = jobSchema.parse({ organizationId: job.organizationId, payload: job.payload });
     const parent: Context = parentContext(traceparent);
     const span: Span = trace
@@ -202,6 +203,7 @@ export class CleanUpRemovedMemberHandler implements OnApplicationBootstrap {
           this.cleanUpRemovedMember.execute({
             organizationId: organizationId.toLowerCase(),
             userId: userId.toLowerCase(),
+            ...(memberId === undefined ? {} : { memberId: memberId.toLowerCase() }),
             signal: job.signal,
           }),
       );

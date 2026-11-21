@@ -131,11 +131,8 @@ export class GrantRequestedAccess {
    */
   public async execute(input: GrantRequestedAccessInput): Promise<GrantRequestedAccessOutput> {
     return this.unitOfWork.run(async (store: SpacesStore): Promise<GrantRequestedAccessOutput> => {
-      const granteeRole: MemberRole | null = await this.members.roleOf(
-        input.organizationId,
-        input.granteeUserId,
-        true,
-      );
+      const grantee: { readonly memberId: string; readonly role: MemberRole } | null =
+        await this.members.grantMembershipOf(input.organizationId, input.granteeUserId, true);
       const actor: EventActor = { type: 'user', id: input.actorUserId };
       const target: GrantRequestedAccessInput['target'] = input.target;
       if (target.kind === 'space') {
@@ -167,7 +164,7 @@ export class GrantRequestedAccess {
           input,
           resource,
           space.snapshot.ownerUserId,
-          granteeRole,
+          grantee,
         );
         if (!('grants' in raised)) {
           return raised;
@@ -223,7 +220,7 @@ export class GrantRequestedAccess {
         input,
         resource,
         locked.space.snapshot.ownerUserId,
-        granteeRole,
+        grantee,
       );
       if (!('grants' in raised)) {
         return raised;
@@ -262,14 +259,18 @@ export class GrantRequestedAccess {
     input: GrantRequestedAccessInput,
     resource: GrantedResource,
     ownerUserId: string,
-    granteeRole: MemberRole | null,
+    grantee: { readonly memberId: string; readonly role: MemberRole } | null,
   ): Promise<GrantsUpdate | GrantRequestedAccessOutput> {
     const stored: StoredGrant[] = await store.grants.listOf(input.organizationId, resource);
     const grants: ResourceGrants = this.keeper.restore(resource, ownerUserId, stored);
     let update: GrantsUpdate;
     try {
       update = this.keeper.apply(() =>
-        grants.raise({ userId: input.granteeUserId, role: input.role, granteeRole }),
+        grants.raise({
+          userId: input.granteeUserId,
+          role: input.role,
+          granteeRole: grantee?.role ?? null,
+        }),
       );
     } catch (error: unknown) {
       if (error instanceof SpaceRefusal) {
@@ -286,10 +287,20 @@ export class GrantRequestedAccess {
       throw error;
     }
     if (update.changed && update.role !== null) {
-      await store.grants.put(input.organizationId, resource, input.granteeUserId, update.role, {
-        type: 'user',
-        id: input.actorUserId,
-      });
+      if (grantee === null) {
+        return { outcome: 'refused', reason: 'grantee-invalid' };
+      }
+      await store.grants.put(
+        input.organizationId,
+        resource,
+        input.granteeUserId,
+        update.role,
+        {
+          type: 'user',
+          id: input.actorUserId,
+        },
+        grantee.memberId,
+      );
     }
     return update;
   }

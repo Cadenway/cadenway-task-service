@@ -21,6 +21,7 @@ import { CommentsController } from './presentation/http/controllers/comment/comm
 import { ApplyAutomationTaskComment } from './application/use-cases/commands/comment/apply-automation-task-comment/apply-automation-task-comment.use-case.js';
 import { AutomationCommentController } from './presentation/http/controllers/comment/automation-comment.controller.js';
 import { AutomationCommentReplayGuard } from './presentation/http/guards/comment/automation-comment-replay.guard.js';
+import { CommentReplayAccessGuard } from './presentation/http/guards/comment/comment-replay-access.guard.js';
 
 /** Applies the kit's idempotency metadata to the creation handler. */
 function markCreateIdempotent(): void {
@@ -37,6 +38,7 @@ markCreateIdempotent();
   exports: [AllocateApprovalCommentId, CreateApprovalComment, FindCommentExcerpts],
   providers: [
     AutomationCommentReplayGuard,
+    CommentReplayAccessGuard,
     {
       provide: ApplyAutomationTaskComment,
       inject: [CreateComment],

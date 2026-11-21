@@ -62,6 +62,22 @@ export class OrganizationMembersMemberDirectory implements MemberDirectory {
 
   // #region Methods
   /**
+   * Finds the unique active membership for a new resource grant.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} userId - The account receiving the grant.
+   * @param {boolean} [lock] - Keeps the membership locked through the write.
+   * @returns {Promise<FindOrganizationMemberOutput | null>} The grant's membership generation.
+   */
+  public grantMembershipOf(
+    organizationId: string,
+    userId: string,
+    lock = false,
+  ): Promise<FindOrganizationMemberOutput | null> {
+    return this.findMember.execute({ organizationId, userId, lock, unique: true });
+  }
+
+  /**
    * Method roleOf
    *
    * @description

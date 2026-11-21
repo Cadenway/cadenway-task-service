@@ -4658,6 +4658,45 @@ describe('tasks', () => {
       ]);
     });
 
+    it('rechecks task visibility and comment authority before replaying a comment receipt', async () => {
+      const space = await createSpace(hugo, {
+        name: 'Comment replay permissions',
+        prefix: 'RPL',
+        visibility: 'private',
+      });
+      const task = await createTask(hugo, space.firstList.id, { name: 'Comment replay' });
+      const grant = `/internal/v1/lists/${space.firstList.id}/grants/${lea.userId}`;
+      const path = `/internal/v1/tasks/${task.key}/comments`;
+      const body = { body: 'Commentaire de Camille' };
+      const headers = { 'Idempotency-Key': 'comment-replay-authority' };
+
+      expectStatus(await send('put', grant, hugo, { body: { role: 'comment' } }), 200);
+      const first = await send('post', path, lea, { body, headers });
+      expectStatus(first, 201);
+      const replay = await send('post', path, lea, { body, headers });
+      expectStatus(replay, 201);
+      expect(replay.headers['idempotent-replayed']).toBe('true');
+      expect(replay.headers.location).toBe(first.headers.location);
+      expect(replay.headers.etag).toBe(first.headers.etag);
+      expect(bodyOf(replay)).toEqual(bodyOf(first));
+
+      expectStatus(await send('put', grant, hugo, { body: { role: 'view' } }), 200);
+      const downgraded = await send('post', path, lea, { body, headers });
+      expectProblem(downgraded, 403, 'access.role-insufficient');
+      expect(downgraded.headers['idempotent-replayed']).toBeUndefined();
+
+      expectStatus(await send('delete', grant, hugo), 204);
+      const revoked = await send('post', path, lea, { body, headers });
+      expectProblem(revoked, 404, 'task.not-found');
+      expect(revoked.headers['idempotent-replayed']).toBeUndefined();
+      const events = await asSystem<{ readonly payload: unknown }>(
+        "select payload from outbox_events where organization_id = $1 and event_name = 'comment.created.v1' and payload ->> 'key' = $2",
+        [atelierNordId, task.key],
+      );
+      expect(events).toHaveLength(1);
+      expect((await readTask(hugo, task.key)).version).toBe(task.version + 1);
+    });
+
     it('creates once with idempotency and commits comment activity and outbox together', async () => {
       const restricted = await createSpace(hugo, {
         name: 'Comment permissions',

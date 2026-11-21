@@ -17,6 +17,9 @@ const ATELIER_NORD: string = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b2f';
 /** Account of Hugo Dubois (HD), who left Atelier Nord. */
 const HUGO: string = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b32';
 
+/** The membership that ended. */
+const HUGO_MEMBERSHIP: string = '019a9000-0000-7000-8000-000000000001';
+
 /** A W3C `traceparent` of the delivery of the removal. */
 const TRACEPARENT: string = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
 
@@ -116,17 +119,21 @@ describe('CleanUpRemovedMemberHandler: each job cleans up after one former membe
     expect(inputs).toEqual([{ organizationId: ATELIER_NORD, userId: HUGO, signal: job.signal }]);
   });
 
-  it('lower-cases the ids of a job whose organization and account were enqueued in upper case', async () => {
+  it('lower-cases the organization, account and membership IDs of the job', async () => {
     const { handler, inputs } = handlerOn(COMPLETED);
 
     await handler.handle(
       jobOf({
         organizationId: ATELIER_NORD.toUpperCase(),
-        payload: { userId: HUGO.toUpperCase() },
+        payload: { userId: HUGO.toUpperCase(), memberId: HUGO_MEMBERSHIP.toUpperCase() },
       }),
     );
 
-    expect(inputs[0]).toMatchObject({ organizationId: ATELIER_NORD, userId: HUGO });
+    expect(inputs[0]).toMatchObject({
+      organizationId: ATELIER_NORD,
+      userId: HUGO,
+      memberId: HUGO_MEMBERSHIP,
+    });
   });
 
   it('accepts the ids the kit accepts, whatever their version and variant bits', async () => {

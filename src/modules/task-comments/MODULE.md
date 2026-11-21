@@ -47,6 +47,9 @@ cascades on purge. Migration `0009_collaboration.sql` creates the table.
 
 The ordinary comment routes require an internal gateway user and a visible task. An invisible task answers
 `task.not-found`; a missing, deleted or unrelated comment answers `comment.not-found`.
+When an idempotency key is present, comment creation checks the actor's current task visibility and
+comment authority before replaying its stored response. A revoked or downgraded actor cannot read
+the receipt through this route.
 A task in a restorable trash entry answers `task.trashed` with its entry details to an eligible
 editor. A comment patch requires a JSON body, including when the submitted patch is `{}`.
 

@@ -60,6 +60,7 @@ describe('create comment', () => {
     const begin = vi.fn().mockResolvedValue(ready);
     const record = vi.fn().mockResolvedValue(undefined);
     const tasks: CommentTaskWriter = {
+      authorizeUser: vi.fn(),
       authorizeAutomation: vi.fn(),
       begin,
       record,
@@ -102,7 +103,14 @@ describe('create comment', () => {
           return work(store);
         },
       },
-      { authorizeAutomation, begin, record, change: vi.fn(), canRead: vi.fn() },
+      {
+        authorizeUser: vi.fn(),
+        authorizeAutomation,
+        begin,
+        record,
+        change: vi.fn(),
+        canRead: vi.fn(),
+      },
     );
     const useCase = new ApplyAutomationTaskComment(create);
 
@@ -157,6 +165,7 @@ describe('create comment', () => {
     const create = new CreateComment(
       { read: vi.fn(), write: async (work) => work(store) },
       {
+        authorizeUser: vi.fn(),
         authorizeAutomation: vi.fn(),
         begin: () => Promise.resolve({ outcome: 'role-insufficient', role: 'comment' }),
         record,
@@ -182,6 +191,7 @@ describe('create comment', () => {
     };
     const unit: CommentUnitOfWork = { read: vi.fn(), write: async (work) => work(store) };
     const tasks: CommentTaskWriter = {
+      authorizeUser: vi.fn(),
       authorizeAutomation: vi.fn(),
       begin: () => Promise.resolve({ outcome: 'role-insufficient', role: 'view' }),
       record: vi.fn(),
@@ -210,6 +220,7 @@ describe('create comment', () => {
     };
     const unit: CommentUnitOfWork = { read: vi.fn(), write: async (work) => work(store) };
     const tasks: CommentTaskWriter = {
+      authorizeUser: vi.fn(),
       authorizeAutomation: vi.fn(),
       begin: () => Promise.resolve(ready),
       record: vi.fn(),
@@ -236,6 +247,7 @@ describe('create comment', () => {
     };
     const unit: CommentUnitOfWork = { read: vi.fn(), write: async (work) => work(store) };
     const tasks: CommentTaskWriter = {
+      authorizeUser: vi.fn(),
       authorizeAutomation: vi.fn(),
       begin: vi
         .fn<CommentTaskWriter['begin']>()
@@ -267,6 +279,7 @@ describe('create comment', () => {
     };
     const unit: CommentUnitOfWork = { read: vi.fn(), write: async (work) => work(store) };
     const tasks: CommentTaskWriter = {
+      authorizeUser: vi.fn(),
       authorizeAutomation: vi.fn(),
       begin: vi.fn().mockResolvedValue(ready),
       record: vi.fn(),
@@ -295,6 +308,7 @@ describe('create comment', () => {
     };
     const unit: CommentUnitOfWork = { read: vi.fn(), write: async (work) => work(store) };
     const tasks: CommentTaskWriter = {
+      authorizeUser: vi.fn(),
       authorizeAutomation: vi.fn(),
       begin: vi.fn().mockResolvedValue(ready),
       record: vi.fn(),

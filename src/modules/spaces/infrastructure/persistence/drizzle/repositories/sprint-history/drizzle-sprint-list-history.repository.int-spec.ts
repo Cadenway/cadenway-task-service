@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
@@ -10,6 +11,7 @@ const org = '01938f6e-6d1a-7c3e-9a51-2f0c4b8d7e10';
 const otherOrg = '01938f6e-6d1a-7c3e-9a51-2f0c4b8d7e20';
 const space = '019a7000-0000-7000-8000-000000000001';
 const user = '019a7004-0000-7000-8000-000000000001';
+const membership = '019a7004-0000-7000-8000-000000000002';
 const viewer = { userId: user, role: 'guest' as const };
 const list = (suffix: number): string =>
   `019a7001-0000-7000-8000-${String(suffix).padStart(12, '0')}`;
@@ -65,8 +67,16 @@ describe('DrizzleSprintListHistoryRepository', () => {
         archived_at timestamptz, deleted_at timestamptz, created_at timestamptz,
         primary key (organization_id,id)
       );
-      create table space_grants (organization_id uuid, space_id uuid, user_id uuid, role text);
-      create table list_grants (organization_id uuid, list_id uuid, user_id uuid, role text);
+      create table organization_members (
+        organization_id uuid, id uuid, user_id uuid, created_at timestamptz, removed_at timestamptz,
+        primary key (organization_id,id)
+      );
+      create table space_grants (
+        organization_id uuid, space_id uuid, user_id uuid, role text, granted_at timestamptz
+      );
+      create table list_grants (
+        organization_id uuid, list_id uuid, user_id uuid, role text, granted_at timestamptz
+      );
       create table sprint_list_history (
         organization_id uuid, sequence bigint generated always as identity, list_id uuid,
         space_id uuid, sprint_start_date date, sprint_end_date date, deleted_at timestamptz,
@@ -74,6 +84,20 @@ describe('DrizzleSprintListHistoryRepository', () => {
         foreign key (organization_id,list_id) references lists on delete cascade
       );
     `);
+    await pool.query(
+      await readFile(
+        new URL(
+          '../../../../../../../../migrations/0022_membership_grant_epochs.sql',
+          import.meta.url,
+        ),
+        'utf8',
+      ),
+    );
+    await pool.query("insert into organization_members values ($1,$2,$3,'2026-01-01',null)", [
+      org,
+      membership,
+      user,
+    ]);
     await pool.query(
       `insert into spaces values ($1,$2,$3,'private',false,null),($4,$2,$3,'private',false,null)`,
       [org, space, user, otherOrg],
@@ -92,11 +116,11 @@ describe('DrizzleSprintListHistoryRepository', () => {
         ],
       );
       if (index <= 5) {
-        await pool.query("insert into list_grants values ($1,$2,$3,'view')", [
-          org,
-          list(index),
-          user,
-        ]);
+        await pool.query(
+          `insert into list_grants (organization_id,list_id,user_id,role,granted_at,member_id)
+           values ($1,$2,$3,'view','2026-02-01',$4)`,
+          [org, list(index), user, membership],
+        );
       }
     }
     await pool.query(

@@ -29,7 +29,7 @@ export class CreateListCopy {
   /** Uses the ordinary create-list operation and access rules. */
   public constructor(
     private readonly unitOfWork: SpacesUnitOfWork,
-    members: MemberDirectory,
+    private readonly members: MemberDirectory,
     private readonly create: CreateList,
   ) {
     this.viewers = new ViewerResolver(members);
@@ -42,6 +42,7 @@ export class CreateListCopy {
     return this.unitOfWork.run(async (store: SpacesStore): Promise<CreateListCopyOutput> => {
       const { organizationId, actorUserId, sourceListId } = input;
       const viewer: Viewer = await this.viewers.resolve(organizationId, actorUserId, true);
+      const membership = await this.members.grantMembershipOf(organizationId, actorUserId, true);
       const initial: TaskList | null = await store.lists.find(organizationId, sourceListId);
       const space: Space | null =
         initial === null
@@ -91,6 +92,7 @@ export class CreateListCopy {
         store,
         TaskList.restore(result.list),
         actorUserId,
+        membership?.memberId ?? null,
       );
       return toVisibleList(editable.snapshot, 'edit');
     });
@@ -101,15 +103,20 @@ export class CreateListCopy {
     store: SpacesStore,
     list: TaskList,
     userId: string,
+    memberId: string | null,
   ): Promise<TaskList> {
     const { id: listId, organizationId, spaceId } = list.snapshot;
     const actor: EventActor = { type: 'user', id: userId };
+    if (memberId === null) {
+      throw new SpaceRefusal({ reason: 'organization-not-found' });
+    }
     await store.grants.put(
       organizationId,
       { kind: 'list', listId, spaceId },
       userId,
       'edit',
       actor,
+      memberId,
     );
     const changed: TaskList = list.recordAccessChange();
     await store.lists.update(changed);

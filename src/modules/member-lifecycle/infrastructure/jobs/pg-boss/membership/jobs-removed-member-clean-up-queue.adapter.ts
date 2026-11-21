@@ -19,6 +19,9 @@ interface CleanUpJobPayload {
   /** The account of the member who left. */
   readonly userId: string;
 
+  /** The membership generation that ended. */
+  readonly memberId: string;
+
   /** The `traceparent` of the delivery of the removal, absent without an active trace. */
   readonly traceparent?: string;
   // #endregion
@@ -114,7 +117,7 @@ export class JobsRemovedMemberCleanUpQueue implements RemovedMemberCleanUpQueue 
   ): Promise<boolean> {
     const traceparent: string | undefined = activeTraceparent();
     const payload: CleanUpJobPayload =
-      traceparent === undefined ? { userId } : { userId, traceparent };
+      traceparent === undefined ? { userId, memberId } : { userId, memberId, traceparent };
     const result: JobEnqueueResult = await this.jobs.enqueue(
       this.transaction,
       CLEAN_UP_REMOVED_MEMBER_QUEUE,

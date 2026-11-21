@@ -41,6 +41,7 @@ the removal committed.
   answers, and for whether a former member joined again (the clean-up of their requests).
   Its `stamp` method returns the identity, role and version of the same selected membership for
   the tasks module to compare with Organization's Search membership proof.
+  Its `unique` option rejects ambiguous active memberships before granting resource access.
 - `ListActiveMembers` pages only `userId` and `memberId` in user ID order. It selects each
   account's least privileged active membership before applying the list reader audience.
 - `FindOrganizationMemberRoles` applies the same least-privileged rule in a single batch. The
@@ -51,6 +52,12 @@ organization of the context; they must not be called from a system transaction (
 to open a tenant transaction inside a system one). The caller passes the organization of its
 verified context or of its event: row-level security hides any other, so another value finds
 nothing.
+
+The spaces module also uses the SQL predicates `public.organization_member_grant_is_effective`
+and `public.organization_member_grant_is_obsolete` to join grant checks in the same statement as
+the resource query. Both explicitly correlate the organization and account, and execute with the
+invoker's row-level security. The first predicate requires the unique active membership. The
+second requires a matching tombstone before allowing removal of an obsolete grant.
 
 ## Owned tables
 

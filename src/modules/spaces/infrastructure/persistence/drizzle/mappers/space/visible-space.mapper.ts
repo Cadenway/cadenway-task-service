@@ -8,6 +8,7 @@ import { listGrants } from '../../schemas/access/list-grant.schema.js';
 import { spaceGrants } from '../../schemas/access/space-grant.schema.js';
 import { taskLists } from '../../schemas/list/task-list.schema.js';
 import { spaces } from '../../schemas/space/space.schema.js';
+import { effectiveGrantCondition } from '../access/grant-membership.mapper.js';
 import { toAccessRole } from '../access/stored-grant.mapper.js';
 import { undeletedListCondition } from '../list/list-tombstone.mapper.js';
 import { undeletedSpaceCondition } from './space-tombstone.mapper.js';
@@ -50,7 +51,7 @@ const LIST_SPACES_SPACE_ID: SQL = sql`${sql.identifier('viewer_list_spaces')}.${
  * @returns {SQL} The join condition.
  */
 export function viewerSpaceGrantJoin(organizationId: string, viewerUserId: string): SQL {
-  return sql`${viewerSpaceGrant.organizationId} = ${organizationId} and ${viewerSpaceGrant.spaceId} = ${spaces.id} and ${viewerSpaceGrant.userId} = ${viewerUserId}`;
+  return sql`${viewerSpaceGrant.organizationId} = ${organizationId} and ${viewerSpaceGrant.spaceId} = ${spaces.id} and ${viewerSpaceGrant.userId} = ${viewerUserId} and ${effectiveGrantCondition(viewerSpaceGrant)}`;
 }
 
 /**
@@ -71,7 +72,7 @@ export function viewerSpaceGrantJoin(organizationId: string, viewerUserId: strin
  * @returns {SQL} The aliased subquery.
  */
 export function viewerListSpaces(organizationId: string, viewerUserId: string): SQL {
-  return sql`(select distinct ${listGrants.spaceId} from ${listGrants} inner join ${taskLists} on ${taskLists.organizationId} = ${listGrants.organizationId} and ${taskLists.id} = ${listGrants.listId} where ${listGrants.organizationId} = ${organizationId} and ${listGrants.userId} = ${viewerUserId} and ${undeletedListCondition()}) as ${sql.identifier('viewer_list_spaces')}`;
+  return sql`(select distinct ${listGrants.spaceId} from ${listGrants} inner join ${taskLists} on ${taskLists.organizationId} = ${listGrants.organizationId} and ${taskLists.id} = ${listGrants.listId} where ${listGrants.organizationId} = ${organizationId} and ${listGrants.userId} = ${viewerUserId} and ${effectiveGrantCondition(listGrants)} and ${undeletedListCondition()}) as ${sql.identifier('viewer_list_spaces')}`;
 }
 
 /**

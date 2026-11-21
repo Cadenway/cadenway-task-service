@@ -77,6 +77,30 @@ export class BeginComment {
     }
   }
 
+  /** Checks a human commenter's current authority without advancing the task version. */
+  public async authorizeUser(
+    input: Pick<BeginCommentInput, 'organizationId' | 'actorUserId' | 'taskKey'>,
+  ): Promise<
+    Exclude<BeginCommentOutput, { outcome: 'ready' }> | { readonly outcome: 'authorized' }
+  > {
+    try {
+      return await this.unit.run(async (store) => {
+        const result = await this.prepare(store, input);
+        return result.outcome === 'locked' ? { outcome: 'authorized' } : result;
+      });
+    } catch (error: unknown) {
+      if (error instanceof TaskRefusal) {
+        if (error.refusal.reason === 'organization-not-found')
+          return { outcome: 'organization-not-found' };
+        if (error.refusal.reason === 'task-archived') return { outcome: 'task-archived' };
+        if (error.refusal.reason === 'task-trashed')
+          return { outcome: 'task-trashed', details: TaskRefusal.trashDetails(error.refusal) };
+        if (error.refusal.reason === 'task-not-found') return { outcome: 'task-not-found' };
+      }
+      throw error;
+    }
+  }
+
   /** Checks the role before recipient or reply validation; the caller must roll back on refusal. */
   public async execute(input: BeginCommentInput): Promise<BeginCommentOutput> {
     try {
