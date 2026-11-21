@@ -3,6 +3,7 @@ import { Comment } from '../../../../../domain/aggregates/comment/comment.aggreg
 import type { CommentWriteStore } from '../../../../models/comment/comment-write-store.model.js';
 import type { CommentTaskWriter } from '../../../../ports/outbound/tasks/task/comment-task-writer.port.js';
 import type { CommentUnitOfWork } from '../../../../ports/outbound/transactions/comment/comment-unit-of-work.port.js';
+import { ApplyAutomationTaskComment } from '../apply-automation-task-comment/apply-automation-task-comment.use-case.js';
 import { CreateComment } from './create-comment.use-case.js';
 
 /** New comment of CAD-482. */
@@ -28,6 +29,14 @@ const input = {
   body: 'Bonjour',
   replyToCommentId: null,
 };
+/** Signed rule identity and the human whose current authority is delegated. */
+const automation = {
+  organizationId: input.organizationId,
+  ruleAuthorUserId: input.actorUserId,
+  ruleId: 'rule',
+  taskKey: input.taskKey,
+  body: input.body,
+};
 /** Locked task after the version change. */
 const ready = {
   outcome: 'ready',
@@ -50,13 +59,19 @@ describe('create comment', () => {
     const unit: CommentUnitOfWork = { read: vi.fn(), write: async (work) => work(store) };
     const begin = vi.fn().mockResolvedValue(ready);
     const record = vi.fn().mockResolvedValue(undefined);
-    const tasks: CommentTaskWriter = { begin, record, change: vi.fn(), canRead: vi.fn() };
+    const tasks: CommentTaskWriter = {
+      authorizeAutomation: vi.fn(),
+      begin,
+      record,
+      change: vi.fn(),
+      canRead: vi.fn(),
+    };
     expect(await new CreateComment(unit, tasks).execute(input)).toBe(comment);
     expect(begin).toHaveBeenCalledWith(input, [], true);
     expect(record).toHaveBeenCalledWith(input, 2, 'comment', 'Bonjour');
     expect(created).toHaveBeenCalledWith({
       organizationId: 'org',
-      actorUserId: 'camille',
+      actor: { type: 'user', id: 'camille' },
       taskKey: 'CAD-482',
       taskVersion: 2,
       spaceId: 'space',
@@ -68,6 +83,96 @@ describe('create comment', () => {
     });
   });
 
+  it('checks a replay independently and writes the comment as the signed rule', async () => {
+    const insert = vi.fn().mockResolvedValue(comment);
+    const created = vi.fn();
+    const store: CommentWriteStore = {
+      comments: { insert, find: vi.fn(), list: vi.fn(), count: vi.fn(), update: vi.fn() },
+      events: { created, updated: vi.fn(), deleted: vi.fn() },
+    };
+    const write = vi.fn();
+    const begin = vi.fn().mockResolvedValue(ready);
+    const record = vi.fn();
+    const authorizeAutomation = vi.fn().mockResolvedValue(true);
+    const create = new CreateComment(
+      {
+        read: vi.fn(),
+        write: async (work) => {
+          write();
+          return work(store);
+        },
+      },
+      { authorizeAutomation, begin, record, change: vi.fn(), canRead: vi.fn() },
+    );
+    const useCase = new ApplyAutomationTaskComment(create);
+
+    await expect(useCase.authorize(automation)).resolves.toBe(true);
+    expect(authorizeAutomation).toHaveBeenCalledWith({
+      organizationId: 'org',
+      actorUserId: 'camille',
+      taskKey: 'CAD-482',
+    });
+    expect(write).not.toHaveBeenCalled();
+
+    await useCase.execute(automation);
+
+    expect(begin).toHaveBeenCalledWith({ ...input, requireEdit: true }, [], true);
+    expect(insert).toHaveBeenCalledWith({
+      organizationId: 'org',
+      taskId: 'task',
+      actorType: 'automation',
+      actorId: 'rule',
+      body: 'Bonjour',
+      mentions: [],
+      replyToCommentId: null,
+    });
+    expect(record).toHaveBeenCalledWith(
+      { ...input, actor: { type: 'automation', id: 'rule' } },
+      2,
+      'comment',
+      'Bonjour',
+    );
+    expect(created).toHaveBeenCalledWith({
+      organizationId: 'org',
+      actor: { type: 'automation', id: 'rule' },
+      taskKey: 'CAD-482',
+      taskVersion: 2,
+      spaceId: 'space',
+      listId: 'list',
+      commentId: 'comment',
+      commentVersion: 1,
+      mentionedUserIds: [],
+      watcherIds: ['camille', 'hugo'],
+    });
+  });
+
+  it('returns the generic automation refusal when the author can only comment', async () => {
+    const insert = vi.fn();
+    const record = vi.fn();
+    const created = vi.fn();
+    const store: CommentWriteStore = {
+      comments: { insert, find: vi.fn(), list: vi.fn(), count: vi.fn(), update: vi.fn() },
+      events: { created, updated: vi.fn(), deleted: vi.fn() },
+    };
+    const create = new CreateComment(
+      { read: vi.fn(), write: async (work) => work(store) },
+      {
+        authorizeAutomation: vi.fn(),
+        begin: () => Promise.resolve({ outcome: 'role-insufficient', role: 'comment' }),
+        record,
+        change: vi.fn(),
+        canRead: vi.fn(),
+      },
+    );
+
+    await expect(new ApplyAutomationTaskComment(create).execute(automation)).rejects.toMatchObject({
+      reason: 'task-not-found',
+    });
+    expect(insert).not.toHaveBeenCalled();
+    expect(record).not.toHaveBeenCalled();
+    expect(created).not.toHaveBeenCalled();
+  });
+
   it('refuses an insufficient role before inspecting a reply', async () => {
     const find = vi.fn();
     const insert = vi.fn();
@@ -77,6 +182,7 @@ describe('create comment', () => {
     };
     const unit: CommentUnitOfWork = { read: vi.fn(), write: async (work) => work(store) };
     const tasks: CommentTaskWriter = {
+      authorizeAutomation: vi.fn(),
       begin: () => Promise.resolve({ outcome: 'role-insufficient', role: 'view' }),
       record: vi.fn(),
       change: vi.fn(),
@@ -104,6 +210,7 @@ describe('create comment', () => {
     };
     const unit: CommentUnitOfWork = { read: vi.fn(), write: async (work) => work(store) };
     const tasks: CommentTaskWriter = {
+      authorizeAutomation: vi.fn(),
       begin: () => Promise.resolve(ready),
       record: vi.fn(),
       change: vi.fn(),
@@ -129,6 +236,7 @@ describe('create comment', () => {
     };
     const unit: CommentUnitOfWork = { read: vi.fn(), write: async (work) => work(store) };
     const tasks: CommentTaskWriter = {
+      authorizeAutomation: vi.fn(),
       begin: vi
         .fn<CommentTaskWriter['begin']>()
         .mockImplementationOnce(async (_input, _ids, _includeWatchers, findReplyAuthor) => {
@@ -159,6 +267,7 @@ describe('create comment', () => {
     };
     const unit: CommentUnitOfWork = { read: vi.fn(), write: async (work) => work(store) };
     const tasks: CommentTaskWriter = {
+      authorizeAutomation: vi.fn(),
       begin: vi.fn().mockResolvedValue(ready),
       record: vi.fn(),
       change: vi.fn(),
@@ -186,6 +295,7 @@ describe('create comment', () => {
     };
     const unit: CommentUnitOfWork = { read: vi.fn(), write: async (work) => work(store) };
     const tasks: CommentTaskWriter = {
+      authorizeAutomation: vi.fn(),
       begin: vi.fn().mockResolvedValue(ready),
       record: vi.fn(),
       change: vi.fn(),

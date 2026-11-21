@@ -12,6 +12,7 @@ export type BeginCommentOutput =
       readonly unavailableRecipientIds?: readonly string[];
       readonly watcherIds: readonly string[];
       readonly replyRecipientId?: string;
+      readonly canModerateAutomationComment?: boolean;
     }
   | { readonly outcome: 'task-trashed'; readonly details: TaskTrashedDetails }
   | { readonly outcome: 'task-not-found' | 'organization-not-found' | 'task-archived' }

@@ -34,7 +34,11 @@ export class ChangeComment {
     return this.unit.write(async (store: CommentWriteStore): Promise<ChangeCommentOutput> => {
       const supplied = input.mentions ?? [];
       const recipientIds = [...new Set(supplied.map((mention) => mention.userId.toLowerCase()))];
-      const task = await this.tasks.begin(input, recipientIds);
+      const deleting = input.body === null;
+      const task = await this.tasks.begin(
+        deleting ? { ...input, includeModerationAuthority: true } : input,
+        recipientIds,
+      );
       if (task.outcome === 'task-trashed') throw new CommentTrashedTaskRefusal(task.details);
       if (task.outcome === 'role-insufficient')
         throw new CommentWriteRefusal(task.outcome, task.role);
@@ -46,11 +50,12 @@ export class ChangeComment {
         false,
       );
       if (current === null) throw new CommentWriteRefusal('comment-not-found');
-      if (
-        current.snapshot.actorType !== 'user' ||
-        current.snapshot.actorId.toLowerCase() !== input.actorUserId.toLowerCase()
-      )
-        throw new CommentWriteRefusal('author-required');
+      const { actorType, actorId } = current.snapshot;
+      const author =
+        actorType === 'user' && actorId.toLowerCase() === input.actorUserId.toLowerCase();
+      const moderator =
+        actorType === 'automation' && deleting && task.canModerateAutomationComment === true;
+      if (!author && !moderator) throw new CommentWriteRefusal('author-required');
       if (
         input.expectedVersions !== null &&
         !input.expectedVersions.includes(current.snapshot.version)
@@ -93,7 +98,7 @@ export class ChangeComment {
       );
       const event = {
         organizationId: input.organizationId,
-        actorUserId: input.actorUserId,
+        actor: { type: 'user' as const, id: input.actorUserId },
         taskKey: input.taskKey,
         taskVersion: task.version,
         spaceId: task.spaceId,

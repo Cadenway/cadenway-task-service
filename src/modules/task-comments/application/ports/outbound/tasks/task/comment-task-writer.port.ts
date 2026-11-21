@@ -4,9 +4,15 @@ import type { CommentWriteTask } from '../../../../models/comment/comment-write-
 /** Task-owned authorization, version and activity operations. */
 export interface CommentTaskWriter {
   // #region Methods
+  /** Checks current authority for a delegated comment without advancing the task version. */
+  authorizeAutomation(input: CommentReadInput): Promise<boolean>;
+
   /** Authorizes and locks the task, then advances its version in the current transaction. */
   begin(
-    input: CommentReadInput,
+    input: CommentReadInput & {
+      readonly requireEdit?: boolean;
+      readonly includeModerationAuthority?: boolean;
+    },
     recipientIds?: readonly string[],
     includeWatcherAudience?: boolean,
     findReplyAuthor?: (taskId: string) => Promise<string | null>,
@@ -14,7 +20,9 @@ export interface CommentTaskWriter {
 
   /** Records the creation activity while the task lock remains held. */
   record(
-    input: CommentReadInput,
+    input: CommentReadInput & {
+      readonly actor?: { readonly type: 'automation'; readonly id: string };
+    },
     taskVersion: number,
     commentId: string,
     excerpt: string,

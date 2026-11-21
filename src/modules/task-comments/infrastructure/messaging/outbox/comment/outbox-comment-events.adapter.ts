@@ -34,7 +34,7 @@ export class OutboxCommentEvents implements CommentEvents {
     }
     await this.outbox.append(this.transaction, eventSchemas, 'comment.created.v1', {
       organizationId,
-      actor: { type: 'user', id: event.actorUserId },
+      actor: event.actor,
       version: event.taskVersion,
       key: event.taskKey,
       spaceId: event.spaceId,
@@ -60,7 +60,7 @@ export class OutboxCommentEvents implements CommentEvents {
     }
     await this.outbox.append(this.transaction, eventSchemas, 'comment.updated.v1', {
       organizationId,
-      actor: { type: 'user', id: event.actorUserId },
+      actor: event.actor,
       version: event.taskVersion,
       key: event.taskKey,
       spaceId: event.spaceId,
@@ -83,7 +83,7 @@ export class OutboxCommentEvents implements CommentEvents {
     }
     await this.outbox.append(this.transaction, eventSchemas, 'comment.deleted.v1', {
       organizationId,
-      actor: { type: 'user', id: event.actorUserId },
+      actor: event.actor,
       version: event.taskVersion,
       key: event.taskKey,
       spaceId: event.spaceId,

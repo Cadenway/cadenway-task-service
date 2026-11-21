@@ -32,9 +32,14 @@ export class TasksCommentWriter implements CommentTaskWriter {
   // #endregion
 
   // #region Methods
+  /** Rechecks the rule author's current authority through the Task placement operation. */
+  public async authorizeAutomation(input: CommentReadInput): Promise<boolean> {
+    return this.beginComment.authorize(input);
+  }
+
   /** Authorizes and versions the task. */
   public async begin(
-    input: CommentReadInput,
+    input: Parameters<CommentTaskWriter['begin']>[0],
     recipientIds: readonly string[] = [],
     includeWatcherAudience = false,
     findReplyAuthor?: (taskId: string) => Promise<string | null>,
@@ -49,7 +54,7 @@ export class TasksCommentWriter implements CommentTaskWriter {
 
   /** Records comment activity. */
   public async record(
-    input: CommentReadInput,
+    input: Parameters<CommentTaskWriter['record']>[0],
     taskVersion: number,
     commentId: string,
     excerpt: string,

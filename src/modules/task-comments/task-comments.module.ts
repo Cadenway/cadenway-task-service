@@ -18,6 +18,9 @@ import { TasksCommentDirectory } from './infrastructure/adapters/tasks/tasks-com
 import { DrizzleCommentExcerptReader } from './infrastructure/persistence/drizzle/repositories/comment/drizzle-comment-excerpt.repository.js';
 import { TenantCommentUnitOfWork } from './infrastructure/persistence/drizzle/transactions/comment/tenant-comment.unit-of-work.js';
 import { CommentsController } from './presentation/http/controllers/comment/comments.controller.js';
+import { ApplyAutomationTaskComment } from './application/use-cases/commands/comment/apply-automation-task-comment/apply-automation-task-comment.use-case.js';
+import { AutomationCommentController } from './presentation/http/controllers/comment/automation-comment.controller.js';
+import { AutomationCommentReplayGuard } from './presentation/http/guards/comment/automation-comment-replay.guard.js';
 
 /** Applies the kit's idempotency metadata to the creation handler. */
 function markCreateIdempotent(): void {
@@ -30,9 +33,16 @@ markCreateIdempotent();
 /** Composition root of the comment reads and creation. */
 @Module({
   imports: [TasksModule],
-  controllers: [CommentsController],
+  controllers: [CommentsController, AutomationCommentController],
   exports: [AllocateApprovalCommentId, CreateApprovalComment, FindCommentExcerpts],
   providers: [
+    AutomationCommentReplayGuard,
+    {
+      provide: ApplyAutomationTaskComment,
+      inject: [CreateComment],
+      useFactory: (create: CreateComment): ApplyAutomationTaskComment =>
+        new ApplyAutomationTaskComment(create),
+    },
     {
       provide: AllocateApprovalCommentId,
       inject: [TenantTransactionRunner],

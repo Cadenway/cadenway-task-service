@@ -10,6 +10,12 @@ export interface BeginCommentInput {
   /** Task key. */
   readonly taskKey: string;
 
+  /** Requires current edit access on the active task and list for a delegated comment. */
+  readonly requireEdit?: boolean;
+
+  /** Checks whether the human caller can moderate a rule-authored comment. */
+  readonly includeModerationAuthority?: boolean;
+
   /** Mention recipients whose membership must remain stable through the write. */
   readonly recipientIds?: readonly string[];
 

@@ -8,6 +8,8 @@ import {
   InMemorySpaceDirectory,
   InMemoryTasks,
   atelierNordMembers,
+  placedList,
+  placedSpace,
   sprint14SharedWith,
   storedEntry,
   taskState,
@@ -63,6 +65,106 @@ describe('begin comment', () => {
       version: 13,
     });
   });
+
+  it('requires effective edit for delegated creation and replay', async () => {
+    const tasks = InMemoryTasks.withCad482();
+    const begin = new BeginComment(
+      tasks,
+      atelierNordMembers(),
+      sprint14SharedWith({ [HUGO]: 'comment' }),
+    );
+    const delegate = { ...input, actorUserId: HUGO };
+
+    expect(await begin.execute({ ...delegate, requireEdit: true })).toEqual({
+      outcome: 'role-insufficient',
+      role: 'comment',
+    });
+    expect(await begin.authorize(delegate)).toBe(false);
+    expect(tasks.stored(CAD_482).version).toBe(12);
+  });
+
+  it('holds membership, task and current placement without changing the version on replay', async () => {
+    const trace: string[] = [];
+    const tasks = InMemoryTasks.withCad482({ trace });
+    const members = atelierNordMembers([], trace);
+    const spaces = new InMemorySpaceDirectory({ trace });
+    const begin = new BeginComment(tasks, members, spaces);
+
+    expect(await begin.authorize(input)).toBe(true);
+    expect(trace.indexOf(`members.roleOf:${CAMILLE}:lock`)).toBeLessThan(
+      trace.indexOf('tasks.findByKey:lock'),
+    );
+    expect(trace.indexOf('tasks.findByKey:lock')).toBeLessThan(
+      trace.indexOf('spaces.lockTrashLists'),
+    );
+    expect(trace.indexOf('spaces.lockTrashLists')).toBeLessThan(
+      trace.lastIndexOf('spaces.findVisibleList'),
+    );
+    expect(tasks.stored(CAD_482).version).toBe(12);
+
+    expect(
+      await begin.execute({ ...input, requireEdit: true, includeWatcherAudience: true }),
+    ).toMatchObject({ outcome: 'ready', version: 13, watcherIds: [CAMILLE, INES] });
+  });
+
+  it('refuses replay after the delegated author loses membership', async () => {
+    const tasks = InMemoryTasks.withCad482();
+    const begin = new BeginComment(
+      tasks,
+      atelierNordMembers([CAMILLE]),
+      new InMemorySpaceDirectory(),
+    );
+
+    expect(await begin.authorize(input)).toBe(false);
+    expect(tasks.stored(CAD_482).version).toBe(12);
+  });
+
+  it.each(['create', 'replay'] as const)(
+    'refuses delegated %s if the parent list was archived before the placement lock',
+    async (operation) => {
+      const tasks = InMemoryTasks.withCad482();
+      const spaces = new InMemorySpaceDirectory();
+      vi.spyOn(spaces, 'findVisibleList').mockImplementation(() =>
+        Promise.resolve({
+          list: placedList({
+            archivedAt:
+              spaces.lockTrashCalls.length === 0 ? null : new Date('2026-11-10T00:00:00Z'),
+          }),
+          space: placedSpace(),
+        }),
+      );
+      const begin = new BeginComment(tasks, atelierNordMembers(), spaces);
+
+      if (operation === 'create') {
+        expect(await begin.execute({ ...input, requireEdit: true })).toEqual({
+          outcome: 'task-not-found',
+        });
+      } else {
+        expect(await begin.authorize(input)).toBe(false);
+      }
+      expect(spaces.lockTrashCalls).toHaveLength(1);
+      expect(tasks.stored(CAD_482).version).toBe(12);
+    },
+  );
+
+  it('reports moderation authority only to an editor managing the current space', async () => {
+    const tasks = InMemoryTasks.withCad482();
+    const begin = new BeginComment(
+      tasks,
+      atelierNordMembers(),
+      sprint14SharedWith({ [HUGO]: 'edit' }),
+    );
+
+    expect(await begin.execute({ ...input, includeModerationAuthority: true })).toMatchObject({
+      outcome: 'ready',
+      canModerateAutomationComment: true,
+    });
+    expect(
+      await begin.execute({ ...input, actorUserId: HUGO, includeModerationAuthority: true }),
+    ).toMatchObject({ outcome: 'ready', canModerateAutomationComment: false });
+    expect(await begin.execute(input)).not.toHaveProperty('canModerateAutomationComment');
+  });
+
   it('refuses view access before checking recipient memberships', async () => {
     const tasks = new InMemoryTasks({ tasks: [taskState()] });
     const members = atelierNordMembers();
