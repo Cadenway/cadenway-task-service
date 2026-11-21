@@ -24,8 +24,8 @@ export class GitTaskActionReplayGuard implements CanActivate {
     if (principal === undefined) {
       throw new ProblemException({ status: 403, code: 'auth.actor-not-allowed' });
     }
-    await runWithOrganizationContext(principal, () =>
-      answerGitTaskRefusals(() => this.action.authorize(input)),
+    await answerGitTaskRefusals(() =>
+      runWithOrganizationContext(principal, () => this.action.authorize(input)),
     );
     return true;
   }

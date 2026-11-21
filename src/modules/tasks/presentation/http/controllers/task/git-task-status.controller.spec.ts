@@ -86,6 +86,24 @@ describe('Git task action', () => {
     });
   });
 
+  it('returns a sanitized unavailable response when replay authorization fails unexpectedly', async () => {
+    const authorize = vi.fn().mockRejectedValue(new Error('private database details'));
+    const guard = new GitTaskActionReplayGuard({ authorize } as unknown as ApplyGitTaskStatus);
+    await expect(guard.canActivate(executionContext(requestOf()))).rejects.toMatchObject({
+      problem: { status: 503, code: 'task.action-unavailable' },
+    });
+  });
+
+  it.each([
+    ['an execution failure', () => Promise.reject(new Error('private database details'))],
+    ['a malformed receipt', () => Promise.resolve({ disposition: 'applied' })],
+  ])('returns a sanitized unavailable response for %s', async (_label, execute) => {
+    const controller = new GitTaskStatusController({ execute } as unknown as ApplyGitTaskStatus);
+    await expect(controller.apply(requestOf())).rejects.toMatchObject({
+      problem: { status: 503, code: 'task.action-unavailable' },
+    });
+  });
+
   it('refuses a verified user actor even when it carries an organization', async () => {
     const authorize = vi.fn();
     const guard = new GitTaskActionReplayGuard({ authorize } as unknown as ApplyGitTaskStatus);

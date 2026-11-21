@@ -219,6 +219,12 @@ describe('ApplyGitTaskStatus', () => {
       status: 'todo',
       createdBy: { type: 'git', id: input.integrationId },
     });
+    expect([...tasks.activity.values()]).toContainEqual(
+      expect.objectContaining({
+        change: { kind: 'create' },
+        actor: { type: 'git', id: input.integrationId, provider: 'github' },
+      }),
+    );
     expect(tasks.events.map((event) => event.kind)).toEqual([
       'updated',
       'statusChanged',

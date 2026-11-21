@@ -411,10 +411,9 @@ The request guard checks body presence before replay for ordinary JSON, includin
 requests. Transport bytes can still represent an empty decompressed body because the shared
 parser discards decoded raw bytes. The API gateway sends a literal JSON object.
 
-`openapi/internal/task-service.yaml` (`@cadenway/contracts` 0.12.0), actor `user`, organization
-required; issuer `api-gateway` for every route but the access check, which accepts
-`realtime-gateway` only (`TaskAccessController`, a controller of its own; any other issuer answers
-`403 auth.issuer-not-allowed`):
+`openapi/internal/task-service.yaml` (`@cadenway/contracts` 0.28.0). The user routes require an
+organization and the `api-gateway` issuer. The Realtime access check and the delegated Git command
+specify their own signed callers below.
 
 | Route                                                                  | Operation                          | Success                   |
 | ---------------------------------------------------------------------- | ---------------------------------- | ------------------------- |

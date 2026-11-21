@@ -186,7 +186,7 @@ export class ApplyGitTaskStatus {
       scheduled,
       current.space.statuses,
       candidates,
-      { type: actor.type, id: actor.id },
+      actor,
       now,
     );
     return { ...result, disposition: 'applied' };
