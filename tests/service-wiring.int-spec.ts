@@ -129,9 +129,9 @@ const publicTables = [
  * the lists and the access requests, then the archives of lists and tasks, then the trash and the
  * deletion of lists and spaces, then the trash root snapshot, collaboration, planning and the
  * task library, P3c-1 capabilities, goals, sprint reporting history, intake, delivery decisions
- * and Git activity attribution.
+ * Git activity attribution and membership-scoped grants.
  */
-const appliedMigrations = 22;
+const appliedMigrations = 23;
 
 /**
  * Runs `docker compose` on the throwaway project.
