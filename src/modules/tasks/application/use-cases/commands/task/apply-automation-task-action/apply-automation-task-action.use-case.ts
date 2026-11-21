@@ -2,6 +2,7 @@ import { refuseUnassignable } from '../../../../../domain/policies/task/assignab
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
 import type { TaskUpdate } from '../../../../../domain/value-objects/task/task-update.value-object.js';
 import type { LocatedTask } from '../../../../models/task/located-task.model.js';
+import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
 import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
@@ -32,7 +33,7 @@ export class ApplyAutomationTaskAction {
   public constructor(
     private readonly work: TasksUnitOfWork,
     members: MemberDirectory,
-    spaces: SpaceDirectory,
+    private readonly spaces: SpaceDirectory,
   ) {
     this.viewers = new ViewerResolver(members);
     this.assignees = new AssigneeChecker(members);
@@ -104,7 +105,18 @@ export class ApplyAutomationTaskAction {
       expectedVersions: null,
     });
     await this.placement.holdPlacement(input.organizationId, viewer, located.task.snapshot.listId);
-    return located;
+    const placement = await this.spaces.findVisibleList(
+      input.organizationId,
+      viewer,
+      located.task.snapshot.listId,
+    );
+    if (
+      placement?.list.archivedAt !== null ||
+      placement.space.id !== located.task.snapshot.spaceId
+    ) {
+      throw new TaskRefusal({ reason: 'task-not-found' });
+    }
+    return { task: located.task, placement };
   }
   // #endregion
 }

@@ -32,7 +32,14 @@ export function toGitTaskAction(request: Request): ApplyGitTaskStatusInput {
   );
   const keyInvalid =
     !key.success || !/^[\x21-\x7e]{1,255}$/u.test(key.data['Idempotency-Key']) || keys.length > 1;
-  if (!path.success || !body.success || keyInvalid || Object.keys(request.query).length !== 0) {
+  const json = request.is('application/json') === 'application/json';
+  if (
+    !path.success ||
+    !body.success ||
+    !json ||
+    keyInvalid ||
+    Object.keys(request.query).length !== 0
+  ) {
     const issue = keyInvalid
       ? { in: 'header', path: 'Idempotency-Key' }
       : !path.success

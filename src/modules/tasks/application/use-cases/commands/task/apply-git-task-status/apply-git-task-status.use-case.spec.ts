@@ -15,6 +15,7 @@ import {
   SPRINT_14,
   archiveFrom,
   atelierNordMembers,
+  placedList,
   placedSpace,
   taskState,
 } from '../../../tasks.fixture.js';
@@ -40,6 +41,22 @@ function setup(state: TaskState = taskState(), removed: readonly string[] = []) 
 }
 
 describe('ApplyGitTaskStatus', () => {
+  it.each(['execute', 'authorize'] as const)(
+    'refuses an archived list while checking %s',
+    async (method) => {
+      const tasks = InMemoryTasks.withCad482();
+      const spaces = new InMemorySpaceDirectory({
+        lists: [placedList({ archivedAt: new Date('2026-11-10T00:00:00Z') })],
+      });
+      const useCase = new ApplyGitTaskStatus(tasks, atelierNordMembers(), spaces);
+      await expect(useCase[method](input)).rejects.toMatchObject({
+        refusal: { reason: 'task-not-found' },
+      });
+      expect(tasks.events).toEqual([]);
+      expect(tasks.stored(CAD_482).version).toBe(12);
+    },
+  );
+
   it('authorizes the current mapping under locks without a task, activity or outbox write', async () => {
     const { tasks, trace, useCase } = setup();
     const original = tasks.stored(CAD_482);

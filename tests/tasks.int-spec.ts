@@ -5487,6 +5487,80 @@ describe('tasks', () => {
     });
   });
 
+  it.each(['git', 'automation'] as const)(
+    'refuses a fresh and replayed %s action when the parent list is archived',
+    async (actor) => {
+      const list = await createList(camille, produit.id, `Archived ${actor} action list`);
+      const task = await createTask(camille, list.id, {
+        name: `Archived ${actor} action task`,
+        status: 'progress',
+        priority: 'basse',
+      });
+      const serviceSigner = await InternalTokenSigner.create({
+        issuer: actor === 'git' ? 'integration-service' : 'automation-service',
+        privateJwk: actor === 'git' ? integrationKey.privateJwk : automationKey.privateJwk,
+      });
+      const token = await serviceSigner.sign('task-service', {
+        actor: {
+          type: actor,
+          id: '019a0000-0000-7000-8000-000000000004',
+        },
+        organizationId: atelierNordId,
+      });
+      const action = (key: string, fresh: boolean): request.Test => {
+        const body =
+          actor === 'git'
+            ? {
+                provider: 'github',
+                spaceId: produit.id,
+                mappingAuthorUserId: camille.userId,
+                status: fresh ? 'done' : 'review',
+              }
+            : {
+                ruleAuthorUserId: camille.userId,
+                type: 'priority',
+                priority: fresh ? 'basse' : 'haute',
+              };
+        const endpoint = actor === 'git' ? 'git-status-actions' : 'automation-actions';
+        return request(service().getHttpServer())
+          .post(`/internal/v1/tasks/${task.key}/${endpoint}`)
+          .set('Authorization', `Bearer ${token}`)
+          .set('Idempotency-Key', key)
+          .send(body);
+      };
+      const key = randomUUID();
+      expectStatus(await action(key, false), 200);
+      expectStatus(
+        await send('post', `/internal/v1/lists/${list.id}/archive`, camille, { body: {} }),
+        200,
+      );
+
+      const [prefix, number] = task.key.split('-');
+      const [stored] = await asSystem<{ readonly id: string }>(
+        'select id from tasks where organization_id = $1 and key_prefix = $2 and key_number = $3::int',
+        [atelierNordId, prefix, number],
+      );
+      if (stored === undefined) throw new Error('The archived task is missing.');
+      const state = () =>
+        asSystem(
+          'select status, priority, version from tasks where organization_id = $1 and id = $2',
+          [atelierNordId, stored.id],
+        );
+      const activityCount = () => countRows('activity_entries', 'task_id = $2', stored.id);
+      const eventFacts = async () =>
+        (await outboxOfKeys(task.key)).map(({ event_name, payload }) => ({ event_name, payload }));
+      const before = await Promise.all([state(), activityCount(), eventFacts()]);
+
+      for (const attempt of [action(key, false), action(randomUUID(), true)]) {
+        const refusal = await attempt;
+        expectProblem(refusal, 404, 'task.not-found');
+        expect(refusal.headers['cache-control']).toBe('private, no-store');
+        expect(refusal.headers['idempotent-replayed']).toBeUndefined();
+      }
+      expect(await Promise.all([state(), activityCount(), eventFacts()])).toEqual(before);
+    },
+  );
+
   it('applies an eligible Automation assignment once and refuses a guest', async () => {
     const task = await createTask(camille, sprint14.id, {
       name: 'Automation assignment integration regression',

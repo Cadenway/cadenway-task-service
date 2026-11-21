@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   ATELIER_NORD,
@@ -11,6 +11,8 @@ import {
   InMemorySpaceDirectory,
   InMemoryTasks,
   atelierNordMembers,
+  placedList,
+  placedSpace,
   refusalOf,
   sprint14SharedWith,
   taskState,
@@ -142,6 +144,35 @@ describe('ApplyAutomationTaskAction', () => {
       reason: 'role-insufficient',
       role: 'view',
     });
+    expect(tasks.events).toEqual([]);
+  });
+
+  it.each(['execute', 'authorize'] as const)(
+    'refuses an archived list when checking %s',
+    async (method) => {
+      const tasks = InMemoryTasks.withCad482();
+      const spaces = new InMemorySpaceDirectory({
+        lists: [placedList({ archivedAt: new Date('2026-11-10T00:00:00Z') })],
+      });
+      const useCase = new ApplyAutomationTaskAction(tasks, atelierNordMembers(), spaces);
+      expect(await refusalOf(useCase[method](input))).toEqual({ reason: 'task-not-found' });
+      expect(tasks.events).toEqual([]);
+      expect(tasks.stored(CAD_482).version).toBe(12);
+    },
+  );
+
+  it('rechecks the list archive after acquiring its placement lock', async () => {
+    const tasks = InMemoryTasks.withCad482();
+    const spaces = new InMemorySpaceDirectory();
+    vi.spyOn(spaces, 'findVisibleList')
+      .mockResolvedValueOnce({ list: placedList(), space: placedSpace() })
+      .mockResolvedValueOnce({
+        list: placedList({ archivedAt: new Date('2026-11-10T00:00:00Z') }),
+        space: placedSpace(),
+      });
+    const useCase = new ApplyAutomationTaskAction(tasks, atelierNordMembers(), spaces);
+    expect(await refusalOf(useCase.execute(input))).toEqual({ reason: 'task-not-found' });
+    expect(spaces.lockTrashCalls).toHaveLength(1);
     expect(tasks.events).toEqual([]);
   });
 });

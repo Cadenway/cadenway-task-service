@@ -17,6 +17,7 @@ function requestOf(overrides: Record<string, unknown> = {}): Request {
     rawHeaders: ['Idempotency-Key', 'p6-command'],
     params: { taskKey: 'CAD-482' },
     query: {},
+    is: () => 'application/json',
     body: { ruleAuthorUserId: authorId, type: 'priority', priority: 'haute' },
     internalPrincipal: {
       issuer: 'automation-service',
@@ -67,6 +68,75 @@ describe('Automation task action', () => {
     await expect(guard.canActivate(executionContext(requestOf()))).rejects.toMatchObject({
       problem: { status: 404, code: 'task.not-found' },
     });
+  });
+
+  it('reports each malformed body field before rechecking authorization', async () => {
+    const authorize = vi.fn();
+    const guard = new AutomationTaskActionReplayGuard({
+      authorize,
+    } as unknown as ApplyAutomationTaskAction);
+    const request = requestOf({
+      body: { ruleAuthorUserId: 'invalid', type: 'priority', priority: 'unknown' },
+    });
+    await expect(guard.canActivate(executionContext(request))).rejects.toMatchObject({
+      problem: {
+        status: 400,
+        code: 'request.invalid',
+        details: {
+          issues: expect.arrayContaining([
+            expect.objectContaining({ in: 'body', path: 'ruleAuthorUserId' }),
+            expect.objectContaining({ in: 'body', path: 'priority' }),
+          ]) as unknown,
+        },
+      },
+    });
+    expect(authorize).not.toHaveBeenCalled();
+  });
+
+  it('identifies each unknown body property', async () => {
+    const authorize = vi.fn();
+    const guard = new AutomationTaskActionReplayGuard({
+      authorize,
+    } as unknown as ApplyAutomationTaskAction);
+    const request = requestOf({
+      body: {
+        ruleAuthorUserId: authorId,
+        type: 'priority',
+        priority: 'haute',
+        extra: true,
+        other: 1,
+      },
+    });
+    await expect(guard.canActivate(executionContext(request))).rejects.toMatchObject({
+      problem: {
+        details: {
+          issues: expect.arrayContaining([
+            expect.objectContaining({ path: 'extra', code: 'unrecognized_keys' }),
+            expect.objectContaining({ path: 'other', code: 'unrecognized_keys' }),
+          ]) as unknown,
+        },
+      },
+    });
+    expect(authorize).not.toHaveBeenCalled();
+  });
+
+  it('refuses urlencoded input before authorization', async () => {
+    const authorize = vi.fn();
+    const guard = new AutomationTaskActionReplayGuard({
+      authorize,
+    } as unknown as ApplyAutomationTaskAction);
+    await expect(
+      guard.canActivate(
+        executionContext(requestOf({ is: () => 'application/x-www-form-urlencoded' })),
+      ),
+    ).rejects.toMatchObject({
+      problem: {
+        status: 400,
+        code: 'request.invalid',
+        details: { issues: [expect.objectContaining({ in: 'body', code: 'invalid_type' })] },
+      },
+    });
+    expect(authorize).not.toHaveBeenCalled();
   });
 
   it.each([

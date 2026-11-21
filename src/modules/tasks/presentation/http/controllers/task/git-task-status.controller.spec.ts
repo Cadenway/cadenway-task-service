@@ -19,6 +19,7 @@ function requestOf(overrides: Record<string, unknown> = {}): Request {
     rawHeaders: ['Idempotency-Key', 'p6-command'],
     params: { taskKey: 'CAD-482' },
     query: {},
+    is: () => 'application/json',
     body: {
       provider: 'github',
       spaceId: integrationId,
@@ -84,6 +85,19 @@ describe('Git task action', () => {
     await expect(guard.canActivate(executionContext(requestOf()))).rejects.toMatchObject({
       problem: { status: 404, code: 'task.not-found' },
     });
+  });
+
+  it('refuses urlencoded input before authorization', async () => {
+    const authorize = vi.fn();
+    const guard = new GitTaskActionReplayGuard({ authorize } as unknown as ApplyGitTaskStatus);
+    await expect(
+      guard.canActivate(
+        executionContext(requestOf({ is: () => 'application/x-www-form-urlencoded' })),
+      ),
+    ).rejects.toMatchObject({
+      problem: { status: 400, code: 'request.invalid' },
+    });
+    expect(authorize).not.toHaveBeenCalled();
   });
 
   it('returns a sanitized unavailable response when replay authorization fails unexpectedly', async () => {
