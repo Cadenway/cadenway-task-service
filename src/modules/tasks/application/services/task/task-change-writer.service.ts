@@ -64,10 +64,10 @@ export class TaskChangeWriter {
     now: Date,
     watcherIds: readonly string[] = [],
   ): Promise<void> {
-    return this.commitAs(store, before, update, { type: 'user', id: actorUserId }, now, watcherIds);
+    await this.commitAs(store, before, update, { type: 'user', id: actorUserId }, now, watcherIds);
   }
 
-  /** Writes an automation or other verified actor's change in the same transaction. */
+  /** Writes a task change attributed to its authenticated actor. */
   public async commitAs(
     store: TasksStore,
     before: Task,

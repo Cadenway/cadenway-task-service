@@ -1,17 +1,19 @@
 import { ApplyAutomationTaskActionInternalResponse } from '@cadenway/contracts/validators/internal/task-service';
 import { InternalAccess } from '@cadenway/nest-common';
 import { Idempotent } from '@cadenway/nest-common/database';
-import { Controller, Header, HttpCode, Post, Req, UseGuards } from '@nestjs/common';
+import { Controller, Header, HttpCode, Post, Req, UseFilters, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import type { z } from 'zod';
 
 import { ApplyAutomationTaskAction } from '../../../../application/use-cases/commands/task/apply-automation-task-action/apply-automation-task-action.use-case.js';
+import { TaskActionFilter } from '../../errors/task/task-action.filter.js';
 import { AutomationTaskActionReplayGuard } from '../../guards/task/automation-task-action-replay.guard.js';
 import { answerAutomationTaskRefusals } from '../../mappers/task/automation-task-action-refusal.mapper.js';
 import { toAutomationTaskAction } from '../../mappers/task/automation-task-action.mapper.js';
 
 /** Applies an Automation rule's task action using the rule author's current authority. */
 @Controller('internal/v1/tasks')
+@UseFilters(TaskActionFilter)
 @InternalAccess({
   issuers: ['automation-service'],
   actors: ['automation'],

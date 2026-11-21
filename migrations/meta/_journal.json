@@ -148,6 +148,13 @@
       "when": 1795205261677,
       "tag": "0020_intake_attachments",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1795260400023,
+      "tag": "0021_git_activity_provider",
+      "breakpoints": true
     }
   ]
 }

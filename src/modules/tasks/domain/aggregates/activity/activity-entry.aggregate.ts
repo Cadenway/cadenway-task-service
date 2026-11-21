@@ -6,7 +6,10 @@ import { ACTIVITY_KINDS } from '../../value-objects/activity/activity-kind.value
 import { CalendarDate } from '../../value-objects/task/calendar-date.value-object.js';
 import { PRIORITY_KEYS } from '../../value-objects/task/priority-key.value-object.js';
 import { STATUS_KEYS } from '../../value-objects/task/status-key.value-object.js';
-import { ACTOR_TYPES } from '../../value-objects/task/task-actor.value-object.js';
+import {
+  ACTOR_TYPES,
+  GIT_ACTOR_PROVIDERS,
+} from '../../value-objects/task/task-actor.value-object.js';
 import type { TaskActor } from '../../value-objects/task/task-actor.value-object.js';
 import type { TaskState } from '../../value-objects/task/task-state.value-object.js';
 
@@ -110,6 +113,12 @@ function checkDraft(draft: ActivityEntryDraft): void {
   }
   if (!ACTOR_TYPES.includes(draft.actor.type) || draft.actor.id === '') {
     throw invalid('the actor has a known type and an id');
+  }
+  if (
+    draft.actor.provider !== undefined &&
+    (draft.actor.type !== 'git' || !GIT_ACTOR_PROVIDERS.includes(draft.actor.provider))
+  ) {
+    throw invalid('only a Git actor can name a known Git provider');
   }
   if (Number.isNaN(draft.occurredAt.getTime())) {
     throw invalid('the instant is a valid date');

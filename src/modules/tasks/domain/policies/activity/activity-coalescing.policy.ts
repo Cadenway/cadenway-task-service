@@ -26,7 +26,7 @@ export function coalesces(kind: ActivityKind): boolean {
  * Function mergeable
  *
  * @description
- * Whether a candidate entry absorbs a new one: same task, same kind, same actor (type and id),
+ * Whether a candidate entry absorbs a new one: same task, kind, actor and Git provider,
  * same list, and the new change at most 60,000 ms after the candidate's `occurredAt`, a sliding
  * window since a merge moves that instant (open questions 1 and 2 of the design).
  *
@@ -41,6 +41,7 @@ function mergeable(draft: ActivityEntryDraft, candidate: ActivityEntryState): bo
     candidate.change.kind === draft.change.kind &&
     candidate.actor.type === draft.actor.type &&
     candidate.actor.id === draft.actor.id &&
+    candidate.actor.provider === draft.actor.provider &&
     candidate.listId === draft.listId &&
     draft.occurredAt.getTime() - candidate.occurredAt.getTime() <= COALESCING_WINDOW_MS
   );

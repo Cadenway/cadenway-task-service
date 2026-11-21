@@ -99,6 +99,17 @@ describe('coalesceActivity: inserts what does not merge', () => {
     ).toBe('insert');
   });
 
+  it('keeps distinct or unknown Git provenance in separate entries for the same integration', () => {
+    const github = { type: 'git', id: 'git-integration', provider: 'github' } as const;
+    const gitlab = { ...github, provider: 'gitlab' } as const;
+    const legacy = { type: 'git', id: github.id } as const;
+    const entry: ActivityEntryDraft = draft(toUrgente, 1_000, { actor: github });
+
+    expect(coalesceActivity(entry, priorityEntry({ actor: gitlab })).action).toBe('insert');
+    expect(coalesceActivity(entry, priorityEntry({ actor: legacy })).action).toBe('insert');
+    expect(coalesceActivity(entry, priorityEntry({ actor: github })).action).toBe('update');
+  });
+
   it('inserts when the task is now in another list', () => {
     expect(
       coalesceActivity(draft(toUrgente, 1_000, { listId: BUGS }), priorityEntry()).action,

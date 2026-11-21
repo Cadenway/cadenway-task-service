@@ -60,6 +60,7 @@ export const activityEntries = pgTable(
     kind: text('kind').notNull(),
     actorType: text('actor_type').notNull(),
     actorId: text('actor_id').notNull(),
+    actorProvider: text('actor_provider'),
     occurredAt: timestamp('occurred_at', { withTimezone: true, precision: 3 }).notNull(),
     statusFrom: text('status_from'),
     statusTo: text('status_to'),
@@ -101,6 +102,10 @@ export const activityEntries = pgTable(
       sql`${table.actorType} in (${sql.raw(toSqlList(ACTOR_TYPES))})`,
     ),
     check('activity_entries_actor_id_check', sql`${table.actorId} <> ''`),
+    check(
+      'activity_entries_actor_provider_check',
+      sql`${table.actorProvider} is null or (${table.actorType} = 'git' and ${table.actorProvider} in ('github', 'gitlab'))`,
+    ),
     check(
       'activity_entries_status_check',
       sql`(${table.kind} = 'status') = (${table.statusFrom} is not null) and (${table.kind} = 'status') = (${table.statusTo} is not null) and (${table.statusFrom} is null or ${table.statusFrom} in (${sql.raw(toSqlList(STATUS_KEYS))})) and (${table.statusTo} is null or ${table.statusTo} in (${sql.raw(toSqlList(STATUS_KEYS))}))`,

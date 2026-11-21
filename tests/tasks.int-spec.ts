@@ -66,7 +66,7 @@ import type { z } from 'zod';
 
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
-import { configureTaskAutomationActionCache } from '../src/infrastructure/http/task-automation-action-cache.js';
+import { configureTaskActionCache } from '../src/infrastructure/http/task-action-cache.js';
 import { DrizzleCommentRepository } from '../src/modules/task-comments/infrastructure/persistence/drizzle/repositories/comment/drizzle-comment.repository.js';
 import { DrizzleCommentExcerptReader } from '../src/modules/task-comments/infrastructure/persistence/drizzle/repositories/comment/drizzle-comment-excerpt.repository.js';
 import { DrizzleWatcherOverrideRepository } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/watcher/drizzle-watcher-override.repository.js';
@@ -546,6 +546,8 @@ async function pause(milliseconds: number): Promise<void> {
 
 describe('tasks', () => {
   const gateway = keyPair();
+  const automationKey = keyPair();
+  const integrationKey = keyPair();
   let app: NestExpressApplication | undefined;
   let signer: InternalTokenSigner;
   let migrator: pg.Pool;
@@ -939,7 +941,8 @@ describe('tasks', () => {
       'INTERNAL_TOKEN_TRUSTED_ISSUERS',
       JSON.stringify({
         'api-gateway': [gateway.publicJwk],
-        'automation-service': [gateway.publicJwk],
+        'automation-service': [automationKey.publicJwk],
+        'integration-service': [integrationKey.publicJwk],
       }),
     );
 
@@ -957,7 +960,7 @@ describe('tasks', () => {
       },
       logDestination: { write: (): void => undefined },
     });
-    configureTaskAutomationActionCache(app);
+    configureTaskActionCache(app);
     await app.init();
     signer = await InternalTokenSigner.create({
       issuer: 'api-gateway',
@@ -5490,7 +5493,7 @@ describe('tasks', () => {
     });
     const automation = await InternalTokenSigner.create({
       issuer: 'automation-service',
-      privateJwk: gateway.privateJwk,
+      privateJwk: automationKey.privateJwk,
     });
     const ruleId = '019a0000-0000-7000-8000-000000000003';
     const token = await automation.sign('task-service', {
@@ -5536,7 +5539,7 @@ describe('tasks', () => {
     });
     const automation = await InternalTokenSigner.create({
       issuer: 'automation-service',
-      privateJwk: gateway.privateJwk,
+      privateJwk: automationKey.privateJwk,
     });
     const ruleId = '019a0000-0000-7000-8000-000000000002';
     const token = await automation.sign('task-service', {
@@ -5581,6 +5584,71 @@ describe('tasks', () => {
       expectProblem(revoked, 404, 'task.not-found');
       expect(revoked.headers['cache-control']).toBe('private, no-store');
       expect(await updates()).toHaveLength(1);
+    } finally {
+      await asSystem(
+        'update organization_members set removed_at = null where organization_id = $1 and user_id = $2',
+        [atelierNordId, camille.userId],
+      );
+    }
+  });
+
+  it('processes a signed Git action once and rejects replay after author revocation', async () => {
+    const task = await createTask(camille, sprint14.id, {
+      name: 'Git status integration regression',
+      status: 'progress',
+    });
+    const integration = await InternalTokenSigner.create({
+      issuer: 'integration-service',
+      privateJwk: integrationKey.privateJwk,
+    });
+    const integrationId = '019a0000-0000-7000-8000-000000000001';
+    const token = await integration.sign('task-service', {
+      actor: { type: 'git', id: integrationId },
+      organizationId: atelierNordId,
+    });
+    const key = randomUUID();
+    const perform = (): request.Test =>
+      request(service().getHttpServer())
+        .post(`/internal/v1/tasks/${task.key}/git-status-actions`)
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', key)
+        .send({
+          provider: 'github',
+          spaceId: produit.id,
+          mappingAuthorUserId: camille.userId,
+          status: 'review',
+        });
+
+    const first = await perform();
+    expectStatus(first, 200);
+    expect(bodyOf(first)).toMatchObject({
+      disposition: 'applied',
+      listId: sprint14.id,
+      spaceId: produit.id,
+    });
+    const replay = await perform();
+    expectStatus(replay, 200);
+    expect(bodyOf(replay)).toEqual(bodyOf(first));
+    expect(replay.headers['idempotent-replayed']).toBe('true');
+    expect((await readTask(camille, task.key)).status).toBe('review');
+    const activity = await activityOf(camille, task.key);
+    expect(activity.items.filter((entry) => entry.kind === 'status')).toEqual([
+      expect.objectContaining({ actor: { type: 'git', id: integrationId, provider: 'github' } }),
+    ]);
+    expect(
+      (await outboxOfKeys(task.key)).filter((row) => row.event_name === 'task.status-changed.v1'),
+    ).toHaveLength(1);
+
+    await asSystem(
+      'update organization_members set removed_at = now() where organization_id = $1 and user_id = $2',
+      [atelierNordId, camille.userId],
+    );
+    try {
+      const revoked = await perform();
+      expectProblem(revoked, 404, 'task.not-found');
+      expect(
+        (await outboxOfKeys(task.key)).filter((row) => row.event_name === 'task.status-changed.v1'),
+      ).toHaveLength(1);
     } finally {
       await asSystem(
         'update organization_members set removed_at = null where organization_id = $1 and user_id = $2',

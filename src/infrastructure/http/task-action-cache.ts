@@ -1,10 +1,10 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import type { NextFunction, Request, Response } from 'express';
 
-const actionPath = /^\/internal\/v1\/tasks\/[^/]+\/automation-actions\/?$/iu;
+const actionPath = /^\/internal\/v1\/tasks\/[^/]+\/(?:automation-actions|git-status-actions)\/?$/iu;
 
-/** Marks Automation receipts and early refusals private. */
-export function configureTaskAutomationActionCache(app: Pick<NestExpressApplication, 'use'>): void {
+/** Marks delegated action receipts and early refusals private. */
+export function configureTaskActionCache(app: Pick<NestExpressApplication, 'use'>): void {
   app.use(actionPath, (_request: Request, response: Response, next: NextFunction): void => {
     response.setHeader('Cache-Control', 'private, no-store');
     next();
