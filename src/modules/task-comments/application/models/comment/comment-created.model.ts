@@ -4,8 +4,8 @@ export interface CommentCreated {
   /** Tenant ID. */
   readonly organizationId: string;
 
-  /** Actor account ID. */
-  readonly actorUserId: string;
+  /** Actor recorded by the application for this fact. */
+  readonly actor: { readonly type: 'user' | 'automation'; readonly id: string };
 
   /** Task key. */
   readonly taskKey: string;

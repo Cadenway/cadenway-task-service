@@ -42,7 +42,7 @@ export class RecordCommentActivity {
       await store.activity.insert([
         ActivityEntry.forComment(
           task.snapshot,
-          { type: 'user', id: input.actorUserId },
+          input.actor ?? { type: 'user', id: input.actorUserId },
           await store.clock.now(),
           input.commentId,
           input.excerpt,

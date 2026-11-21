@@ -7,6 +7,9 @@ export interface RecordCommentActivityInput {
   /** Acting account ID. */
   readonly actorUserId: string;
 
+  /** Authenticated rule attribution for a delegated comment creation. */
+  readonly actor?: { readonly type: 'automation'; readonly id: string };
+
   /** Task key. */
   readonly taskKey: string;
 

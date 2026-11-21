@@ -35,12 +35,17 @@ cascades on purge. Migration `0009_collaboration.sql` creates the table.
   be live comments on the same task. Structured mention recipients must be current members with read access.
 - `PATCH /internal/v1/tasks/{taskKey}/comments/{commentId}`: author-only edit, with required
   comment-version If-Match and a new ETag. Replacing text clears spans unless replacements are supplied.
-- `DELETE /internal/v1/tasks/{taskKey}/comments/{commentId}`: author-only tombstone, with optional
-  comment-version If-Match.
+- `DELETE /internal/v1/tasks/{taskKey}/comments/{commentId}`: the human author can tombstone the
+  comment. A user with edit and space-management permissions can tombstone an automation comment.
+  Comment-version If-Match is optional.
 - `GET /internal/v1/tasks/{taskKey}/comments`: live comments oldest first, cursor pagination and total.
 - `GET /internal/v1/tasks/{taskKey}/comments/{commentId}`: one live comment and its ETag.
+- `POST /internal/v1/tasks/{taskKey}/automation-comments`: creates a top-level comment with
+  `200` and an actor-scoped, required `Idempotency-Key`. The signed `automation-service` rule
+  actor uses a lowercase UUIDv7 and is recorded on the comment, activity and creation event. The rule author's current
+  edit access is checked before replay and again under the write locks.
 
-All routes require an internal gateway user and a visible task. An invisible task answers
+The ordinary comment routes require an internal gateway user and a visible task. An invisible task answers
 `task.not-found`; a missing, deleted or unrelated comment answers `comment.not-found`.
 A task in a restorable trash entry answers `task.trashed` with its entry details to an eligible
 editor. A comment patch requires a JSON body, including when the submitted patch is `{}`.

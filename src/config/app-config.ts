@@ -25,8 +25,8 @@ import { z } from 'zod';
  *   them.
  * - `INTERNAL_TOKEN_AUDIENCE` and `INTERNAL_TOKEN_TRUSTED_ISSUERS`: the `aud` this service accepts
  *   and the public keys of the backends allowed to call it. A hosted environment can pass the
- *   Document and Search issuer keys separately in `DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS`
- *   and `SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS`. The explicit issuer map takes precedence.
+ *   Document, Search and Notification issuer keys separately through their public JWK variables.
+ *   The explicit issuer map takes precedence.
  * - `SEARCH_PROJECTION_CURSOR_SECRET`: optional 32-byte base64url key shared by Task replicas
  *   to authenticate Search export cursors.
  *
@@ -76,7 +76,9 @@ export interface TrashConfig {
 }
 
 /** Parses an optional hosted key list with the kit's public issuer rules. */
-function optionalIssuerConfig(issuer: 'document-service' | 'search-service') {
+function optionalIssuerConfig(
+  issuer: 'document-service' | 'search-service' | 'notification-service',
+) {
   return z
     .string()
     .trim()
@@ -131,6 +133,7 @@ export const appConfigSchema: z.ZodType<AppConfig> = z
     ...internalTokenVerifierConfigShape,
     DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: optionalIssuerConfig('document-service'),
     SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: optionalIssuerConfig('search-service'),
+    NOTIFICATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: optionalIssuerConfig('notification-service'),
     SEARCH_PROJECTION_CURSOR_SECRET: searchProjectionCursorSecret,
     TRASH_WRITES_ENABLED: z.stringbool().default(false),
   })
@@ -138,12 +141,14 @@ export const appConfigSchema: z.ZodType<AppConfig> = z
     ({
       DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS,
       SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS,
+      NOTIFICATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS,
       ...config
     }): AppConfig => ({
       ...config,
       INTERNAL_TOKEN_TRUSTED_ISSUERS: {
         ...DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS,
         ...SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS,
+        ...NOTIFICATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS,
         ...config.INTERNAL_TOKEN_TRUSTED_ISSUERS,
       },
     }),

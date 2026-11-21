@@ -44,7 +44,13 @@ describe('CreateApprovalComment', () => {
     };
     const unit: CommentUnitOfWork = { read: vi.fn(), write: async (work) => work(store) };
     const begin = vi.fn();
-    const tasks: CommentTaskWriter = { begin, record, change: vi.fn(), canRead: vi.fn() };
+    const tasks: CommentTaskWriter = {
+      authorizeAutomation: vi.fn(),
+      begin,
+      record,
+      change: vi.fn(),
+      canRead: vi.fn(),
+    };
 
     await new CreateApprovalComment(unit, tasks).execute(input);
 
@@ -62,7 +68,7 @@ describe('CreateApprovalComment', () => {
     expect(record).toHaveBeenCalledWith(input, 3, 'comment', input.body);
     expect(created).toHaveBeenCalledWith({
       organizationId: 'org',
-      actorUserId: 'camille',
+      actor: { type: 'user', id: 'camille' },
       taskKey: 'CAD-482',
       taskVersion: 3,
       spaceId: 'space',
@@ -78,6 +84,7 @@ describe('CreateApprovalComment', () => {
     const write = vi.fn();
     const unit: CommentUnitOfWork = { read: vi.fn(), write };
     const tasks: CommentTaskWriter = {
+      authorizeAutomation: vi.fn(),
       begin: vi.fn(),
       record: vi.fn(),
       change: vi.fn(),

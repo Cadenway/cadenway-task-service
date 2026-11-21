@@ -1,4 +1,5 @@
 import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
+import type { AccessRole } from '../../../../../domain/value-objects/access/access-role.value-object.js';
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
 import type { LocatedTask } from '../../../../models/task/located-task.model.js';
 import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
@@ -22,6 +23,7 @@ type PreparedComment =
       readonly unavailableRecipientIds: readonly string[];
       readonly watcherIds: readonly string[];
       readonly replyRecipientId?: string;
+      readonly canModerateAutomationComment?: boolean;
     }
   | Exclude<BeginCommentOutput, { outcome: 'ready' }>;
 
@@ -60,6 +62,21 @@ export class BeginComment {
   // #endregion
 
   // #region Methods
+  /** Checks delegated placement under the write locks before an idempotent receipt is replayed. */
+  public async authorize(
+    input: Pick<BeginCommentInput, 'organizationId' | 'actorUserId' | 'taskKey'>,
+  ): Promise<boolean> {
+    try {
+      return await this.unit.run(async (store) => {
+        const result = await this.prepare(store, { ...input, requireEdit: true });
+        return result.outcome === 'locked';
+      });
+    } catch (error: unknown) {
+      if (error instanceof TaskRefusal) return false;
+      throw error;
+    }
+  }
+
   /** Checks the role before recipient or reply validation; the caller must roll back on refusal. */
   public async execute(input: BeginCommentInput): Promise<BeginCommentOutput> {
     try {
@@ -70,7 +87,13 @@ export class BeginComment {
             ? await withWatcherAudienceRetry(store, prepare)
             : await prepare();
         if (prepared.outcome !== 'locked') return prepared;
-        const { task, watcherIds, unavailableRecipientIds, replyRecipientId } = prepared;
+        const {
+          task,
+          watcherIds,
+          unavailableRecipientIds,
+          replyRecipientId,
+          canModerateAutomationComment,
+        } = prepared;
         const now = await store.clock.now();
         const next = this.rules.apply(() => task.withCommentChange(now));
         await store.tasks.save(task, next);
@@ -84,6 +107,7 @@ export class BeginComment {
           unavailableRecipientIds,
           watcherIds,
           ...(replyRecipientId === undefined ? {} : { replyRecipientId }),
+          ...(canModerateAutomationComment === undefined ? {} : { canModerateAutomationComment }),
         };
       });
     } catch (error: unknown) {
@@ -114,9 +138,12 @@ export class BeginComment {
       archived: 'allow' as const,
       expectedVersions: null,
     };
+    const requiresEdit = input.requireEdit === true;
+    const roleInsufficient = (role: AccessRole): boolean =>
+      role === 'view' || (requiresEdit && role !== 'edit');
     const seen: LocatedTask = await this.locator.locate(store, { ...request, lock: false });
-    if (seen.placement.list.callerRole === 'view') {
-      return { outcome: 'role-insufficient', role: 'view' };
+    if (roleInsufficient(seen.placement.list.callerRole)) {
+      return { outcome: 'role-insufficient', role: seen.placement.list.callerRole };
     }
     const recipients = (input.recipientIds ?? []).map((userId) => userId.toLowerCase());
     const beforeReply = (await input.findReplyAuthor?.(seen.task.snapshot.id))?.toLowerCase();
@@ -128,8 +155,8 @@ export class BeginComment {
       input.includeWatcherAudience === true,
     );
     const { task, placement } = await this.locator.locate(store, { ...request, lock: true });
-    if (placement.list.callerRole === 'view') {
-      return { outcome: 'role-insufficient', role: 'view' };
+    if (roleInsufficient(placement.list.callerRole)) {
+      return { outcome: 'role-insufficient', role: placement.list.callerRole };
     }
     const [held] = await this.spaces.lockTrashLists(
       input.organizationId,
@@ -138,7 +165,23 @@ export class BeginComment {
       viewer,
     );
     if (held?.outcome !== 'live' || held.role === null) return { outcome: 'task-not-found' };
-    if (held.role === 'view') return { outcome: 'role-insufficient', role: 'view' };
+    if (roleInsufficient(held.role)) return { outcome: 'role-insufficient', role: held.role };
+    const checksModerationAuthority = input.includeModerationAuthority === true;
+    const currentPlacement =
+      requiresEdit || checksModerationAuthority
+        ? await this.spaces.findVisibleList(input.organizationId, viewer, task.snapshot.listId)
+        : null;
+    if (requiresEdit) {
+      if (
+        currentPlacement?.list.archivedAt !== null ||
+        currentPlacement.space.id !== task.snapshot.spaceId
+      ) {
+        return { outcome: 'task-not-found' };
+      }
+      if (currentPlacement.list.callerRole !== 'edit') {
+        return { outcome: 'role-insufficient', role: currentPlacement.list.callerRole };
+      }
+    }
     this.rules.apply((): void => {
       task.requireChangeable();
     });
@@ -160,6 +203,15 @@ export class BeginComment {
       ),
       watcherIds,
       ...(replyRecipientId === undefined ? {} : { replyRecipientId }),
+      ...(checksModerationAuthority
+        ? {
+            canModerateAutomationComment:
+              held.role === 'edit' &&
+              currentPlacement?.space.id === task.snapshot.spaceId &&
+              currentPlacement.list.callerRole === 'edit' &&
+              currentPlacement.space.callerCanManage,
+          }
+        : {}),
     };
   }
   // #endregion

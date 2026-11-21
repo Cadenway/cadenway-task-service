@@ -39,7 +39,7 @@ export class CreateApprovalComment {
       );
       await store.events.created({
         organizationId: input.organizationId,
-        actorUserId: input.actorUserId,
+        actor: { type: 'user', id: input.actorUserId },
         taskKey: input.taskKey,
         taskVersion: input.taskVersion,
         spaceId: input.spaceId,

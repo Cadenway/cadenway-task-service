@@ -20,6 +20,12 @@ const comment = Comment.restore({
   deletedAt: null,
   version: 1,
 });
+/** Existing comment authored by a rule. */
+const automationComment = Comment.restore({
+  ...comment.snapshot,
+  actorType: 'automation',
+  actorId: 'rule',
+});
 /** Authorized input. */
 const input = {
   organizationId: 'org',
@@ -30,7 +36,7 @@ const input = {
   body: 'Updated',
 };
 /** Creates transaction-bound doubles. */
-function fixture() {
+function fixture(canModerateAutomationComment = false) {
   const find = vi.fn().mockResolvedValue(comment);
   const update = vi.fn().mockResolvedValue(true);
   const updated = vi.fn();
@@ -54,8 +60,11 @@ function fixture() {
     listId: 'list',
     version: 4,
     instant: new Date('2026-01-02T00:00:00Z'),
+    watcherIds: [],
+    canModerateAutomationComment,
   });
   const tasks: CommentTaskWriter = {
+    authorizeAutomation: vi.fn(),
     begin,
     record: vi.fn(),
     change,
@@ -100,6 +109,40 @@ describe('change comment', () => {
       expect.objectContaining({ taskVersion: 4, commentVersion: 2 }),
     );
   });
+  it('lets an authorized manager delete a rule comment and identifies the human moderator', async () => {
+    const { begin, find, deleted, change, useCase } = fixture(true);
+    find.mockResolvedValue(automationComment);
+    const request = { ...input, actorUserId: 'moderator', body: null };
+
+    const result = await useCase.execute(request);
+
+    expect(result.snapshot).toMatchObject({ body: null, actorType: 'automation', actorId: 'rule' });
+    expect(begin).toHaveBeenCalledWith({ ...request, includeModerationAuthority: true }, []);
+    expect(change).toHaveBeenCalledWith(request, 4, 'comment', null);
+    expect(deleted).toHaveBeenCalledWith(
+      expect.objectContaining({ actor: { type: 'user', id: 'moderator' } }),
+    );
+  });
+  it.each([
+    { stored: automationComment, body: null, authority: false },
+    { stored: automationComment, body: 'Edited', authority: true },
+    { stored: comment, body: null, authority: true },
+  ])(
+    'preserves authorship outside authorized automation deletion (%#)',
+    async ({ stored, body, authority }) => {
+      const { find, update, updated, deleted, useCase } = fixture(authority);
+      find.mockResolvedValue(stored);
+
+      await expect(
+        useCase.execute({ ...input, actorUserId: 'moderator', body }),
+      ).rejects.toMatchObject({
+        reason: 'author-required',
+      });
+      expect(update).not.toHaveBeenCalled();
+      expect(updated).not.toHaveBeenCalled();
+      expect(deleted).not.toHaveBeenCalled();
+    },
+  );
   it('checks the role before comment existence or authorship', async () => {
     const { begin, find, useCase } = fixture();
     begin.mockResolvedValue({ outcome: 'role-insufficient', role: 'view' });

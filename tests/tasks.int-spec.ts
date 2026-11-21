@@ -548,6 +548,7 @@ describe('tasks', () => {
   const gateway = keyPair();
   const automationKey = keyPair();
   const integrationKey = keyPair();
+  const notificationKey = keyPair();
   let app: NestExpressApplication | undefined;
   let signer: InternalTokenSigner;
   let migrator: pg.Pool;
@@ -943,6 +944,7 @@ describe('tasks', () => {
         'api-gateway': [gateway.publicJwk],
         'automation-service': [automationKey.publicJwk],
         'integration-service': [integrationKey.publicJwk],
+        'notification-service': [notificationKey.publicJwk],
       }),
     );
 
@@ -5729,5 +5731,146 @@ describe('tasks', () => {
         [atelierNordId, camille.userId],
       );
     }
+  });
+
+  it('checks both current accounts for a signed automation notification proof', async () => {
+    const task = await createTask(camille, produitList.id, {
+      name: 'Automation notification proof',
+    });
+    const notification = await InternalTokenSigner.create({
+      issuer: 'notification-service',
+      privateJwk: notificationKey.privateJwk,
+    });
+    const token = await notification.sign('task-service', {
+      actor: { type: 'system', id: 'notification-service' },
+      organizationId: atelierNordId,
+    });
+    const proof = () =>
+      request(service().getHttpServer())
+        .post(`/internal/v1/tasks/${task.key}/automation-notification-authorization`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ ruleAuthorUserId: camille.userId, recipientUserId: ines.userId });
+
+    const accepted = await proof().expect(204).expect('Cache-Control', 'private, no-store');
+    expect(accepted.text).toBe('');
+    await asSystem(
+      'update organization_members set removed_at = now() where organization_id = $1 and user_id = $2',
+      [atelierNordId, ines.userId],
+    );
+    try {
+      const refused = await proof();
+      expectProblem(refused, 404, 'task.not-found');
+      expect(refused.headers['cache-control']).toBe('private, no-store');
+      expect(JSON.stringify(bodyOf(refused))).not.toContain(ines.userId);
+    } finally {
+      await asSystem(
+        'update organization_members set removed_at = null where organization_id = $1 and user_id = $2',
+        [atelierNordId, ines.userId],
+      );
+    }
+    expect((await readTask(camille, task.key)).version).toBe(task.version);
+  });
+
+  it.each(['automation-comments', 'automation-notification-authorization'] as const)(
+    'returns private contract problems for parser refusals on %s',
+    async (route) => {
+      const taskKey = 'CAD-482';
+      const marker = 'private-parser-value@example.test';
+      const cases = [
+        { type: 'application/json', body: `{"body":"${marker}`, code: 'invalid_json' },
+        { type: 'application/json; charset=iso-8859-1', body: '{}', code: 'invalid_format' },
+        {
+          type: 'application/json',
+          body: JSON.stringify({ body: 'a'.repeat(1_048_576) }),
+          code: 'invalid_format',
+        },
+      ];
+      for (const { type, body, code } of cases) {
+        const response = await request(service().getHttpServer())
+          .post(`/internal/v1/tasks/${taskKey}/${route}`)
+          .set('Content-Type', type)
+          .send(body);
+        expectProblem(response, 400, 'request.invalid');
+        expect(response.headers['cache-control']).toBe('private, no-store');
+        expect(bodyOf(response)).toHaveProperty('details.issues.0.code', code);
+        expect(response.text).not.toContain(marker);
+      }
+    },
+  );
+
+  it('attributes a signed automation comment to the rule and keeps replay and moderation consistent', async () => {
+    const task = await createTask(camille, produitList.id, {
+      name: 'Delegated comment regression',
+    });
+    const automation = await InternalTokenSigner.create({
+      issuer: 'automation-service',
+      privateJwk: automationKey.privateJwk,
+    });
+    const ruleId = '019a0000-0000-7000-8000-000000000031';
+    const token = await automation.sign('task-service', {
+      actor: { type: 'automation', id: ruleId },
+      organizationId: atelierNordId,
+    });
+    const key = randomUUID();
+    const automationComment = (bearer = token) =>
+      request(service().getHttpServer())
+        .post(`/internal/v1/tasks/${task.key}/automation-comments`)
+        .set('Authorization', `Bearer ${bearer}`)
+        .set('Idempotency-Key', key)
+        .send({ ruleAuthorUserId: camille.userId, body: 'Commentaire produit par la règle.' });
+
+    const first = await automationComment()
+      .expect(200)
+      .expect('Cache-Control', 'private, no-store');
+    expect(bodyOf(first)).toEqual({ disposition: 'applied' });
+    await automationComment().expect(200).expect('Idempotent-Replayed', 'true');
+    const variant = await automation.sign('task-service', {
+      actor: { type: 'automation', id: ruleId.toUpperCase() },
+      organizationId: atelierNordId,
+    });
+    expectProblem(await automationComment(variant), 403, 'auth.actor-not-allowed');
+    const events = await asSystem<{ readonly payload: unknown }>(
+      "select payload from outbox_events where organization_id = $1 and event_name = 'comment.created.v1' and payload ->> 'key' = $2",
+      [atelierNordId, task.key],
+    );
+    expect(events).toHaveLength(1);
+    const event = conforms(taskEventSchemas['comment.created.v1'], events[0]?.payload);
+    expect(event.actor).toEqual({ type: 'automation', id: ruleId });
+    const path = `/internal/v1/tasks/${task.key}/comments/${event.commentId}`;
+    const visible = await send('get', path, camille);
+    expectStatus(visible, 200);
+    expect(bodyOf(visible)).toMatchObject({ actor: { type: 'automation', id: ruleId } });
+    const activity = await activityOf(camille, task.key, '?kind=comment');
+    expect(activity.items[0]).toMatchObject({ actor: { type: 'automation', id: ruleId } });
+    const versionAfterComment = (await readTask(camille, task.key)).version;
+
+    await asSystem(
+      'update organization_members set removed_at = now() where organization_id = $1 and user_id = $2',
+      [atelierNordId, camille.userId],
+    );
+    try {
+      const forbiddenReplay = await automationComment();
+      expectProblem(forbiddenReplay, 404, 'task.not-found');
+      expect(forbiddenReplay.headers['idempotent-replayed']).toBeUndefined();
+    } finally {
+      await asSystem(
+        'update organization_members set removed_at = null where organization_id = $1 and user_id = $2',
+        [atelierNordId, camille.userId],
+      );
+    }
+    expect((await readTask(camille, task.key)).version).toBe(versionAfterComment);
+    expectStatus(await send('delete', path, camille), 204);
+    expectProblem(await send('get', path, camille), 404, 'comment.not-found');
+    await automationComment().expect(200).expect('Idempotent-Replayed', 'true');
+    expectProblem(await send('get', path, camille), 404, 'comment.not-found');
+    const deleted = await asSystem<{ readonly payload: unknown }>(
+      "select payload from outbox_events where organization_id = $1 and event_name = 'comment.deleted.v1' and payload ->> 'commentId' = $2",
+      [atelierNordId, event.commentId],
+    );
+    expect(deleted).toHaveLength(1);
+    expect(conforms(taskEventSchemas['comment.deleted.v1'], deleted[0]?.payload).actor).toEqual({
+      type: 'user',
+      id: camille.userId,
+    });
   });
 });
