@@ -5,7 +5,7 @@ import { AppModule } from './app.module.js';
 import { appConfigSchema } from './config/app-config.js';
 import type { AppConfig } from './config/app-config.js';
 import { configureDocumentSpaceAccessCache } from './infrastructure/http/document-space-access-cache.js';
-import { configureTaskGitActionCache } from './infrastructure/http/task-git-action-cache.js';
+import { configureTaskActionCache } from './infrastructure/http/task-action-cache.js';
 import { configureTaskSearchCache } from './infrastructure/http/task-search-cache.js';
 
 // Started after the instrumentation hooks and `telemetry.js`, with the heap capped for the 256M
@@ -30,7 +30,7 @@ await runApplication({ service: 'task-service' }, async (): Promise<void> => {
     },
   });
   configureDocumentSpaceAccessCache(app);
-  configureTaskGitActionCache(app);
+  configureTaskActionCache(app);
   configureTaskSearchCache(app);
   await app.listen(config.PORT);
 });

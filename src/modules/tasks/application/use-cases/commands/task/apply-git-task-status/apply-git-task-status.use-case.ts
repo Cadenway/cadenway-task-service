@@ -98,7 +98,7 @@ export class ApplyGitTaskStatus {
       task.snapshot.listId,
     );
     if (
-      placement === null ||
+      placement?.list.archivedAt !== null ||
       task.snapshot.spaceId !== input.spaceId ||
       placement.space.id !== input.spaceId
     ) {

@@ -124,6 +124,9 @@ import { TaskParticipantsController } from './presentation/http/controllers/task
 import { CreateIntakeTask } from './public/intake/create-intake-task.js';
 import { ResolveIntakeContactTask } from './public/intake/resolve-intake-contact-task.js';
 import { TasksController } from './presentation/http/controllers/task/tasks.controller.js';
+import { AutomationTaskActionController } from './presentation/http/controllers/task/automation-task-action.controller.js';
+import { AutomationTaskActionReplayGuard } from './presentation/http/guards/task/automation-task-action-replay.guard.js';
+import { applyAutomationTaskActionProvider } from './composition/providers/use-cases/task/apply-automation-task-action.provider.js';
 import { TaskTrashController } from './presentation/http/controllers/trash/task-trash.controller.js';
 import { TrashController } from './presentation/http/controllers/trash/trash.controller.js';
 import { UnassignRemovedMember } from './public/assignee/unassign-removed-member.js';
@@ -213,6 +216,7 @@ markIdempotent(TaskTimeController.prototype, 'create');
     UserTasksController,
     BulkTaskActionsController,
     TasksController,
+    AutomationTaskActionController,
     GitTaskStatusController,
     TaskAssigneesController,
     TaskWatchersController,
@@ -237,6 +241,8 @@ markIdempotent(TaskTimeController.prototype, 'create');
     TaskParticipantsController,
   ],
   providers: [
+    applyAutomationTaskActionProvider,
+    AutomationTaskActionReplayGuard,
     applyGitTaskStatusProvider,
     GitTaskActionReplayGuard,
     ...taskSearchProjectionProviders,

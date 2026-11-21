@@ -11,6 +11,7 @@ import type {
 import {
   AddChecklistItemInternalResponse,
   AddTaskLabelInternalResponse,
+  ApplyAutomationTaskActionInternalResponse,
   AssignTaskInternalResponse,
   CountTaskGroupsInternalResponse,
   CreateListInternalResponse,
@@ -65,6 +66,7 @@ import type { z } from 'zod';
 
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
+import { configureTaskActionCache } from '../src/infrastructure/http/task-action-cache.js';
 import { DrizzleCommentRepository } from '../src/modules/task-comments/infrastructure/persistence/drizzle/repositories/comment/drizzle-comment.repository.js';
 import { DrizzleCommentExcerptReader } from '../src/modules/task-comments/infrastructure/persistence/drizzle/repositories/comment/drizzle-comment-excerpt.repository.js';
 import { DrizzleWatcherOverrideRepository } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/watcher/drizzle-watcher-override.repository.js';
@@ -544,6 +546,8 @@ async function pause(milliseconds: number): Promise<void> {
 
 describe('tasks', () => {
   const gateway = keyPair();
+  const automationKey = keyPair();
+  const integrationKey = keyPair();
   let app: NestExpressApplication | undefined;
   let signer: InternalTokenSigner;
   let migrator: pg.Pool;
@@ -937,7 +941,8 @@ describe('tasks', () => {
       'INTERNAL_TOKEN_TRUSTED_ISSUERS',
       JSON.stringify({
         'api-gateway': [gateway.publicJwk],
-        'integration-service': [gateway.publicJwk],
+        'automation-service': [automationKey.publicJwk],
+        'integration-service': [integrationKey.publicJwk],
       }),
     );
 
@@ -955,6 +960,7 @@ describe('tasks', () => {
       },
       logDestination: { write: (): void => undefined },
     });
+    configureTaskActionCache(app);
     await app.init();
     signer = await InternalTokenSigner.create({
       issuer: 'api-gateway',
@@ -5480,6 +5486,186 @@ describe('tasks', () => {
       expect(refusal.body).not.toHaveProperty('details');
     });
   });
+
+  it.each(['git', 'automation'] as const)(
+    'refuses a fresh and replayed %s action when the parent list is archived',
+    async (actor) => {
+      const list = await createList(camille, produit.id, `Archived ${actor} action list`);
+      const task = await createTask(camille, list.id, {
+        name: `Archived ${actor} action task`,
+        status: 'progress',
+        priority: 'basse',
+      });
+      const serviceSigner = await InternalTokenSigner.create({
+        issuer: actor === 'git' ? 'integration-service' : 'automation-service',
+        privateJwk: actor === 'git' ? integrationKey.privateJwk : automationKey.privateJwk,
+      });
+      const token = await serviceSigner.sign('task-service', {
+        actor: {
+          type: actor,
+          id: '019a0000-0000-7000-8000-000000000004',
+        },
+        organizationId: atelierNordId,
+      });
+      const action = (key: string, fresh: boolean): request.Test => {
+        const body =
+          actor === 'git'
+            ? {
+                provider: 'github',
+                spaceId: produit.id,
+                mappingAuthorUserId: camille.userId,
+                status: fresh ? 'done' : 'review',
+              }
+            : {
+                ruleAuthorUserId: camille.userId,
+                type: 'priority',
+                priority: fresh ? 'basse' : 'haute',
+              };
+        const endpoint = actor === 'git' ? 'git-status-actions' : 'automation-actions';
+        return request(service().getHttpServer())
+          .post(`/internal/v1/tasks/${task.key}/${endpoint}`)
+          .set('Authorization', `Bearer ${token}`)
+          .set('Idempotency-Key', key)
+          .send(body);
+      };
+      const key = randomUUID();
+      expectStatus(await action(key, false), 200);
+      expectStatus(
+        await send('post', `/internal/v1/lists/${list.id}/archive`, camille, { body: {} }),
+        200,
+      );
+
+      const [prefix, number] = task.key.split('-');
+      const [stored] = await asSystem<{ readonly id: string }>(
+        'select id from tasks where organization_id = $1 and key_prefix = $2 and key_number = $3::int',
+        [atelierNordId, prefix, number],
+      );
+      if (stored === undefined) throw new Error('The archived task is missing.');
+      const state = () =>
+        asSystem(
+          'select status, priority, version from tasks where organization_id = $1 and id = $2',
+          [atelierNordId, stored.id],
+        );
+      const activityCount = () => countRows('activity_entries', 'task_id = $2', stored.id);
+      const eventFacts = async () =>
+        (await outboxOfKeys(task.key)).map(({ event_name, payload }) => ({ event_name, payload }));
+      const before = await Promise.all([state(), activityCount(), eventFacts()]);
+
+      for (const attempt of [action(key, false), action(randomUUID(), true)]) {
+        const refusal = await attempt;
+        expectProblem(refusal, 404, 'task.not-found');
+        expect(refusal.headers['cache-control']).toBe('private, no-store');
+        expect(refusal.headers['idempotent-replayed']).toBeUndefined();
+      }
+      expect(await Promise.all([state(), activityCount(), eventFacts()])).toEqual(before);
+    },
+  );
+
+  it('applies an eligible Automation assignment once and refuses a guest', async () => {
+    const task = await createTask(camille, sprint14.id, {
+      name: 'Automation assignment integration regression',
+    });
+    const automation = await InternalTokenSigner.create({
+      issuer: 'automation-service',
+      privateJwk: automationKey.privateJwk,
+    });
+    const ruleId = '019a0000-0000-7000-8000-000000000003';
+    const token = await automation.sign('task-service', {
+      actor: { type: 'automation', id: ruleId },
+      organizationId: atelierNordId,
+    });
+    const assign = (userId: string, key: string): request.Test =>
+      request(service().getHttpServer())
+        .post(`/internal/v1/tasks/${task.key}/automation-actions`)
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', key)
+        .send({ ruleAuthorUserId: camille.userId, type: 'assign', userId });
+
+    const key = randomUUID();
+    const first = await assign(camille.userId, key);
+    expectStatus(first, 200);
+    expect(conforms(ApplyAutomationTaskActionInternalResponse, bodyOf(first))).toEqual({
+      disposition: 'applied',
+    });
+    const replay = await assign(camille.userId, key);
+    expectStatus(replay, 200);
+    expect(replay.headers['idempotent-replayed']).toBe('true');
+    const unchanged = await assign(camille.userId, randomUUID());
+    expectStatus(unchanged, 200);
+    expect(bodyOf(unchanged)).toEqual({ disposition: 'no_op' });
+    const refused = await assign(nadia.userId, randomUUID());
+    expectProblem(refused, 422, 'task.assignee-invalid');
+    expect(refused.body).not.toHaveProperty('details');
+    const activity = await activityOf(camille, task.key);
+    expect(activity.items.filter((entry) => entry.kind === 'assign')).toEqual([
+      expect.objectContaining({ actor: { type: 'automation', id: ruleId } }),
+    ]);
+    const updates = (await outboxOfKeys(task.key)).filter(
+      (row) => row.event_name === 'task.assigned.v1',
+    );
+    expect(updates).toHaveLength(1);
+  });
+
+  it('applies a signed Automation priority action once and refuses replay after author revocation', async () => {
+    const task = await createTask(camille, sprint14.id, {
+      name: 'Automation priority integration regression',
+      priority: 'basse',
+    });
+    const automation = await InternalTokenSigner.create({
+      issuer: 'automation-service',
+      privateJwk: automationKey.privateJwk,
+    });
+    const ruleId = '019a0000-0000-7000-8000-000000000002';
+    const token = await automation.sign('task-service', {
+      actor: { type: 'automation', id: ruleId },
+      organizationId: atelierNordId,
+    });
+    const key = randomUUID();
+    const perform = (): request.Test =>
+      request(service().getHttpServer())
+        .post(`/internal/v1/tasks/${task.key}/automation-actions`)
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', key)
+        .send({ ruleAuthorUserId: camille.userId, type: 'priority', priority: 'haute' });
+
+    const first = await perform();
+    expectStatus(first, 200);
+    expect(conforms(ApplyAutomationTaskActionInternalResponse, bodyOf(first))).toEqual({
+      disposition: 'applied',
+    });
+    expect(first.headers['cache-control']).toBe('private, no-store');
+    const replay = await perform();
+    expectStatus(replay, 200);
+    expect(bodyOf(replay)).toEqual(bodyOf(first));
+    expect(replay.headers['idempotent-replayed']).toBe('true');
+    expect((await readTask(camille, task.key)).priority).toBe('haute');
+    const activity = await activityOf(camille, task.key);
+    expect(activity.items.filter((entry) => entry.kind === 'priority')).toEqual([
+      expect.objectContaining({ actor: { type: 'automation', id: ruleId } }),
+    ]);
+    const updates = (): Promise<OutboxRow[]> =>
+      outboxOfKeys(task.key).then((rows) =>
+        rows.filter((row) => row.event_name === 'task.updated.v1'),
+      );
+    expect(await updates()).toHaveLength(1);
+
+    await asSystem(
+      'update organization_members set removed_at = now() where organization_id = $1 and user_id = $2',
+      [atelierNordId, camille.userId],
+    );
+    try {
+      const revoked = await perform();
+      expectProblem(revoked, 404, 'task.not-found');
+      expect(revoked.headers['cache-control']).toBe('private, no-store');
+      expect(await updates()).toHaveLength(1);
+    } finally {
+      await asSystem(
+        'update organization_members set removed_at = null where organization_id = $1 and user_id = $2',
+        [atelierNordId, camille.userId],
+      );
+    }
+  });
+
   it('processes a signed Git action once and rejects replay after author revocation', async () => {
     const task = await createTask(camille, sprint14.id, {
       name: 'Git status integration regression',
@@ -5487,7 +5673,7 @@ describe('tasks', () => {
     });
     const integration = await InternalTokenSigner.create({
       issuer: 'integration-service',
-      privateJwk: gateway.privateJwk,
+      privateJwk: integrationKey.privateJwk,
     });
     const integrationId = '019a0000-0000-7000-8000-000000000001';
     const token = await integration.sign('task-service', {

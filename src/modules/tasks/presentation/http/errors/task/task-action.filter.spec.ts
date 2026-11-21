@@ -3,9 +3,9 @@ import { BadRequestException, InternalServerErrorException } from '@nestjs/commo
 import type { ArgumentsHost } from '@nestjs/common';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { GitTaskActionFilter } from './git-task-action.filter.js';
+import { TaskActionFilter } from './task-action.filter.js';
 
-describe('GitTaskActionFilter', () => {
+describe('TaskActionFilter', () => {
   afterEach(() => vi.restoreAllMocks());
 
   it.each([
@@ -16,21 +16,20 @@ describe('GitTaskActionFilter', () => {
   ])('preserves the typed HTTP refusal', (exception) => {
     const delegate = vi.spyOn(ProblemFilter.prototype, 'catch').mockImplementation(() => undefined);
     const host = {} as ArgumentsHost;
-    new GitTaskActionFilter().catch(exception, host);
+    new TaskActionFilter().catch(exception, host);
     expect(delegate).toHaveBeenCalledWith(exception, host);
   });
 
-  it.each([new Error('private database details'), new InternalServerErrorException()])(
-    'sanitizes an unexpected failure anywhere in the route pipeline',
-    (exception) => {
-      const delegate = vi
-        .spyOn(ProblemFilter.prototype, 'catch')
-        .mockImplementation(() => undefined);
-      const host = {} as ArgumentsHost;
-      new GitTaskActionFilter().catch(exception, host);
-      const received: unknown = delegate.mock.calls[0]?.[0];
-      expect(received).toMatchObject({ problem: { status: 503, code: 'task.action-unavailable' } });
-      expect(delegate.mock.calls[0]?.[1]).toBe(host);
-    },
-  );
+  it.each([
+    new Error('private database details'),
+    new InternalServerErrorException(),
+    new ProblemException({ status: 503, code: 'dependency.failure', detail: 'Private details.' }),
+  ])('sanitizes an unexpected failure anywhere in the route pipeline', (exception) => {
+    const delegate = vi.spyOn(ProblemFilter.prototype, 'catch').mockImplementation(() => undefined);
+    const host = {} as ArgumentsHost;
+    new TaskActionFilter().catch(exception, host);
+    const received: unknown = delegate.mock.calls[0]?.[0];
+    expect(received).toMatchObject({ problem: { status: 503, code: 'task.action-unavailable' } });
+    expect(delegate.mock.calls[0]?.[1]).toBe(host);
+  });
 });

@@ -19,6 +19,7 @@ function requestOf(overrides: Record<string, unknown> = {}): Request {
     rawHeaders: ['Idempotency-Key', 'p6-command'],
     params: { taskKey: 'CAD-482' },
     query: {},
+    is: () => 'application/json',
     body: {
       provider: 'github',
       spaceId: integrationId,
@@ -84,6 +85,53 @@ describe('Git task action', () => {
     await expect(guard.canActivate(executionContext(requestOf()))).rejects.toMatchObject({
       problem: { status: 404, code: 'task.not-found' },
     });
+  });
+
+  it('refuses urlencoded input before authorization', async () => {
+    const authorize = vi.fn();
+    const guard = new GitTaskActionReplayGuard({ authorize } as unknown as ApplyGitTaskStatus);
+    await expect(
+      guard.canActivate(
+        executionContext(requestOf({ is: () => 'application/x-www-form-urlencoded' })),
+      ),
+    ).rejects.toMatchObject({
+      problem: { status: 400, code: 'request.invalid' },
+    });
+    expect(authorize).not.toHaveBeenCalled();
+  });
+
+  it('reports every invalid field and unknown body property before authorization', async () => {
+    const authorize = vi.fn();
+    const guard = new GitTaskActionReplayGuard({ authorize } as unknown as ApplyGitTaskStatus);
+    const request = requestOf({
+      params: { taskKey: 'invalid' },
+      query: { unexpected: 'value' },
+      body: {
+        provider: 'invalid',
+        spaceId: 'invalid',
+        mappingAuthorUserId: authorId,
+        status: 'review',
+        extra: 'secret input value',
+        other: true,
+      },
+    });
+    await expect(guard.canActivate(executionContext(request))).rejects.toMatchObject({
+      problem: {
+        status: 400,
+        code: 'request.invalid',
+        details: {
+          issues: expect.arrayContaining([
+            expect.objectContaining({ in: 'path', path: 'taskKey' }),
+            expect.objectContaining({ in: 'query', path: 'unexpected' }),
+            expect.objectContaining({ in: 'body', path: 'provider' }),
+            expect.objectContaining({ in: 'body', path: 'spaceId' }),
+            expect.objectContaining({ in: 'body', path: 'extra', code: 'unrecognized_keys' }),
+            expect.objectContaining({ in: 'body', path: 'other', code: 'unrecognized_keys' }),
+          ]) as unknown,
+        },
+      },
+    });
+    expect(authorize).not.toHaveBeenCalled();
   });
 
   it('returns a sanitized unavailable response when replay authorization fails unexpectedly', async () => {
