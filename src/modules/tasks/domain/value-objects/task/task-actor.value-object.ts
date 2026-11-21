@@ -31,8 +31,17 @@ export interface TaskActor {
    * @readonly
    */
   readonly id: string;
+
+  /** Verified provider recorded for a Git actor in activity. Old entries may omit it. */
+  readonly provider?: 'github' | 'gitlab';
   // #endregion
 }
+
+/** Providers Task accepts as verified Git activity provenance. */
+export const GIT_ACTOR_PROVIDERS: readonly NonNullable<TaskActor['provider']>[] = Object.freeze([
+  'github',
+  'gitlab',
+]);
 
 /**
  * Constant ACTOR_TYPES

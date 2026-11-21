@@ -416,49 +416,50 @@ required; issuer `api-gateway` for every route but the access check, which accep
 `realtime-gateway` only (`TaskAccessController`, a controller of its own; any other issuer answers
 `403 auth.issuer-not-allowed`):
 
-| Route                                                                  | Operation                        | Success                   |
-| ---------------------------------------------------------------------- | -------------------------------- | ------------------------- |
-| `POST /internal/v1/lists/{listId}/tasks`                               | `createTaskInternal`             | `201`, `Location`, `ETag` |
-| `POST /internal/v1/tasks/bulk-actions`                                 | `executeBulkTaskActionInternal`  | `200`                     |
-| `POST /internal/v1/lists/{listId}/duplicate`                           | `duplicateListInternal`          | `201`, `Location`, `ETag` |
-| `POST /internal/v1/tasks/{taskKey}/duplicate`                          | `duplicateTaskInternal`          | `201`, `Location`, `ETag` |
-| `GET /internal/v1/lists/{listId}/activity`                             | `listListActivityInternal`       | `200`                     |
-| `GET /internal/v1/tasks/{taskKey}`                                     | `getTaskInternal`                | `200`, `ETag`             |
-| `PATCH /internal/v1/tasks/{taskKey}`                                   | `updateTaskInternal`             | `200`, `ETag`             |
-| `GET /internal/v1/tasks/{taskKey}/detail`                              | `getTaskDetailInternal`          | `200`, `ETag`             |
-| `PUT /internal/v1/tasks/{taskKey}/assignees/{userId}`                  | `assignTaskInternal`             | `200`, `ETag`             |
-| `DELETE /internal/v1/tasks/{taskKey}/assignees/{userId}`               | `unassignTaskInternal`           | `204`, `ETag`             |
-| `POST /internal/v1/tasks/{taskKey}/labels/add`                         | `addTaskLabelInternal`           | `200`, `ETag`             |
-| `POST /internal/v1/tasks/{taskKey}/labels/remove`                      | `removeTaskLabelInternal`        | `200`, `ETag`             |
-| `GET /internal/v1/tasks/{taskKey}/subtasks`                            | `listSubtasksInternal`           | `200`                     |
-| `POST /internal/v1/tasks/{taskKey}/subtasks`                           | `createSubtaskInternal`          | `201`, `Location`, `ETag` |
-| `POST /internal/v1/tasks/{taskKey}/checklist-items`                    | `addChecklistItemInternal`       | `201`, `Location`, `ETag` |
-| `PATCH /internal/v1/tasks/{taskKey}/checklist-items/{checklistItemId}` | `updateChecklistItemInternal`    | `200`, `ETag`             |
-| `GET /internal/v1/tasks/{taskKey}/activity`                            | `listTaskActivityInternal`       | `200`                     |
-| `GET /internal/v1/tasks/{taskKey}/time-entries`                        | `listTaskTimeEntriesInternal`    | `200`                     |
-| `POST /internal/v1/tasks/{taskKey}/time-entries`                       | `createTaskTimeEntryInternal`    | `201`, `Location`         |
-| `GET /internal/v1/tasks/{taskKey}/time-entries/{timeEntryId}`          | `getTaskTimeEntryInternal`       | `200`                     |
-| `DELETE /internal/v1/tasks/{taskKey}/time-entries/{timeEntryId}`       | `deleteTaskTimeEntryInternal`    | `204`                     |
-| `GET /internal/v1/tasks/{taskKey}/time-summary`                        | `getTaskTimeSummaryInternal`     | `200`                     |
-| `GET /internal/v1/tasks/{taskKey}/status-durations`                    | `getTaskStatusDurationsInternal` | `200`                     |
-| `GET /internal/v1/lists/{listId}/tasks`                                | `listTasksInternal`              | `200`                     |
-| `GET /internal/v1/lists/{listId}/task-groups`                          | `countTaskGroupsInternal`        | `200`                     |
-| `GET /internal/v1/lists/{listId}/counts`                               | `getListCountsInternal`          | `200`                     |
-| `GET /internal/v1/spaces/{spaceId}/overview`                           | `getSpaceOverviewInternal`       | `200`                     |
-| `GET /internal/v1/spaces/{spaceId}/milestones`                         | `listSpaceMilestonesInternal`    | `200`                     |
-| `GET /internal/v1/labels`                                              | `listLabelsInternal`             | `200`                     |
-| `GET /internal/v1/users/{userId}/tasks`                                | `listMyTasksInternal`            | `200`                     |
-| `GET /internal/v1/users/{userId}/home`                                 | `getHomeInternal`                | `200`                     |
-| `POST /internal/v1/tasks/{taskKey}/archive`                            | `archiveTaskInternal`            | `200`, `ETag`             |
-| `POST /internal/v1/tasks/{taskKey}/unarchive`                          | `unarchiveTaskInternal`          | `200`, `ETag`             |
-| `GET /internal/v1/archives/lists`                                      | `listArchivedListsInternal`      | `200`                     |
-| `GET /internal/v1/archives/tasks`                                      | `listArchivedTasksInternal`      | `200`                     |
-| `POST /internal/v1/tasks/{taskKey}/trash`                              | `trashTaskInternal`              | `200`                     |
-| `GET /internal/v1/trash/entries`                                       | `listTrashInternal`              | `200`                     |
-| `DELETE /internal/v1/trash/entries/{entryId}`                          | `purgeTrashEntryInternal`        | `204`                     |
-| `POST /internal/v1/trash/entries/{entryId}/restore`                    | `restoreTrashEntryInternal`      | `200`                     |
-| `POST /internal/v1/trash/empty`                                        | `emptyTrashInternal`             | `202`                     |
-| `GET /internal/v1/tasks/{taskKey}/access` (`realtime-gateway`)         | `checkTaskAccessInternal`        | `200`                     |
+| Route                                                                  | Operation                          | Success                   |
+| ---------------------------------------------------------------------- | ---------------------------------- | ------------------------- |
+| `POST /internal/v1/lists/{listId}/tasks`                               | `createTaskInternal`               | `201`, `Location`, `ETag` |
+| `POST /internal/v1/tasks/bulk-actions`                                 | `executeBulkTaskActionInternal`    | `200`                     |
+| `POST /internal/v1/lists/{listId}/duplicate`                           | `duplicateListInternal`            | `201`, `Location`, `ETag` |
+| `POST /internal/v1/tasks/{taskKey}/duplicate`                          | `duplicateTaskInternal`            | `201`, `Location`, `ETag` |
+| `GET /internal/v1/lists/{listId}/activity`                             | `listListActivityInternal`         | `200`                     |
+| `GET /internal/v1/tasks/{taskKey}`                                     | `getTaskInternal`                  | `200`, `ETag`             |
+| `PATCH /internal/v1/tasks/{taskKey}`                                   | `updateTaskInternal`               | `200`, `ETag`             |
+| `POST /internal/v1/tasks/{taskKey}/git-status-actions`                 | `applyGitTaskStatusActionInternal` | `200`                     |
+| `GET /internal/v1/tasks/{taskKey}/detail`                              | `getTaskDetailInternal`            | `200`, `ETag`             |
+| `PUT /internal/v1/tasks/{taskKey}/assignees/{userId}`                  | `assignTaskInternal`               | `200`, `ETag`             |
+| `DELETE /internal/v1/tasks/{taskKey}/assignees/{userId}`               | `unassignTaskInternal`             | `204`, `ETag`             |
+| `POST /internal/v1/tasks/{taskKey}/labels/add`                         | `addTaskLabelInternal`             | `200`, `ETag`             |
+| `POST /internal/v1/tasks/{taskKey}/labels/remove`                      | `removeTaskLabelInternal`          | `200`, `ETag`             |
+| `GET /internal/v1/tasks/{taskKey}/subtasks`                            | `listSubtasksInternal`             | `200`                     |
+| `POST /internal/v1/tasks/{taskKey}/subtasks`                           | `createSubtaskInternal`            | `201`, `Location`, `ETag` |
+| `POST /internal/v1/tasks/{taskKey}/checklist-items`                    | `addChecklistItemInternal`         | `201`, `Location`, `ETag` |
+| `PATCH /internal/v1/tasks/{taskKey}/checklist-items/{checklistItemId}` | `updateChecklistItemInternal`      | `200`, `ETag`             |
+| `GET /internal/v1/tasks/{taskKey}/activity`                            | `listTaskActivityInternal`         | `200`                     |
+| `GET /internal/v1/tasks/{taskKey}/time-entries`                        | `listTaskTimeEntriesInternal`      | `200`                     |
+| `POST /internal/v1/tasks/{taskKey}/time-entries`                       | `createTaskTimeEntryInternal`      | `201`, `Location`         |
+| `GET /internal/v1/tasks/{taskKey}/time-entries/{timeEntryId}`          | `getTaskTimeEntryInternal`         | `200`                     |
+| `DELETE /internal/v1/tasks/{taskKey}/time-entries/{timeEntryId}`       | `deleteTaskTimeEntryInternal`      | `204`                     |
+| `GET /internal/v1/tasks/{taskKey}/time-summary`                        | `getTaskTimeSummaryInternal`       | `200`                     |
+| `GET /internal/v1/tasks/{taskKey}/status-durations`                    | `getTaskStatusDurationsInternal`   | `200`                     |
+| `GET /internal/v1/lists/{listId}/tasks`                                | `listTasksInternal`                | `200`                     |
+| `GET /internal/v1/lists/{listId}/task-groups`                          | `countTaskGroupsInternal`          | `200`                     |
+| `GET /internal/v1/lists/{listId}/counts`                               | `getListCountsInternal`            | `200`                     |
+| `GET /internal/v1/spaces/{spaceId}/overview`                           | `getSpaceOverviewInternal`         | `200`                     |
+| `GET /internal/v1/spaces/{spaceId}/milestones`                         | `listSpaceMilestonesInternal`      | `200`                     |
+| `GET /internal/v1/labels`                                              | `listLabelsInternal`               | `200`                     |
+| `GET /internal/v1/users/{userId}/tasks`                                | `listMyTasksInternal`              | `200`                     |
+| `GET /internal/v1/users/{userId}/home`                                 | `getHomeInternal`                  | `200`                     |
+| `POST /internal/v1/tasks/{taskKey}/archive`                            | `archiveTaskInternal`              | `200`, `ETag`             |
+| `POST /internal/v1/tasks/{taskKey}/unarchive`                          | `unarchiveTaskInternal`            | `200`, `ETag`             |
+| `GET /internal/v1/archives/lists`                                      | `listArchivedListsInternal`        | `200`                     |
+| `GET /internal/v1/archives/tasks`                                      | `listArchivedTasksInternal`        | `200`                     |
+| `POST /internal/v1/tasks/{taskKey}/trash`                              | `trashTaskInternal`                | `200`                     |
+| `GET /internal/v1/trash/entries`                                       | `listTrashInternal`                | `200`                     |
+| `DELETE /internal/v1/trash/entries/{entryId}`                          | `purgeTrashEntryInternal`          | `204`                     |
+| `POST /internal/v1/trash/entries/{entryId}/restore`                    | `restoreTrashEntryInternal`        | `200`                     |
+| `POST /internal/v1/trash/empty`                                        | `emptyTrashInternal`               | `202`                     |
+| `GET /internal/v1/tasks/{taskKey}/access` (`realtime-gateway`)         | `checkTaskAccessInternal`          | `200`                     |
 
 - The access check answers `AccessCheck`: the role of the actor on the list of the task, the
   space, the list, the stable task UUID and the key. A task the actor has no role on and an unknown key answer
@@ -493,6 +494,11 @@ required; issuer `api-gateway` for every route but the access check, which accep
 
 - The task routes and `listSubtasks` name a task by its key, `^[A-Z]{2,5}-[1-9][0-9]{0,8}$`: a
   lower-case or zero-padded key answers `400 request.invalid`.
+- The Git action requires a signed `integration-service` issuer, a Git actor, an organization and
+  an idempotency key scoped to that actor. Before a cached reply, a guard checks the mapping author's
+  current access and the task's active placement; the mutation checks them again under its own locks.
+  A refusal is a generic `404 task.not-found`. A successful transition records Git provider activity
+  and outbox events in the same transaction as the task change.
 - The three creations honour `Idempotency-Key` (`@Idempotent()`, applied by `tasks.module.ts`: the
   decorator lives in `@cadenway/nest-common/database`, which the strict layout keeps out of
   `presentation/`). A replay answers the recorded `Location` and `ETag`: the version at creation.

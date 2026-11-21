@@ -935,7 +935,10 @@ describe('tasks', () => {
     vi.stubEnv('INTERNAL_TOKEN_AUDIENCE', 'task-service');
     vi.stubEnv(
       'INTERNAL_TOKEN_TRUSTED_ISSUERS',
-      JSON.stringify({ 'api-gateway': [gateway.publicJwk] }),
+      JSON.stringify({
+        'api-gateway': [gateway.publicJwk],
+        'integration-service': [gateway.publicJwk],
+      }),
     );
 
     telemetry = startTelemetry({ service: 'task-service', version: '0.0.0-test' });
@@ -5476,5 +5479,69 @@ describe('tasks', () => {
       expectProblem(refusal, 422, 'dependency.cycle');
       expect(refusal.body).not.toHaveProperty('details');
     });
+  });
+  it('processes a signed Git action once and rejects replay after author revocation', async () => {
+    const task = await createTask(camille, sprint14.id, {
+      name: 'Git status integration regression',
+      status: 'progress',
+    });
+    const integration = await InternalTokenSigner.create({
+      issuer: 'integration-service',
+      privateJwk: gateway.privateJwk,
+    });
+    const integrationId = '019a0000-0000-7000-8000-000000000001';
+    const token = await integration.sign('task-service', {
+      actor: { type: 'git', id: integrationId },
+      organizationId: atelierNordId,
+    });
+    const key = randomUUID();
+    const perform = (): request.Test =>
+      request(service().getHttpServer())
+        .post(`/internal/v1/tasks/${task.key}/git-status-actions`)
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', key)
+        .send({
+          provider: 'github',
+          spaceId: produit.id,
+          mappingAuthorUserId: camille.userId,
+          status: 'review',
+        });
+
+    const first = await perform();
+    expectStatus(first, 200);
+    expect(bodyOf(first)).toMatchObject({
+      disposition: 'applied',
+      listId: sprint14.id,
+      spaceId: produit.id,
+    });
+    const replay = await perform();
+    expectStatus(replay, 200);
+    expect(bodyOf(replay)).toEqual(bodyOf(first));
+    expect(replay.headers['idempotent-replayed']).toBe('true');
+    expect((await readTask(camille, task.key)).status).toBe('review');
+    const activity = await activityOf(camille, task.key);
+    expect(activity.items.filter((entry) => entry.kind === 'status')).toEqual([
+      expect.objectContaining({ actor: { type: 'git', id: integrationId, provider: 'github' } }),
+    ]);
+    expect(
+      (await outboxOfKeys(task.key)).filter((row) => row.event_name === 'task.status-changed.v1'),
+    ).toHaveLength(1);
+
+    await asSystem(
+      'update organization_members set removed_at = now() where organization_id = $1 and user_id = $2',
+      [atelierNordId, camille.userId],
+    );
+    try {
+      const revoked = await perform();
+      expectProblem(revoked, 404, 'task.not-found');
+      expect(
+        (await outboxOfKeys(task.key)).filter((row) => row.event_name === 'task.status-changed.v1'),
+      ).toHaveLength(1);
+    } finally {
+      await asSystem(
+        'update organization_members set removed_at = null where organization_id = $1 and user_id = $2',
+        [atelierNordId, camille.userId],
+      );
+    }
   });
 });

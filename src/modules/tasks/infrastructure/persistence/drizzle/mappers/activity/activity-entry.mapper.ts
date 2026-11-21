@@ -88,12 +88,23 @@ function toActivityChange(row: ActivityEntryRow): ActivityChange {
  * @throws {InvalidTaskError} When the stored entry breaks an invariant of the domain.
  */
 export function toActivityEntry(row: ActivityEntryRow): ActivityEntryState {
+  if (
+    row.actorProvider !== null &&
+    row.actorProvider !== 'github' &&
+    row.actorProvider !== 'gitlab'
+  ) {
+    throw new Error(`A stored Git provider is outside the providers (activity entry ${row.id})`);
+  }
   return ActivityEntry.restore({
     id: row.id,
     organizationId: row.organizationId,
     taskId: row.taskId,
     listId: row.listId,
-    actor: { type: toActorType(row.actorType, `activity entry ${row.id}`), id: row.actorId },
+    actor: {
+      type: toActorType(row.actorType, `activity entry ${row.id}`),
+      id: row.actorId,
+      ...(row.actorProvider === null ? {} : { provider: row.actorProvider }),
+    },
     occurredAt: row.occurredAt,
     change: toActivityChange(row),
     ...(row.initialStatus === null
@@ -162,6 +173,7 @@ export function toActivityEntryInsert(
     kind: draft.change.kind,
     actorType: draft.actor.type,
     actorId: draft.actor.id,
+    actorProvider: draft.actor.provider ?? null,
     occurredAt: draft.occurredAt,
     initialStatus: draft.initialStatus ?? null,
     ...toActivityDetail(draft.change),

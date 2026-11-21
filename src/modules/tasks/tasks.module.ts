@@ -17,6 +17,9 @@ import { trashWritesProvider } from './composition/providers/adapters/feature/tr
 import { spaceDirectoryProvider } from './composition/providers/adapters/space/space-directory.provider.js';
 import { duplicateListProvider } from './composition/providers/use-cases/list/duplicate-list.provider.js';
 import { duplicateTaskProvider } from './composition/providers/use-cases/task/duplicate-task.provider.js';
+import { applyGitTaskStatusProvider } from './composition/providers/use-cases/task/apply-git-task-status.provider.js';
+import { GitTaskStatusController } from './presentation/http/controllers/task/git-task-status.controller.js';
+import { GitTaskActionReplayGuard } from './presentation/http/guards/task/git-task-action-replay.guard.js';
 import { ListDuplicateController } from './presentation/http/controllers/duplicate/list-duplicate.controller.js';
 import { TaskDuplicateController } from './presentation/http/controllers/duplicate/task-duplicate.controller.js';
 import { RequiredDuplicateBodyGuard } from './presentation/http/guards/duplicate/required-duplicate-body.guard.js';
@@ -210,6 +213,7 @@ markIdempotent(TaskTimeController.prototype, 'create');
     UserTasksController,
     BulkTaskActionsController,
     TasksController,
+    GitTaskStatusController,
     TaskAssigneesController,
     TaskWatchersController,
     TaskLabelsController,
@@ -233,6 +237,8 @@ markIdempotent(TaskTimeController.prototype, 'create');
     TaskParticipantsController,
   ],
   providers: [
+    applyGitTaskStatusProvider,
+    GitTaskActionReplayGuard,
     ...taskSearchProjectionProviders,
     resolveTaskSearchAccessProvider,
     {

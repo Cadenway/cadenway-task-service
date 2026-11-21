@@ -64,6 +64,18 @@ export class TaskChangeWriter {
     now: Date,
     watcherIds: readonly string[] = [],
   ): Promise<void> {
+    await this.commitAs(store, before, update, { type: 'user', id: actorUserId }, now, watcherIds);
+  }
+
+  /** Writes a task change attributed to its authenticated actor. */
+  public async commitAs(
+    store: TasksStore,
+    before: Task,
+    update: TaskUpdate,
+    actor: TaskActor,
+    now: Date,
+    watcherIds: readonly string[] = [],
+  ): Promise<void> {
     if (update.changed.length === 0) {
       return;
     }
@@ -74,8 +86,7 @@ export class TaskChangeWriter {
     ) {
       throw new Error('A planned occurrence needs its allocated successor key before saving.');
     }
-    const actor: TaskActor = { type: 'user', id: actorUserId };
-    const eventActor: EventActor = { type: 'user', id: actorUserId };
+    const eventActor: EventActor = { type: actor.type, id: actor.id };
     await store.tasks.save(before, update.task);
     const entries: readonly ActivityEntryDraft[] = ActivityEntry.forChange(
       before.snapshot,

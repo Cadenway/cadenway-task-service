@@ -27,6 +27,20 @@ function entryOf(change: ActivityEntryView['change']): ActivityEntryView {
 }
 
 describe('toActivityEntry', () => {
+  it('preserves the verified Git provider while leaving older activity unchanged', () => {
+    const legacy = entryOf({ kind: 'create' });
+    const github = toActivityEntry({
+      ...legacy,
+      actor: { type: 'git', id: HUGO, provider: 'github' },
+    });
+    const older = toActivityEntry({ ...legacy, actor: { type: 'git', id: HUGO } });
+    expect(github.actor).toEqual({ type: 'git', id: HUGO, provider: 'github' });
+    expect(older.actor).toEqual({ type: 'git', id: HUGO });
+    expect(
+      ListListActivityInternalResponse.safeParse({ items: [github], nextCursor: null, total: 1 })
+        .success,
+    ).toBe(true);
+  });
   it('gives a creation no detail', () => {
     const entry = toActivityEntry(entryOf({ kind: 'create' }));
 
