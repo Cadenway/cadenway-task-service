@@ -70,6 +70,41 @@ describe('ActivityEntry.forCreation: one create entry per task created', () => {
 });
 
 describe('ActivityEntry.forChange: status, priority, due date and assignees only', () => {
+  it.each(['github', 'gitlab'] as const)('preserves the verified Git provider %s', (provider) => {
+    const actor = { type: 'git', id: 'integration-id', provider } as const;
+    const [draft] = ActivityEntry.forChange(
+      taskState(),
+      taskState({ status: 'review' }),
+      actor,
+      NOW,
+    );
+
+    expect(draft).toMatchObject({ actor, change: { kind: 'status' } });
+    if (draft === undefined) throw new Error('Expected Git activity.');
+    expect(ActivityEntry.restore({ ...draft, id: 'git-activity' }).snapshot.actor).toEqual(actor);
+  });
+
+  it('restores a legacy Git actor without a provider', () => {
+    const actor = { type: 'git', id: 'integration-id' } as const;
+    expect(ActivityEntry.restore(priorityEntry({ actor })).snapshot.actor).toEqual(actor);
+  });
+
+  it('refuses Git provider provenance on a human actor', () => {
+    expect(() =>
+      ActivityEntry.restore(priorityEntry({ actor: { ...CAMILLE_ACTOR, provider: 'github' } })),
+    ).toThrow(InvalidTaskError);
+  });
+
+  it('refuses unknown Git provider provenance when restoring stored activity', () => {
+    expect(() =>
+      ActivityEntry.restore(
+        priorityEntry({
+          actor: { type: 'git', id: 'integration-id', provider: 'unknown' as 'github' },
+        }),
+      ),
+    ).toThrow(InvalidTaskError);
+  });
+
   it('records status, priority and due changes in that order, with the list after the change', () => {
     const drafts: readonly ActivityEntryDraft[] = ActivityEntry.forChange(
       taskState(),

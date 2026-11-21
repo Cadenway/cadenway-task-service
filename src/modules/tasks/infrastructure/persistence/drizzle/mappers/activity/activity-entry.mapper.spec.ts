@@ -40,6 +40,7 @@ function rowOf(
     kind: entry.change.kind,
     actorType: entry.actor.type,
     actorId: entry.actor.id,
+    actorProvider: entry.actor.provider ?? null,
     occurredAt: entry.occurredAt,
     initialStatus: entry.initialStatus ?? null,
     ...toActivityDetail(entry.change),
@@ -60,6 +61,29 @@ const CHANGES: readonly ActivityChange[] = [
 ];
 
 describe('toActivityEntry: a stored row becomes the entry it stores', () => {
+  it.each(['github', 'gitlab'] as const)(
+    'preserves the %s provider of Git activity',
+    (provider) => {
+      const entry: ActivityEntryState = priorityEntry({
+        actor: { type: 'git', id: 'integration', provider },
+      });
+      expect(toActivityEntryInsert(entry).actorProvider).toBe(provider);
+      expect(toActivityEntry(rowOf(entry))).toEqual(entry);
+    },
+  );
+
+  it('omits the provider of activity created before provider attribution', () => {
+    const entry: ActivityEntryState = priorityEntry({ actor: { type: 'git', id: 'integration' } });
+    expect(toActivityEntryInsert(entry).actorProvider).toBeNull();
+    expect(toActivityEntry(rowOf(entry)).actor).toEqual({ type: 'git', id: 'integration' });
+  });
+
+  it('refuses an unknown stored provider', () => {
+    expect(() => toActivityEntry(rowOf(priorityEntry(), { actorProvider: 'unknown' }))).toThrow(
+      'A stored Git provider is outside the providers',
+    );
+  });
+
   it.each(CHANGES)('round-trips the entry of kind $kind through its columns', (change) => {
     const entry: ActivityEntryState = priorityEntry({ change });
 
@@ -193,6 +217,7 @@ describe('toActivityEntryInsert: a draft becomes the columns of a new entry', ()
       kind: 'assign',
       actorType: 'user',
       actorId: CAMILLE,
+      actorProvider: null,
       occurredAt: NOW,
       initialStatus: null,
       statusFrom: null,

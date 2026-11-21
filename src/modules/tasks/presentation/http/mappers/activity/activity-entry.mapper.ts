@@ -21,7 +21,11 @@ export function toActivityEntry(view: ActivityEntryView): ActivityEntry {
     id: view.id,
     occurredAt: view.occurredAt.toISOString(),
     kind: view.kind,
-    actor: { type: view.actor.type, id: view.actor.id },
+    actor: {
+      type: view.actor.type,
+      id: view.actor.id,
+      ...(view.actor.provider === undefined ? {} : { provider: view.actor.provider }),
+    },
     task: toTaskRef(view.task),
     listId: view.listId,
   };
