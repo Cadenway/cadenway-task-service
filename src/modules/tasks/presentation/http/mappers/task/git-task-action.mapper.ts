@@ -32,25 +32,57 @@ export function toGitTaskAction(request: Request): ApplyGitTaskStatusInput {
   );
   const keyInvalid =
     !key.success || !/^[\x21-\x7e]{1,255}$/u.test(key.data['Idempotency-Key']) || keys.length > 1;
-  const json = request.is('application/json') === 'application/json';
-  if (
-    !path.success ||
-    !body.success ||
-    !json ||
-    keyInvalid ||
-    Object.keys(request.query).length !== 0
-  ) {
-    const issue = keyInvalid
-      ? { in: 'header', path: 'Idempotency-Key' }
-      : !path.success
-        ? { in: 'path', path: 'taskKey' }
-        : Object.keys(request.query).length !== 0
-          ? { in: 'query', path: '' }
-          : { in: 'body', path: '' };
+  const issues: { in: string; path: string; code: string; message?: string }[] = [];
+  if (keyInvalid) issues.push({ in: 'header', path: 'Idempotency-Key', code: 'invalid_format' });
+  if (!path.success) {
+    issues.push(
+      ...path.error.issues.map((issue) => ({
+        in: 'path',
+        path: issue.path.join('.'),
+        code: issue.code,
+        message: issue.message,
+      })),
+    );
+  }
+  for (const name of Object.keys(request.query)) {
+    issues.push({ in: 'query', path: name, code: 'unrecognized_parameter' });
+  }
+  if (request.is('application/json') !== 'application/json') {
+    issues.push({
+      in: 'body',
+      path: '',
+      code: 'invalid_type',
+      message: 'Expected application/json.',
+    });
+  } else if (!body.success) {
+    issues.push(
+      ...body.error.issues.flatMap<{ in: string; path: string; code: string; message: string }>(
+        (issue) => {
+          if (issue.code === 'unrecognized_keys') {
+            return issue.keys.map((key) => ({
+              in: 'body',
+              path: [...issue.path, key].join('.'),
+              code: issue.code,
+              message: 'Unknown body property.',
+            }));
+          }
+          return [
+            {
+              in: 'body',
+              path: issue.path.join('.'),
+              code: issue.code,
+              message: issue.message,
+            },
+          ];
+        },
+      ),
+    );
+  }
+  if (issues.length > 0 || !path.success || !body.success) {
     throw new ProblemException({
       status: 400,
       code: 'request.invalid',
-      details: { issues: [{ ...issue, code: 'invalid_format' }] },
+      details: { issues },
     });
   }
   return {
