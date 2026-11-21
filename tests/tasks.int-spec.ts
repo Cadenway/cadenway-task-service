@@ -11,6 +11,7 @@ import type {
 import {
   AddChecklistItemInternalResponse,
   AddTaskLabelInternalResponse,
+  ApplyAutomationTaskActionInternalResponse,
   AssignTaskInternalResponse,
   CountTaskGroupsInternalResponse,
   CreateListInternalResponse,
@@ -65,6 +66,7 @@ import type { z } from 'zod';
 
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
+import { configureTaskAutomationActionCache } from '../src/infrastructure/http/task-automation-action-cache.js';
 import { DrizzleCommentRepository } from '../src/modules/task-comments/infrastructure/persistence/drizzle/repositories/comment/drizzle-comment.repository.js';
 import { DrizzleCommentExcerptReader } from '../src/modules/task-comments/infrastructure/persistence/drizzle/repositories/comment/drizzle-comment-excerpt.repository.js';
 import { DrizzleWatcherOverrideRepository } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/watcher/drizzle-watcher-override.repository.js';
@@ -935,7 +937,10 @@ describe('tasks', () => {
     vi.stubEnv('INTERNAL_TOKEN_AUDIENCE', 'task-service');
     vi.stubEnv(
       'INTERNAL_TOKEN_TRUSTED_ISSUERS',
-      JSON.stringify({ 'api-gateway': [gateway.publicJwk] }),
+      JSON.stringify({
+        'api-gateway': [gateway.publicJwk],
+        'automation-service': [gateway.publicJwk],
+      }),
     );
 
     telemetry = startTelemetry({ service: 'task-service', version: '0.0.0-test' });
@@ -952,6 +957,7 @@ describe('tasks', () => {
       },
       logDestination: { write: (): void => undefined },
     });
+    configureTaskAutomationActionCache(app);
     await app.init();
     signer = await InternalTokenSigner.create({
       issuer: 'api-gateway',
@@ -5476,5 +5482,110 @@ describe('tasks', () => {
       expectProblem(refusal, 422, 'dependency.cycle');
       expect(refusal.body).not.toHaveProperty('details');
     });
+  });
+
+  it('applies an eligible Automation assignment once and refuses a guest', async () => {
+    const task = await createTask(camille, sprint14.id, {
+      name: 'Automation assignment integration regression',
+    });
+    const automation = await InternalTokenSigner.create({
+      issuer: 'automation-service',
+      privateJwk: gateway.privateJwk,
+    });
+    const ruleId = '019a0000-0000-7000-8000-000000000003';
+    const token = await automation.sign('task-service', {
+      actor: { type: 'automation', id: ruleId },
+      organizationId: atelierNordId,
+    });
+    const assign = (userId: string, key: string): request.Test =>
+      request(service().getHttpServer())
+        .post(`/internal/v1/tasks/${task.key}/automation-actions`)
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', key)
+        .send({ ruleAuthorUserId: camille.userId, type: 'assign', userId });
+
+    const key = randomUUID();
+    const first = await assign(camille.userId, key);
+    expectStatus(first, 200);
+    expect(conforms(ApplyAutomationTaskActionInternalResponse, bodyOf(first))).toEqual({
+      disposition: 'applied',
+    });
+    const replay = await assign(camille.userId, key);
+    expectStatus(replay, 200);
+    expect(replay.headers['idempotent-replayed']).toBe('true');
+    const unchanged = await assign(camille.userId, randomUUID());
+    expectStatus(unchanged, 200);
+    expect(bodyOf(unchanged)).toEqual({ disposition: 'no_op' });
+    const refused = await assign(nadia.userId, randomUUID());
+    expectProblem(refused, 422, 'task.assignee-invalid');
+    expect(refused.body).not.toHaveProperty('details');
+    const activity = await activityOf(camille, task.key);
+    expect(activity.items.filter((entry) => entry.kind === 'assign')).toEqual([
+      expect.objectContaining({ actor: { type: 'automation', id: ruleId } }),
+    ]);
+    const updates = (await outboxOfKeys(task.key)).filter(
+      (row) => row.event_name === 'task.assigned.v1',
+    );
+    expect(updates).toHaveLength(1);
+  });
+
+  it('applies a signed Automation priority action once and refuses replay after author revocation', async () => {
+    const task = await createTask(camille, sprint14.id, {
+      name: 'Automation priority integration regression',
+      priority: 'basse',
+    });
+    const automation = await InternalTokenSigner.create({
+      issuer: 'automation-service',
+      privateJwk: gateway.privateJwk,
+    });
+    const ruleId = '019a0000-0000-7000-8000-000000000002';
+    const token = await automation.sign('task-service', {
+      actor: { type: 'automation', id: ruleId },
+      organizationId: atelierNordId,
+    });
+    const key = randomUUID();
+    const perform = (): request.Test =>
+      request(service().getHttpServer())
+        .post(`/internal/v1/tasks/${task.key}/automation-actions`)
+        .set('Authorization', `Bearer ${token}`)
+        .set('Idempotency-Key', key)
+        .send({ ruleAuthorUserId: camille.userId, type: 'priority', priority: 'haute' });
+
+    const first = await perform();
+    expectStatus(first, 200);
+    expect(conforms(ApplyAutomationTaskActionInternalResponse, bodyOf(first))).toEqual({
+      disposition: 'applied',
+    });
+    expect(first.headers['cache-control']).toBe('private, no-store');
+    const replay = await perform();
+    expectStatus(replay, 200);
+    expect(bodyOf(replay)).toEqual(bodyOf(first));
+    expect(replay.headers['idempotent-replayed']).toBe('true');
+    expect((await readTask(camille, task.key)).priority).toBe('haute');
+    const activity = await activityOf(camille, task.key);
+    expect(activity.items.filter((entry) => entry.kind === 'priority')).toEqual([
+      expect.objectContaining({ actor: { type: 'automation', id: ruleId } }),
+    ]);
+    const updates = (): Promise<OutboxRow[]> =>
+      outboxOfKeys(task.key).then((rows) =>
+        rows.filter((row) => row.event_name === 'task.updated.v1'),
+      );
+    expect(await updates()).toHaveLength(1);
+
+    await asSystem(
+      'update organization_members set removed_at = now() where organization_id = $1 and user_id = $2',
+      [atelierNordId, camille.userId],
+    );
+    try {
+      const revoked = await perform();
+      expectProblem(revoked, 404, 'task.not-found');
+      expect(revoked.headers['cache-control']).toBe('private, no-store');
+      expect(await updates()).toHaveLength(1);
+    } finally {
+      await asSystem(
+        'update organization_members set removed_at = null where organization_id = $1 and user_id = $2',
+        [atelierNordId, camille.userId],
+      );
+    }
   });
 });

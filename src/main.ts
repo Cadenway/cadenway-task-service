@@ -6,6 +6,7 @@ import { appConfigSchema } from './config/app-config.js';
 import type { AppConfig } from './config/app-config.js';
 import { configureDocumentSpaceAccessCache } from './infrastructure/http/document-space-access-cache.js';
 import { configureTaskSearchCache } from './infrastructure/http/task-search-cache.js';
+import { configureTaskAutomationActionCache } from './infrastructure/http/task-automation-action-cache.js';
 
 // Started after the instrumentation hooks and `telemetry.js`, with the heap capped for the 256M
 // container: `node --max-old-space-size=160 --import @cadenway/nest-common/register
@@ -30,5 +31,6 @@ await runApplication({ service: 'task-service' }, async (): Promise<void> => {
   });
   configureDocumentSpaceAccessCache(app);
   configureTaskSearchCache(app);
+  configureTaskAutomationActionCache(app);
   await app.listen(config.PORT);
 });
