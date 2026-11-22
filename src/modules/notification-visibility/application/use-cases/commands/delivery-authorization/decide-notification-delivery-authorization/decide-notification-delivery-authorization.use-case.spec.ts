@@ -29,7 +29,7 @@ describe('DecideNotificationDeliveryAuthorization', () => {
       now,
     );
 
-    await run.execute(input, new AbortController().signal);
+    await run.execute(input, new AbortController().signal, () => Promise.resolve(true));
 
     expect(visibility).toHaveBeenCalledWith({
       organizationId: input.organizationId,
@@ -63,7 +63,7 @@ describe('DecideNotificationDeliveryAuthorization', () => {
       () => 0,
     );
 
-    await run.execute(input, new AbortController().signal);
+    await run.execute(input, new AbortController().signal, () => Promise.resolve(true));
 
     expect(lock).toHaveBeenCalledWith(input.organizationId, input.authorizationRequestId);
     expect(visibility).not.toHaveBeenCalled();

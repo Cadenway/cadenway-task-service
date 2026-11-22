@@ -1,6 +1,9 @@
 import { Idempotent, TenantTransactionRunner } from '@cadenway/nest-common/database';
 import { OutboxRelay, OutboxWriter } from '@cadenway/nest-messaging/outbox';
 import { Global, Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+
+import { SavedViewReplayAccessInterceptor } from './composition/providers/adapters/view/saved-views-replay-access.provider.js';
 
 import { PurgeTargetFavorites } from '../favorites/public/purge/purge-target-favorites.js';
 import { OrganizationMembersModule } from '../organization-members/organization-members.module.js';
@@ -85,6 +88,7 @@ const operations = [
           purgeFavorites,
         ),
     },
+    { provide: APP_INTERCEPTOR, useClass: SavedViewReplayAccessInterceptor },
     ...operations,
   ],
   exports: [FindFavoriteSavedView],

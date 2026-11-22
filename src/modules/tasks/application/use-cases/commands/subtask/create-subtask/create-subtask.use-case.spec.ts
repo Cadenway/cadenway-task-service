@@ -166,6 +166,8 @@ describe('CreateSubtask: a subtask takes the list of its parent and the next key
       'tasks.findByKey:read',
       'spaces.findVisibleList',
       'tasks.findByKey:lock',
+      'spaces.lockTrashLists',
+      'spaces.findVisibleList',
       'spaces.allocateKeys',
       'tasks.insert',
       'events.created',

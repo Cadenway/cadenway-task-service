@@ -137,7 +137,7 @@ describe('GetListCounts: what the actor does not see is not found', () => {
   });
 });
 
-describe('GetListCounts: the read runs in one read-only transaction', () => {
+describe('GetListCounts: visibility and counts share a read-only snapshot', () => {
   it('opens a single read-only run, with the default isolation, with no snapshot', async () => {
     const tasks = sprint14();
 
@@ -145,7 +145,7 @@ describe('GetListCounts: the read runs in one read-only transaction', () => {
 
     expect(tasks.runs).toBe(1);
     expect(tasks.readOnlyRuns).toBe(1);
-    expect(tasks.snapshotRuns).toBe(0);
+    expect(tasks.snapshotRuns).toBe(1);
   });
 });
 

@@ -118,6 +118,7 @@ export class ListTaskActivity {
         );
         return { items, next: page.next, total };
       },
+      { snapshot: true },
     );
   }
   // #endregion

@@ -1,6 +1,7 @@
 import { TenantTransactionRunner } from '@cadenway/nest-common/database';
 import type { FactoryProvider } from '@nestjs/common';
 
+import { matchesCurrentMembership } from '../../../../../../infrastructure/http/current-membership.js';
 import { FindOrganizationMember } from '../../../../../organization-members/public/membership/find-organization-member.js';
 import { ResolveDocumentSpaceAccess } from '../../../../application/use-cases/queries/access/resolve-document-space-access/resolve-document-space-access.use-case.js';
 import { ResolveGoalSpaces } from '../../../../application/use-cases/queries/goal/resolve-goal-spaces/resolve-goal-spaces.use-case.js';
@@ -19,7 +20,12 @@ export const resolveDocumentSpaceAccessProvider: FactoryProvider<ResolveDocument
         runner.run(
           () =>
             work({
-              findViewer: (input) => memberships.execute({ ...input, lock: false }),
+              findViewer: async (input) => {
+                const member = await memberships.stamp({ ...input, lock: false });
+                return matchesCurrentMembership(input.organizationId, input.userId, member)
+                  ? member
+                  : null;
+              },
               resolveSpaces: (input) => spaces.execute({ ...input, lock: false }),
             }),
           { readOnly: true, isolationLevel: 'repeatable read' },

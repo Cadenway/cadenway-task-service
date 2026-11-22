@@ -104,6 +104,20 @@ export class DrizzleTaskTemplateRepository implements TaskTemplateRepository {
     return row?.count ?? 0;
   }
 
+  /** Reads sources only, without bringing template content into the space transaction. */
+  public async sourceListIds(
+    organizationId: string,
+    spaceId: string,
+  ): Promise<readonly (string | null)[]> {
+    const rows = await this.db
+      .selectDistinct({ listId: taskTemplates.sourceListId })
+      .from(taskTemplates)
+      .where(
+        and(eq(taskTemplates.organizationId, organizationId), eq(taskTemplates.spaceId, spaceId)),
+      );
+    return rows.map(({ listId }) => listId);
+  }
+
   /** Deletes only the entry in the supplied tenant and space. */
   public async delete(organizationId: string, spaceId: string, id: string): Promise<void> {
     await this.db

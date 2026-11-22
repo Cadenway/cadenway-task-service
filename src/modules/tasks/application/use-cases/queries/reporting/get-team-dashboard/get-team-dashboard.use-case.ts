@@ -41,6 +41,8 @@ export class GetTeamDashboard {
       const firstDay = shiftReportingDate(today, -reportingWeekday(today) - (input.weeks - 1) * 7);
       // IANA offsets lie within a day of UTC; the policy applies the exact local boundary.
       const from = new Date(Date.parse(`${firstDay.format()}T00:00:00.000Z`) - 86_400_000);
+      const localDayEndBound = Date.parse(`${today.format()}T00:00:00.000Z`) + 2 * 86_400_000;
+      const through = new Date(Math.min(localDayEndBound, observedAt.getTime()));
       const viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
       const listIds = await this.spaces.visibleListIds(input.organizationId, viewer, {
         liveOnly: true,
@@ -59,7 +61,7 @@ export class GetTeamDashboard {
                 input.organizationId,
                 listIds,
                 from,
-                observedAt,
+                through,
                 after,
                 limit,
               ),

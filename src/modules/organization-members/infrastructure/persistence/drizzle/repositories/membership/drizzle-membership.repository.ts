@@ -1,5 +1,6 @@
 import type { TransactionDatabase } from '@cadenway/nest-common/database';
 import { and, asc, desc, eq, gt, inArray, isNull, ne, or, sql } from 'drizzle-orm';
+import type { SQL, SQLWrapper } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 
 import type { MembershipRepository } from '../../../../../application/ports/outbound/persistence/membership/membership-repository.port.js';
@@ -28,6 +29,14 @@ const batchUsersCap: number = 10_000;
 
 /** Alias for the bounded memberships of an account. */
 const activeCandidates = alias(organizationMembers, 'active_membership_candidate');
+
+/** Ranks active candidates before any bounded read can discard a stricter membership. */
+function membershipPrivilege(role: SQLWrapper): SQL {
+  return sql`case ${role} ${sql.join(
+    Object.entries(privilegeOf).map(([name, weight]) => sql`when ${name} then ${weight}::integer`),
+    sql` `,
+  )} end`;
+}
 
 /**
  * Class DrizzleMembershipRepository
@@ -142,7 +151,7 @@ export class DrizzleMembershipRepository implements MembershipRepository {
    *
    * @description
    * Loads the active memberships of an account in an organization, through the index on
-   * `(organization_id, user_id)`, the latest stored first. There is one, or two while a removal
+   * `(organization_id, user_id)`, the least privileged first. There is one, or two while a removal
    * and a new join of the same person cross; `activeMembershipsCap` bounds the read all the same.
    *
    * @param {string} organizationId - The organization.
@@ -166,7 +175,11 @@ export class DrizzleMembershipRepository implements MembershipRepository {
           isNull(organizationMembers.removedAt),
         ),
       )
-      .orderBy(desc(organizationMembers.createdAt), desc(organizationMembers.id))
+      .orderBy(
+        membershipPrivilege(organizationMembers.role),
+        desc(organizationMembers.createdAt),
+        desc(organizationMembers.id),
+      )
       .limit(activeMembershipsCap);
     const rows: OrganizationMemberRow[] = lock ? await query.for('share') : await query;
     return rows.map(toMembership);
@@ -177,12 +190,6 @@ export class DrizzleMembershipRepository implements MembershipRepository {
     input: ListActiveMembersInput,
   ): Promise<readonly ListActiveMembersOutput[]> {
     const explicit = [...new Set([...input.nonGuestIds, ...input.guestIds])];
-    const rank = sql`case ${organizationMembers.role} ${sql.join(
-      Object.entries(privilegeOf).map(
-        ([role, weight]) => sql`when ${role} then ${weight}::integer`,
-      ),
-      sql` `,
-    )} end`;
     const members = this.db
       .selectDistinctOn([organizationMembers.userId], {
         userId: organizationMembers.userId,
@@ -200,7 +207,7 @@ export class DrizzleMembershipRepository implements MembershipRepository {
       )
       .orderBy(
         asc(organizationMembers.userId),
-        rank,
+        membershipPrivilege(organizationMembers.role),
         desc(organizationMembers.createdAt),
         desc(organizationMembers.id),
       )
@@ -223,13 +230,13 @@ export class DrizzleMembershipRepository implements MembershipRepository {
 
   /**
    * Reads the active memberships of a bounded set of accounts in stable account order.
-   * The same latest-ten cap applies to every account as in `listActiveByUser`; the use case
+   * The same cap and least-privileged order apply to every account as in `listActiveByUser`; the use case
    * then applies the same least-privileged membership policy to each returned group.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} userIds - Accounts whose current memberships are requested.
    * @param {boolean} lock - Hold the selected memberships `FOR SHARE` through commit.
-   * @returns {Promise<Membership[]>} Active memberships, sorted by user and then newest first.
+   * @returns {Promise<Membership[]>} Active memberships, sorted by user and then privilege.
    * @throws {Error} When the number of distinct accounts exceeds the maximum copy size.
    */
   public async listActiveByUsers(
@@ -255,13 +262,14 @@ export class DrizzleMembershipRepository implements MembershipRepository {
             where ${activeCandidates.organizationId} = ${organizationMembers.organizationId}
               and ${activeCandidates.userId} = ${organizationMembers.userId}
               and ${activeCandidates.removedAt} is null
-            order by ${activeCandidates.createdAt} desc, ${activeCandidates.id} desc
+            order by ${membershipPrivilege(activeCandidates.role)}, ${activeCandidates.createdAt} desc, ${activeCandidates.id} desc
             limit ${activeMembershipsCap}
           )`,
         ),
       )
       .orderBy(
         asc(organizationMembers.userId),
+        membershipPrivilege(organizationMembers.role),
         desc(organizationMembers.createdAt),
         desc(organizationMembers.id),
       );

@@ -22,6 +22,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
+import { ReadCurrentMembership } from '../src/modules/organization-members/public/membership/read-current-membership.js';
+import { mirrorCurrentMembership } from './support/current-membership.fixture.js';
 
 const project = `task-goals-test-${String(process.pid)}`;
 const organizationId = '01938f6e-6d1a-7c3e-9a51-2f0c4b8d7e10';
@@ -139,6 +141,7 @@ describe('goal routes with PostgreSQL and NATS', () => {
       logDestination: { write: (): void => undefined },
     });
     await app.init();
+    mirrorCurrentMembership(app);
     signer = await InternalTokenSigner.create({
       issuer: 'api-gateway',
       privateJwk: { ...publicJwk, d },
@@ -437,6 +440,25 @@ describe('goal routes with PostgreSQL and NATS', () => {
   });
 
   describe('idempotent goal creation checks current authorization', () => {
+    it('keeps an organization goal intact while its membership proof and projection disagree', async () => {
+      const created = await createGoal({ ...basicGoal, name: 'Objectif conservé' });
+      expect(created.status, created.text).toBe(201);
+      const { id } = CreateGoalInternalResponse.parse(created.body as unknown);
+      if (app === undefined) throw new Error('Application did not start');
+      const authority = app.get(ReadCurrentMembership);
+      const stamp = await authority.execute(organizationId, camille);
+      if (stamp === null) throw new Error('Missing fixture membership');
+      vi.spyOn(authority, 'execute').mockResolvedValueOnce({
+        ...stamp,
+        role: 'member',
+        version: stamp.version + 1,
+      });
+      const denied = await send('delete', `/internal/v1/goals/${id}`);
+      expect(denied.status, denied.text).toBe(404);
+      const unchanged = await send('get', `/internal/v1/goals/${id}?today=${today}`);
+      expect(unchanged.status, unchanged.text).toBe(200);
+    });
+
     it('replays an authorized result with the original stale ETag, then rejects after role removal', async () => {
       const created = await createGoal({ ...basicGoal, name: 'Objectif avec rejeu' });
       const goal = CreateGoalInternalResponse.parse(created.body as unknown);

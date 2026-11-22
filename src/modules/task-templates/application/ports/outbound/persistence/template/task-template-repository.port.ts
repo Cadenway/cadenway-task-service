@@ -22,6 +22,9 @@ export interface TaskTemplateRepository {
   /** Counts the entries while the owning space is locked. */
   count(organizationId: string, spaceId: string): Promise<number>;
 
+  /** Lists all provenance IDs, including the unknown sources of legacy templates. */
+  sourceListIds(organizationId: string, spaceId: string): Promise<readonly (string | null)[]>;
+
   /** Deletes one template in the scoped space. */
   delete(organizationId: string, spaceId: string, id: string): Promise<void>;
 

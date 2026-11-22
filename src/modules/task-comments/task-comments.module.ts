@@ -1,5 +1,6 @@
 import { OutboxRelay, OutboxWriter } from '@cadenway/nest-messaging/outbox';
 import { BeginComment } from '../tasks/public/task/begin-comment.js';
+import { DelegatedMemberships } from '../tasks/public/member/delegated-memberships.js';
 import { RecordCommentActivity } from '../tasks/public/task/record-comment-activity.js';
 import { ChangeComment } from './application/use-cases/commands/comment/change-comment/change-comment.use-case.js';
 import { AllocateApprovalCommentId } from './public/comment/allocate-approval-comment-id.js';
@@ -41,9 +42,22 @@ markCreateIdempotent();
     CommentReplayAccessGuard,
     {
       provide: ApplyAutomationTaskComment,
-      inject: [CreateComment],
-      useFactory: (create: CreateComment): ApplyAutomationTaskComment =>
-        new ApplyAutomationTaskComment(create),
+      inject: [CreateComment, DelegatedMemberships, TenantTransactionRunner],
+      useFactory: (
+        create: CreateComment,
+        memberships: DelegatedMemberships,
+        runner: TenantTransactionRunner,
+      ): ApplyAutomationTaskComment =>
+        new ApplyAutomationTaskComment(create, {
+          read: async (organizationId, userId) => {
+            const proof = await memberships.execute(organizationId, [userId]);
+            return {
+              confirms: async (tenant, actor) =>
+                (await memberships.confirm(proof, tenant, actor, true)) !== null,
+            };
+          },
+          run: (work) => runner.run(work),
+        }),
     },
     {
       provide: AllocateApprovalCommentId,

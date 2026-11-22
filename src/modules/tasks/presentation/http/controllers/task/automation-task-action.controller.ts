@@ -10,6 +10,7 @@ import { TaskActionFilter } from '../../errors/task/task-action.filter.js';
 import { AutomationTaskActionReplayGuard } from '../../guards/task/automation-task-action-replay.guard.js';
 import { answerAutomationTaskRefusals } from '../../mappers/task/automation-task-action-refusal.mapper.js';
 import { toAutomationTaskAction } from '../../mappers/task/automation-task-action.mapper.js';
+import { actionProofOf } from '../../mappers/task/delegated-action-membership.mapper.js';
 
 /** Applies an Automation rule's task action using the rule author's current authority. */
 @Controller('internal/v1/tasks')
@@ -37,7 +38,9 @@ export class AutomationTaskActionController {
   ): Promise<z.output<typeof ApplyAutomationTaskActionInternalResponse>> {
     const input = toAutomationTaskAction(request);
     return answerAutomationTaskRefusals(async () =>
-      ApplyAutomationTaskActionInternalResponse.parse(await this.action.execute(input)),
+      ApplyAutomationTaskActionInternalResponse.parse(
+        await this.action.execute(input, actionProofOf(request)),
+      ),
     );
   }
   // #endregion

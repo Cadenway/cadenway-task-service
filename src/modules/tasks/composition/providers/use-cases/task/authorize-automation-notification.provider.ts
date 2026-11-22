@@ -1,10 +1,9 @@
 import type { FactoryProvider } from '@nestjs/common';
 
-import type { MemberDirectory } from '../../../../application/ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../application/ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../application/ports/outbound/transactions/task/tasks-unit-of-work.port.js';
+import { DelegatedMemberships } from '../../../../application/use-cases/queries/member/delegated-memberships/delegated-memberships.use-case.js';
 import { AuthorizeAutomationNotification } from '../../../../application/use-cases/queries/task/authorize-automation-notification/authorize-automation-notification.use-case.js';
-import { MEMBER_DIRECTORY } from '../../../tokens/membership/member-directory.token.js';
 import { SPACE_DIRECTORY } from '../../../tokens/space/space-directory.token.js';
 import { TASKS_UNIT_OF_WORK } from '../../../tokens/task/tasks-unit-of-work.token.js';
 
@@ -12,11 +11,11 @@ import { TASKS_UNIT_OF_WORK } from '../../../tokens/task/tasks-unit-of-work.toke
 export const authorizeAutomationNotificationProvider: FactoryProvider<AuthorizeAutomationNotification> =
   {
     provide: AuthorizeAutomationNotification,
-    inject: [TASKS_UNIT_OF_WORK, MEMBER_DIRECTORY, SPACE_DIRECTORY],
+    inject: [TASKS_UNIT_OF_WORK, SPACE_DIRECTORY, DelegatedMemberships],
     useFactory: (
       unit: TasksUnitOfWork,
-      members: MemberDirectory,
       spaces: SpaceDirectory,
+      memberships: DelegatedMemberships,
     ): AuthorizeAutomationNotification =>
-      new AuthorizeAutomationNotification(unit, members, spaces),
+      new AuthorizeAutomationNotification(unit, spaces, memberships),
   };

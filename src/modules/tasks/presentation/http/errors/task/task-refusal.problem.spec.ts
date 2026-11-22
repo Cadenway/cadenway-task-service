@@ -30,6 +30,7 @@ describe('answerRefusals', () => {
       { role: 'comment', requiredRole: 'edit' },
     ],
     [{ reason: 'task-archived', key: 'CAD-430' }, 409, 'task.archived', { key: 'CAD-430' }],
+    [{ reason: 'trash-tree-too-large', limit: 1000 }, 409, 'trash.tree-too-large', { limit: 1000 }],
     [
       {
         reason: 'task-trashed',
@@ -92,7 +93,7 @@ describe('answerRefusals', () => {
   ];
 
   it('defines one expectation per mapped reason, including distinct role details', () => {
-    expect(new Set(answers.map(([refusal]) => refusal.reason)).size).toBe(27);
+    expect(new Set(answers.map(([refusal]) => refusal.reason)).size).toBe(28);
   });
 
   it('answers a write of the trash while its switch is off exactly as a route the service lacks', async () => {

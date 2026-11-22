@@ -190,10 +190,12 @@ describe('DrizzleReportingReader', () => {
        select $1, ('019a7010-0000-7000-8000-' || lpad(to_hex(n), 12, '0'))::uuid,
          'TST', n, $2, $3, 'Workload ' || n,
          case when n % 6 = 5 then 'cancelled' else 'todo' end, 'moyenne',
-         case when n % 6 = 4 then '2026-12-12'::date else null end,
+         case n % 12 when 4 then '2026-11-29'::date when 10 then '2026-12-12'::date
+           else null end,
          case n % 6 when 0 then null when 1 then '2026-11-28'::date
            when 2 then '2026-11-20'::date when 3 then '2026-12-08'::date
-           when 4 then '2026-12-05'::date else '2026-11-26'::date end,
+           when 4 then case when n % 12 = 4 then '2026-11-28'::date else '2026-12-05'::date end
+           else '2026-11-26'::date end,
          case when n % 7 = 0 then null else 30 end
        from generate_series(1, 3000) as n`,
       [org, space, otherList],
@@ -234,6 +236,7 @@ describe('DrizzleReportingReader', () => {
       } while (afterId !== null);
       expect(pages).toBeGreaterThan(1);
       expect(candidates.length).toBeLessThan(source.rows.length);
+      expect(candidates.some((task) => task.startDate === '2026-12-12')).toBe(false);
       expect(buildWorkload('2026-11-23', candidates)).toEqual(original);
     } finally {
       await pool.query(`delete from tasks where organization_id = $1 and key_prefix = 'TST'`, [
@@ -242,17 +245,25 @@ describe('DrizzleReportingReader', () => {
     }
   });
 
-  it('pages weekly entries and respects current task placement', async () => {
-    const page = await reader.timesheetEntries(org, list, '2026-11-23', null, 1);
-    expect(page.items.map((entry) => entry.minutes)).toEqual([30]);
-    expect(
-      (await reader.timesheetEntries(org, list, '2026-11-23', page.next, 1)).items.map(
-        (entry) => entry.minutes,
-      ),
-    ).toEqual([45]);
-    expect((await reader.timesheetEntries(org, otherList, '2026-11-23', null, 10)).items).toEqual(
-      [],
-    );
+  it('pages weekly author and task groups, preserves full totals and respects task placement', async () => {
+    const page = await reader.timesheetPage(org, list, '2026-11-23', null, 1);
+    expect(page.items.map(({ totalMinutes }) => totalMinutes)).toEqual([30]);
+    expect(page.items[0]?.minutesByDay).toEqual([30, 0, 0, 0, 0, 0, 0]);
+    expect(page.totalMinutes).toBe(75);
+    expect(page.days.slice(0, 2)).toEqual([
+      { date: '2026-11-23', totalMinutes: 30 },
+      { date: '2026-11-24', totalMinutes: 45 },
+    ]);
+
+    const next = await reader.timesheetPage(org, list, '2026-11-23', page.next, 1);
+    expect(next.items.map(({ totalMinutes }) => totalMinutes)).toEqual([45]);
+    expect(next.items[0]?.minutesByDay).toEqual([0, 45, 0, 0, 0, 0, 0]);
+    expect(next.totalMinutes).toBe(75);
+    expect(next.next).toBeNull();
+
+    const empty = await reader.timesheetPage(org, otherList, '2026-11-23', null, 10);
+    expect(empty.items).toEqual([]);
+    expect(empty.totalMinutes).toBe(0);
   });
 
   it('pages dashboard tasks and completion facts over visible lists only', async () => {

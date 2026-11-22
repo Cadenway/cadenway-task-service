@@ -1,10 +1,11 @@
-import { createApplication, loadConfig, runApplication } from '@cadenway/nest-common';
+import { loadConfig, runApplication } from '@cadenway/nest-common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 
 import { AppModule } from './app.module.js';
 import { appConfigSchema } from './config/app-config.js';
 import type { AppConfig } from './config/app-config.js';
 import { configureDocumentSpaceAccessCache } from './infrastructure/http/document-space-access-cache.js';
+import { createTaskApplication } from './infrastructure/http/task-application.module.js';
 import { configureTaskActionCache } from './infrastructure/http/task-action-cache.js';
 import { configureTaskSearchCache } from './infrastructure/http/task-search-cache.js';
 
@@ -19,7 +20,7 @@ import { configureTaskSearchCache } from './infrastructure/http/task-search-cach
 // comes from that token only.
 await runApplication({ service: 'task-service' }, async (): Promise<void> => {
   const config: Readonly<AppConfig> = loadConfig(appConfigSchema);
-  const app: NestExpressApplication = await createApplication(AppModule, {
+  const app: NestExpressApplication = await createTaskApplication(AppModule, {
     service: 'task-service',
     config,
     internalToken: {

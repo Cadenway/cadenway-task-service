@@ -3,7 +3,17 @@ import type {
   AccessRequestPage as AccessRequestPageBody,
 } from '@cadenway/contracts/types/internal/task-service';
 import { InternalAccess } from '@cadenway/nest-common';
-import { Body, Controller, Get, HttpCode, Param, Post, Query, Res } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  Query,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import type { Response } from 'express';
 
 import type { Caller } from '../../../../application/models/caller/caller.model.js';
@@ -21,6 +31,7 @@ import { CreateAccessRequestBody } from '../../dto/input/access-request/create-a
 import { ListAccessRequestsQuery } from '../../dto/input/access-request/list-access-requests-query.dto.js';
 import { RefuseAccessRequestBody } from '../../dto/input/access-request/refuse-access-request-body.dto.js';
 import { answerRefusals } from '../../errors/access-request/access-request-refusal.problem.js';
+import { CurrentMembershipGuard } from '../../guards/access-request/current-membership.guard.js';
 import { toAccessRequestsPosition } from '../../mappers/access-request/access-request-cursor.mapper.js';
 import { toAccessRequestPage } from '../../mappers/access-request/access-request-page.mapper.js';
 import { toAccessRequest } from '../../mappers/access-request/access-request.mapper.js';
@@ -160,6 +171,7 @@ export class AccessRequestsController {
    * one of this collection.
    */
   @Get()
+  @UseGuards(CurrentMembershipGuard)
   public async list(@Query() query: ListAccessRequestsQuery): Promise<AccessRequestPageBody> {
     const caller: Caller = toCaller();
     const spaceId: string | null = query.spaceId === undefined ? null : query.spaceId.toLowerCase();
@@ -185,6 +197,7 @@ export class AccessRequestsController {
    * @throws {ProblemException} The refusals above.
    */
   @Post(':accessRequestId/approval')
+  @UseGuards(CurrentMembershipGuard)
   @HttpCode(200)
   public async approve(
     @Param() path: AccessRequestPath,
@@ -215,6 +228,7 @@ export class AccessRequestsController {
    * @throws {ProblemException} The refusals above.
    */
   @Post(':accessRequestId/refusal')
+  @UseGuards(CurrentMembershipGuard)
   @HttpCode(200)
   public async refuse(
     @Body() _body: RefuseAccessRequestBody,

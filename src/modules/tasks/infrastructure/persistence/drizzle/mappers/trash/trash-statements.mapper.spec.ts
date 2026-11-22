@@ -295,12 +295,15 @@ describe('trashTreesStatement: the trees of the roots of entries in one statemen
     });
   });
 
-  it('limits bulk discovery without sorting the recursive result', () => {
+  it('limits discovery and each parent probe without sorting the recursive result', () => {
     const statement = renderSql(trashTreesStatement('org', [CAD_482], 1001));
 
-    expect(statement.sql).toMatch(/from tree limit \$4$/);
+    expect(statement.sql).toMatch(
+      /cross join lateral \(select .* "child"\."parent_id" = tree\.id .* limit \$4\)/,
+    );
+    expect(statement.sql).toMatch(/from tree limit \$5$/);
     expect(statement.sql).not.toContain('order by');
-    expect(statement.params).toEqual(['org', [CAD_482], 'org', 1001]);
+    expect(statement.params).toEqual(['org', [CAD_482], 'org', 1001, 1001]);
   });
 });
 

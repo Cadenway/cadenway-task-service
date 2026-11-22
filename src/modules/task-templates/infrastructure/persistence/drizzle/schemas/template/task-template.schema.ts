@@ -31,6 +31,7 @@ export const taskTemplates = pgTable(
       .notNull()
       .default(sql`uuidv7()`),
     spaceId: uuid('space_id').notNull(),
+    sourceListId: uuid('source_list_id'),
     name: text('name').notNull(),
     title: text('title').notNull(),
     description: text('description'),

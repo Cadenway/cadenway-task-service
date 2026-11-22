@@ -62,9 +62,11 @@ function jobOf(overrides: Partial<Job> = {}): Job {
 function handlerOn(output: CleanUpRemovedMemberOutput | Error): {
   readonly handler: CleanUpRemovedMemberHandler;
   readonly inputs: CleanUpRemovedMemberInput[];
+  readonly recovered: string[];
   readonly registered: { queue: string; handler: JobHandler | null };
 } {
   const inputs: CleanUpRemovedMemberInput[] = [];
+  const recovered: string[] = [];
   const registered: { queue: string; handler: JobHandler | null } = { queue: '', handler: null };
   const useCase = {
     execute: (input: CleanUpRemovedMemberInput): Promise<CleanUpRemovedMemberOutput> => {
@@ -80,8 +82,17 @@ function handlerOn(output: CleanUpRemovedMemberOutput | Error): {
     },
   };
   return {
-    handler: new CleanUpRemovedMemberHandler(workers, useCase, 'task.clean-up-removed-member'),
+    handler: new CleanUpRemovedMemberHandler(
+      workers,
+      useCase,
+      'task.clean-up-removed-member',
+      (organizationId) => {
+        recovered.push(organizationId);
+        return Promise.resolve();
+      },
+    ),
     inputs,
+    recovered,
     registered,
   };
 }
@@ -108,6 +119,13 @@ describe('CleanUpRemovedMemberHandler: each job cleans up after one former membe
 
     expect(registered.queue).toBe('task.clean-up-removed-member');
     expect(registered.handler).not.toBeNull();
+  });
+
+  it('assigns spaces awaiting a restored owner without cleaning up an account', async () => {
+    const { handler, inputs, recovered } = handlerOn(COMPLETED);
+    await handler.handle(jobOf({ payload: { kind: 'owner-handover' } }));
+    expect(recovered).toEqual([ATELIER_NORD]);
+    expect(inputs).toEqual([]);
   });
 
   it('runs the use case for the organization and the account of the job, with the signal of the attempt', async () => {

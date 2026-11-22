@@ -117,6 +117,8 @@ function shapeOf(refusal: TaskRefusalReason): ProblemShape {
       return { status: 404, code: 'trash-entry.not-found' };
     case 'trash-writes-disabled':
       return { status: 404, code: 'http.not-found' };
+    case 'trash-tree-too-large':
+      return { status: 409, code: 'trash.tree-too-large', details: { limit: refusal.limit } };
 
     case 'version-mismatch':
       return {

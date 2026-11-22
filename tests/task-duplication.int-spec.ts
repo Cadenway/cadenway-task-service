@@ -8,6 +8,7 @@ import {
   CreateTaskInternalResponse,
   DuplicateListInternalResponse,
   DuplicateTaskInternalResponse,
+  ExecuteBulkTaskActionInternalResponse,
 } from '@cadenway/contracts/validators/internal/task-service';
 import { createApplication, InternalTokenSigner, loadConfig } from '@cadenway/nest-common';
 import type { Ed25519PublicJwk } from '@cadenway/nest-common';
@@ -38,7 +39,7 @@ function compose(...args: string[]): string {
   );
 }
 
-describe('duplication routes with PostgreSQL and NATS', () => {
+describe('task mutation receipts with PostgreSQL and NATS', () => {
   let app: NestExpressApplication | undefined;
   let db: pg.Pool | undefined;
   let signer: InternalTokenSigner;
@@ -132,6 +133,7 @@ describe('duplication routes with PostgreSQL and NATS', () => {
     vi.stubEnv('NATS_URL', `nats://127.0.0.1:${natsPort}`);
     vi.stubEnv('NATS_USER', 'task');
     vi.stubEnv('NATS_PASSWORD', 'task');
+    vi.stubEnv('TRASH_WRITES_ENABLED', 'true');
     vi.stubEnv('INTERNAL_TOKEN_AUDIENCE', 'task-service');
     vi.stubEnv('INTERNAL_TOKEN_TRUSTED_ISSUERS', JSON.stringify({ 'api-gateway': [publicJwk] }));
     const config = loadConfig(appConfigSchema);
@@ -205,6 +207,248 @@ describe('duplication routes with PostgreSQL and NATS', () => {
       [copy.key],
     );
     expect(events.filter((event) => event.event_name === 'task.created.v1')).toHaveLength(1);
+  });
+
+  it('withholds the saved task body and headers when its original list is no longer visible', async () => {
+    const privateSpace = await post('/internal/v1/spaces', {
+      name: 'Private source for replay',
+      prefix: 'RPL',
+      visibility: 'private',
+    });
+    expect(privateSpace.status).toBe(201);
+    const { space, firstList } = CreateSpaceInternalResponse.parse(privateSpace.body);
+    await query(
+      `insert into list_grants
+        (organization_id,list_id,space_id,user_id,role,granted_by_type,granted_by_id)
+       values ($1,$2,$3,$4,'edit','user',$5)`,
+      [org, firstList.id, space.id, other, actor],
+    );
+    const source = await post(`/internal/v1/lists/${firstList.id}/tasks`, { name: 'Private task' });
+    expect(source.status).toBe(201);
+    const { key } = CreateTaskInternalResponse.parse(source.body);
+    const path = `/internal/v1/tasks/${key}/duplicate`;
+    const headers = { 'Idempotency-Key': 'duplicate-task-current-access' };
+    const created = await post(path, {}, headers, other);
+    expect(created.status).toBe(201);
+    expect((await post(path, {}, headers, other)).headers['idempotent-replayed']).toBe('true');
+
+    await query('delete from list_grants where organization_id=$1 and list_id=$2 and user_id=$3', [
+      org,
+      firstList.id,
+      other,
+    ]);
+
+    const refused = await post(path, {}, headers, other);
+    expect(refused.status).toBe(404);
+    expect(refused.body).toMatchObject({ code: 'task.not-found' });
+    expect(refused.headers.location).toBeUndefined();
+    expect(refused.headers.etag).not.toBe(created.headers.etag);
+    expect(refused.headers['idempotent-replayed']).toBeUndefined();
+  });
+
+  it('reauthorizes a list duplicate receipt after its space grant is removed', async () => {
+    const privateSpace = await post('/internal/v1/spaces', {
+      name: 'Private lists for replay',
+      prefix: 'LST',
+      visibility: 'private',
+    });
+    expect(privateSpace.status).toBe(201);
+    const { space, firstList } = CreateSpaceInternalResponse.parse(privateSpace.body);
+    await query(
+      `insert into space_grants
+        (organization_id,space_id,user_id,role,granted_by_type,granted_by_id)
+       values ($1,$2,$3,'edit','user',$4)`,
+      [org, space.id, other, actor],
+    );
+    const path = `/internal/v1/lists/${firstList.id}/duplicate`;
+    const headers = { 'Idempotency-Key': 'duplicate-list-current-access' };
+    expect((await post(path, {}, headers, other)).status).toBe(201);
+    expect((await post(path, {}, headers, other)).headers['idempotent-replayed']).toBe('true');
+
+    await query(
+      'delete from space_grants where organization_id=$1 and space_id=$2 and user_id=$3',
+      [org, space.id, other],
+    );
+    const refused = await post(path, {}, headers, other);
+    expect(refused.status).toBe(404);
+    expect(refused.body).toMatchObject({ code: 'list.not-found' });
+    expect(refused.headers.location).toBeUndefined();
+    expect(refused.headers['idempotent-replayed']).toBeUndefined();
+  });
+
+  it('reauthorizes task, subtask, checklist and dependency receipts against their original list', async () => {
+    const origin = await post('/internal/v1/spaces', {
+      name: 'Receipt scope',
+      prefix: 'RSC',
+      visibility: 'private',
+    });
+    expect(origin.status).toBe(201);
+    const { space, firstList } = CreateSpaceInternalResponse.parse(origin.body);
+    await query(
+      `insert into list_grants
+        (organization_id,list_id,space_id,user_id,role,granted_by_type,granted_by_id)
+       values ($1,$2,$3,$4,'edit','user',$5)`,
+      [org, firstList.id, space.id, other, actor],
+    );
+    const taskPath = `/internal/v1/lists/${firstList.id}/tasks`;
+    const createBody = { name: 'Original list metadata', description: 'Private fixture' };
+    const createHeaders = { 'Idempotency-Key': randomUUID() };
+    const first = await post(taskPath, createBody, createHeaders, other);
+    expect(first.status, first.text).toBe(201);
+    const { key } = CreateTaskInternalResponse.parse(first.body);
+    const root = `/internal/v1/tasks/${key}`;
+    const receipts = [
+      { path: taskPath, body: createBody, headers: createHeaders, first, code: 'list.not-found' },
+    ];
+    const operations = [
+      { path: `${root}/subtasks`, body: { name: 'Private subtask' } },
+      { path: `${root}/checklist-items`, body: { text: 'Private checklist item' } },
+      {
+        path: `/internal/v1/tasks/${sourceKey}/dependencies`,
+        body: { otherTaskKey: key, direction: 'blocks' },
+      },
+    ];
+    const taskReceipts = [];
+    for (const { path, body } of operations) {
+      const headers = { 'Idempotency-Key': randomUUID() };
+      const result = await post(path, body, headers, other);
+      expect(result.status, result.text).toBe(201);
+      taskReceipts.push({ path, body, headers, first: result, code: 'task.not-found' });
+    }
+
+    const move = await post('/internal/v1/tasks/bulk-actions', {
+      selection: [{ taskKey: key }],
+      action: { type: 'move', listId },
+    });
+    expect(move.status, move.text).toBe(200);
+    const allReceipts = [...receipts, ...taskReceipts];
+    for (const { path, body, headers, first: original } of allReceipts) {
+      const replay = await post(path, body, headers, other);
+      expect(replay.status, replay.text).toBe(201);
+      expect(replay.body).toEqual(original.body);
+      expect(replay.headers['idempotent-replayed']).toBe('true');
+    }
+
+    await query('delete from list_grants where organization_id=$1 and list_id=$2 and user_id=$3', [
+      org,
+      firstList.id,
+      other,
+    ]);
+    for (const { path, body, headers, first: original, code } of allReceipts) {
+      const denied = await post(path, body, headers, other);
+      expect(denied.status, denied.text).toBe(404);
+      expect(denied.body).toMatchObject({ code });
+      expect(denied.headers).not.toHaveProperty('location');
+      expect(denied.headers).not.toHaveProperty('idempotent-replayed');
+      if (original.headers.etag !== undefined) {
+        expect(denied.headers.etag).not.toBe(original.headers.etag);
+      }
+    }
+  });
+
+  it('replays a bulk trash receipt only while the original entry remains visible', async () => {
+    const origin = await post('/internal/v1/spaces', {
+      name: 'Trash receipt scope',
+      prefix: 'TRC',
+      visibility: 'private',
+    });
+    expect(origin.status).toBe(201);
+    const { space, firstList } = CreateSpaceInternalResponse.parse(origin.body);
+    await query(
+      `insert into list_grants
+        (organization_id,list_id,space_id,user_id,role,granted_by_type,granted_by_id)
+       values ($1,$2,$3,$4,'edit','user',$5)`,
+      [org, firstList.id, space.id, other, actor],
+    );
+    const task = await post(`/internal/v1/lists/${firstList.id}/tasks`, {
+      name: 'Trashed fixture',
+    });
+    expect(task.status).toBe(201);
+    const { key } = CreateTaskInternalResponse.parse(task.body);
+    const path = '/internal/v1/tasks/bulk-actions';
+    const body = { selection: [{ taskKey: key }], action: { type: 'trash' } };
+    const headers = { 'Idempotency-Key': randomUUID() };
+    const first = await post(path, body, headers, other);
+    expect(first.status, first.text).toBe(200);
+    expect(
+      ExecuteBulkTaskActionInternalResponse.parse(first.body).results[0]?.trashEntryId,
+    ).toBeDefined();
+    const replay = await post(path, body, headers, other);
+    expect(replay.status, replay.text).toBe(200);
+    expect(replay.body).toEqual(first.body);
+    expect(replay.headers['idempotent-replayed']).toBe('true');
+
+    await query('delete from list_grants where organization_id=$1 and list_id=$2 and user_id=$3', [
+      org,
+      firstList.id,
+      other,
+    ]);
+    const denied = await post(path, body, headers, other);
+    expect(denied.status, denied.text).toBe(404);
+    expect(denied.body).toMatchObject({ code: 'task.not-found' });
+    expect(denied.body).not.toHaveProperty('details');
+    expect(denied.headers).not.toHaveProperty('idempotent-replayed');
+  });
+
+  it('leaves bulk history private after a move and withholds legacy receipts without scope', async () => {
+    const origin = await post('/internal/v1/spaces', {
+      name: 'Bulk receipt history',
+      prefix: 'BRC',
+      visibility: 'private',
+    });
+    expect(origin.status).toBe(201);
+    const { space, firstList } = CreateSpaceInternalResponse.parse(origin.body);
+    await query(
+      `insert into list_grants
+        (organization_id,list_id,space_id,user_id,role,granted_by_type,granted_by_id)
+       values ($1,$2,$3,$4,'edit','user',$5)`,
+      [org, firstList.id, space.id, other, actor],
+    );
+    const task = await post(`/internal/v1/lists/${firstList.id}/tasks`, { name: 'Bulk fixture' });
+    expect(task.status).toBe(201);
+    const { key } = CreateTaskInternalResponse.parse(task.body);
+    const path = '/internal/v1/tasks/bulk-actions';
+    const selection = [{ taskKey: key }];
+    const body = { selection, action: { type: 'priority', priority: 'haute' } };
+    const legacyHeaders = { 'Idempotency-Key': randomUUID() };
+    const legacy = await post(path, body, legacyHeaders, other);
+    expect(legacy.status, legacy.text).toBe(200);
+    expect(legacy.body).toEqual({
+      results: [{ taskKey: key, version: 2 }],
+      affectedCount: 1,
+    });
+    await query('delete from task_bulk_receipt_scopes where organization_id=$1 and key=$2', [
+      org,
+      legacyHeaders['Idempotency-Key'],
+    ]);
+    const noProof = await post(path, body, legacyHeaders, other);
+    expect(noProof.status, noProof.text).toBe(404);
+    expect(noProof.body).toMatchObject({ code: 'task.not-found' });
+    expect(noProof.headers).not.toHaveProperty('idempotent-replayed');
+
+    const headers = { 'Idempotency-Key': randomUUID() };
+    const first = await post(path, body, headers, other);
+    expect(first.status, first.text).toBe(200);
+    expect(first.body).toEqual({
+      results: [{ taskKey: key, version: 2 }],
+      affectedCount: 0,
+    });
+    const move = await post(path, { selection, action: { type: 'move', listId } });
+    expect(move.status, move.text).toBe(200);
+    const replay = await post(path, body, headers, other);
+    expect(replay.status, replay.text).toBe(200);
+    expect(replay.body).toEqual(first.body);
+    expect(replay.headers['idempotent-replayed']).toBe('true');
+
+    await query('delete from list_grants where organization_id=$1 and list_id=$2 and user_id=$3', [
+      org,
+      firstList.id,
+      other,
+    ]);
+    const denied = await post(path, body, headers, other);
+    expect(denied.status, denied.text).toBe(404);
+    expect(denied.body).toMatchObject({ code: 'task.not-found' });
+    expect(denied.headers).not.toHaveProperty('idempotent-replayed');
   });
 
   it('copies an archived list, remaps its task tree, omits direct grants and replays the same Location', async () => {

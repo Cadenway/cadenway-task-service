@@ -23,5 +23,8 @@ export interface RemovedMemberCleanUpQueue {
    * @throws {Error} When the insert fails: the transaction rolls back.
    */
   enqueue(userId: string, memberId: string, membershipVersion: number): Promise<boolean>;
+
+  /** Defers checking spaces awaiting a recovered owner until the Task runtime starts. */
+  enqueueOwnerHandover(memberId: string, membershipVersion: number): Promise<void>;
   // #endregion
 }

@@ -75,6 +75,7 @@ function traced(failures: Readonly<Partial<Record<Step, Error>>> = {}, enqueued 
         steps.push(`enqueue:${userId}:${memberId}:${String(membershipVersion)}`);
         return answer('enqueue', enqueued);
       },
+      enqueueOwnerHandover: () => Promise.resolve(),
     },
   };
   const unitOfWork: MemberEventUnitOfWork = {

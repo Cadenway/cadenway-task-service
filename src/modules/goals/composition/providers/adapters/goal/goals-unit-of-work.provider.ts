@@ -2,6 +2,7 @@ import { TenantTransactionRunner } from '@cadenway/nest-common/database';
 import type { TransactionScope } from '@cadenway/nest-common/database';
 import type { FactoryProvider } from '@nestjs/common';
 
+import { matchesCurrentMembership } from '../../../../../../infrastructure/http/current-membership.js';
 import { FindOrganizationMember } from '../../../../../organization-members/public/membership/find-organization-member.js';
 import { ResolveGoalSpaces } from '../../../../../spaces/public/goal/resolve-goal-spaces.js';
 import { MeasureGoalTargets } from '../../../../../tasks/public/goal/measure-goal-targets.js';
@@ -31,8 +32,10 @@ export const goalsUnitOfWorkProvider: FactoryProvider<GoalsUnitOfWork> = {
       });
 
     const findViewer: GoalsStore['findViewer'] = async ({ organizationId, userId }, lock) => {
-      const member = await memberships.execute({ organizationId, userId, lock });
-      return member === null ? null : { organizationId, userId, role: member.role };
+      const member = await memberships.stamp({ organizationId, userId, lock });
+      return member === null || !matchesCurrentMembership(organizationId, userId, member)
+        ? null
+        : { organizationId, userId, role: member.role };
     };
 
     const findScope: GoalsStore['findScope'] = async (viewer, spaceId, lock) => {

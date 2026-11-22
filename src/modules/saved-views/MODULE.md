@@ -45,7 +45,8 @@ through its published lifecycle seam. Views do not need an additional membership
 of the item, and `POST .../{viewId}/duplicate` follow the installed task-service contract.
 The API gateway must authenticate a human actor with an organization. Every effective list
 role can read, including when the list is archived. Only a current editor may write, and only
-while the list is active. Creates and duplicates may replay their original responses via the kit.
+while the list is active. A replay requires current access to the list and the created view.
+The copy's access follows its own lifetime in the same list.
 
 Within a tenant transaction, writes lock current membership and parent placement first, then
 the list's saved-view order and affected view rows. This serializes the per-list capacity check,

@@ -43,6 +43,7 @@ import type { z } from 'zod';
 
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
+import { mirrorCurrentMembership } from './support/current-membership.fixture.js';
 import { PurgeMemberFavorites } from '../src/modules/favorites/public/purge/purge-member-favorites.js';
 
 // The spaces and lists of the organizations, on a disposable PostgreSQL and NATS: the service as
@@ -797,6 +798,7 @@ describe('spaces and lists', () => {
       logDestination: { write: (): void => undefined },
     });
     await app.init();
+    mirrorCurrentMembership(app);
     signer = await InternalTokenSigner.create({
       issuer: 'api-gateway',
       privateJwk: gateway.privateJwk,
@@ -1662,9 +1664,11 @@ describe('spaces and lists', () => {
       expect(conforms(GetFavoriteInternalResponse, bodyOf(read))).toEqual(favorite);
       expect(read.headers.etag).toBe('"1"');
 
-      const listFavorite = await send('post', collection, lea, {
+      const listOptions = {
         body: { kind: 'list', targetId: firstList.id },
-      });
+        headers: { 'Idempotency-Key': 'favorite-list-replay' },
+      };
+      const listFavorite = await send('post', collection, lea, listOptions);
       expect(listFavorite.status).toBe(201);
       const listed = conforms(CreateFavoriteInternalResponse, bodyOf(listFavorite));
       const listPath = `${collection}/${listed.id}`;
@@ -1691,6 +1695,11 @@ describe('spaces and lists', () => {
       ).toBe(200);
       expectProblem(await send('get', listPath, lea), 404, 'favorite.not-found');
       expectProblem(await send('delete', listPath, lea), 404, 'favorite.not-found');
+      const archivedReplay = await send('post', collection, lea, listOptions);
+      expectProblem(archivedReplay, 404, 'favorite.target-not-found');
+      expect(archivedReplay.headers.location).toBeUndefined();
+      expect(archivedReplay.headers['idempotent-replayed']).toBeUndefined();
+      expect(archivedReplay.headers.etag).not.toBe('"1"');
       const archived = await send('get', `${collection}?limit=1`, lea);
       expect(conforms(ListFavoritesInternalResponse, bodyOf(archived))).toEqual({
         items: [favorite],
@@ -1703,6 +1712,10 @@ describe('spaces and lists', () => {
       expect(
         conforms(GetFavoriteInternalResponse, bodyOf(await send('get', listPath, lea))),
       ).toEqual(listed);
+      const restoredReplay = await send('post', collection, lea, listOptions);
+      expect(restoredReplay.status).toBe(201);
+      expect(restoredReplay.headers['idempotent-replayed']).toBe('true');
+      expect(bodyOf(restoredReplay)).toEqual(listed);
       expectProblem(
         await send('delete', listPath, lea, { headers: { 'If-Match': '"2"' } }),
         412,

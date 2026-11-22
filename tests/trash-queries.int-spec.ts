@@ -54,12 +54,14 @@ import {
   listsWithTasksStatement,
   trashCandidateRootsStatement,
   trashPageStatement,
+  trashTreesStatement,
   trashTotalStatement,
   writeTrashStatement,
 } from '../src/modules/tasks/infrastructure/persistence/drizzle/mappers/trash/trash-statements.mapper.js';
 import { DrizzleActivityRepository } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/activity/drizzle-activity.repository.js';
 import { DrizzleArchiveReader } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/archive/drizzle-archive-reader.repository.js';
 import { DrizzleAssignedTaskReader } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/assignee/drizzle-assigned-task-reader.repository.js';
+import { DrizzleBulkReceiptScopeRepository } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/bulk/drizzle-bulk-receipt-scope.repository.js';
 import { DrizzleTaskCounter } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/count/drizzle-task-counter.repository.js';
 import { DrizzleCustomFieldRepository } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/custom-field/drizzle-custom-field.repository.js';
 import { DrizzleLabelReader } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/label/drizzle-label-reader.repository.js';
@@ -2574,6 +2576,34 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
     expect(plans[0]?.milliseconds).toBeLessThan(1_000);
   }, 300_000);
 
+  it('bounds initial trash discovery even with archived and trashed children in the same tenant', async () => {
+    const rootId = bigTaskIds[0];
+    if (rootId === undefined) throw new Error('Missing seeded trash root.');
+
+    const plan = await planOf(
+      'bounded trash discovery | child lookup and 500-row sentinel',
+      trashTreesStatement(atelierNordId, [rootId], 500),
+      {
+        prepare: async (client) => {
+          await client.query(
+            'update tasks set trash_entry_id = null where organization_id = $1 and id = any($2::uuid[])',
+            [atelierNordId, bigTaskIds],
+          );
+          // Simulate links left to historical subtasks from another list.
+          await client.query(
+            'update tasks set parent_id = $2 where organization_id = $1 and list_id = $3',
+            [atelierNordId, rootId, largeListId],
+          );
+        },
+      },
+    );
+
+    expect(plan.rows).toBe(500);
+    expect(plan.indexes).toContain('tasks_trash_child_index');
+    expect(plan.seqScans).not.toContain('tasks');
+    expect(plan.removed.tasks ?? 0).toBe(0);
+  }, 120_000);
+
   describe('(15) one batch of the deletion job and one batch of the purge job, through the repositories of src', () => {
     /**
      * A tasks unit of work over a transaction already open: the repositories of the real unit of
@@ -2616,6 +2646,7 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
         tasks: new DrizzleTaskRepository(db),
         customFields: new DrizzleCustomFieldRepository(db),
         time: new DrizzleTaskTimeRepository(db),
+        bulkReceipts: new DrizzleBulkReceiptScopeRepository(db),
         copies: new DrizzleTaskCopiesRepository(db),
         watcherOverrides: new DrizzleWatcherOverrideRepository(db),
         reader: new DrizzleTaskReader(db),

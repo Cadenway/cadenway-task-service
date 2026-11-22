@@ -8,11 +8,14 @@ import { Idempotent } from '@cadenway/nest-common/database';
 import { requestDeadlineMiddleware } from '@cadenway/nest-common';
 import { Module, RequestMethod } from '@nestjs/common';
 import type { MiddlewareConsumer, NestModule } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 
 import { OrganizationMembersModule } from '../organization-members/organization-members.module.js';
 import { RecordFirstOnboardingTask } from '../onboarding/public/onboarding/record-first-onboarding-task.js';
 import { SpacesModule } from '../spaces/spaces.module.js';
 import { memberDirectoryProvider } from './composition/providers/adapters/membership/member-directory.provider.js';
+import { delegatedMembershipsProvider } from './composition/providers/adapters/membership/delegated-memberships.provider.js';
+import { DelegatedMemberships } from './public/member/delegated-memberships.js';
 import { trashWritesProvider } from './composition/providers/adapters/feature/trash-writes.provider.js';
 import { spaceDirectoryProvider } from './composition/providers/adapters/space/space-directory.provider.js';
 import { duplicateListProvider } from './composition/providers/use-cases/list/duplicate-list.provider.js';
@@ -128,6 +131,8 @@ import { AutomationTaskActionController } from './presentation/http/controllers/
 import { AutomationNotificationAuthorizationController } from './presentation/http/controllers/task/automation-notification-authorization.controller.js';
 import { AutomationTaskActionReplayGuard } from './presentation/http/guards/task/automation-task-action-replay.guard.js';
 import { applyAutomationTaskActionProvider } from './composition/providers/use-cases/task/apply-automation-task-action.provider.js';
+import { assertCanReplayTaskReceiptProvider } from './composition/providers/use-cases/task/assert-can-replay-task-receipt.provider.js';
+import { TaskReceiptReplayAccessInterceptor } from './composition/providers/adapters/task/task-receipt-replay-access.provider.js';
 import { authorizeAutomationNotificationProvider } from './composition/providers/use-cases/task/authorize-automation-notification.provider.js';
 import { TaskTrashController } from './presentation/http/controllers/trash/task-trash.controller.js';
 import { TrashController } from './presentation/http/controllers/trash/trash.controller.js';
@@ -244,7 +249,10 @@ markIdempotent(TaskTimeController.prototype, 'create');
     TaskParticipantsController,
   ],
   providers: [
+    assertCanReplayTaskReceiptProvider,
+    { provide: APP_INTERCEPTOR, useClass: TaskReceiptReplayAccessInterceptor },
     applyAutomationTaskActionProvider,
+    delegatedMembershipsProvider,
     authorizeAutomationNotificationProvider,
     AutomationTaskActionReplayGuard,
     applyGitTaskStatusProvider,
@@ -331,6 +339,7 @@ markIdempotent(TaskTimeController.prototype, 'create');
     listUntrashedTaskIdsProvider,
   ],
   exports: [
+    DelegatedMemberships,
     CreateIntakeTask,
     ResolveIntakeContactTask,
     CreateOnboardingExample,

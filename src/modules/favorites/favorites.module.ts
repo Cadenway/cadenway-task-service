@@ -1,5 +1,8 @@
 import { Idempotent } from '@cadenway/nest-common/database';
 import { Global, Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+
+import { FavoriteReplayAccessInterceptor } from './composition/providers/adapters/favorite/favorites-replay-access.provider.js';
 
 import { OrganizationMembersModule } from '../organization-members/organization-members.module.js';
 import { SavedViewsModule } from '../saved-views/saved-views.module.js';
@@ -27,6 +30,7 @@ Idempotent()(FavoritesController.prototype, 'create', creation);
   imports: [OrganizationMembersModule, SavedViewsModule, SpacesModule],
   controllers: [FavoritesController],
   providers: [
+    { provide: APP_INTERCEPTOR, useClass: FavoriteReplayAccessInterceptor },
     favoritesUnitOfWorkProvider,
     favoriteDirectoryProvider,
     createFavoriteProvider,

@@ -35,10 +35,10 @@ import { TaskRuleGuard } from './task-rule-guard.service.js';
  * request scopes every read.
  *
  * A write (`lock`) does not lock before it knows the actor may see, and change, the task: it reads
- * the task without a lock and checks its list, then locks the task and reads it again. If another
- * transaction moved the task to another list in between, the list the locked task is in is checked
- * again, so what the actor is allowed to change is decided on the state the write applies to; a
- * task deleted in between answers as in the trash. A refusal is the same as without the lock.
+ * the task without a lock and checks its list, then locks the task and reads it again. An edit
+ * holds the current space and list after the task lock and reads visibility again before checking
+ * the archive or version. If the task moved meanwhile, the held placement is its new one.
+ * A task deleted in between answers as in the trash.
  */
 export class TaskLocator {
   // #region Properties
@@ -98,6 +98,18 @@ export class TaskLocator {
       task = await this.find(store, request, key, true);
       await this.refuseTrashed(store, request, task);
       if (task.snapshot.listId !== read) {
+        placement = await this.see(request, task);
+      }
+      if (request.edit) {
+        const [held] = await this.spaces.lockTrashLists(
+          request.organizationId,
+          [task.snapshot.listId],
+          'hold',
+          request.viewer,
+        );
+        if (held?.outcome !== 'live' || held.role === null) {
+          throw new TaskRefusal({ reason: 'task-not-found' });
+        }
         placement = await this.see(request, task);
       }
     }

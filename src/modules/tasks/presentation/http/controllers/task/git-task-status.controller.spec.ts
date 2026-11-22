@@ -45,7 +45,8 @@ function executionContext(request: Request): ExecutionContext {
 
 describe('Git task action', () => {
   it('rechecks authorization before replay and returns the minimal action receipt', async () => {
-    const authorize = vi.fn().mockResolvedValue(undefined);
+    const proof = { organizationId, stamps: new Map() };
+    const authorize = vi.fn().mockResolvedValue(proof);
     const execute = vi.fn().mockResolvedValue({
       disposition: 'applied',
       taskId,
@@ -74,7 +75,7 @@ describe('Git task action', () => {
       provider: 'github',
       status: 'review',
     });
-    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ taskKey: 'CAD-482' }));
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ taskKey: 'CAD-482' }), proof);
   });
 
   it('refuses a revoked author before the replay interceptor can return a receipt', async () => {
@@ -210,6 +211,7 @@ describe('Git task action', () => {
     );
     expect(execute).toHaveBeenCalledWith(
       expect.objectContaining({ provider: 'gitlab', status: null }),
+      undefined,
     );
   });
 });

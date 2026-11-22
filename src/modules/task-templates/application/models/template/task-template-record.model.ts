@@ -1,7 +1,7 @@
 import type { TaskTemplateDraft } from './task-template-draft.model.js';
 
 /** Stored template with its library identity and revision. */
-export interface TaskTemplateRecord extends TaskTemplateDraft {
+export interface TaskTemplateRecord extends Omit<TaskTemplateDraft, 'sourceListId'> {
   // #region Properties
   /** Database-assigned identifier. */
   readonly id: string;

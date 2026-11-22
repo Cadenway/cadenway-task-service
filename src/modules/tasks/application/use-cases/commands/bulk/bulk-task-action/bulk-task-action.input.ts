@@ -15,5 +15,8 @@ export interface BulkTaskActionInput {
 
   /** The single requested action. */
   readonly action: BulkTaskCommand;
+
+  /** Validated by the shared idempotency interceptor before it starts the transaction. */
+  readonly idempotencyKey?: string;
   // #endregion
 }

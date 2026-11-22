@@ -54,6 +54,21 @@ describe('appConfigSchema', () => {
     ).toThrow(/DATABASE_TRANSACTION_MAX_ATTEMPTS/u);
   });
 
+  it('requires a dedicated Task key when the Organization authority origin is set', () => {
+    expect(() =>
+      loadConfig(appConfigSchema, {
+        ...complete,
+        ORGANIZATION_SERVICE_URL: 'http://organization-service:3011',
+      }),
+    ).toThrow(/TASK_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK/u);
+    expect(() =>
+      loadConfig(appConfigSchema, {
+        ...complete,
+        ORGANIZATION_SERVICE_URL: 'http://organization-service:3011/internal',
+      }),
+    ).toThrow(/ORGANIZATION_SERVICE_URL/u);
+  });
+
   it('adds optional hosted Document trust without replacing explicit issuers', () => {
     const key = {
       kty: 'OKP',

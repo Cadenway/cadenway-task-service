@@ -338,7 +338,8 @@ list-only grants do not yield a role. The response uses `Cache-Control: no-store
   statement and cuts the page in memory, keyset `(created_at, user_id)` in an opaque cursor bound
   to the resource, `total` on every page.
 - The two creations honour `Idempotency-Key` (`@Idempotent()`, applied by `spaces.module.ts`). A
-  replay answers the recorded `Location` and `ETag`.
+  replay returns the recorded `Location` and `ETag` only while the caller can read the recorded
+  resources and the list is still in its recorded space.
 - `GET /internal/v1/spaces/{spaceId}/overview` and `GET /internal/v1/lists/{listId}/counts` are
   served by the tasks module.
 

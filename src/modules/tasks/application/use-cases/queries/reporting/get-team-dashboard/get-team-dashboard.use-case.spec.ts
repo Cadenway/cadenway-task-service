@@ -9,45 +9,52 @@ import type { TaskSummaryView } from '../../../../projections/task/task-summary.
 import { GetTeamDashboard } from './get-team-dashboard.use-case.js';
 
 describe('GetTeamDashboard', () => {
-  it('limits task and completion reads to visible live lists and a safe time boundary', async () => {
-    const readTasks = vi.fn().mockResolvedValue({ items: [], next: null });
-    const readTransitions = vi.fn().mockResolvedValue({ items: [], next: null });
-    const readSummaries = vi.fn();
-    const visibleListIds = vi.fn().mockResolvedValue(['visible']);
-    const reader = {
-      dashboardTasks: readTasks,
-      dashboardTransitions: readTransitions,
-      dashboardSummaries: readSummaries,
-    } as unknown as ReportingReader;
-    const work: ReportingUnitOfWork = { runReadOnly: async (fn) => fn(reader) };
-    const members = { roleOf: vi.fn().mockResolvedValue('member') } as unknown as MemberDirectory;
-    const spaces = { visibleListIds } as unknown as SpaceDirectory;
-    const now = new Date('2026-11-06T10:00:00Z');
-    const result = await new GetTeamDashboard(work, members, spaces, () => now).execute({
-      organizationId: 'org',
-      actorUserId: 'actor',
-      today: '2026-11-06',
-      timeZone: 'Europe/Paris',
-      weeks: 8,
-    });
-    expect(result.completions).toHaveLength(8);
-    expect(result.overdueTasks).toEqual([]);
-    expect(readSummaries).not.toHaveBeenCalled();
-    expect(visibleListIds).toHaveBeenCalledWith(
-      'org',
-      { userId: 'actor', role: 'member' },
-      { liveOnly: true },
-    );
-    expect(readTasks).toHaveBeenCalledWith('org', ['visible'], null, 500);
-    expect(readTransitions).toHaveBeenCalledWith(
-      'org',
-      ['visible'],
-      new Date('2026-09-13T00:00:00.000Z'),
-      now,
-      null,
-      500,
-    );
-  });
+  it.each([
+    ['2026-11-06T10:00:00Z', '2026-11-06T10:00:00Z'],
+    ['2026-12-01T00:00:00Z', '2026-11-08T00:00:00Z'],
+  ])(
+    'limits completion reads to visible live lists and the historical day at %s',
+    async (serverTime, readThrough) => {
+      const readTasks = vi.fn().mockResolvedValue({ items: [], next: null });
+      const readTransitions = vi.fn().mockResolvedValue({ items: [], next: null });
+      const readSummaries = vi.fn();
+      const visibleListIds = vi.fn().mockResolvedValue(['visible']);
+      const reader = {
+        dashboardTasks: readTasks,
+        dashboardTransitions: readTransitions,
+        dashboardSummaries: readSummaries,
+      } as unknown as ReportingReader;
+      const work: ReportingUnitOfWork = { runReadOnly: async (fn) => fn(reader) };
+      const members = { roleOf: vi.fn().mockResolvedValue('member') } as unknown as MemberDirectory;
+      const spaces = { visibleListIds } as unknown as SpaceDirectory;
+      const now = new Date(serverTime);
+      const result = await new GetTeamDashboard(work, members, spaces, () => now).execute({
+        organizationId: 'org',
+        actorUserId: 'actor',
+        today: '2026-11-06',
+        timeZone: 'Europe/Paris',
+        weeks: 8,
+      });
+      expect(result.completions).toHaveLength(8);
+      expect(result.overdueTasks).toEqual([]);
+      expect(result.observedAt).toEqual(now);
+      expect(readSummaries).not.toHaveBeenCalled();
+      expect(visibleListIds).toHaveBeenCalledWith(
+        'org',
+        { userId: 'actor', role: 'member' },
+        { liveOnly: true },
+      );
+      expect(readTasks).toHaveBeenCalledWith('org', ['visible'], null, 500);
+      expect(readTransitions).toHaveBeenCalledWith(
+        'org',
+        ['visible'],
+        new Date('2026-09-13T00:00:00.000Z'),
+        new Date(readThrough),
+        null,
+        500,
+      );
+    },
+  );
 
   it('loads only the selected overdue summaries and restores the policy order', async () => {
     const tasks = Array.from({ length: 12 }, (_, index) => ({

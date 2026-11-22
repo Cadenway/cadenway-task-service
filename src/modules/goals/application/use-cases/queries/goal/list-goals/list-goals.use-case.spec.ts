@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { Goal } from '../../../../../domain/aggregates/goal/goal.aggregate.js';
 import type { GoalRecord } from '../../../../models/goal/goal-record.model.js';
@@ -97,6 +97,7 @@ function createStore(): GoalsStore {
 describe('ListGoals', () => {
   it('continues through hidden candidate batches, reports full visible summary and resumes after the last visible goal', async () => {
     const store = createStore();
+    const scanned = vi.spyOn(store.goals, 'listCandidates');
     const work = {
       run: async <T>(action: (value: GoalsStore) => Promise<T>) => action(store),
       read: async <T>(action: (value: GoalsStore) => Promise<T>) => action(store),
@@ -118,15 +119,18 @@ describe('ListGoals', () => {
       averageProgressPercent: 100 / 3,
     });
     expect(first.nextPosition?.id).toBe(first.items[1]?.id);
+    expect(scanned).toHaveBeenCalledTimes(2);
     const second = await list.execute({ ...input, after: first.nextPosition });
     expect(second.items).toHaveLength(1);
     expect(second.nextPosition).toBeNull();
     expect(second.summary).toEqual(first.summary);
+    expect(scanned).toHaveBeenCalledTimes(4);
     expect(second.items[0]?.id).not.toBe(first.items[1]?.id);
   });
 
   it('omits organization goals from guest results and summary', async () => {
     const store = createStore();
+    const scanned = vi.spyOn(store.goals, 'listCandidates');
     const guestStore: GoalsStore = {
       ...store,
       findViewer: () => Promise.resolve({ organizationId, userId, role: 'guest' }),
@@ -145,5 +149,6 @@ describe('ListGoals', () => {
     });
     expect(result.items).toEqual([]);
     expect(result.summary.goalCount).toBe(0);
+    expect(scanned).not.toHaveBeenCalled();
   });
 });

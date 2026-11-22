@@ -28,7 +28,7 @@ export async function requireScope(
   lock: boolean = write,
 ): Promise<void> {
   if (spaceId === null) {
-    if (!write && viewer.role === 'guest') {
+    if (viewer.role === 'guest' && (!write || missing === 'missing-goal')) {
       throw new GoalError({ reason: missing });
     }
     if (write && viewer.role !== 'owner' && viewer.role !== 'admin') {

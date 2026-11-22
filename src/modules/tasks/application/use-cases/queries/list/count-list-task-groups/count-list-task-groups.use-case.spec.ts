@@ -264,7 +264,7 @@ describe('CountListTaskGroups: what the actor does not see is not found', () => 
   });
 });
 
-describe('CountListTaskGroups: the read runs in one read-only transaction', () => {
+describe('CountListTaskGroups: visibility and grouped counts share a read-only snapshot', () => {
   it('opens a single read-only run, with the default isolation, with no snapshot', async () => {
     const tasks = sprint14();
 
@@ -272,7 +272,7 @@ describe('CountListTaskGroups: the read runs in one read-only transaction', () =
 
     expect(tasks.runs).toBe(1);
     expect(tasks.readOnlyRuns).toBe(1);
-    expect(tasks.snapshotRuns).toBe(0);
+    expect(tasks.snapshotRuns).toBe(1);
   });
 });
 

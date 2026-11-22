@@ -33,7 +33,8 @@ exclusive deadline. The recipient and resource remain in the binding.
 
 `notification.delivery-authorization-requested.v1` on `EVENTS`, through
 `task-service__decide-notification-delivery-authorization`. The consumer verifies the
-Notification system actor. The handler retains the same decision on replay of a correlation.
+Notification system actor and transactionally schedules a tenant job for the correlation.
+The job retains the same decision on replay of a correlation.
 
 ## Invariants
 
@@ -44,13 +45,15 @@ Notification system actor. The handler retains the same decision on replay of a 
 
 ## Transactions
 
-HTTP reads share a read-only repeatable-read transaction. The event decision binds the request,
-current visibility and outbox fact in the tenant deduplication transaction. It uses repeatable-read
-isolation and returns serialization failures to JetStream so a new delivery can use a fresh
-snapshot.
+HTTP reads share a read-only repeatable-read transaction. The event's deduplication transaction
+enqueues a job whose tenant comes from that transaction. The worker obtains a current membership
+proof from Organization before opening the decision transaction. That transaction reconciles the
+proof with the projected membership and binds the decision and outbox fact in one repeatable-read
+snapshot. Failed decisions retry from a new authority proof and snapshot while the request is
+valid. A request past its expiry can only record a deny.
 
 ## Decisions
 
 - Capability adapters read through their owners' public entry points inside the same snapshot.
-- The broker retries a failed delivery in a new transaction with a fresh visibility snapshot.
+- The job queue retries authority or transaction errors without issuing a permit.
 - Responses and events carry only the fields needed by their respective consumers.

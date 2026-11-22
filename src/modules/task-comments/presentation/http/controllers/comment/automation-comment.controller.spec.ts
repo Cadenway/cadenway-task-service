@@ -38,7 +38,8 @@ function contextOf(request: Request): ExecutionContext {
 
 describe('Automation comment action', () => {
   it('checks current access before execution and returns only the published receipt', async () => {
-    const authorizeAutomation = vi.fn().mockResolvedValue(true);
+    const proof = { confirms: vi.fn().mockResolvedValue(true) };
+    const authorizeAutomation = vi.fn().mockResolvedValue(proof);
     const executeAutomation = vi.fn().mockResolvedValue(undefined);
     const comments = {
       authorize: authorizeAutomation,
@@ -56,17 +57,20 @@ describe('Automation comment action', () => {
       taskKey: 'CAD-482',
       ruleAuthorUserId: authorId,
     });
-    expect(executeAutomation).toHaveBeenCalledWith({
-      organizationId,
-      taskKey: 'CAD-482',
-      ruleAuthorUserId: authorId,
-      ruleId,
-      body: 'La maquette est prête.',
-    });
+    expect(executeAutomation).toHaveBeenCalledWith(
+      {
+        organizationId,
+        taskKey: 'CAD-482',
+        ruleAuthorUserId: authorId,
+        ruleId,
+        body: 'La maquette est prête.',
+      },
+      proof,
+    );
   });
 
   it('refuses revoked authority before reading or replaying a receipt', async () => {
-    const authorizeAutomation = vi.fn().mockResolvedValue(false);
+    const authorizeAutomation = vi.fn().mockResolvedValue(null);
     const guard = new AutomationCommentReplayGuard({
       authorize: authorizeAutomation,
     } as unknown as ApplyAutomationTaskComment);

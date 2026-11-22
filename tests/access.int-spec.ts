@@ -70,6 +70,8 @@ import type { z } from 'zod';
 
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
+import { ReadCurrentMembership } from '../src/modules/organization-members/public/membership/read-current-membership.js';
+import { mirrorCurrentMembership } from './support/current-membership.fixture.js';
 import { configureDocumentSpaceAccessCache } from '../src/infrastructure/http/document-space-access-cache.js';
 import { configureTaskSearchCache } from '../src/infrastructure/http/task-search-cache.js';
 import { DrizzleAccessRequestRepository } from '../src/modules/access-requests/infrastructure/persistence/drizzle/repositories/access-request/drizzle-access-request.repository.js';
@@ -1293,6 +1295,7 @@ describe('the access model: grants, the switch, the effective role and access re
     configureDocumentSpaceAccessCache(app);
     configureTaskSearchCache(app);
     await app.init();
+    mirrorCurrentMembership(app);
     signers.set(
       'api-gateway',
       await InternalTokenSigner.create({
@@ -1870,11 +1873,12 @@ describe('the access model: grants, the switch, the effective role and access re
     it('keeps the membership and direct-space proof in one repeatable-read snapshot', async () => {
       const path = '/internal/v1/spaces/access/resolve';
       const membership = service().get(FindOrganizationMember);
-      const readMembership = membership.execute.bind(membership);
+      const readMembership = membership.stamp.bind(membership);
       let changed = false;
-      const hook = vi.spyOn(membership, 'execute').mockImplementation(async (input) => {
+      const hook = vi.spyOn(membership, 'stamp').mockImplementation(async (input) => {
         const result = await readMembership(input);
-        if (!changed && input.userId === lea.userId) {
+        // The matching authority fixture reads the stamp once before the resolve snapshot opens.
+        if (!changed && input.lock === false && input.userId === lea.userId) {
           changed = true;
           await asSystem(
             `delete from space_grants
@@ -2957,6 +2961,21 @@ describe('the access model: grants, the switch, the effective role and access re
       await forgetAttempts(ines);
     });
 
+    it('reads pending requests in one repeatable read-only tenant snapshot', async () => {
+      const tenant = service().get(TenantTransactionRunner);
+      const run = vi.spyOn(tenant, 'run');
+      try {
+        const page = await pendingSeenBy(camille);
+        expect(page.items.length).toBeGreaterThan(0);
+        expect(run).toHaveBeenCalledWith(expect.any(Function), {
+          readOnly: true,
+          isolationLevel: 'repeatable read',
+        });
+      } finally {
+        run.mockRestore();
+      }
+    });
+
     it('lists the pending requests only to whoever answers their target, the most recent first, with the total on every page', async () => {
       await grant(camille, 'lists', budget.id, ines.userId, 'edit');
       const [r1, r2, r3, r4, r5] = ['R1', 'R2', 'R3', 'R4', 'R5'].map(requestId);
@@ -3605,6 +3624,9 @@ describe('the access model: grants, the switch, the effective role and access re
         }, waitOptions);
       };
       await sendDecisionRequest(recipient, correlation);
+      await vi.waitFor(async () => {
+        expect(await outboxOf('authorizationRequestId', correlation)).toHaveLength(1);
+      }, waitOptions);
       const [allowed] = await outboxOf('authorizationRequestId', correlation);
       expect(allowed?.event_name).toBe('task.notification-delivery-authorized.v1');
       expect(allowed?.payload).toMatchObject({
@@ -3620,12 +3642,25 @@ describe('the access model: grants, the switch, the effective role and access re
 
       const deniedCorrelation = randomUUID();
       await sendDecisionRequest(camille.userId, deniedCorrelation);
+      await vi.waitFor(async () => {
+        expect(await outboxOf('authorizationRequestId', deniedCorrelation)).toHaveLength(1);
+      }, waitOptions);
       const deniedRows = await outboxOf('authorizationRequestId', deniedCorrelation);
       expect(deniedRows).toHaveLength(1);
       expect(deniedRows[0]?.payload).toMatchObject({
         authorizationRequestId: deniedCorrelation,
         decision: 'deny',
       });
+
+      const absentMembership = randomUUID();
+      if (app === undefined) throw new Error('Application did not start.');
+      vi.spyOn(app.get(ReadCurrentMembership), 'execute').mockResolvedValueOnce(null);
+      await sendDecisionRequest(recipient, absentMembership);
+      await vi.waitFor(async () => {
+        const decisions = await outboxOf('authorizationRequestId', absentMembership);
+        expect(decisions).toHaveLength(1);
+        expect(decisions[0]?.payload).toMatchObject({ decision: 'deny' });
+      }, waitOptions);
     });
 
     it('authorizes attachment checks only for the API gateway with a current role', async () => {

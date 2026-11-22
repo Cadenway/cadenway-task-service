@@ -6,6 +6,7 @@ import type { MemberRole } from '../../../../../domain/value-objects/member/memb
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
 import type { TaskActor } from '../../../../../domain/value-objects/task/task-actor.value-object.js';
 import type { TaskUpdate } from '../../../../../domain/value-objects/task/task-update.value-object.js';
+import type { DelegatedMembershipProof } from '../../../../models/membership/delegated-membership-proof.model.js';
 import type { LocatedTask } from '../../../../models/task/located-task.model.js';
 import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
 import { WatcherAudienceChanged } from '../../../../models/watcher/watcher-audience-changed.model.js';
@@ -13,10 +14,9 @@ import type { TasksStore } from '../../../../models/transactions/tasks-store.mod
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
-import { ViewerResolver } from '../../../../services/member/viewer-resolver.service.js';
+import type { DelegatedMemberships } from '../../../queries/member/delegated-memberships/delegated-memberships.use-case.js';
 import { TaskChangeWriter } from '../../../../services/task/task-change-writer.service.js';
 import { TaskLocator } from '../../../../services/task/task-locator.service.js';
-import { TaskMovePlanner } from '../../../../services/task/task-move-planner.service.js';
 import { TaskOccurrenceScheduler } from '../../../../services/task/task-occurrence-scheduler.service.js';
 import { EffectiveWatchers } from '../../../../services/watcher/effective-watchers.service.js';
 import { withWatcherAudienceRetry } from '../../../../services/watcher/watcher-audience-retry.service.js';
@@ -26,12 +26,16 @@ import type { ApplyGitTaskStatusOutput } from './apply-git-task-status.output.js
 /** Applies an authenticated Git status rule using the mapping author's current task authority. */
 export class ApplyGitTaskStatus {
   // #region Properties
-  /** Resolves the authorizing account from current membership. */
-  private readonly viewers: ViewerResolver;
+  /** Checks and holds the live task placement. */
   private readonly locator: TaskLocator;
-  private readonly placement: TaskMovePlanner;
+
+  /** Plans a successor for a recurring task. */
   private readonly recurrence: TaskOccurrenceScheduler;
+
+  /** Checks who is eligible for resulting activity and notifications. */
   private readonly watchers: EffectiveWatchers;
+
+  /** Appends the ordinary effects in the same task transaction. */
   private readonly writer = new TaskChangeWriter();
   // #endregion
 
@@ -40,11 +44,10 @@ export class ApplyGitTaskStatus {
   public constructor(
     private readonly work: TasksUnitOfWork,
     members: MemberDirectory,
-    private readonly spaces: SpaceDirectory,
+    spaces: SpaceDirectory,
+    private readonly memberships: DelegatedMemberships,
   ) {
-    this.viewers = new ViewerResolver(members);
     this.locator = new TaskLocator(spaces);
-    this.placement = new TaskMovePlanner(spaces);
     this.recurrence = new TaskOccurrenceScheduler(spaces);
     this.watchers = new EffectiveWatchers(members, spaces);
   }
@@ -52,28 +55,34 @@ export class ApplyGitTaskStatus {
 
   // #region Methods
   /** Locks and rechecks authority before returning a placement or mutating a task. */
-  public async execute(input: ApplyGitTaskStatusInput): Promise<ApplyGitTaskStatusOutput> {
+  public async execute(
+    input: ApplyGitTaskStatusInput,
+    proof?: DelegatedMembershipProof,
+  ): Promise<ApplyGitTaskStatusOutput> {
+    const current = proof ?? (await this.readMembership(input));
     return this.work.run((store) =>
-      withWatcherAudienceRetry(store, () => this.apply(store, input)),
+      withWatcherAudienceRetry(store, () => this.apply(store, input, current)),
     );
   }
 
-  /** Rechecks current authority and placement without changing state or publishing events. */
-  public async authorize(input: ApplyGitTaskStatusInput): Promise<ApplyGitTaskStatusOutput> {
-    return this.work.run(async (store) => {
-      const viewer = await this.viewers.resolve(
+  /** Checks live authority before replay and supplies it to the write when there is no receipt. */
+  public async authorize(input: ApplyGitTaskStatusInput): Promise<DelegatedMembershipProof> {
+    const proof = await this.readMembership(input);
+    await this.work.run(async (store) => {
+      const viewer = await this.memberships.require(
+        proof,
         input.organizationId,
         input.mappingAuthorUserId,
         true,
       );
-      const { task } = await this.locateAuthorized(store, viewer, input);
-      return {
-        disposition: 'no_op',
-        taskId: task.snapshot.id,
-        listId: task.snapshot.listId,
-        spaceId: task.snapshot.spaceId,
-      };
+      await this.locateAuthorized(store, viewer, input);
     });
+    return proof;
+  }
+
+  /** Gets the mapping author's current membership without holding task or membership locks. */
+  private readMembership(input: ApplyGitTaskStatusInput): Promise<DelegatedMembershipProof> {
+    return this.memberships.execute(input.organizationId, [input.mappingAuthorUserId]);
   }
 
   /** Holds the task and its live placement after rechecking current edit access. */
@@ -82,7 +91,7 @@ export class ApplyGitTaskStatus {
     viewer: Viewer,
     input: ApplyGitTaskStatusInput,
   ): Promise<LocatedTask> {
-    const { task } = await this.locator.locate(store, {
+    const { task, placement } = await this.locator.locate(store, {
       organizationId: input.organizationId,
       viewer,
       taskKey: input.taskKey,
@@ -91,14 +100,8 @@ export class ApplyGitTaskStatus {
       archived: 'refuse',
       expectedVersions: null,
     });
-    await this.placement.holdPlacement(input.organizationId, viewer, task.snapshot.listId);
-    const placement = await this.spaces.findVisibleList(
-      input.organizationId,
-      viewer,
-      task.snapshot.listId,
-    );
     if (
-      placement?.list.archivedAt !== null ||
+      placement.list.archivedAt !== null ||
       task.snapshot.spaceId !== input.spaceId ||
       placement.space.id !== input.spaceId
     ) {
@@ -111,8 +114,10 @@ export class ApplyGitTaskStatus {
   private async apply(
     store: TasksStore,
     input: ApplyGitTaskStatusInput,
+    proof: DelegatedMembershipProof,
   ): Promise<ApplyGitTaskStatusOutput> {
-    const viewer: Viewer = await this.viewers.resolve(
+    const viewer: Viewer = await this.memberships.require(
+      proof,
       input.organizationId,
       input.mappingAuthorUserId,
       true,

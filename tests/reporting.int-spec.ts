@@ -33,6 +33,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
+import { mirrorCurrentMembership } from './support/current-membership.fixture.js';
 import { ExportListTasks } from '../src/modules/tasks/application/use-cases/queries/reporting/export-list-tasks/export-list-tasks.use-case.js';
 
 const project = `task-reporting-test-${String(process.pid)}`;
@@ -185,6 +186,7 @@ describe('reports with PostgreSQL and NATS', () => {
       logDestination: { write: (): void => undefined },
     });
     await app.init();
+    mirrorCurrentMembership(app);
     signer = await InternalTokenSigner.create({
       issuer: 'api-gateway',
       privateJwk: { ...publicJwk, d },

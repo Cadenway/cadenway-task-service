@@ -1,10 +1,8 @@
-import { TimesheetAccumulator } from '../../../../../domain/policies/reporting/timesheet.policy.js';
 import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { ReportingUnitOfWork } from '../../../../ports/outbound/transactions/reporting/reporting-unit-of-work.port.js';
 import { ViewerResolver } from '../../../../services/member/viewer-resolver.service.js';
-import { ReportingPage } from '../../../../services/reporting/reporting-page.service.js';
 import type { GetListTimesheetInput } from './get-list-timesheet.input.js';
 import type { GetListTimesheetOutput } from './get-list-timesheet.output.js';
 
@@ -13,7 +11,6 @@ export class GetListTimesheet {
   // #region Properties
   /** Report data and dependencies. */
   private readonly viewers: ViewerResolver;
-  private readonly pages = new ReportingPage();
   // #endregion
 
   // #region Constructor
@@ -38,33 +35,14 @@ export class GetListTimesheet {
         input.listId,
       );
       if (placement === null) throw new TaskRefusal({ reason: 'list-not-found' });
-      const accumulator = new TimesheetAccumulator(input.weekStart);
-      let afterId: string | null = null;
-      do {
-        const batch = await reader.timesheetEntries(
-          input.organizationId,
-          input.listId,
-          input.weekStart,
-          afterId,
-          500,
-        );
-        accumulator.add(batch.items);
-        afterId = batch.next;
-      } while (afterId !== null);
-      const timesheet = accumulator.build();
-      const page = this.pages.slice(
-        timesheet.items,
-        (item) => ({ userId: item.authorUserId, taskKey: item.taskKey }),
+      const page = await reader.timesheetPage(
+        input.organizationId,
+        input.listId,
+        input.weekStart,
         input.after,
         input.limit,
       );
-      return {
-        listId: input.listId,
-        weekStart: input.weekStart,
-        days: timesheet.days,
-        totalMinutes: timesheet.totalMinutes,
-        ...page,
-      };
+      return { listId: input.listId, weekStart: input.weekStart, ...page };
     });
   }
   // #endregion

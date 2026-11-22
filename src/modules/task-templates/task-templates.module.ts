@@ -1,6 +1,9 @@
 import { Idempotent, TenantTransactionRunner } from '@cadenway/nest-common/database';
 import { OutboxRelay, OutboxWriter } from '@cadenway/nest-messaging/outbox';
 import { Global, Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+
+import { TaskTemplateReplayAccessInterceptor } from './composition/providers/adapters/template/task-templates-replay-access.provider.js';
 
 import { ResolveTaskTemplateSpace } from '../spaces/public/space/resolve-task-template-space.js';
 import { SpacesModule } from '../spaces/spaces.module.js';
@@ -11,6 +14,7 @@ import { CreateTaskTemplate } from './application/use-cases/commands/template/cr
 import { DeleteTaskTemplate } from './application/use-cases/commands/template/delete-task-template/delete-task-template.use-case.js';
 import { RemoveSpaceTaskTemplates } from './application/use-cases/commands/template/remove-space-task-templates/remove-space-task-templates.use-case.js';
 import { GetTaskTemplate } from './application/use-cases/queries/template/get-task-template/get-task-template.use-case.js';
+import { ReadSpaceTaskTemplateSources } from './public/template/read-space-task-template-sources.js';
 import { ListTaskTemplates } from './application/use-cases/queries/template/list-task-templates/list-task-templates.use-case.js';
 import { TenantTaskTemplateUnitOfWork } from './infrastructure/persistence/drizzle/transactions/template/tenant-task-template.unit-of-work.js';
 import { OwningTaskTemplateSourceDirectory } from './infrastructure/adapters/source/task-template-source-directory.adapter.js';
@@ -49,8 +53,14 @@ const templateUnitOfWorkProvider = {
       useFactory: (unitOfWork: TenantTaskTemplateUnitOfWork): RemoveSpaceTaskTemplates =>
         new RemoveSpaceTaskTemplates(unitOfWork),
     },
+    {
+      provide: ReadSpaceTaskTemplateSources,
+      inject: [TenantTaskTemplateUnitOfWork],
+      useFactory: (unitOfWork: TenantTaskTemplateUnitOfWork): ReadSpaceTaskTemplateSources =>
+        new ReadSpaceTaskTemplateSources(unitOfWork),
+    },
   ],
-  exports: [RemoveSpaceTaskTemplates],
+  exports: [RemoveSpaceTaskTemplates, ReadSpaceTaskTemplateSources],
 })
 export class TaskTemplatesStorageModule {}
 
@@ -60,6 +70,7 @@ export class TaskTemplatesStorageModule {}
   controllers: [TaskTemplatesController],
   providers: [
     templateUnitOfWorkProvider,
+    { provide: APP_INTERCEPTOR, useClass: TaskTemplateReplayAccessInterceptor },
     {
       provide: OwningTaskTemplateSourceDirectory,
       inject: [ResolveTaskTemplateSpace, ReadTaskTemplateSource],

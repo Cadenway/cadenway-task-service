@@ -5,6 +5,7 @@ import type { TaskEvents } from '../../ports/outbound/messaging/task/task-events
 import type { ActivityRepository } from '../../ports/outbound/persistence/activity/activity-repository.port.js';
 import type { ArchiveReader } from '../../ports/outbound/persistence/archive/archive-reader.port.js';
 import type { AssignedTaskReader } from '../../ports/outbound/persistence/assignee/assigned-task-reader.port.js';
+import type { BulkReceiptScopeRepository } from '../../ports/outbound/persistence/bulk/bulk-receipt-scope-repository.port.js';
 import type { TaskCounter } from '../../ports/outbound/persistence/count/task-counter.port.js';
 import type { CustomFieldRepository } from '../../ports/outbound/persistence/custom-field/custom-field-repository.port.js';
 import type { TaskDependencyRepository } from '../../ports/outbound/persistence/dependency/task-dependency-repository.port.js';
@@ -45,6 +46,9 @@ export interface TasksStore {
 
   /** The bounded source snapshots and initial checklists of task copies. */
   readonly copies: TaskCopies;
+
+  /** The historical authorization scope of bulk task receipts. */
+  readonly bulkReceipts: BulkReceiptScopeRepository;
 
   /** The read side: counts, pages of subtasks and task references. */
   readonly reader: TaskReader;

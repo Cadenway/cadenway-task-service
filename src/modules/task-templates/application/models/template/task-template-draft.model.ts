@@ -7,6 +7,9 @@ export interface TaskTemplateDraft {
   /** Space containing the library. */
   readonly spaceId: string;
 
+  /** Provenance of this new snapshot, kept internal to the audience check. */
+  readonly sourceListId: string;
+
   /** Name displayed in the library. */
   readonly name: string;
 

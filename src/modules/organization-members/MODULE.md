@@ -26,6 +26,8 @@ the removal committed.
 | `public/membership/find-organization-member-roles` | tasks                                                                                                                        |
 | `public/membership/find-organization-owner`        | spaces                                                                                                                       |
 | `public/membership/list-active-members`            | tasks                                                                                                                        |
+| `public/membership/read-current-membership`        | access-requests, goals, spaces, tasks                                                                                        |
+| `public/membership/scan-membership-rebuild`        | member-lifecycle                                                                                                             |
 
 `OrganizationMembersModule` exports each public provider with its input and output types.
 
@@ -52,6 +54,10 @@ organization of the context; they must not be called from a system transaction (
 to open a tenant transaction inside a system one). The caller passes the organization of its
 verified context or of its event: row-level security hides any other, so another value finds
 nothing.
+
+`ScanMembershipRebuild` is an offline exception. It pages the restored Task database in a
+read-only system transaction so member-lifecycle can reject a snapshot from an older or
+incompatible Organization history before it applies any membership.
 
 The spaces module also uses the SQL predicates `public.organization_member_grant_is_effective`
 and `public.organization_member_grant_is_obsolete` to join grant checks in the same statement as
@@ -96,9 +102,9 @@ together.
   applies a membership by its stored `version` (`Membership.apply`): an older or equal version
   changes nothing, a removal always applies and stays applied, a late join or role change never
   brings it back. `claimVersion` of the kit cannot order them: it keys versions per consumer.
-- The copy falls behind beyond the 7 days `EVENTS` keeps (the first deployment in an older
-  environment, a restored database); the rebuild that would fill it does not exist yet (see the
-  `MODULE.md` of member-lifecycle).
+- The copy can fall behind beyond the 7 days `EVENTS` keeps. The offline rebuild reads the
+  authoritative Organization snapshot before bringing a restored Task database online. See the
+  `MODULE.md` of member-lifecycle.
 
 ## Invariants
 
@@ -138,6 +144,10 @@ together.
 - Membership queries run in the tenant transaction of their
   caller and join it, so row-level security limits them to the organization of the context, which
   each query also names.
+- Goal writes, space administration, access-request management and the Document access proof
+  obtain the acting member's authority from Organization before the transaction. They require
+  the same membership generation, version and role in the local projection. Writes check the
+  projection under its transaction lock. Delegated actions use the same authority client.
 
 ## Decisions
 

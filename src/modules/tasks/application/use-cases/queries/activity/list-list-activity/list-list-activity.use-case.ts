@@ -122,6 +122,7 @@ export class ListListActivity {
         );
         return { items, next: page.next, total };
       },
+      { snapshot: true },
     );
   }
   // #endregion

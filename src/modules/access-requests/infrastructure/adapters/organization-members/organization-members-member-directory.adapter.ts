@@ -1,7 +1,5 @@
-import type {
-  FindOrganizationMember,
-  FindOrganizationMemberOutput,
-} from '../../../../organization-members/public/membership/find-organization-member.js';
+import { matchesCurrentMembership } from '../../../../../infrastructure/http/current-membership.js';
+import type { FindOrganizationMember } from '../../../../organization-members/public/membership/find-organization-member.js';
 import type { MemberDirectory } from '../../../application/ports/outbound/members/membership/member-directory.port.js';
 import type { MemberRole } from '../../../domain/value-objects/member/member-role.value-object.js';
 
@@ -62,12 +60,14 @@ export class OrganizationMembersMemberDirectory implements MemberDirectory {
     userId: string,
     lock = false,
   ): Promise<MemberRole | null> {
-    const member: FindOrganizationMemberOutput | null = await this.findMember.execute({
+    const member = await this.findMember.stamp({
       organizationId,
       userId,
       lock,
     });
-    return member === null ? null : member.role;
+    return member === null || !matchesCurrentMembership(organizationId, userId, member)
+      ? null
+      : member.role;
   }
   // #endregion
 }

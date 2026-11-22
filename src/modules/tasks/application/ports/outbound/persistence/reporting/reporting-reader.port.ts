@@ -2,10 +2,11 @@ import type { TaskFilter } from '../../../../models/query/task-filter.model.js';
 import type { TaskOrder } from '../../../../models/query/task-order.model.js';
 import type { TaskSummaryView } from '../../../../projections/task/task-summary.projection.js';
 import type { buildTeamDashboard } from '../../../../../domain/policies/reporting/dashboard.policy.js';
-import type { buildTimesheet } from '../../../../../domain/policies/reporting/timesheet.policy.js';
+import type { Timesheet } from '../../../../../domain/policies/reporting/timesheet.policy.js';
 import type { buildWorkload } from '../../../../../domain/policies/reporting/workload.policy.js';
 import type { ReportingExportRows } from '../../../../models/reporting/reporting-export-rows.model.js';
 import type { ReportingBatch } from '../../../../models/reporting/reporting-batch.model.js';
+import type { ReportingPosition } from '../../../../models/reporting/reporting-position.model.js';
 
 /** All operations join the caller's tenant snapshot and restrict rows to the supplied scope. */
 export interface ReportingReader {
@@ -20,14 +21,14 @@ export interface ReportingReader {
     limit: number,
   ): Promise<ReportingBatch<Parameters<typeof buildWorkload>[1][number]>>;
 
-  /** Reads entries for currently live tasks of the list within the requested work-date week. */
-  timesheetEntries(
+  /** Returns exact weekly totals and one page of grouped author and task rows. */
+  timesheetPage(
     organizationId: string,
     listId: string,
     weekStart: string,
-    afterId: string | null,
+    after: ReportingPosition | null,
     limit: number,
-  ): Promise<ReportingBatch<Parameters<typeof buildTimesheet>[1][number]>>;
+  ): Promise<Timesheet & { readonly next: ReportingPosition | null }>;
 
   /** Reads the fields needed to aggregate live tasks in readable live lists. */
   dashboardTasks(

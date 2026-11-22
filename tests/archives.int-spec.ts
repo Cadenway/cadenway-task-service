@@ -66,6 +66,7 @@ import type { z } from 'zod';
 
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
+import { mirrorCurrentMembership } from './support/current-membership.fixture.js';
 
 // The archives of P3b-1 (PR 2) on a disposable PostgreSQL and NATS: the archive and the
 // restoration of a list and of a task with its subtree, what an archived list or task is left out
@@ -1282,6 +1283,7 @@ describe('the archives of lists and tasks', () => {
       logDestination: { write: (): void => undefined },
     });
     await app.init();
+    mirrorCurrentMembership(app);
     signers.set(
       'api-gateway',
       await InternalTokenSigner.create({

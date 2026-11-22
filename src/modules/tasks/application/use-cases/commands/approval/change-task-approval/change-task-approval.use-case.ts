@@ -12,7 +12,6 @@ import { ViewerResolver } from '../../../../services/member/viewer-resolver.serv
 import { taskApprovalRefusal } from '../../../../services/approval/task-approval-refusal.service.js';
 import { TaskChangeWriter } from '../../../../services/task/task-change-writer.service.js';
 import { TaskLocator } from '../../../../services/task/task-locator.service.js';
-import { TaskMovePlanner } from '../../../../services/task/task-move-planner.service.js';
 import { TaskOccurrenceScheduler } from '../../../../services/task/task-occurrence-scheduler.service.js';
 import { TaskRuleGuard } from '../../../../services/task/task-rule-guard.service.js';
 import { EffectiveWatchers } from '../../../../services/watcher/effective-watchers.service.js';
@@ -26,7 +25,6 @@ export class ChangeTaskApproval {
   /** Task access and existing mutation services. */
   private readonly viewers: ViewerResolver;
   private readonly locator: TaskLocator;
-  private readonly planner: TaskMovePlanner;
   private readonly watchers: EffectiveWatchers;
   private readonly recurrence: TaskOccurrenceScheduler;
   private readonly writer: TaskChangeWriter = new TaskChangeWriter();
@@ -42,7 +40,6 @@ export class ChangeTaskApproval {
   ) {
     this.viewers = new ViewerResolver(members);
     this.locator = new TaskLocator(spaces);
-    this.planner = new TaskMovePlanner(spaces);
     this.watchers = new EffectiveWatchers(members, spaces);
     this.recurrence = new TaskOccurrenceScheduler(spaces);
   }
@@ -114,14 +111,11 @@ export class ChangeTaskApproval {
       viewer,
       [...reviewerIds, ...requested, ...seen.task.snapshot.assigneeIds],
     );
-    const { task } = await this.locator.locate(store, {
+    const { task, placement } = await this.locator.locate(store, {
       ...request,
       lock: true,
     });
     const state = task.snapshot;
-    await this.planner.holdPlacement(input.organizationId, viewer, state.listId);
-    const placement = await this.spaces.findVisibleList(input.organizationId, viewer, state.listId);
-    if (placement === null) throw new WatcherAudienceChanged();
     this.rules.apply((): void => {
       task.requireChangeable();
     });

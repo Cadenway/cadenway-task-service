@@ -76,6 +76,11 @@ export class BulkTaskAction {
     return this.unitOfWork.run(async (store): Promise<BulkTaskActionOutput> => {
       const now = await store.clock.now();
       const { targets, changes } = await this.preflight(store, input, now);
+      if (input.idempotencyKey !== undefined) {
+        const listIds = new Set(targets.selection.map(({ placement }) => placement.list.id));
+        if (targets.destination !== null) listIds.add(targets.destination.list.id);
+        await store.bulkReceipts.record(input.organizationId, input.idempotencyKey, [...listIds]);
+      }
       const affected =
         input.action.type === 'duplicate'
           ? await this.duplicate(store, targets, input, now)

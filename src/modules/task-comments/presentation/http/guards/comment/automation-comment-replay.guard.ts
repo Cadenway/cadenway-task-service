@@ -3,9 +3,17 @@ import { Injectable } from '@nestjs/common';
 import type { CanActivate, ExecutionContext } from '@nestjs/common';
 import type { Request } from 'express';
 
+import type { AutomationCommentProof } from '../../../../application/models/comment/automation-comment-proof.model.js';
 import { ApplyAutomationTaskComment } from '../../../../application/use-cases/commands/comment/apply-automation-task-comment/apply-automation-task-comment.use-case.js';
 import { answerAutomationComment } from '../../mappers/comment/automation-comment-refusal.mapper.js';
 import { toAutomationComment } from '../../mappers/comment/automation-comment.mapper.js';
+
+const availableProofs = new WeakMap<object, AutomationCommentProof>();
+
+/** Retrieves the authorization recorded by this request's pre-interceptor guard. */
+export function automationCommentProofOf(request: object): AutomationCommentProof | undefined {
+  return availableProofs.get(request);
+}
 
 /** Checks the author's current authority before the idempotency interceptor reads a receipt. */
 @Injectable()
@@ -23,7 +31,7 @@ export class AutomationCommentReplayGuard implements CanActivate {
     const principal = principalOf(request);
     if (principal === undefined)
       throw new ProblemException({ status: 403, code: 'auth.actor-not-allowed' });
-    const allowed = await runWithOrganizationContext(principal, () =>
+    const proof = await runWithOrganizationContext(principal, () =>
       answerAutomationComment(() =>
         this.comments.authorize({
           organizationId: input.organizationId,
@@ -32,7 +40,8 @@ export class AutomationCommentReplayGuard implements CanActivate {
         }),
       ),
     );
-    if (!allowed) throw new ProblemException({ status: 404, code: 'task.not-found' });
+    if (proof === null) throw new ProblemException({ status: 404, code: 'task.not-found' });
+    availableProofs.set(request, proof);
     return true;
   }
   // #endregion

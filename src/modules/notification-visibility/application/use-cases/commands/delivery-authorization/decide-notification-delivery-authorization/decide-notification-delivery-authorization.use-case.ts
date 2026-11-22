@@ -29,6 +29,7 @@ export class DecideNotificationDeliveryAuthorization {
   public execute(
     input: NotificationDeliveryAuthorizationInput,
     signal: AbortSignal,
+    membershipAgrees: () => Promise<boolean>,
   ): Promise<void> {
     return this.inTransaction(async (repository, publish) => {
       signal.throwIfAborted();
@@ -38,7 +39,7 @@ export class DecideNotificationDeliveryAuthorization {
       signal.throwIfAborted();
 
       const current =
-        this.now() < expiresAt.getTime()
+        this.now() < expiresAt.getTime() && (await membershipAgrees())
           ? await this.visibility.execute({
               organizationId,
               userId: recipientId,

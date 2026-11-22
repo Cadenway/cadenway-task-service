@@ -126,5 +126,15 @@ export class JobsRemovedMemberCleanUpQueue implements RemovedMemberCleanUpQueue 
     );
     return !result.duplicate;
   }
+
+  /** Records one post-restore handover per source owner membership version. */
+  public async enqueueOwnerHandover(memberId: string, membershipVersion: number): Promise<void> {
+    await this.jobs.enqueue(
+      this.transaction,
+      CLEAN_UP_REMOVED_MEMBER_QUEUE,
+      { kind: 'owner-handover' },
+      { occurrenceKey: `owner:${memberId}:${String(membershipVersion)}` },
+    );
+  }
   // #endregion
 }

@@ -62,7 +62,8 @@ export class TaskTrashController {
    * @returns {Promise<TrashEntry>} The entry.
    * @throws {ProblemException} `404 http.not-found` while the switch is off, `404 task.not-found`,
    * `404 task.trashed`,
-   * `403 access.role-insufficient`, `409 task.archived`, `412 request.version-mismatch`,
+   * `403 access.role-insufficient`, `409 task.archived`, `409 trash.tree-too-large`,
+   * `412 request.version-mismatch`,
    * `404 organization.not-found`.
    */
   @Post(':taskKey/trash')

@@ -1,6 +1,6 @@
 import type { BulkTaskResult } from '@cadenway/contracts/types/internal/task-service';
 import { InternalAccess, ProblemException } from '@cadenway/nest-common';
-import { Body, Controller, HttpCode, Post } from '@nestjs/common';
+import { Body, Controller, Headers, HttpCode, Post } from '@nestjs/common';
 
 import { BulkTaskExpansionError } from '../../../../application/models/bulk/bulk-task-expansion.model.js';
 import { BulkTaskAction } from '../../../../application/use-cases/commands/bulk/bulk-task-action/bulk-task-action.use-case.js';
@@ -21,13 +21,17 @@ export class BulkTaskActionsController {
   /** Applies one action to the explicit selection and returns one result per selected key. */
   @Post('bulk-actions')
   @HttpCode(200)
-  public async execute(@Body() body: BulkTaskActionBody): Promise<BulkTaskResult> {
+  public async execute(
+    @Body() body: BulkTaskActionBody,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ): Promise<BulkTaskResult> {
     try {
       const result = await answerRefusals(() =>
         this.bulkTaskAction.execute({
           ...toCaller(),
           selection: body.selection,
           action: body.action,
+          ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
         }),
       );
       return {

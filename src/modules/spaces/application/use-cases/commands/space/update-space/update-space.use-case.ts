@@ -13,6 +13,7 @@ import type { ViewerAccess } from '../../../../models/access/viewer-access.model
 import type { SpaceRefusalReason } from '../../../../models/space/space-refusal-reason.model.js';
 import { SpaceRefusal } from '../../../../models/space/space-refusal.model.js';
 import type { SpacesStore } from '../../../../models/transactions/spaces-store.model.js';
+import type { SpaceTemplateSources } from '../../../../ports/outbound/library/space/space-template-sources.port.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpacesUnitOfWork } from '../../../../ports/outbound/transactions/space/spaces-unit-of-work.port.js';
 import { AccessResolver } from '../../../../services/access/access-resolver.service.js';
@@ -134,9 +135,14 @@ export class UpdateSpace {
    *
    * @param {SpacesUnitOfWork} unitOfWork - The tenant transaction.
    * @param {MemberDirectory} members - The copy of the memberships.
+   * @param {SpaceTemplateSources} templateSources - Template provenance for a visibility increase.
    * @constructor
    */
-  public constructor(unitOfWork: SpacesUnitOfWork, members: MemberDirectory) {
+  public constructor(
+    unitOfWork: SpacesUnitOfWork,
+    members: MemberDirectory,
+    private readonly templateSources: SpaceTemplateSources,
+  ) {
     this.unitOfWork = unitOfWork;
     this.viewers = new ViewerResolver(members);
     this.members = members;
@@ -203,6 +209,9 @@ export class UpdateSpace {
         this.applyPatch(stored, input, viewer),
         input.organizationId,
       );
+      if (changed.includes('visibility') && space.snapshot.visibility === 'organization') {
+        await this.requireShareableTemplates(store, input.organizationId, space.snapshot.id);
+      }
       if (changed.length > 0) {
         if (changed.includes('prefix')) {
           const claimed: boolean = await store.prefixes.claim(
@@ -231,6 +240,35 @@ export class UpdateSpace {
         callerCanManage: canManageSpace(space.snapshot, viewer),
       });
     });
+  }
+
+  /** Keeps the source lists stable between the library audit and publication of the space. */
+  private async requireShareableTemplates(
+    store: SpacesStore,
+    organizationId: string,
+    spaceId: string,
+  ): Promise<void> {
+    const sourceIds: string[] = [];
+    for (const listId of await this.templateSources.execute(organizationId, spaceId)) {
+      if (listId === null) {
+        throw new SpaceRefusal({ reason: 'visibility-forbidden' });
+      }
+      sourceIds.push(listId);
+    }
+    if (sourceIds.length === 0) return;
+    const lists = await store.lists.lockMany(organizationId, sourceIds, 'share');
+    if (
+      lists.length !== sourceIds.length ||
+      lists.some(
+        ({ snapshot }) =>
+          snapshot.spaceId !== spaceId ||
+          snapshot.deletedAt !== null ||
+          snapshot.archivedAt !== null ||
+          !snapshot.organizationAccess,
+      )
+    ) {
+      throw new SpaceRefusal({ reason: 'visibility-forbidden' });
+    }
   }
 
   /**

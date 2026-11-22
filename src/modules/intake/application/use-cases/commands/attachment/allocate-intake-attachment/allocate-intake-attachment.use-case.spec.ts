@@ -81,6 +81,14 @@ function fixture() {
 }
 
 describe('AllocateIntakeAttachment', () => {
+  it('returns the attachment limit refusal when the publication has no draft capacity', async () => {
+    const { subject, attachments } = fixture();
+    attachments.startDraft.mockResolvedValue(null);
+
+    await expect(subject.execute(input)).rejects.toMatchObject({ failure: 'limit-exceeded' });
+    expect(attachments.insertReservation).not.toHaveBeenCalled();
+  });
+
   it('allocates within the publication transaction with the original deadline', async () => {
     const { subject, attachments } = fixture();
     await expect(subject.execute(input)).resolves.toEqual({

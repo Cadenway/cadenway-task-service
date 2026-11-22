@@ -192,7 +192,7 @@ describe('ListLabels: the read runs in one read-only transaction', () => {
 
     expect(tasks.runs).toBe(1);
     expect(tasks.readOnlyRuns).toBe(1);
-    expect(tasks.snapshotRuns).toBe(0);
+    expect(tasks.snapshotRuns).toBe(1);
   });
 });
 

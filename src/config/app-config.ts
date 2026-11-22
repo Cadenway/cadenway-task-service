@@ -1,5 +1,13 @@
-import { baseConfigShape, internalTokenVerifierConfigShape } from '@cadenway/nest-common';
-import type { BaseConfig, InternalTokenVerifierConfig } from '@cadenway/nest-common';
+import {
+  baseConfigShape,
+  internalTokenSignerConfigShape,
+  internalTokenVerifierConfigShape,
+} from '@cadenway/nest-common';
+import type {
+  BaseConfig,
+  Ed25519PrivateJwk,
+  InternalTokenVerifierConfig,
+} from '@cadenway/nest-common';
 import { databaseConfigShape } from '@cadenway/nest-common/database';
 import type { DatabaseConfig } from '@cadenway/nest-common/database';
 import { messagingConfigShape } from '@cadenway/nest-messaging';
@@ -29,6 +37,8 @@ import { z } from 'zod';
  *   The explicit issuer map takes precedence.
  * - `SEARCH_PROJECTION_CURSOR_SECRET`: optional 32-byte base64url key shared by Task replicas
  *   to authenticate Search export cursors.
+ * - `ORGANIZATION_SERVICE_URL` and `TASK_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`: paired configuration
+ *   for current membership checks on actions admitted from Git and Automation.
  *
  * - `TRASH_WRITES_ENABLED` (`TrashConfig`): whether the writes that put something in the trash or
  *   make a tombstone are served ("Supprimer la tâche", `DELETE` of a list and of a space, "Vider la
@@ -42,6 +52,8 @@ export type AppConfig = BaseConfig &
   InternalTokenVerifierConfig &
   TrashConfig & {
     readonly SEARCH_PROJECTION_CURSOR_SECRET?: string;
+    readonly ORGANIZATION_SERVICE_URL?: string;
+    readonly TASK_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK?: Ed25519PrivateJwk;
   };
 
 /**
@@ -135,8 +147,33 @@ export const appConfigSchema: z.ZodType<AppConfig> = z
     SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: optionalIssuerConfig('search-service'),
     NOTIFICATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: optionalIssuerConfig('notification-service'),
     SEARCH_PROJECTION_CURSOR_SECRET: searchProjectionCursorSecret,
+    ORGANIZATION_SERVICE_URL: z.preprocess(
+      (value) => (value === '' ? undefined : value),
+      z
+        .string()
+        .trim()
+        .max(512)
+        .refine((value) => {
+          const url = URL.parse(value);
+          return url?.origin === value && (url.protocol === 'http:' || url.protocol === 'https:');
+        }, 'Expected an HTTP or HTTPS origin.')
+        .optional(),
+    ),
+    TASK_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK: z.preprocess(
+      (value) => (value === '' ? undefined : value),
+      internalTokenSignerConfigShape.INTERNAL_TOKEN_PRIVATE_JWK.optional(),
+    ),
     TRASH_WRITES_ENABLED: z.stringbool().default(false),
   })
+  .refine(
+    (config) =>
+      (config.ORGANIZATION_SERVICE_URL === undefined) ===
+      (config.TASK_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK === undefined),
+    {
+      path: ['TASK_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK'],
+      message: 'Configure the Organization origin and Task signing key together.',
+    },
+  )
   .transform(
     ({
       DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS,

@@ -66,11 +66,11 @@ describe('DrizzleMembershipRepository.listActiveByUsers', () => {
     await pool.query('delete from organization_members');
   });
 
-  it('selects the newest ten active memberships per user in stable lock order', async () => {
+  it('includes the least privileged active membership in bounded single and batch reads', async () => {
     await pool.query(
       `insert into organization_members (organization_id,id,user_id,role,version,created_at)
        select $1,md5(('member-' || n)::text)::uuid,$2,
-              case when n = 2 then 'guest' else 'member' end,
+              case when n = 1 then 'guest' else 'member' end,
               1, to_timestamp(n)
        from generate_series(1, 11) as n`,
       [ORG, CAMILLE],

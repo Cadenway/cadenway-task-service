@@ -417,12 +417,6 @@ export class UpdateTask {
           }));
     const statusChanged = update.changed.includes('status');
     const { listId } = update.task.snapshot;
-    if (
-      move === null &&
-      (statusChanged || recipients.length > 0 || input.patch.customFieldValues !== undefined)
-    ) {
-      await this.planner.holdPlacement(input.organizationId, viewer, listId);
-    }
     if (recipients.length > 0) {
       await this.descriptionMentions.requireEligible(input.organizationId, listId, recipients);
     }

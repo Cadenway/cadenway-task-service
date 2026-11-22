@@ -63,6 +63,7 @@ import type { z } from 'zod';
 
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
+import { mirrorCurrentMembership } from './support/current-membership.fixture.js';
 import {
   DROP_TRASHED_TASK_REQUESTS_QUEUE,
   PURGE_TRASH_QUEUE,
@@ -1492,6 +1493,7 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       },
     });
     await started.init();
+    mirrorCurrentMembership(started);
     return started;
   }
 
@@ -6685,6 +6687,58 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
         await raced.release();
         await jobsSettled();
       }
+    });
+  });
+
+  describe('the synchronous trash size limit', () => {
+    /** Adds independently archived subtasks, as can accumulate under a live parent. */
+    async function addArchivedChildren(rootId: string, count: number): Promise<void> {
+      await asSystem(
+        `with generated as (select uuidv7() as id, 810000000 + n as number from generate_series(1, $4::int) as n)
+         insert into tasks (organization_id, id, key_prefix, key_number, space_id, list_id, parent_id,
+           name, status, priority, created_by_type, created_by_id, archived_at, archived_by_type,
+           archived_by_id, archive_root_id, archive_root, version)
+         select root.organization_id, generated.id, root.key_prefix, generated.number, root.space_id,
+           root.list_id, root.id, 'Archived task', 'todo', 'basse', 'user', $3, now(), 'user', $3,
+           generated.id, true, 2
+         from tasks as root cross join generated where root.organization_id = $1 and root.id = $2`,
+        [atelierNordId, rootId, camille.userId, count],
+      );
+    }
+
+    it('refuses 1001 tasks atomically, then trashes exactly 1000 in a single entry with every event', async () => {
+      const list = await createList(camille, produit.space.id, { name: 'Long-running project' });
+      const root = await createTask(camille, list.id, { name: 'Project archive' });
+      const rootId = await taskIdOf(root.key);
+      await addArchivedChildren(rootId, 1000);
+      await jobsSettled();
+      const eventsBefore = await outboxTotal();
+      const entriesForList = (): Promise<number> =>
+        countOf('select count(*)::int as total from trash_entries where list_id = $1', [list.id]);
+      const trashedTasksForList = (): Promise<number> =>
+        countOf(
+          'select count(*)::int as total from tasks where list_id = $1 and trash_entry_id is not null',
+          [list.id],
+        );
+
+      expectProblem(await trashRequest(root.key), 409, 'trash.tree-too-large', { limit: 1000 });
+      expect(await entriesForList()).toBe(0);
+      expect(await trashedTasksForList()).toBe(0);
+      expect(await outboxTotal()).toBe(eventsBefore);
+
+      await asSystem(
+        'delete from tasks where organization_id = $1 and parent_id = $2 and key_number = 810001000',
+        [atelierNordId, rootId],
+      );
+      const entry = await trashTask(root.key);
+      const events = await trashedOf(entry.id);
+
+      expect(entry.subtaskCount).toBe(999);
+      expect(await entriesForList()).toBe(1);
+      expect(await trashedTasksForList()).toBe(1000);
+      expect(events).toHaveLength(1000);
+      expect(new Set(events.map((event) => event.key)).size).toBe(1000);
+      expect(events[0]?.key).toBe(root.key);
     });
   });
 

@@ -38,7 +38,8 @@ function executionContext(request: Request): ExecutionContext {
 
 describe('Automation task action', () => {
   it('checks current authority before replay and returns only the published receipt', async () => {
-    const authorize = vi.fn().mockResolvedValue(undefined);
+    const proof = { organizationId, stamps: new Map() };
+    const authorize = vi.fn().mockResolvedValue(proof);
     const execute = vi.fn().mockResolvedValue({ disposition: 'applied', private: 'hidden' });
     const action = { authorize, execute } as unknown as ApplyAutomationTaskAction;
     const request = requestOf();
@@ -55,7 +56,7 @@ describe('Automation task action', () => {
       ruleAuthorUserId: authorId,
       action: { type: 'priority', priority: 'haute' },
     });
-    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ taskKey: 'CAD-482' }));
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ taskKey: 'CAD-482' }), proof);
   });
 
   it('refuses a revoked rule author before a stored receipt can be replayed', async () => {
@@ -223,6 +224,7 @@ describe('Automation task action', () => {
         ruleAuthorUserId: authorId,
         action: { type: 'assign', userId: ruleId },
       }),
+      undefined,
     );
   });
 });

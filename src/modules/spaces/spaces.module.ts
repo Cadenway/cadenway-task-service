@@ -1,5 +1,9 @@
 import { Idempotent } from '@cadenway/nest-common/database';
 import { Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+
+import { SpacesReplayAccessInterceptor } from './composition/providers/adapters/space/spaces-replay-access.provider.js';
+import { currentMembershipProvider } from './composition/providers/adapters/space/current-membership.provider.js';
 
 import { OrganizationMembersModule } from '../organization-members/organization-members.module.js';
 import { memberDirectoryProvider } from './composition/providers/adapters/membership/member-directory.provider.js';
@@ -167,6 +171,8 @@ markIdempotent(SpaceListsController.prototype, 'create');
     spacesUnitOfWorkProvider,
     memberDirectoryProvider,
     trashWritesProvider,
+    currentMembershipProvider,
+    { provide: APP_INTERCEPTOR, useClass: SpacesReplayAccessInterceptor },
     createSpaceProvider,
     provisionOnboardingSpaceProvider,
     listSpacesProvider,

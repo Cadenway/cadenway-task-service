@@ -1,3 +1,4 @@
+import { SystemTransactionRunner } from '@cadenway/nest-common/database';
 import { Module } from '@nestjs/common';
 
 import { tenantUnitOfWorkProvider } from './composition/providers/adapters/membership/tenant-unit-of-work.provider.js';
@@ -6,11 +7,15 @@ import { findOrganizationMemberProvider } from './composition/providers/use-case
 import { findOrganizationMemberRolesProvider } from './composition/providers/use-cases/membership/find-organization-member-roles.provider.js';
 import { findOrganizationOwnerProvider } from './composition/providers/use-cases/membership/find-organization-owner.provider.js';
 import { listActiveMembersProvider } from './composition/providers/use-cases/membership/list-active-members.provider.js';
+import { readCurrentMembershipProvider } from './composition/providers/use-cases/membership/read-current-membership.provider.js';
+import { DrizzleRebuildMembershipScan } from './infrastructure/persistence/drizzle/repositories/membership/drizzle-rebuild-membership-scan.repository.js';
 import { ApplyMembershipChange } from './public/membership/apply-membership-change.js';
 import { FindOrganizationMember } from './public/membership/find-organization-member.js';
 import { FindOrganizationMemberRoles } from './public/membership/find-organization-member-roles.js';
 import { FindOrganizationOwner } from './public/membership/find-organization-owner.js';
 import { ListActiveMembers } from './public/membership/list-active-members.js';
+import { ReadCurrentMembership } from './public/membership/read-current-membership.js';
+import { ScanMembershipRebuild } from './public/membership/scan-membership-rebuild.js';
 
 /**
  * Class OrganizationMembersModule
@@ -31,6 +36,15 @@ import { ListActiveMembers } from './public/membership/list-active-members.js';
     findOrganizationMemberRolesProvider,
     findOrganizationOwnerProvider,
     listActiveMembersProvider,
+    readCurrentMembershipProvider,
+    {
+      provide: ScanMembershipRebuild,
+      inject: [SystemTransactionRunner],
+      useFactory: (system: SystemTransactionRunner): ScanMembershipRebuild => {
+        const scan = new DrizzleRebuildMembershipScan(system);
+        return new ScanMembershipRebuild((check) => scan.verify(check));
+      },
+    },
   ],
   exports: [
     ApplyMembershipChange,
@@ -38,6 +52,8 @@ import { ListActiveMembers } from './public/membership/list-active-members.js';
     FindOrganizationMemberRoles,
     FindOrganizationOwner,
     ListActiveMembers,
+    ReadCurrentMembership,
+    ScanMembershipRebuild,
   ],
 })
 export class OrganizationMembersModule {}

@@ -153,15 +153,18 @@ transaction of the event, a deleted space excepted.
 position, so the copy falls behind only when this service consumes nothing for longer than that,
 or when its database starts after the first member events left the stream: the first deployment in
 an environment where organization-service has run for more than 7 days, or a restored database.
-The memberships older than that are then missing from the copy, and their members are answered as
-non-members (`404 organization.not-found`). The remedy is a rebuild: organization-service re-emits
-its current memberships with `RebuildEmitter` on `rebuild.task.membership`, received with
-`EventConsumers.onRebuild` and applied with the same rules. None of it exists yet: the item schema
-belongs to cadenway-api-contracts, the emitter to organization-service, the receiver to this
-service; the `task` user already subscribes to `rebuild.task.>`, and organization-service's NATS
-user would need the right to publish `rebuild.task.membership`. Until then the service must not
-ship to an environment whose copy is incomplete, and a removal or role change lost on the way stays
-unapplied, with no later correction.
+An offline rebuild reads Organization's authoritative membership export on stdin and applies
+active generations and tombstones with the same lifecycle and version rules as live events. The
+command is `node --import @cadenway/nest-common/register dist/infrastructure/maintenance/rebuild-memberships.js`.
+Ops passes `--database <candidate>` when restoring Task and keeps the normal runtime stopped
+until the candidate can be activated.
+
+The command validates the whole versioned, ordered export and its final count in a private
+spool. A read-only comparison rejects any restored membership that Organization cannot confirm
+as part of the same history. Each subsequent membership update and its cleanup or owner handover
+job commit together. The command has no HTTP listener or broker connection and does not run
+workers, so jobs run only after the normal service starts. A failed
+cutover discards the candidate; a repeat import into the same candidate is idempotent.
 
 ## Invariants
 

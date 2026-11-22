@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { TaskState } from '../../../../../domain/value-objects/task/task-state.value-object.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
+import { delegatedMembershipFixture } from '../../../delegated-membership.fixture.js';
 import {
   ATELIER_NORD,
   CAD_482,
@@ -32,12 +33,26 @@ const input: ApplyGitTaskStatusInput = {
   status: 'review',
 };
 
+function build(
+  work: TasksUnitOfWork,
+  members = atelierNordMembers(),
+  spaces = new InMemorySpaceDirectory(),
+) {
+  const fixture = delegatedMembershipFixture(members);
+  return {
+    ...fixture,
+    useCase: new ApplyGitTaskStatus(work, members, spaces, fixture.memberships),
+  };
+}
+
 function setup(state: TaskState = taskState(), removed: readonly string[] = []) {
   const trace: string[] = [];
   const tasks = new InMemoryTasks({ tasks: [state], trace });
   const spaces = new InMemorySpaceDirectory({ trace });
-  const useCase = new ApplyGitTaskStatus(tasks, atelierNordMembers(removed, trace), spaces);
-  return { tasks, spaces, useCase, trace };
+  const members = atelierNordMembers([], trace);
+  const fixture = delegatedMembershipFixture(members, atelierNordMembers(removed));
+  const useCase = new ApplyGitTaskStatus(tasks, members, spaces, fixture.memberships);
+  return { tasks, spaces, useCase, trace, ...fixture };
 }
 
 describe('ApplyGitTaskStatus', () => {
@@ -48,7 +63,7 @@ describe('ApplyGitTaskStatus', () => {
       const spaces = new InMemorySpaceDirectory({
         lists: [placedList({ archivedAt: new Date('2026-11-10T00:00:00Z') })],
       });
-      const useCase = new ApplyGitTaskStatus(tasks, atelierNordMembers(), spaces);
+      const { useCase } = build(tasks, atelierNordMembers(), spaces);
       await expect(useCase[method](input)).rejects.toMatchObject({
         refusal: { reason: 'task-not-found' },
       });
@@ -61,10 +76,8 @@ describe('ApplyGitTaskStatus', () => {
     const { tasks, trace, useCase } = setup();
     const original = tasks.stored(CAD_482);
     await expect(useCase.authorize(input)).resolves.toEqual({
-      disposition: 'no_op',
-      taskId: CAD_482,
-      listId: SPRINT_14,
-      spaceId: PRODUIT,
+      organizationId: ATELIER_NORD,
+      stamps: new Map([[CAMILLE, { memberId: CAMILLE, role: 'owner', version: 1 }]]),
     });
     expect(trace).toContain('spaces.lockTrashLists');
     expect(tasks.stored(CAD_482)).toEqual(original);
@@ -74,11 +87,10 @@ describe('ApplyGitTaskStatus', () => {
   });
 
   it('rechecks the mapping author when a previously authorized operation is replayed', async () => {
-    const tasks = new InMemoryTasks({ tasks: [taskState()] });
-    const members = atelierNordMembers();
-    const useCase = new ApplyGitTaskStatus(tasks, members, new InMemorySpaceDirectory());
-    await expect(useCase.authorize(input)).resolves.toMatchObject({ taskId: CAD_482 });
-    vi.spyOn(members, 'roleOf').mockResolvedValue(null);
+    const { tasks, useCase, authority, projection } = setup();
+    await expect(useCase.authorize(input)).resolves.toMatchObject({ organizationId: ATELIER_NORD });
+    const project = vi.spyOn(projection, 'stampOf');
+    vi.spyOn(authority, 'find').mockResolvedValue(null);
 
     await expect(useCase.authorize(input)).rejects.toMatchObject({
       refusal: { reason: 'organization-not-found' },
@@ -86,6 +98,7 @@ describe('ApplyGitTaskStatus', () => {
     await expect(useCase.execute(input)).rejects.toMatchObject({
       refusal: { reason: 'organization-not-found' },
     });
+    expect(project).not.toHaveBeenCalled();
     expect(tasks.stored(CAD_482)).toEqual(taskState());
     expect(tasks.activity.size).toBe(0);
     expect(tasks.events).toEqual([]);
@@ -93,7 +106,7 @@ describe('ApplyGitTaskStatus', () => {
 
   it('refuses reauthorization after moving the task outside the mapped space', async () => {
     const { tasks, useCase } = setup();
-    await expect(useCase.authorize(input)).resolves.toMatchObject({ taskId: CAD_482 });
+    await expect(useCase.authorize(input)).resolves.toMatchObject({ organizationId: ATELIER_NORD });
     tasks.tasks.set(CAD_482, taskState({ spaceId: DESIGN, listId: MAQUETTES }));
     await expect(useCase.authorize(input)).rejects.toMatchObject({
       refusal: { reason: 'task-not-found' },
@@ -154,6 +167,19 @@ describe('ApplyGitTaskStatus', () => {
     expect(tasks.events).toEqual([]);
   });
 
+  it.each([
+    { memberId: NADIA, role: 'owner', version: 1 },
+    { memberId: CAMILLE, role: 'member', version: 1 },
+    { memberId: CAMILLE, role: 'owner', version: 2 },
+  ] as const)('does not mutate when the proof and projected stamp disagree', async (stamp) => {
+    const { tasks, useCase, projection } = setup();
+    const proof = await useCase.authorize(input);
+    vi.spyOn(projection, 'stampOf').mockResolvedValue(stamp);
+    await expect(useCase.execute(input, proof)).rejects.toThrow('do not agree');
+    expect(tasks.events).toEqual([]);
+    expect(tasks.stored(CAD_482)).toEqual(taskState());
+  });
+
   it('refuses an archived task before returning a placement', async () => {
     const { tasks, useCase } = setup(taskState({ archive: archiveFrom(CAD_482) }));
     await expect(useCase.execute({ ...input, status: null })).rejects.toMatchObject({
@@ -173,7 +199,7 @@ describe('ApplyGitTaskStatus', () => {
   it('refuses a mapping author who can only view the task', async () => {
     const tasks = new InMemoryTasks({ tasks: [taskState()] });
     const spaces = new InMemorySpaceDirectory({ listGrants: { [SPRINT_14]: { [NADIA]: 'view' } } });
-    const useCase = new ApplyGitTaskStatus(tasks, atelierNordMembers(), spaces);
+    const { useCase } = build(tasks, atelierNordMembers(), spaces);
     await expect(useCase.execute({ ...input, mappingAuthorUserId: NADIA })).rejects.toMatchObject({
       refusal: { reason: 'role-insufficient', role: 'view' },
     });
@@ -186,7 +212,7 @@ describe('ApplyGitTaskStatus', () => {
     const spaces = new InMemorySpaceDirectory({
       spaces: [{ ...space, statuses: { ...space.statuses, review: { name: null, hidden: true } } }],
     });
-    const useCase = new ApplyGitTaskStatus(tasks, atelierNordMembers(), spaces);
+    const { useCase } = build(tasks, atelierNordMembers(), spaces);
     await expect(useCase.execute(input)).resolves.toMatchObject({ disposition: 'no_op' });
     expect(tasks.events).toEqual([]);
   });
@@ -207,11 +233,7 @@ describe('ApplyGitTaskStatus', () => {
         ),
       runReadOnly: (operation, options) => tasks.runReadOnly(operation, options),
     };
-    const useCase = new ApplyGitTaskStatus(
-      work,
-      atelierNordMembers(),
-      new InMemorySpaceDirectory(),
-    );
+    const { useCase } = build(work, atelierNordMembers(), new InMemorySpaceDirectory());
     await expect(useCase.execute(input)).rejects.toThrow('outbox failed');
     expect(tasks.stored(CAD_482)).toEqual(original);
     expect(tasks.events).toEqual([]);

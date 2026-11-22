@@ -42,12 +42,7 @@ import {
   UpdateSpaceInternalResponse,
   UpdateTaskInternalResponse,
 } from '@cadenway/contracts/validators/internal/task-service';
-import {
-  createApplication,
-  InternalTokenSigner,
-  loadConfig,
-  runWithOrganizationContext,
-} from '@cadenway/nest-common';
+import { InternalTokenSigner, loadConfig, runWithOrganizationContext } from '@cadenway/nest-common';
 import type {
   Ed25519PrivateJwk,
   Ed25519PublicJwk,
@@ -66,7 +61,10 @@ import type { z } from 'zod';
 
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
+import { createTaskApplication } from '../src/infrastructure/http/task-application.module.js';
 import { configureTaskActionCache } from '../src/infrastructure/http/task-action-cache.js';
+import type { MembershipStamp } from '../src/modules/tasks/application/models/membership/membership-stamp.model.js';
+import { OrganizationMembershipAuthority } from '../src/modules/organization-members/infrastructure/adapters/organization/organization-membership-authority.adapter.js';
 import { DrizzleCommentRepository } from '../src/modules/task-comments/infrastructure/persistence/drizzle/repositories/comment/drizzle-comment.repository.js';
 import { DrizzleCommentExcerptReader } from '../src/modules/task-comments/infrastructure/persistence/drizzle/repositories/comment/drizzle-comment-excerpt.repository.js';
 import { DrizzleWatcherOverrideRepository } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/watcher/drizzle-watcher-override.repository.js';
@@ -553,6 +551,7 @@ describe('tasks', () => {
   let signer: InternalTokenSigner;
   let migrator: pg.Pool;
   let telemetry: TelemetryHandle | undefined;
+  const removedAtAuthority = new Set<string>();
 
   // The spaces and lists of Atelier Nord the scenarios work in.
   let produit: SpaceBody;
@@ -951,7 +950,17 @@ describe('tasks', () => {
     telemetry = startTelemetry({ service: 'task-service', version: '0.0.0-test' });
     // As main.ts: the configuration is read inside the start-up, never when a module is imported.
     const config = loadConfig(appConfigSchema);
-    app = await createApplication(AppModule, {
+    vi.spyOn(OrganizationMembershipAuthority.prototype, 'find').mockImplementation(
+      async (organizationId, userId) => {
+        if (removedAtAuthority.has(userId)) return null;
+        const members = await asSystem<MembershipStamp>(
+          'select id as "memberId", role, version::float8 as version from organization_members where organization_id = $1 and user_id = $2 and removed_at is null',
+          [organizationId, userId],
+        );
+        return members.length === 1 ? (members[0] ?? null) : null;
+      },
+    );
+    app = await createTaskApplication(AppModule, {
       service: 'task-service',
       config,
       internalToken: {
@@ -1149,6 +1158,10 @@ describe('tasks', () => {
         204,
       );
       expectProblem(await send('get', itemPath, camille), 404, 'template.not-found');
+      const replayAfterDeletion = await send('post', path, camille, create);
+      expectProblem(replayAfterDeletion, 404, 'space.not-found');
+      expect(replayAfterDeletion.headers).not.toHaveProperty('location');
+      expect(replayAfterDeletion.headers).not.toHaveProperty('idempotent-replayed');
 
       const rows = await asSystem<{ payload: unknown }>(
         `select payload from outbox_events
@@ -1172,6 +1185,73 @@ describe('tasks', () => {
         expect(event).not.toHaveProperty('description');
         expect(event).not.toHaveProperty('checklist');
       }
+    });
+
+    it('preserves a private library until its copied source is also eligible for publication', async () => {
+      const { space } = await createSpace(camille, {
+        name: 'Review templates before sharing',
+        prefix: 'TPR',
+        visibility: 'private',
+      });
+      const spacePath = `/internal/v1/spaces/${space.id}`;
+      const templates = `${spacePath}/task-templates`;
+      const created = await send('post', `${spacePath}/lists`, camille, {
+        body: { name: 'Restricted', organizationAccess: false },
+      });
+      expectStatus(created, 201);
+      const sourceList = conforms(CreateListInternalResponse, bodyOf(created));
+      const task = await createTask(camille, sourceList.id, { name: 'Template source' });
+      const template = await send('post', templates, camille, {
+        body: { sourceTaskKey: task.key },
+      });
+      expectStatus(template, 201);
+      const snapshot = conforms(CreateTaskTemplateInternalResponse, bodyOf(template));
+      expect(template.body).not.toHaveProperty('sourceListId');
+
+      const change = { body: { visibility: 'organization' } };
+      expectProblem(
+        await send('patch', spacePath, camille, change),
+        403,
+        'space.visibility-forbidden',
+      );
+      expectStatus(await send('get', `${templates}/${snapshot.id}`, camille), 200);
+      expectProblem(await send('get', templates, hugo), 404, 'space.not-found');
+
+      expectStatus(
+        await send('patch', `/internal/v1/lists/${sourceList.id}`, camille, {
+          body: { organizationAccess: true },
+        }),
+        200,
+      );
+      const published = await send('patch', spacePath, camille, change);
+      expectStatus(published, 200);
+      expect(bodyOf(published)).toMatchObject({ visibility: 'organization' });
+      expectStatus(await send('get', `${templates}/${snapshot.id}`, hugo), 200);
+    });
+
+    it('keeps a legacy template with unknown provenance in the private space', async () => {
+      const { space } = await createSpace(camille, {
+        name: 'Legacy private templates',
+        prefix: 'TLP',
+        visibility: 'private',
+      });
+      const spacePath = `/internal/v1/spaces/${space.id}`;
+      await asSystem(
+        `insert into task_templates
+           (organization_id, space_id, name, title, priority, labels, checklist, subtasks)
+         values ($1, $2, 'Legacy', 'Legacy', 'moyenne', '[]', '[]', '[]')`,
+        [atelierNordId, space.id],
+      );
+      expectProblem(
+        await send('patch', spacePath, camille, { body: { visibility: 'organization' } }),
+        403,
+        'space.visibility-forbidden',
+      );
+      const page = await send('get', `${spacePath}/task-templates`, camille);
+      expectStatus(page, 200);
+      expect(conforms(ListTaskTemplatesInternalResponse, bodyOf(page)).items).toMatchObject([
+        { title: 'Legacy' },
+      ]);
     });
 
     it('refuses a restricted source and serializes simultaneous writes at capacity', async () => {
@@ -1229,6 +1309,7 @@ describe('tasks', () => {
       await migrator.end();
       await telemetry?.shutdown();
     } finally {
+      vi.restoreAllMocks();
       vi.unstubAllEnvs();
       compose('down', '--volumes', '--remove-orphans');
     }
@@ -3440,8 +3521,11 @@ describe('tasks', () => {
     it('reads an organization in upper case as Atelier Nord on the routes that read', async () => {
       const upper = { userId: camille.userId.toUpperCase() };
       const options = { organizationId: atelierNordId.toUpperCase() };
+      const task = await createTask(camille, sprint14.id, {
+        name: 'Lire avec la même organisation',
+      });
 
-      const read = await send('get', '/internal/v1/tasks/CAD-482', upper, options);
+      const read = await send('get', `/internal/v1/tasks/${task.key}`, upper, options);
       const activity = await send(
         'get',
         `/internal/v1/lists/${sprint14.id}/activity`,
@@ -3453,25 +3537,91 @@ describe('tasks', () => {
       expectStatus(activity, 200);
     });
 
-    // Defect: the token keeps the organization id as sent, and the tenant transaction compares it
-    // with the lower-case id of the event: OutboxWriter.append throws and the creation answers 500.
-    it.fails(
-      'creates a task for an organization in upper case, as the same Atelier Nord',
-      async () => {
+    it.each([false, true])(
+      'commits a task and its outbox entry for an uppercase organization claim (keyed: %s)',
+      async (keyed) => {
         const upper = { userId: camille.userId.toUpperCase() };
-
-        const created = await send('post', `/internal/v1/lists/${sprint14.id}/tasks`, upper, {
+        const name = keyed ? 'Rejouer la création en majuscules' : 'Écrire en majuscules partout';
+        const path = `/internal/v1/lists/${sprint14.id}/tasks`;
+        const headers: Record<string, string> = keyed ? { 'Idempotency-Key': randomUUID() } : {};
+        const body = { name };
+        const created = await send('post', path, upper, {
           organizationId: atelierNordId.toUpperCase(),
-          body: { name: 'Écrire en majuscules partout' },
+          body,
+          headers,
         });
 
         expectStatus(created, 201);
-        expect(conforms(CreateTaskInternalResponse, bodyOf(created)).createdBy).toEqual({
-          type: 'user',
-          id: camille.userId,
+        const task = conforms(CreateTaskInternalResponse, bodyOf(created));
+        expect(task.createdBy).toEqual({ type: 'user', id: camille.userId });
+        if (keyed) {
+          const replay = await send('post', path, upper, { body, headers });
+          expectStatus(replay, 201);
+          expect(bodyOf(replay)).toEqual(task);
+          expect(replay.headers['idempotent-replayed']).toBe('true');
+        }
+        expect(
+          await asSystem<{ organization_id: string; created_by_id: string }>(
+            'select organization_id, created_by_id from tasks where list_id = $1 and name = $2',
+            [sprint14.id, name],
+          ),
+        ).toEqual([{ organization_id: atelierNordId, created_by_id: camille.userId }]);
+        const facts = await outboxOfKeys(task.key);
+        expect(facts.map(({ event_name }) => event_name)).toEqual(['task.created.v1']);
+        expect(conforms(taskEventSchemas['task.created.v1'], facts[0]?.payload)).toMatchObject({
+          organizationId: atelierNordId,
+          actor: { type: 'user', id: camille.userId },
+          key: task.key,
         });
       },
     );
+
+    it('shares one idempotency lock between uppercase and lowercase organization claims', async () => {
+      const writer = service().get(OutboxWriter);
+      const append = writer.append.bind(writer);
+      let markEntered = (): void => undefined;
+      const entered = new Promise<void>((resolve) => {
+        markEntered = resolve;
+      });
+      let release = (): void => undefined;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const pause = vi
+        .spyOn(writer, 'append')
+        .mockImplementationOnce(async (tx, schemas, eventName, data) => {
+          markEntered();
+          await released;
+          return append(tx, schemas, eventName, data);
+        });
+
+      const path = `/internal/v1/lists/${sprint14.id}/tasks`;
+      const options = {
+        body: { name: 'Une seule création simultanée' },
+        headers: { 'Idempotency-Key': randomUUID() },
+      };
+      const first = send('post', path, camille, {
+        ...options,
+        organizationId: atelierNordId.toUpperCase(),
+      });
+      try {
+        await Promise.race([
+          entered,
+          first.then((response) => {
+            throw new Error(
+              `Creation returned ${String(response.status)} before reaching the outbox.`,
+            );
+          }),
+        ]);
+        const concurrent = await send('post', path, camille, options);
+        expectProblem(concurrent, 409, 'idempotency.request-in-progress');
+      } finally {
+        release();
+        pause.mockRestore();
+        await first;
+      }
+      expectStatus(await first, 201);
+    });
 
     it('sees the private space of its owner through an actor id in upper case', async () => {
       const task = await createTask(hugo, rechercheList.id, { name: 'Notes d’entretien' });
@@ -5662,11 +5812,11 @@ describe('tasks', () => {
       organizationId: atelierNordId,
     });
     const key = randomUUID();
-    const perform = (): request.Test =>
+    const perform = (attempt = key): request.Test =>
       request(service().getHttpServer())
         .post(`/internal/v1/tasks/${task.key}/automation-actions`)
         .set('Authorization', `Bearer ${token}`)
-        .set('Idempotency-Key', key)
+        .set('Idempotency-Key', attempt)
         .send({ ruleAuthorUserId: camille.userId, type: 'priority', priority: 'haute' });
 
     const first = await perform();
@@ -5690,20 +5840,16 @@ describe('tasks', () => {
       );
     expect(await updates()).toHaveLength(1);
 
-    await asSystem(
-      'update organization_members set removed_at = now() where organization_id = $1 and user_id = $2',
-      [atelierNordId, camille.userId],
-    );
+    removedAtAuthority.add(camille.userId);
     try {
+      expect(await activeMembers(atelierNordId)).toContain(camille.userId);
       const revoked = await perform();
       expectProblem(revoked, 404, 'task.not-found');
       expect(revoked.headers['cache-control']).toBe('private, no-store');
+      expectProblem(await perform(randomUUID()), 404, 'task.not-found');
       expect(await updates()).toHaveLength(1);
     } finally {
-      await asSystem(
-        'update organization_members set removed_at = null where organization_id = $1 and user_id = $2',
-        [atelierNordId, camille.userId],
-      );
+      removedAtAuthority.delete(camille.userId);
     }
   });
 
@@ -5722,11 +5868,11 @@ describe('tasks', () => {
       organizationId: atelierNordId,
     });
     const key = randomUUID();
-    const perform = (): request.Test =>
+    const perform = (attempt = key): request.Test =>
       request(service().getHttpServer())
         .post(`/internal/v1/tasks/${task.key}/git-status-actions`)
         .set('Authorization', `Bearer ${token}`)
-        .set('Idempotency-Key', key)
+        .set('Idempotency-Key', attempt)
         .send({
           provider: 'github',
           spaceId: produit.id,
@@ -5754,21 +5900,17 @@ describe('tasks', () => {
       (await outboxOfKeys(task.key)).filter((row) => row.event_name === 'task.status-changed.v1'),
     ).toHaveLength(1);
 
-    await asSystem(
-      'update organization_members set removed_at = now() where organization_id = $1 and user_id = $2',
-      [atelierNordId, camille.userId],
-    );
+    removedAtAuthority.add(camille.userId);
     try {
+      expect(await activeMembers(atelierNordId)).toContain(camille.userId);
       const revoked = await perform();
       expectProblem(revoked, 404, 'task.not-found');
+      expectProblem(await perform(randomUUID()), 404, 'task.not-found');
       expect(
         (await outboxOfKeys(task.key)).filter((row) => row.event_name === 'task.status-changed.v1'),
       ).toHaveLength(1);
     } finally {
-      await asSystem(
-        'update organization_members set removed_at = null where organization_id = $1 and user_id = $2',
-        [atelierNordId, camille.userId],
-      );
+      removedAtAuthority.delete(camille.userId);
     }
   });
 
@@ -5792,20 +5934,15 @@ describe('tasks', () => {
 
     const accepted = await proof().expect(204).expect('Cache-Control', 'private, no-store');
     expect(accepted.text).toBe('');
-    await asSystem(
-      'update organization_members set removed_at = now() where organization_id = $1 and user_id = $2',
-      [atelierNordId, ines.userId],
-    );
+    removedAtAuthority.add(ines.userId);
     try {
+      expect(await activeMembers(atelierNordId)).toContain(ines.userId);
       const refused = await proof();
       expectProblem(refused, 404, 'task.not-found');
       expect(refused.headers['cache-control']).toBe('private, no-store');
       expect(JSON.stringify(bodyOf(refused))).not.toContain(ines.userId);
     } finally {
-      await asSystem(
-        'update organization_members set removed_at = null where organization_id = $1 and user_id = $2',
-        [atelierNordId, ines.userId],
-      );
+      removedAtAuthority.delete(ines.userId);
     }
     expect((await readTask(camille, task.key)).version).toBe(task.version);
   });
@@ -5883,19 +6020,14 @@ describe('tasks', () => {
     expect(activity.items[0]).toMatchObject({ actor: { type: 'automation', id: ruleId } });
     const versionAfterComment = (await readTask(camille, task.key)).version;
 
-    await asSystem(
-      'update organization_members set removed_at = now() where organization_id = $1 and user_id = $2',
-      [atelierNordId, camille.userId],
-    );
+    removedAtAuthority.add(camille.userId);
     try {
+      expect(await activeMembers(atelierNordId)).toContain(camille.userId);
       const forbiddenReplay = await automationComment();
       expectProblem(forbiddenReplay, 404, 'task.not-found');
       expect(forbiddenReplay.headers['idempotent-replayed']).toBeUndefined();
     } finally {
-      await asSystem(
-        'update organization_members set removed_at = null where organization_id = $1 and user_id = $2',
-        [atelierNordId, camille.userId],
-      );
+      removedAtAuthority.delete(camille.userId);
     }
     expect((await readTask(camille, task.key)).version).toBe(versionAfterComment);
     expectStatus(await send('delete', path, camille), 204);
