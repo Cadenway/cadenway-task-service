@@ -1395,7 +1395,7 @@ describe('the live condition and the archives keep the statements of the tasks o
     }
   }, 300_000);
 
-  it('counts and lists the subtasks of a page through the join on the parent, and the live child count and subtree through tasks_parent_created_index', async () => {
+  it('uses parent indexes for subtask pages, child counts and live subtrees', async () => {
     const livePage = await rowsOf<{ readonly id: string }>(
       pageStatement(
         atelierNordId,
@@ -1470,10 +1470,21 @@ describe('the live condition and the archives keep the statements of the tasks o
     }
     expect(plans).toHaveLength(8);
     expect(seqScansOf(plans, ['tasks'])).toEqual([]);
-    for (const plan of plans) {
+    for (const plan of plans.slice(0, 4)) {
       expect(plan.indexes, `${plan.label}: ${plan.nodes.join(' > ')}`).toContain(
         'tasks_parent_created_index',
       );
+    }
+    // Live counts and subtree walks can also use the partial index for children out of the trash.
+    for (const plan of plans.slice(4)) {
+      expect(
+        plan.indexes.some(
+          (index) => index === 'tasks_parent_created_index' || index === 'tasks_trash_child_index',
+        ),
+        `${plan.label}: ${plan.nodes.join(' > ')}`,
+      ).toBe(true);
+    }
+    for (const plan of plans) {
       expect(plan.milliseconds, plan.label).toBeLessThan(300);
     }
     // The subtask reads join the parent by its primary key.

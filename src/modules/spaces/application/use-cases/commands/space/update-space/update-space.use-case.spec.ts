@@ -25,6 +25,13 @@ import {
 import type { UpdateSpaceInput } from './update-space.input.js';
 import { UpdateSpace } from './update-space.use-case.js';
 
+function updateSpace(
+  work: ConstructorParameters<typeof UpdateSpace>[0],
+  members: ConstructorParameters<typeof UpdateSpace>[1],
+): UpdateSpace {
+  return new UpdateSpace(work, members, { execute: () => Promise.resolve([]) });
+}
+
 /**
  * Builds a change of the space "Produit" by Hugo Dubois, a member who sees it.
  *
@@ -56,7 +63,7 @@ describe('UpdateSpace: a member with edit on the space changes it', () => {
   it('stores the change at the next version and returns the space with its next key', async () => {
     const spaces = atelierNord();
 
-    const view = await new UpdateSpace(spaces, atelierNordMembers()).execute(updateProduit());
+    const view = await updateSpace(spaces, atelierNordMembers()).execute(updateProduit());
 
     expect(view.space).toEqual(spaceState({ name: 'Plateforme', version: 4 }));
     expect(view.nextKey).toBe('CAD-482');
@@ -66,7 +73,7 @@ describe('UpdateSpace: a member with edit on the space changes it', () => {
   it('appends space.updated with what changed, by the caller', async () => {
     const spaces = atelierNord();
 
-    await new UpdateSpace(spaces, atelierNordMembers()).execute(
+    await updateSpace(spaces, atelierNordMembers()).execute(
       updateProduit({ patch: { name: 'Plateforme', color: 'vert' } }),
     );
 
@@ -84,7 +91,7 @@ describe('UpdateSpace: a member with edit on the space changes it', () => {
   it('applies the patch as a merge patch: what it leaves out is unchanged', async () => {
     const spaces = atelierNord();
 
-    await new UpdateSpace(spaces, atelierNordMembers()).execute(
+    await updateSpace(spaces, atelierNordMembers()).execute(
       updateProduit({ patch: { statuses: { progress: { name: 'En cours' } } } }),
     );
 
@@ -99,7 +106,7 @@ describe('UpdateSpace: a member with edit on the space changes it', () => {
 
   it('puts back every default status with statuses: null', async () => {
     const spaces = atelierNord();
-    const update = new UpdateSpace(spaces, atelierNordMembers());
+    const update = updateSpace(spaces, atelierNordMembers());
     await update.execute(
       updateProduit({ patch: { statuses: { progress: { name: 'En cours' } } } }),
     );
@@ -115,7 +122,7 @@ describe('UpdateSpace: a change that changes nothing stores nothing and emits no
   it('keeps the version and appends no event for an empty patch', async () => {
     const spaces = atelierNord();
 
-    const view = await new UpdateSpace(spaces, atelierNordMembers()).execute(
+    const view = await updateSpace(spaces, atelierNordMembers()).execute(
       updateProduit({ patch: {} }),
     );
 
@@ -127,7 +134,7 @@ describe('UpdateSpace: a change that changes nothing stores nothing and emits no
   it('keeps the version and appends no event when the patch sets the values the space has', async () => {
     const spaces = atelierNord();
 
-    await new UpdateSpace(spaces, atelierNordMembers()).execute(
+    await updateSpace(spaces, atelierNordMembers()).execute(
       updateProduit({ patch: { name: ' Produit ', color: 'violet', visibility: 'organization' } }),
     );
 
@@ -137,7 +144,7 @@ describe('UpdateSpace: a change that changes nothing stores nothing and emits no
 
   it('is repeatable: sending the same patch again appends one event only', async () => {
     const spaces = atelierNord();
-    const update = new UpdateSpace(spaces, atelierNordMembers());
+    const update = updateSpace(spaces, atelierNordMembers());
 
     await update.execute(updateProduit());
     await update.execute(updateProduit());
@@ -152,9 +159,7 @@ describe('UpdateSpace: the version sent in If-Match is the stored version', () =
     const spaces = atelierNord();
 
     const refusal = await refusalOf(
-      new UpdateSpace(spaces, atelierNordMembers()).execute(
-        updateProduit({ expectedVersions: [2] }),
-      ),
+      updateSpace(spaces, atelierNordMembers()).execute(updateProduit({ expectedVersions: [2] })),
     );
 
     expect(refusal).toEqual({ reason: 'version-mismatch', version: 3 });
@@ -165,7 +170,7 @@ describe('UpdateSpace: the version sent in If-Match is the stored version', () =
   it('applies the change when the stored version is the one sent', async () => {
     const spaces = atelierNord();
 
-    await new UpdateSpace(spaces, atelierNordMembers()).execute(
+    await updateSpace(spaces, atelierNordMembers()).execute(
       updateProduit({ expectedVersions: [3] }),
     );
 
@@ -175,7 +180,7 @@ describe('UpdateSpace: the version sent in If-Match is the stored version', () =
   it('applies the change when the stored version is one of the versions sent', async () => {
     const spaces = atelierNord();
 
-    await new UpdateSpace(spaces, atelierNordMembers()).execute(
+    await updateSpace(spaces, atelierNordMembers()).execute(
       updateProduit({ expectedVersions: [1, 3] }),
     );
 
@@ -185,7 +190,7 @@ describe('UpdateSpace: the version sent in If-Match is the stored version', () =
   it('applies the change when no version is sent', async () => {
     const spaces = atelierNord();
 
-    await new UpdateSpace(spaces, atelierNordMembers()).execute(
+    await updateSpace(spaces, atelierNordMembers()).execute(
       updateProduit({ expectedVersions: null }),
     );
 
@@ -194,7 +199,7 @@ describe('UpdateSpace: the version sent in If-Match is the stored version', () =
 
   it('refuses a stale version even when the patch would change nothing', async () => {
     const refusal = await refusalOf(
-      new UpdateSpace(atelierNord(), atelierNordMembers()).execute(
+      updateSpace(atelierNord(), atelierNordMembers()).execute(
         updateProduit({ patch: {}, expectedVersions: [1] }),
       ),
     );
@@ -208,7 +213,7 @@ describe('UpdateSpace: a prefix belongs for good to the space that used it', () 
     const spaces = atelierNord();
 
     const refusal = await refusalOf(
-      new UpdateSpace(spaces, atelierNordMembers()).execute(
+      updateSpace(spaces, atelierNordMembers()).execute(
         updateProduit({ patch: { name: 'Plateforme', prefix: 'DES' } }),
       ),
     );
@@ -225,9 +230,7 @@ describe('UpdateSpace: a prefix belongs for good to the space that used it', () 
     });
 
     const refusal = await refusalOf(
-      new UpdateSpace(spaces, atelierNordMembers()).execute(
-        updateProduit({ patch: { prefix: 'UX' } }),
-      ),
+      updateSpace(spaces, atelierNordMembers()).execute(updateProduit({ patch: { prefix: 'UX' } })),
     );
 
     expect(refusal).toEqual({ reason: 'prefix-taken', prefix: 'UX' });
@@ -241,7 +244,7 @@ describe('UpdateSpace: a prefix belongs for good to the space that used it', () 
       lastNumbers: { CAD: 481 },
     });
 
-    const view = await new UpdateSpace(spaces, atelierNordMembers()).execute(
+    const view = await updateSpace(spaces, atelierNordMembers()).execute(
       updateProduit({ patch: { prefix: 'CAD' } }),
     );
 
@@ -252,7 +255,7 @@ describe('UpdateSpace: a prefix belongs for good to the space that used it', () 
 
   it('claims a free prefix and keeps the former one for the space', async () => {
     const spaces = atelierNord();
-    const update = new UpdateSpace(spaces, atelierNordMembers());
+    const update = updateSpace(spaces, atelierNordMembers());
 
     const view = await update.execute(updateProduit({ patch: { prefix: 'PRD' } }));
 
@@ -264,12 +267,12 @@ describe('UpdateSpace: a prefix belongs for good to the space that used it', () 
 
   it('does not let another space take the former prefix of a renamed one', async () => {
     const spaces = atelierNord();
-    await new UpdateSpace(spaces, atelierNordMembers()).execute(
+    await updateSpace(spaces, atelierNordMembers()).execute(
       updateProduit({ patch: { prefix: 'PRD' } }),
     );
 
     const refusal = await refusalOf(
-      new UpdateSpace(spaces, atelierNordMembers()).execute(
+      updateSpace(spaces, atelierNordMembers()).execute(
         updateProduit({ spaceId: DESIGN, actorUserId: HUGO, patch: { prefix: 'CAD' } }),
       ),
     );
@@ -281,7 +284,7 @@ describe('UpdateSpace: a prefix belongs for good to the space that used it', () 
     const spaces = atelierNord();
     const before = spaces.prefixOwners.size;
 
-    await new UpdateSpace(spaces, atelierNordMembers()).execute(updateProduit());
+    await updateSpace(spaces, atelierNordMembers()).execute(updateProduit());
 
     expect(spaces.prefixOwners.size).toBe(before);
   });
@@ -292,7 +295,7 @@ describe('UpdateSpace: only the owner of the space, or the owner or an admin of 
     const spaces = atelierNord();
 
     const refusal = await refusalOf(
-      new UpdateSpace(spaces, atelierNordMembers()).execute(
+      updateSpace(spaces, atelierNordMembers()).execute(
         updateProduit({
           actorUserId: LEA,
           patch: { name: 'Plateforme', visibility: 'private' },
@@ -308,7 +311,7 @@ describe('UpdateSpace: only the owner of the space, or the owner or an admin of 
   it('lets a member who does not own the space change everything else', async () => {
     const spaces = atelierNord();
 
-    await new UpdateSpace(spaces, atelierNordMembers()).execute(
+    await updateSpace(spaces, atelierNordMembers()).execute(
       updateProduit({ actorUserId: LEA, patch: { name: 'Plateforme', color: 'vert' } }),
     );
 
@@ -318,7 +321,7 @@ describe('UpdateSpace: only the owner of the space, or the owner or an admin of 
   it('lets the owner of the space change its visibility', async () => {
     const spaces = atelierNord();
 
-    const view = await new UpdateSpace(spaces, atelierNordMembers()).execute(
+    const view = await updateSpace(spaces, atelierNordMembers()).execute(
       updateProduit({ spaceId: DESIGN, patch: { visibility: 'organization' } }),
     );
 
@@ -328,7 +331,7 @@ describe('UpdateSpace: only the owner of the space, or the owner or an admin of 
 
   it('lets an admin make a space private and gives her the answer, though she no longer sees it', async () => {
     const spaces = atelierNord();
-    const update = new UpdateSpace(spaces, atelierNordMembers());
+    const update = updateSpace(spaces, atelierNordMembers());
 
     const view = await update.execute(
       updateProduit({ actorUserId: INES, patch: { visibility: 'private' } }),
@@ -347,7 +350,7 @@ describe('UpdateSpace: only the owner of the space, or the owner or an admin of 
   it('lets the owner of the organization make a space of a member private', async () => {
     const spaces = new InMemorySpaces({ spaces: [spaceState({ ownerUserId: HUGO })] });
 
-    const view = await new UpdateSpace(spaces, atelierNordMembers()).execute(
+    const view = await updateSpace(spaces, atelierNordMembers()).execute(
       updateProduit({ actorUserId: CAMILLE, patch: { visibility: 'private' } }),
     );
 
@@ -360,7 +363,7 @@ describe('UpdateSpace: todo and done are always used', () => {
     const spaces = atelierNord();
 
     const refusal = await refusalOf(
-      new UpdateSpace(spaces, atelierNordMembers()).execute(
+      updateSpace(spaces, atelierNordMembers()).execute(
         updateProduit({ patch: { statuses: { [status]: { hidden: true } } } }),
       ),
     );
@@ -373,7 +376,7 @@ describe('UpdateSpace: todo and done are always used', () => {
   it('hides another status', async () => {
     const spaces = atelierNord();
 
-    await new UpdateSpace(spaces, atelierNordMembers()).execute(
+    await updateSpace(spaces, atelierNordMembers()).execute(
       updateProduit({ patch: { statuses: { blocked: { hidden: true } } } }),
     );
 
@@ -382,7 +385,7 @@ describe('UpdateSpace: todo and done are always used', () => {
 
   it('rejects a status name of 25 characters as an invalid space, not as a refusal', async () => {
     await expect(
-      new UpdateSpace(atelierNord(), atelierNordMembers()).execute(
+      updateSpace(atelierNord(), atelierNordMembers()).execute(
         updateProduit({ patch: { statuses: { review: { name: 'a'.repeat(25) } } } }),
       ),
     ).rejects.toThrow(InvalidSpaceError);
@@ -394,7 +397,7 @@ describe('UpdateSpace: a space the caller does not see is unknown', () => {
     const spaces = atelierNord();
 
     const refusal = await refusalOf(
-      new UpdateSpace(spaces, atelierNordMembers()).execute(
+      updateSpace(spaces, atelierNordMembers()).execute(
         updateProduit({ spaceId: DESIGN, actorUserId: CAMILLE }),
       ),
     );
@@ -406,7 +409,7 @@ describe('UpdateSpace: a space the caller does not see is unknown', () => {
   it('answers space-not-found to an admin and to another member for a private space', async () => {
     for (const actorUserId of [INES, LEA]) {
       const refusal = await refusalOf(
-        new UpdateSpace(atelierNord(), atelierNordMembers()).execute(
+        updateSpace(atelierNord(), atelierNordMembers()).execute(
           updateProduit({ spaceId: DESIGN, actorUserId }),
         ),
       );
@@ -417,7 +420,7 @@ describe('UpdateSpace: a space the caller does not see is unknown', () => {
 
   it('answers space-not-found to a guest, even for an organization space', async () => {
     const refusal = await refusalOf(
-      new UpdateSpace(atelierNord(), atelierNordMembers()).execute(
+      updateSpace(atelierNord(), atelierNordMembers()).execute(
         updateProduit({ actorUserId: NADIA }),
       ),
     );
@@ -427,7 +430,7 @@ describe('UpdateSpace: a space the caller does not see is unknown', () => {
 
   it('answers space-not-found for a space that does not exist', async () => {
     const refusal = await refusalOf(
-      new UpdateSpace(atelierNord(), atelierNordMembers()).execute(
+      updateSpace(atelierNord(), atelierNordMembers()).execute(
         updateProduit({ spaceId: UNKNOWN_SPACE }),
       ),
     );
@@ -441,7 +444,7 @@ describe('UpdateSpace: a space the caller does not see is unknown', () => {
     });
 
     const refusal = await refusalOf(
-      new UpdateSpace(spaces, atelierNordMembers()).execute(updateProduit()),
+      updateSpace(spaces, atelierNordMembers()).execute(updateProduit()),
     );
 
     expect(refusal).toEqual({ reason: 'space-not-found' });
@@ -449,7 +452,7 @@ describe('UpdateSpace: a space the caller does not see is unknown', () => {
 
   it('answers organization-not-found to an account the copy of the members does not know', async () => {
     const refusal = await refusalOf(
-      new UpdateSpace(atelierNord(), atelierNordMembers()).execute(
+      updateSpace(atelierNord(), atelierNordMembers()).execute(
         updateProduit({ actorUserId: STRANGER }),
       ),
     );
@@ -468,7 +471,7 @@ describe('UpdateSpace: a space made private is never left to an owner who is no 
     const spaces = ownedByALeaver();
     const members = atelierNordMembers({ removed: [HUGO] });
 
-    const view = await new UpdateSpace(spaces, members).execute(
+    const view = await updateSpace(spaces, members).execute(
       updateProduit({ actorUserId: INES, patch: { visibility: 'private' } }),
     );
 
@@ -479,7 +482,7 @@ describe('UpdateSpace: a space made private is never left to an owner who is no 
   it('appends one space.updated naming the visibility and the owner', async () => {
     const spaces = ownedByALeaver();
 
-    await new UpdateSpace(spaces, atelierNordMembers({ removed: [HUGO] })).execute(
+    await updateSpace(spaces, atelierNordMembers({ removed: [HUGO] })).execute(
       updateProduit({ actorUserId: INES, patch: { name: 'Plateforme', visibility: 'private' } }),
     );
 
@@ -499,7 +502,7 @@ describe('UpdateSpace: a space made private is never left to an owner who is no 
     const members = atelierNordMembers({ removed: [HUGO], ownerKnown: false });
 
     const refusal = await refusalOf(
-      new UpdateSpace(spaces, members).execute(
+      updateSpace(spaces, members).execute(
         updateProduit({ actorUserId: INES, patch: { name: 'Plateforme', visibility: 'private' } }),
       ),
     );
@@ -513,7 +516,7 @@ describe('UpdateSpace: a space made private is never left to an owner who is no 
     const spaces = ownedByALeaver();
     const members = atelierNordMembers();
 
-    const view = await new UpdateSpace(spaces, members).execute(
+    const view = await updateSpace(spaces, members).execute(
       updateProduit({ actorUserId: INES, patch: { visibility: 'private' } }),
     );
 
@@ -528,7 +531,7 @@ describe('UpdateSpace: a space made private is never left to an owner who is no 
     });
     const members = atelierNordMembers({ removed: [HUGO] });
 
-    const view = await new UpdateSpace(spaces, members).execute(
+    const view = await updateSpace(spaces, members).execute(
       updateProduit({ actorUserId: INES, patch: { visibility: 'organization' } }),
     );
 
@@ -541,7 +544,7 @@ describe('UpdateSpace: a space made private is never left to an owner who is no 
     const spaces = ownedByALeaver();
     const members = atelierNordMembers({ removed: [HUGO] });
 
-    const view = await new UpdateSpace(spaces, members).execute(
+    const view = await updateSpace(spaces, members).execute(
       updateProduit({ actorUserId: INES, patch: { name: 'Plateforme' } }),
     );
 
@@ -555,7 +558,7 @@ describe('UpdateSpace: a space made private is never left to an owner who is no 
     });
     const members = atelierNordMembers();
 
-    await new UpdateSpace(spaces, members).execute(
+    await updateSpace(spaces, members).execute(
       updateProduit({ actorUserId: INES, patch: { visibility: 'private' } }),
     );
 
@@ -568,7 +571,7 @@ describe('UpdateSpace: the membership of the caller is locked, so a removal cann
   it('asks the directory for the role of the caller with the lock', async () => {
     const members = atelierNordMembers();
 
-    await new UpdateSpace(atelierNord(), members).execute(updateProduit());
+    await updateSpace(atelierNord(), members).execute(updateProduit());
 
     expect(members.roleCalls[0]).toEqual({
       organizationId: ATELIER_NORD,
@@ -588,7 +591,7 @@ describe('UpdateSpace: a private space that awaits an owner is unknown to everyo
       const spaces = new InMemorySpaces({ spaces: [designState({ awaitingOwner: true })] });
 
       const refusal = await refusalOf(
-        new UpdateSpace(spaces, atelierNordMembers()).execute(
+        updateSpace(spaces, atelierNordMembers()).execute(
           updateProduit({ actorUserId, spaceId: DESIGN, patch: { visibility: 'organization' } }),
         ),
       );
@@ -622,7 +625,7 @@ describe('UpdateSpace: a change of a space needs edit on it, then the version, t
       const spaces = designSharedWithLea(role);
 
       const refusal = await refusalOf(
-        new UpdateSpace(spaces, atelierNordMembers()).execute(
+        updateSpace(spaces, atelierNordMembers()).execute(
           updateProduit({ actorUserId: LEA, spaceId: DESIGN }),
         ),
       );
@@ -634,7 +637,7 @@ describe('UpdateSpace: a change of a space needs edit on it, then the version, t
 
   it('refuses role-insufficient with no role to a guest who sees the space through a list', async () => {
     const refusal = await refusalOf(
-      new UpdateSpace(designSharedWithLea('view'), atelierNordMembers()).execute(
+      updateSpace(designSharedWithLea('view'), atelierNordMembers()).execute(
         updateProduit({ actorUserId: NADIA, spaceId: DESIGN }),
       ),
     );
@@ -644,7 +647,7 @@ describe('UpdateSpace: a change of a space needs edit on it, then the version, t
 
   it('answers role-insufficient before a stale If-Match', async () => {
     const refusal = await refusalOf(
-      new UpdateSpace(designSharedWithLea('view'), atelierNordMembers()).execute(
+      updateSpace(designSharedWithLea('view'), atelierNordMembers()).execute(
         updateProduit({ actorUserId: LEA, spaceId: DESIGN, expectedVersions: [1] }),
       ),
     );
@@ -654,7 +657,7 @@ describe('UpdateSpace: a change of a space needs edit on it, then the version, t
 
   it('answers space-not-found before role-insufficient to a member who does not see the space', async () => {
     const refusal = await refusalOf(
-      new UpdateSpace(designSharedWithLea('view'), atelierNordMembers()).execute(
+      updateSpace(designSharedWithLea('view'), atelierNordMembers()).execute(
         updateProduit({ actorUserId: INES, spaceId: DESIGN }),
       ),
     );
@@ -663,7 +666,7 @@ describe('UpdateSpace: a change of a space needs edit on it, then the version, t
   });
 
   it('lets a member with edit through a grant change the settings, answering edit without managing', async () => {
-    const view = await new UpdateSpace(designSharedWithLea('edit'), atelierNordMembers()).execute(
+    const view = await updateSpace(designSharedWithLea('edit'), atelierNordMembers()).execute(
       updateProduit({ actorUserId: LEA, spaceId: DESIGN, expectedVersions: [2] }),
     );
 
@@ -673,7 +676,7 @@ describe('UpdateSpace: a change of a space needs edit on it, then the version, t
 
   it('refuses visibility-forbidden to a member with edit who does not manage the space', async () => {
     const refusal = await refusalOf(
-      new UpdateSpace(designSharedWithLea('edit'), atelierNordMembers()).execute(
+      updateSpace(designSharedWithLea('edit'), atelierNordMembers()).execute(
         updateProduit({ actorUserId: LEA, spaceId: DESIGN, patch: { visibility: 'organization' } }),
       ),
     );
@@ -682,7 +685,7 @@ describe('UpdateSpace: a change of a space needs edit on it, then the version, t
   });
 
   it('answers that the owner of the space manages it after the change', async () => {
-    const view = await new UpdateSpace(atelierNord(), atelierNordMembers()).execute(
+    const view = await updateSpace(atelierNord(), atelierNordMembers()).execute(
       updateProduit({ actorUserId: HUGO, spaceId: DESIGN }),
     );
 
@@ -690,7 +693,7 @@ describe('UpdateSpace: a change of a space needs edit on it, then the version, t
   });
 
   it('answers the role the change was made with to an admin who made the space private', async () => {
-    const view = await new UpdateSpace(atelierNord(), atelierNordMembers()).execute(
+    const view = await updateSpace(atelierNord(), atelierNordMembers()).execute(
       updateProduit({ actorUserId: INES, patch: { visibility: 'private' } }),
     );
 
@@ -705,7 +708,7 @@ describe('UpdateSpace: a space handed to the owner of the organization keeps no 
       grants: [spaceGrantOf(PRODUIT, CAMILLE, 'view'), spaceGrantOf(PRODUIT, LEA, 'edit')],
     });
 
-    await new UpdateSpace(spaces, atelierNordMembers({ removed: [HUGO] })).execute(
+    await updateSpace(spaces, atelierNordMembers({ removed: [HUGO] })).execute(
       updateProduit({ actorUserId: INES, patch: { visibility: 'private' } }),
     );
 
@@ -733,7 +736,7 @@ describe('UpdateSpace: the actor is checked on the space read without lock, befo
     members.journal = spaces.journal;
 
     const refusal = await refusalOf(
-      new UpdateSpace(spaces, members).execute(
+      updateSpace(spaces, members).execute(
         updateProduit({ actorUserId: CAMILLE, spaceId: DESIGN }),
       ),
     );

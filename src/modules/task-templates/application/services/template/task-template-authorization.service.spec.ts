@@ -40,6 +40,7 @@ describe('Task template source access', () => {
 
     await directory.requireSpace(CALLER, 'prepare');
     await expect(directory.readSource(CALLER, 'CAD-123')).resolves.toEqual({
+      sourceListId: LIST,
       title: 'Prepare the release',
       description: null,
       priority: 'haute',

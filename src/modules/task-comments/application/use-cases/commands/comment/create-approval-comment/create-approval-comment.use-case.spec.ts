@@ -45,6 +45,7 @@ describe('CreateApprovalComment', () => {
     const unit: CommentUnitOfWork = { read: vi.fn(), write: async (work) => work(store) };
     const begin = vi.fn();
     const tasks: CommentTaskWriter = {
+      authorizeUser: vi.fn(),
       authorizeAutomation: vi.fn(),
       begin,
       record,
@@ -84,6 +85,7 @@ describe('CreateApprovalComment', () => {
     const write = vi.fn();
     const unit: CommentUnitOfWork = { read: vi.fn(), write };
     const tasks: CommentTaskWriter = {
+      authorizeUser: vi.fn(),
       authorizeAutomation: vi.fn(),
       begin: vi.fn(),
       record: vi.fn(),

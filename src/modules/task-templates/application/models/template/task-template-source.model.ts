@@ -4,7 +4,10 @@ import type { TaskTemplateDraft } from './task-template-draft.model.js';
 export type TaskTemplateSource =
   | {
       readonly outcome: 'found';
-      readonly source: Omit<TaskTemplateDraft, 'organizationId' | 'spaceId' | 'name'> & {
+      readonly source: Omit<
+        TaskTemplateDraft,
+        'organizationId' | 'spaceId' | 'name' | 'sourceListId'
+      > & {
         readonly listId: string;
       };
     }

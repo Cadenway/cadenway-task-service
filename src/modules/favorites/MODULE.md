@@ -27,7 +27,8 @@ forced organization RLS. Owner queries also constrain `user_id`.
 `GET` and `POST /internal/v1/me/favorites` list and add favorites. `GET` and
 `DELETE /internal/v1/me/favorites/{favoriteId}` read and remove one. The verified gateway token
 supplies the user and organization. The write contract supports an optional idempotency key on
-creation and an optional `If-Match` on removal.
+creation and an optional `If-Match` on removal. A creation replay requires that the favorite
+still belongs to the caller and that the caller can still read its active target.
 
 ## Events emitted
 

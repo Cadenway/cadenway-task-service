@@ -5,6 +5,8 @@ import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import type { TaskFilter } from '../../../../../application/models/query/task-filter.model.js';
+import { buildWorkload } from '../../../../../domain/policies/reporting/workload.policy.js';
+import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import { DrizzleReportingReader } from './drizzle-reporting-reader.repository.js';
 
 const org = '01938f6e-6d1a-7c3e-9a51-2f0c4b8d7e10';
@@ -52,9 +54,27 @@ describe('DrizzleReportingReader', () => {
       ],
       { encoding: 'utf8' },
     ).trim();
-    const address = execFileSync('docker', ['port', container, '5432/tcp'], {
-      encoding: 'utf8',
-    }).trim();
+    let address = '';
+    try {
+      const deadline = Date.now() + 15_000;
+      while (address === '' && Date.now() < deadline) {
+        try {
+          address = execFileSync('docker', ['port', container, '5432/tcp'], {
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+            timeout: 2_000,
+          }).trim();
+        } catch {
+          // Docker can return before the published port is visible.
+        }
+        if (address === '') await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      if (address === '') throw new Error('The disposable PostgreSQL port was not published.');
+    } catch (error) {
+      execFileSync('docker', ['rm', '-f', container], { stdio: 'ignore' });
+      container = '';
+      throw error;
+    }
     pool = new pg.Pool({
       host: '127.0.0.1',
       port: Number(address.slice(address.lastIndexOf(':') + 1)),
@@ -96,7 +116,7 @@ describe('DrizzleReportingReader', () => {
       values ($1,$2,'CAD',1,$5,$6,'First','todo','haute','2026-11-25',120),
              ($1,$3,'CAD',2,$5,$6,'Second','progress','basse','2026-11-26',60),
              ($1,$4,'CAD',3,$5,$7,'Hidden','todo','moyenne',null,null),
-             ($8,$2,'OTH',1,$5,$6,'Other tenant','todo','moyenne',null,null)
+             ($8,$2,'OTH',1,$5,$6,'Other tenant','todo','moyenne','2026-11-25',30)
     `,
       [org, first, second, third, space, list, otherList, otherOrg],
     );
@@ -147,36 +167,127 @@ describe('DrizzleReportingReader', () => {
   });
 
   it('pages filtered workload and keeps tenant and list scope', async () => {
-    const page = await reader.workloadTasks(org, list, filter, null, 1);
+    const page = await reader.workloadTasks(org, list, filter, '2026-11-23', null, 1);
     expect(page.items.map((task) => task.key.format())).toEqual(['CAD-1']);
     expect(page.next).toBe(first);
     expect(
-      (await reader.workloadTasks(org, list, filter, page.next, 1)).items.map((task) =>
-        task.key.format(),
+      (await reader.workloadTasks(org, list, filter, '2026-11-23', page.next, 1)).items.map(
+        (task) => task.key.format(),
       ),
     ).toEqual(['CAD-2']);
     expect(
-      (await reader.workloadTasks(otherOrg, list, filter, null, 10)).items.map((task) =>
-        task.key.format(),
+      (await reader.workloadTasks(otherOrg, list, filter, '2026-11-23', null, 10)).items.map(
+        (task) => task.key.format(),
       ),
     ).toEqual(['OTH-1']);
   });
 
-  it('pages weekly entries and respects current task placement', async () => {
-    const page = await reader.timesheetEntries(org, list, '2026-11-23', null, 1);
-    expect(page.items.map((entry) => entry.minutes)).toEqual([30]);
-    expect(
-      (await reader.timesheetEntries(org, list, '2026-11-23', page.next, 1)).items.map(
-        (entry) => entry.minutes,
-      ),
-    ).toEqual([45]);
-    expect((await reader.timesheetEntries(org, otherList, '2026-11-23', null, 10)).items).toEqual(
-      [],
+  it('preserves workload allocations across pages and date boundaries', async () => {
+    if (pool === null) throw new Error('PostgreSQL is unavailable.');
+    await pool.query(
+      `insert into tasks
+       (organization_id,id,key_prefix,key_number,space_id,list_id,name,status,priority,start_date,due_date,estimate_minutes)
+       select $1, ('019a7010-0000-7000-8000-' || lpad(to_hex(n), 12, '0'))::uuid,
+         'TST', n, $2, $3, 'Workload ' || n,
+         case when n % 6 = 5 then 'cancelled' else 'todo' end, 'moyenne',
+         case n % 12 when 4 then '2026-11-29'::date when 10 then '2026-12-12'::date
+           else null end,
+         case n % 6 when 0 then null when 1 then '2026-11-28'::date
+           when 2 then '2026-11-20'::date when 3 then '2026-12-08'::date
+           when 4 then case when n % 12 = 4 then '2026-11-28'::date else '2026-12-05'::date end
+           else '2026-11-26'::date end,
+         case when n % 7 = 0 then null else 30 end
+       from generate_series(1, 3000) as n`,
+      [org, space, otherList],
     );
+    try {
+      const source = await pool.query<{
+        keyNumber: number;
+        status: 'todo' | 'cancelled';
+        startDate: string | null;
+        dueDate: string | null;
+        estimateMinutes: number | null;
+      }>(
+        `select key_number as "keyNumber", status, start_date::text as "startDate",
+          due_date::text as "dueDate", estimate_minutes as "estimateMinutes"
+         from tasks where organization_id = $1 and list_id = $2 and key_prefix = 'TST' order by id`,
+        [org, otherList],
+      );
+      const original = buildWorkload(
+        '2026-11-23',
+        source.rows.map((row) => ({
+          key: TaskKey.of('TST', row.keyNumber),
+          name: `Workload ${String(row.keyNumber)}`,
+          status: row.status,
+          startDate: row.startDate,
+          dueDate: row.dueDate,
+          estimateMinutes: row.estimateMinutes,
+          assigneeIds: [],
+        })),
+      );
+      const candidates: Parameters<typeof buildWorkload>[1][number][] = [];
+      let afterId: string | null = null;
+      let pages = 0;
+      do {
+        const page = await reader.workloadTasks(org, otherList, filter, '2026-11-23', afterId, 500);
+        candidates.push(...page.items);
+        afterId = page.next;
+        pages += 1;
+      } while (afterId !== null);
+      expect(pages).toBeGreaterThan(1);
+      expect(candidates.length).toBeLessThan(source.rows.length);
+      expect(candidates.some((task) => task.startDate === '2026-12-12')).toBe(false);
+      expect(buildWorkload('2026-11-23', candidates)).toEqual(original);
+    } finally {
+      await pool.query(`delete from tasks where organization_id = $1 and key_prefix = 'TST'`, [
+        org,
+      ]);
+    }
+  });
+
+  it('pages weekly author and task groups, preserves full totals and respects task placement', async () => {
+    const page = await reader.timesheetPage(org, list, '2026-11-23', null, 1);
+    expect(page.items.map(({ totalMinutes }) => totalMinutes)).toEqual([30]);
+    expect(page.items[0]?.minutesByDay).toEqual([30, 0, 0, 0, 0, 0, 0]);
+    expect(page.totalMinutes).toBe(75);
+    expect(page.days.slice(0, 2)).toEqual([
+      { date: '2026-11-23', totalMinutes: 30 },
+      { date: '2026-11-24', totalMinutes: 45 },
+    ]);
+
+    const next = await reader.timesheetPage(org, list, '2026-11-23', page.next, 1);
+    expect(next.items.map(({ totalMinutes }) => totalMinutes)).toEqual([45]);
+    expect(next.items[0]?.minutesByDay).toEqual([0, 45, 0, 0, 0, 0, 0]);
+    expect(next.totalMinutes).toBe(75);
+    expect(next.next).toBeNull();
+
+    const empty = await reader.timesheetPage(org, otherList, '2026-11-23', null, 10);
+    expect(empty.items).toEqual([]);
+    expect(empty.totalMinutes).toBe(0);
   });
 
   it('pages dashboard tasks and completion facts over visible lists only', async () => {
-    expect((await reader.dashboardTasks(org, [list], null, 1)).next).toBe(first);
+    const tasks = await reader.dashboardTasks(org, [list], null, 1);
+    expect(tasks.next).toBe(first);
+    expect(tasks.items).toMatchObject([{ id: first, assigneeIds: [user], status: 'todo' }]);
+    const summaries = await reader.dashboardSummaries(org, [list], [first, second, third]);
+    expect(summaries.map(({ id }) => id)).toEqual([first, second]);
+    expect(summaries[1]).toMatchObject({
+      id: second,
+      labels: ['Review', 'Design'],
+      assigneeIds: [secondUser, user],
+    });
+    expect(await reader.dashboardSummaries(org, [otherList], [first, second])).toEqual([]);
+    expect(await reader.dashboardSummaries(otherOrg, [list], [first])).toMatchObject([
+      { id: first, name: 'Other tenant', assigneeIds: [secondUser] },
+    ]);
+    await expect(
+      reader.dashboardSummaries(
+        org,
+        [list],
+        Array.from({ length: 11 }, () => first),
+      ),
+    ).rejects.toThrow('limited to ten tasks');
     const page = await reader.dashboardTransitions(
       org,
       [list],

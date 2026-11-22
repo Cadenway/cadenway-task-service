@@ -21,7 +21,6 @@ import {
   refusalOf,
   sprint14SharedWith,
 } from '../../../tasks.fixture.js';
-import type { HeldList } from '../../../../models/placement/held-list.model.js';
 import type { CreateTaskInput } from './create-task.input.js';
 
 import { CreateTask } from './create-task.use-case.js';
@@ -272,7 +271,8 @@ describe('CreateTask: a member creates a task in a list they see', () => {
       'spaces.findVisibleList',
       `members.roleOf:${CAMILLE}:lock`,
       `members.roleOf:${INES}:lock`,
-      'spaces.holdList',
+      'spaces.lockTrashLists',
+      'spaces.findVisibleList',
       'spaces.allocateKeys',
 
       'tasks.insert',
@@ -436,8 +436,12 @@ describe('CreateTask: a deleted list takes no new task', () => {
        *
        * @returns The list, deleted by Camille Martin.
        */
-      public override holdList(): Promise<HeldList> {
-        return Promise.resolve({ outcome: 'deleted', deletedBy: { type: 'user', id: CAMILLE } });
+      public override lockTrashLists(
+        ...args: Parameters<InMemorySpaceDirectory['lockTrashLists']>
+      ): ReturnType<InMemorySpaceDirectory['lockTrashLists']> {
+        return Promise.resolve([
+          { listId: args[1][0] ?? SPRINT_14, outcome: 'deleted', role: null },
+        ]);
       }
       // #endregion
     }

@@ -27,9 +27,8 @@ export interface AccessRequestsUnitOfWork {
    * Method runReadOnly
    *
    * @description
-   * Runs `work` in one read-only tenant transaction: any write the work attempts fails in the
-   * database. The operations of the other modules the work calls join it, so they must not ask for
-   * more than it gives.
+   * Runs `work` in one read-only repeatable tenant snapshot. Authorization and the result
+   * read the same committed state, including operations that join from other modules.
    *
    * @param {(store: AccessRequestsStore) => Promise<TResult>} work - The read.
    * @returns {Promise<TResult>} What the work resolved with.

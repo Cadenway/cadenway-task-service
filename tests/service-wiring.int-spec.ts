@@ -6,18 +6,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import {
-  createApplication,
-  InternalTokenSigner,
-  loadConfig,
-  runWithOrganizationContext,
-} from '@cadenway/nest-common';
+import { InternalTokenSigner, loadConfig, runWithOrganizationContext } from '@cadenway/nest-common';
 import type {
   Ed25519PrivateJwk,
   Ed25519PublicJwk,
   OrganizationContext,
 } from '@cadenway/nest-common';
 import { SystemTransactionRunner, TenantTransactionRunner } from '@cadenway/nest-common/database';
+import { JobProducer, JobScheduler } from '@cadenway/nest-jobs/runtime';
 import { Controller, Get, Injectable, Module } from '@nestjs/common';
 import type { BeforeApplicationShutdown } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
@@ -29,6 +25,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
+import { PURGE_IDEMPOTENCY_RECEIPTS_QUEUE } from '../src/config/job-queues.js';
+import { createTaskApplication } from '../src/infrastructure/http/task-application.module.js';
+import { DrizzleBulkReceiptScopeRepository } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/bulk/drizzle-bulk-receipt-scope.repository.js';
 
 // The service as main.ts assembles it, on a disposable PostgreSQL and NATS. `@cadenway/nest-testing`
 // does not export its container fixtures yet and a service never depends on `testcontainers` itself,
@@ -112,6 +111,7 @@ const publicTables = [
   'task_approval_reviewers',
   'task_approval_rounds',
   'task_assignees',
+  'task_bulk_receipt_scopes',
   'task_comments',
   'task_custom_field_values',
   'task_dependencies',
@@ -131,7 +131,7 @@ const publicTables = [
  * task library, P3c-1 capabilities, goals, sprint reporting history, intake, delivery decisions
  * Git activity attribution and membership-scoped grants.
  */
-const appliedMigrations = 23;
+const appliedMigrations = 26;
 
 /**
  * Runs `docker compose` on the throwaway project.
@@ -412,7 +412,7 @@ describe('task-service wiring', () => {
 
     // As main.ts: the configuration is read inside the start-up, never when a module is imported.
     const config = loadConfig(appConfigSchema);
-    app = await createApplication(ProbedApplicationModule, {
+    app = await createTaskApplication(ProbedApplicationModule, {
       service: 'task-service',
       config,
       internalToken: {
@@ -490,7 +490,8 @@ describe('task-service wiring', () => {
                             'saved_views', 'space_custom_fields',
                             'sprint_field_history', 'sprint_history_coverage', 'sprint_list_history',
                             'sprint_task_history', 'sprint_value_history',
-                            'task_approval_reviewers', 'task_approval_rounds', 'task_comments',
+                            'task_approval_reviewers', 'task_approval_rounds',
+                            'task_bulk_receipt_scopes', 'task_comments',
                             'task_custom_field_values', 'task_dependencies', 'task_templates',
                             'task_time_entries', 'task_watcher_overrides')
           order by relname`,
@@ -518,6 +519,7 @@ describe('task-service wiring', () => {
         { relname: 'sprint_value_history', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'task_approval_reviewers', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'task_approval_rounds', relrowsecurity: true, relforcerowsecurity: true },
+        { relname: 'task_bulk_receipt_scopes', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'task_comments', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'task_custom_field_values', relrowsecurity: true, relforcerowsecurity: true },
         { relname: 'task_dependencies', relrowsecurity: true, relforcerowsecurity: true },
@@ -627,11 +629,13 @@ describe('task-service wiring', () => {
     );
 
     expect(schema.rows).toEqual([{ owner: 'task_migrator' }]);
-    // Member, trash and intake cleanup queues.
+    // Member, trash, intake and HTTP receipt cleanup queues.
     const names = [
       'task.clean-up-removed-member',
       'task.drop-trashed-task-requests',
       'task.expire-intake-attachment-drafts',
+      'task.decide-notification-delivery',
+      PURGE_IDEMPOTENCY_RECEIPTS_QUEUE,
       'task.purge-intake-receipts',
       'task.purge-trash',
       'task.schedule-trash-purge',
@@ -645,6 +649,127 @@ describe('task-service wiring', () => {
         ])
         .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0)),
     );
+  });
+
+  it('purges expired HTTP receipts in successive jobs and preserves an in-flight bulk refresh', async () => {
+    const queue = PURGE_IDEMPOTENCY_RECEIPTS_QUEUE;
+    const system = service().get<SystemTransactionRunner>(SystemTransactionRunner);
+    const producer = service().get(JobProducer);
+    const scheduler = service().get(JobScheduler);
+    const schedule = { key: 'minutely', timeZone: 'UTC' };
+    const cron = '* * * * *';
+    const registered = await migrator.query(
+      'select key, cron, timezone from pgboss.schedule where name = $1',
+      [queue],
+    );
+    expect(registered.rows).toEqual([{ key: schedule.key, cron, timezone: schedule.timeZone }]);
+    // Trigger the same real worker explicitly so the assertions do not depend on the UTC minute.
+    await scheduler.unschedule(queue, { key: schedule.key });
+    const prefix = `receipt-cleanup-${randomUUID()}-`;
+    const refreshingKey = `${prefix}refreshing`;
+    const liveKey = `${prefix}live`;
+    const runCleanup = async (): Promise<void> => {
+      const { jobId } = await system.run((scope) => producer.enqueue(scope, queue, {}));
+      await vi.waitFor(
+        async () => {
+          const job = await migrator.query(
+            'select state from pgboss.job where name = $1 and id = $2',
+            [queue, jobId],
+          );
+          expect(job.rows).toEqual([{ state: 'completed' }]);
+        },
+        { timeout: 15_000, interval: 100 },
+      );
+    };
+    const retained = (table: 'idempotency_keys' | 'task_bulk_receipt_scopes') =>
+      system.run(async ({ client }) => {
+        const { rows } = await client.query(
+          `select key from ${table} where key like $1 order by key`,
+          [`${prefix}%`],
+        );
+        return rows;
+      });
+
+    try {
+      await system.run(async ({ client }) => {
+        await client.query(
+          `insert into idempotency_keys
+             (organization_id, key, request_fingerprint, response_status, response_headers, expires_at)
+           select case when n % 2 = 0 then $1::uuid end, $2 || n::text, 'fixture', 200, '{}'::jsonb,
+                  now() - interval '1 hour' from generate_series(1, 501) n
+           union all select $1::uuid, $3, 'fixture', 200, '{}', now() + interval '8 seconds'
+           union all select $4::uuid, $5, 'fixture', 200, '{}', now() + interval '1 hour'`,
+          [atelierNordId, prefix, refreshingKey, otherOrganizationId, liveKey],
+        );
+        await client.query(
+          `insert into task_bulk_receipt_scopes (organization_id, key, list_ids)
+           select organization_id, key, array[$2::uuid] from idempotency_keys
+           where key like $1 and organization_id is not null`,
+          [`${prefix}%`, legacyListId],
+        );
+      });
+
+      let markAcquired: () => void = () => undefined;
+      let rejectAcquisition: (reason: unknown) => void = () => undefined;
+      const acquired = new Promise<void>((resolve, reject) => {
+        markAcquired = resolve;
+        rejectAcquisition = reject;
+      });
+      let releaseRefresh: () => void = () => undefined;
+      const release = new Promise<void>((resolve) => {
+        releaseRefresh = resolve;
+      });
+      const rollback = new Error('Discard the simulated refresh');
+      const refreshing = system
+        .run(async ({ db }) => {
+          await new DrizzleBulkReceiptScopeRepository(db).record(atelierNordId, refreshingKey, [
+            legacyListId,
+          ]);
+          markAcquired();
+          await release;
+          throw rollback;
+        })
+        .catch((error: unknown): unknown => {
+          rejectAcquisition(error);
+          return error;
+        });
+
+      try {
+        await acquired;
+        // The writer holds the parent before it expires, even if a previous cron job is queued.
+        await vi.waitFor(
+          async () => {
+            const { rows } = await system.run(({ client }) =>
+              client.query(
+                'select expires_at <= now() as expired from idempotency_keys where key = $1',
+                [refreshingKey],
+              ),
+            );
+            expect(rows).toEqual([{ expired: true }]);
+          },
+          { timeout: 10_000, interval: 100 },
+        );
+        await runCleanup();
+        const expected = [{ key: liveKey }, { key: refreshingKey }];
+        expect(await retained('idempotency_keys')).toEqual(expected);
+        expect(await retained('task_bulk_receipt_scopes')).toEqual(expected);
+      } finally {
+        releaseRefresh();
+        expect(await refreshing).toBe(rollback);
+      }
+
+      await runCleanup();
+      expect(await retained('idempotency_keys')).toEqual([{ key: liveKey }]);
+      expect(await retained('task_bulk_receipt_scopes')).toEqual([{ key: liveKey }]);
+    } finally {
+      try {
+        await system.run(({ client }) =>
+          client.query('delete from idempotency_keys where key like $1', [`${prefix}%`]),
+        );
+      } finally {
+        await scheduler.schedule(queue, cron, schedule);
+      }
+    }
   });
 
   it('lets the application role use the jobs but change no structure of the pg-boss schema', async () => {
@@ -788,6 +913,7 @@ describe('task-service wiring', () => {
       { relname: 'task_approval_reviewers', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_approval_rounds', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_assignees', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'task_bulk_receipt_scopes', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_comments', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_custom_field_values', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'task_dependencies', relrowsecurity: true, relforcerowsecurity: true },
@@ -870,6 +996,10 @@ describe('task-service wiring', () => {
         policyname: 'task_approval_rounds_organization_isolation',
       },
       { tablename: 'task_assignees', policyname: 'task_assignees_organization_isolation' },
+      {
+        tablename: 'task_bulk_receipt_scopes',
+        policyname: 'task_bulk_receipt_scopes_organization_isolation',
+      },
       { tablename: 'task_comments', policyname: 'task_comments_organization_isolation' },
       {
         tablename: 'task_custom_field_values',

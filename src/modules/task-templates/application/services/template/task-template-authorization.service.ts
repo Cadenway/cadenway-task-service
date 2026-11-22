@@ -43,7 +43,7 @@ export class TaskTemplateAuthorization {
     if (scope.sourceRestricted) {
       throw new TaskTemplateRefusal(422, 'template.source-restricted');
     }
-    return content;
+    return { ...content, sourceListId: listId };
   }
 
   /** Requires an actual space role, and edit on writes. */

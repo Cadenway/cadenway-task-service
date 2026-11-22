@@ -961,7 +961,7 @@ describe('UpdateTask: the visibility is checked again when the lock shows anothe
     });
   });
 
-  it('checks the visibility of the list once when the task did not move', async () => {
+  it('rechecks the list after holding its placement when the task did not move', async () => {
     const trace: string[] = [];
     const tasks = new InMemoryTasks({ tasks: [taskState()], trace });
     const spaces = new InMemorySpaceDirectory({ trace });
@@ -970,7 +970,7 @@ describe('UpdateTask: the visibility is checked again when the lock shows anothe
       patchOf({ name: 'Refonte' }),
     );
 
-    expect(spaces.findCalls).toEqual([SPRINT_14]);
+    expect(spaces.findCalls).toEqual([SPRINT_14, SPRINT_14]);
   });
 });
 
@@ -1520,7 +1520,7 @@ describe('UpdateTask: the trash and the deleted lists in a move or an attachment
     expect(tasks.stored(CAD_482).listId).toBe(BUGS);
   });
 
-  it('holds no list for a change within the list', async () => {
+  it('holds the list for a change within the same list', async () => {
     const tasks = new InMemoryTasks({ tasks: tree() });
     const spaces = new InMemorySpaceDirectory();
 
@@ -1529,7 +1529,9 @@ describe('UpdateTask: the trash and the deleted lists in a move or an attachment
     );
 
     expect(spaces.holdCalls).toEqual([]);
-    expect(spaces.lockTrashCalls).toEqual([]);
+    expect(spaces.lockTrashCalls).toEqual([
+      { listIds: [SPRINT_14], mode: 'hold', viewer: { userId: CAMILLE, role: 'owner' } },
+    ]);
   });
 
   it('leaves the trash out of the subtree a move takes', async () => {

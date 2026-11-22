@@ -1,15 +1,17 @@
 import type { DocumentSpaceAccessResult } from '@cadenway/contracts/types/internal/task-service';
 import { InternalAccess, ProblemException } from '@cadenway/nest-common';
-import { Body, Controller, Header, HttpCode, Post } from '@nestjs/common';
+import { Body, Controller, Header, HttpCode, Post, UseGuards } from '@nestjs/common';
 
 import { ResolveDocumentSpaceAccess } from '../../../../application/use-cases/queries/access/resolve-document-space-access/resolve-document-space-access.use-case.js';
 import { DocumentSpaceAccessBody } from '../../dto/input/access/document-space-access-body.dto.js';
 import { answerRefusals } from '../../errors/space/space-refusal.problem.js';
+import { CurrentMembershipGuard } from '../../guards/space/current-membership.guard.js';
 import { toCaller } from '../../mappers/caller/caller.mapper.js';
 
 /** Provides current direct-space roles only to the authenticated document service. */
 @Controller('internal/v1/spaces/access')
 @InternalAccess({ issuers: ['document-service'], actors: ['user'], organization: 'required' })
+@UseGuards(CurrentMembershipGuard)
 export class DocumentSpaceAccessController {
   // #region Constructor
   /** Binds the use case that reads membership and space grants in a shared snapshot. */

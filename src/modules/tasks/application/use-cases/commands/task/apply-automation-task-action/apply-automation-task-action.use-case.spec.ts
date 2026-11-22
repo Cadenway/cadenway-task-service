@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { delegatedMembershipFixture } from '../../../delegated-membership.fixture.js';
 import {
   ATELIER_NORD,
   CAD_482,
@@ -7,7 +8,6 @@ import {
   HUGO,
   INES,
   NADIA,
-  STRANGER,
   InMemorySpaceDirectory,
   InMemoryTasks,
   atelierNordMembers,
@@ -34,12 +34,13 @@ function setup(stored = [taskState()]) {
   const tasks = new InMemoryTasks({ tasks: stored, trace });
   return {
     tasks,
-    useCase: new ApplyAutomationTaskAction(
-      tasks,
-      atelierNordMembers([], trace),
-      new InMemorySpaceDirectory({ trace }),
-    ),
+    ...build(tasks, new InMemorySpaceDirectory({ trace }), trace),
   };
+}
+
+function build(tasks: InMemoryTasks, spaces: InMemorySpaceDirectory, trace: string[] = []) {
+  const fixture = delegatedMembershipFixture(atelierNordMembers([], trace));
+  return { ...fixture, useCase: new ApplyAutomationTaskAction(tasks, spaces, fixture.memberships) };
 }
 
 describe('ApplyAutomationTaskAction', () => {
@@ -104,11 +105,33 @@ describe('ApplyAutomationTaskAction', () => {
   });
 
   it('rechecks the rule author on the pre-replay authorization path', async () => {
-    const { useCase } = setup();
-    await expect(useCase.authorize(input)).resolves.toBeUndefined();
-    expect(await refusalOf(useCase.authorize({ ...input, ruleAuthorUserId: STRANGER }))).toEqual({
+    const { useCase, authority, projection } = setup();
+    await expect(useCase.authorize(input)).resolves.toMatchObject({ organizationId: ATELIER_NORD });
+    vi.spyOn(authority, 'find').mockResolvedValue(null);
+    const project = vi.spyOn(projection, 'stampOf');
+    expect(await refusalOf(useCase.authorize(input))).toEqual({
       reason: 'organization-not-found',
     });
+    expect(project).not.toHaveBeenCalled();
+  });
+
+  it('does not apply when Organization cannot prove the membership', async () => {
+    const { authority, tasks, useCase } = setup();
+    const unavailable = new Error('Authority unavailable.');
+    vi.spyOn(authority, 'find').mockRejectedValue(unavailable);
+    await expect(useCase.execute(input)).rejects.toBe(unavailable);
+    expect(tasks.events).toEqual([]);
+  });
+
+  it('refuses an assignment when only its recipient has left at the source', async () => {
+    const { authority, tasks, useCase } = setup();
+    vi.spyOn(authority, 'find').mockImplementation((_organizationId, userId) =>
+      Promise.resolve(userId === CAMILLE ? { memberId: CAMILLE, role: 'owner', version: 1 } : null),
+    );
+    expect(
+      await refusalOf(useCase.execute({ ...input, action: { type: 'assign', userId: HUGO } })),
+    ).toEqual({ reason: 'assignee-invalid', userIds: [HUGO] });
+    expect(tasks.events).toEqual([]);
   });
 
   it('refuses a recipient who is no longer eligible before replaying an assignment', async () => {
@@ -129,17 +152,13 @@ describe('ApplyAutomationTaskAction', () => {
     const { tasks, useCase } = setup();
     await expect(
       useCase.authorize({ ...input, action: { type: 'assign', userId: INES } }),
-    ).resolves.toBeUndefined();
+    ).resolves.toMatchObject({ organizationId: ATELIER_NORD });
     expect(tasks.events).toEqual([]);
   });
 
   it('refuses a rule author who has only read access', async () => {
     const tasks = InMemoryTasks.withCad482();
-    const useCase = new ApplyAutomationTaskAction(
-      tasks,
-      atelierNordMembers(),
-      sprint14SharedWith({ [HUGO]: 'view' }),
-    );
+    const { useCase } = build(tasks, sprint14SharedWith({ [HUGO]: 'view' }));
     expect(await refusalOf(useCase.execute({ ...input, ruleAuthorUserId: HUGO }))).toEqual({
       reason: 'role-insufficient',
       role: 'view',
@@ -154,7 +173,7 @@ describe('ApplyAutomationTaskAction', () => {
       const spaces = new InMemorySpaceDirectory({
         lists: [placedList({ archivedAt: new Date('2026-11-10T00:00:00Z') })],
       });
-      const useCase = new ApplyAutomationTaskAction(tasks, atelierNordMembers(), spaces);
+      const { useCase } = build(tasks, spaces);
       expect(await refusalOf(useCase[method](input))).toEqual({ reason: 'task-not-found' });
       expect(tasks.events).toEqual([]);
       expect(tasks.stored(CAD_482).version).toBe(12);
@@ -170,7 +189,7 @@ describe('ApplyAutomationTaskAction', () => {
         list: placedList({ archivedAt: new Date('2026-11-10T00:00:00Z') }),
         space: placedSpace(),
       });
-    const useCase = new ApplyAutomationTaskAction(tasks, atelierNordMembers(), spaces);
+    const { useCase } = build(tasks, spaces);
     expect(await refusalOf(useCase.execute(input))).toEqual({ reason: 'task-not-found' });
     expect(spaces.lockTrashCalls).toHaveLength(1);
     expect(tasks.events).toEqual([]);

@@ -8,7 +8,6 @@ import type { TaskDraft } from '../../../../../domain/value-objects/task/task-dr
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import type { TaskPlacement } from '../../../../../domain/value-objects/task/task-placement.value-object.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
-import type { HeldList } from '../../../../models/placement/held-list.model.js';
 import type { KeyAllocation } from '../../../../models/placement/key-allocation.model.js';
 import type { ListPlacement } from '../../../../models/placement/list-placement.model.js';
 import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
@@ -153,15 +152,15 @@ export class CreateTask {
         input.actorUserId,
         true,
       );
-      const placement: ListPlacement | null = await this.spaces.findVisibleList(
+      const observed: ListPlacement | null = await this.spaces.findVisibleList(
         input.organizationId,
         viewer,
         input.listId,
       );
-      if (placement === null) {
+      if (observed === null) {
         throw new TaskRefusal({ reason: 'list-not-found' });
       }
-      this.editing.requireEdit(placement.list);
+      this.editing.requireEdit(observed.list);
       const candidates: readonly AssigneeCandidate[] = await this.assignees.candidates(
         input.organizationId,
         input.assigneeIds,
@@ -172,6 +171,24 @@ export class CreateTask {
         viewer,
         input.descriptionMentions ?? [],
       );
+      const [held] = await this.spaces.lockTrashLists(
+        input.organizationId,
+        [input.listId],
+        'hold',
+        viewer,
+      );
+      if (held?.outcome !== 'live' || held.role === null) {
+        throw new TaskRefusal({ reason: 'list-not-found' });
+      }
+      const placement: ListPlacement | null = await this.spaces.findVisibleList(
+        input.organizationId,
+        viewer,
+        input.listId,
+      );
+      if (placement === null) {
+        throw new TaskRefusal({ reason: 'list-not-found' });
+      }
+      this.editing.requireEdit(placement.list);
       const now: Date = await store.clock.now();
       const creator: TaskActor = { type: 'user', id: input.actorUserId };
       const where: TaskPlacement = { listId: placement.list.id, spaceId: placement.space.id };
@@ -204,22 +221,7 @@ export class CreateTask {
       const checklist: readonly ChecklistItemDraft[] = this.rules.apply(() =>
         Task.draftInitialChecklist(input.checklistTexts ?? []),
       );
-      if (recipients.length === 0) {
-        const held: HeldList = await this.spaces.holdList(input.organizationId, placement.list.id);
-        if (held.outcome !== 'live') throw new TaskRefusal({ reason: 'list-not-found' });
-      } else {
-        const [held] = await this.spaces.lockTrashLists(
-          input.organizationId,
-          [placement.list.id],
-          'hold',
-          viewer,
-        );
-        if (held?.outcome !== 'live' || held.role === null) {
-          throw new TaskRefusal({ reason: 'list-not-found' });
-        }
-        if (held.role !== 'edit') {
-          throw new TaskRefusal({ reason: 'role-insufficient', role: held.role });
-        }
+      if (recipients.length > 0) {
         await this.descriptionMentions.requireEligible(
           input.organizationId,
           placement.list.id,

@@ -9,10 +9,9 @@ Gives the tables of the service kit their place in this service's own migrations
   `@cadenway/nest-messaging/outbox`;
 - `idempotency_keys`, defined by `@cadenway/nest-common/database`.
 
-It holds no business rule, no use case, no route and no handler, and never will: product data and
-its rules belong to the business modules. The definition and the behavior of the tables belong to
-the kit, through `DatabaseModule`, `MessagingModule` and `OutboxModule` registered in
-`src/app.module.ts`.
+Product data and rules belong to the business modules. The kit defines these tables and implements
+the request interceptor and the event infrastructure. Platform schedules physical cleanup of
+expired HTTP receipts in the service's own database.
 
 ## Public entry points
 
@@ -59,12 +58,21 @@ uses `event_versions`, since that module orders the events by the version it sto
 
 ## Transactions
 
-None of its own. The rows are written inside the units of work of others: an outbox row in the
+The rows are written inside the units of work of others: an outbox row in the
 transaction of the use case that changes the data (tenant runner, or system runner for an event
 without organization), a processed id and a version in the transaction of the handler, an
 idempotency key in the transaction the interceptor opens for its route. The relay locks, publishes
 and marks pending rows in system transactions, and purges sent rows after 7 days and processed ids
 after 14.
+
+### Jobs
+
+`task.purge-idempotency-receipts` runs every minute in UTC as a system job. The migrator provisions
+its queue and dead-letter queue with the other Task queues. The worker deletes up to 500 receipts
+past the kit's expiry per system transaction, then continues in a new transaction. Locked receipts
+are picked up by a later occurrence. The foreign key removes bulk replay scopes with their parent
+receipt. Bulk writers lock the existing parent before updating the scope to match the order used by
+cleanup. A failed or interrupted run leaves committed batches deleted for the next occurrence.
 
 ## Decisions
 

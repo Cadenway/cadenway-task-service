@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { delegatedMembershipFixture } from '../../../delegated-membership.fixture.js';
 import {
   ARCHIVED_AT,
   ATELIER_NORD,
@@ -48,12 +49,14 @@ function setup(
 ) {
   const tasks = options.tasks ?? new InMemoryTasks({ tasks: [taskState()] });
   const spaces = options.spaces ?? new InMemorySpaceDirectory();
-  const members = atelierNordMembers(options.removed);
+  const members = atelierNordMembers();
+  const fixture = delegatedMembershipFixture(members, atelierNordMembers(options.removed));
   return {
     tasks,
     spaces,
     members,
-    useCase: new AuthorizeAutomationNotification(tasks, members, spaces),
+    ...fixture,
+    useCase: new AuthorizeAutomationNotification(tasks, spaces, fixture.memberships),
   };
 }
 

@@ -26,6 +26,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
+import { mirrorCurrentMembership } from './support/current-membership.fixture.js';
 import { DrizzleCustomFieldRepository } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/custom-field/drizzle-custom-field.repository.js';
 
 const project = `custom-fields-test-${String(process.pid)}`;
@@ -152,6 +153,7 @@ describe('custom fields with PostgreSQL and NATS', () => {
       logDestination: { write: (): void => undefined },
     });
     await app.init();
+    mirrorCurrentMembership(app);
     signer = await InternalTokenSigner.create({
       issuer: 'api-gateway',
       privateJwk: { ...publicJwk, d },

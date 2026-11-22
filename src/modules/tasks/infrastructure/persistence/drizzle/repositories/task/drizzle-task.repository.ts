@@ -793,7 +793,7 @@ export class DrizzleTaskRepository implements TaskRepository {
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {readonly string[]} rootIds - The roots.
-   * @param {number} [readLimit] - Caps the unordered discovery of one bulk trash root.
+   * @param {number} [readLimit] - Caps the unordered discovery of one trash root.
    * @returns {Promise<readonly TrashTreeNode[]>} Each task of each tree with its root and depth.
    * @throws {Error} When PostgreSQL detects a cycle of parent links in a tree, which the writers
    * never make: a defect.

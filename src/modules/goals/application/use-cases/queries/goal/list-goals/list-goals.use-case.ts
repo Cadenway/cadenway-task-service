@@ -1,6 +1,5 @@
 import { rethrowGoalFailure } from '../../../../services/goal/goal-failure.service.js';
 import { GoalQuarter } from '../../../../../domain/value-objects/goal/goal-quarter.value-object.js';
-import type { GoalPageSummary } from '../../../../models/goal/goal-page-summary.model.js';
 import type { GoalPosition } from '../../../../models/goal/goal-position.model.js';
 import type { GoalRecord } from '../../../../models/goal/goal-record.model.js';
 import type { GoalViewer } from '../../../../models/goal/goal-viewer.model.js';
@@ -25,24 +24,7 @@ export class ListGoals {
   /** Scans bounded candidate batches and applies current visibility before paging. */
   public execute(input: ListGoalsInput): Promise<ListGoalsOutput> {
     return this.work
-      .read(async (store) => {
-        const viewer = await requireViewer(store, input, false);
-        const summary = await summarize(store, viewer, input);
-        const records = await visiblePage(store, viewer, input);
-        const hasMore = records.length > input.limit;
-        const page = records.slice(0, input.limit);
-        const links = await store.measureLinks(
-          viewer,
-          page.flatMap((record) => record.goal.snapshot.results),
-          false,
-        );
-        const items = page.map((record) => projectGoal(record.goal, input.today, links));
-        return {
-          items,
-          nextPosition: hasMore ? (page.at(-1)?.position ?? null) : null,
-          summary,
-        };
-      })
+      .read(async (store) => scanVisible(store, await requireViewer(store, input, false), input))
       .catch(rethrowGoalFailure);
   }
   // #endregion
@@ -61,24 +43,49 @@ async function visibleBatch(
       ),
     ),
   ];
-  const visible = await store.visibleSpaces(viewer, spaceIds);
-  return candidates.filter(({ goal }) =>
-    goal.snapshot.spaceId === null ? viewer.role !== 'guest' : visible.has(goal.snapshot.spaceId),
+  const visible =
+    spaceIds.length === 0 ? new Set<string>() : await store.visibleSpaces(viewer, spaceIds);
+  return candidates.filter(
+    ({ goal }) => goal.snapshot.spaceId === null || visible.has(goal.snapshot.spaceId),
   );
 }
 
-/** Measures all currently visible goals in the requested quarter with bounded memory. */
-async function summarize(
+function follows(position: GoalPosition, after: GoalPosition | null): boolean {
+  if (after === null) return true;
+  const difference = position.createdAt.getTime() - after.createdAt.getTime();
+  return difference < 0 || (difference === 0 && position.id < after.id);
+}
+
+/** Produces the page and the entire visible quarter's summary in one pass. */
+async function scanVisible(
   store: GoalsStore,
   viewer: GoalViewer,
   input: ListGoalsInput,
-): Promise<GoalPageSummary> {
+): Promise<ListGoalsOutput> {
+  const expectedProgressPercent = GoalQuarter.parse(input.quarter).expectedProgress(input.today);
+  if (viewer.role === 'guest') {
+    // Guests cannot have a direct role on a space, and organization goals also exclude them.
+    return {
+      items: [],
+      nextPosition: null,
+      summary: {
+        goalCount: 0,
+        expectedProgressPercent,
+        averageProgressPercent: 0,
+        onTrackOrAchievedCount: 0,
+        achievedCount: 0,
+        atRiskOrBehindCount: 0,
+      },
+    };
+  }
+
   let after: GoalPosition | null = null;
   let goalCount = 0;
   let totalProgress = 0;
   let onTrackOrAchievedCount = 0;
   let achievedCount = 0;
-  let atRiskOrBehindCount = 0;
+  const items: { readonly view: GoalView; readonly position: GoalPosition }[] = [];
+
   for (;;) {
     const candidates = await store.goals.listCandidates(
       viewer.organizationId,
@@ -88,52 +95,37 @@ async function summarize(
     );
     if (candidates.length === 0) break;
     const visible = await visibleBatch(store, viewer, candidates);
-    const links = await store.measureLinks(
-      viewer,
-      visible.flatMap((record) => record.goal.snapshot.results),
-      false,
-    );
-    for (const record of visible) {
-      const goal: GoalView = projectGoal(record.goal, input.today, links);
-      goalCount += 1;
-      totalProgress += goal.progressPercent;
-      if (goal.health === 'achieved') achievedCount += 1;
-      if (goal.health === 'achieved' || goal.health === 'on-track') onTrackOrAchievedCount += 1;
-      else atRiskOrBehindCount += 1;
+    if (visible.length > 0) {
+      const links = await store.measureLinks(
+        viewer,
+        visible.flatMap((record) => record.goal.snapshot.results),
+        false,
+      );
+      for (const record of visible) {
+        const view: GoalView = projectGoal(record.goal, input.today, links);
+        goalCount += 1;
+        totalProgress += view.progressPercent;
+        if (view.health === 'achieved') achievedCount += 1;
+        if (view.health === 'achieved' || view.health === 'on-track') onTrackOrAchievedCount += 1;
+        if (items.length <= input.limit && follows(record.position, input.after)) {
+          items.push({ view, position: record.position });
+        }
+      }
     }
     if (candidates.length < batchSize) break;
-    after = candidates[candidates.length - 1]?.position ?? null;
+    after = candidates.at(-1)?.position ?? null;
   }
+  const page = items.slice(0, input.limit);
   return {
-    goalCount,
-    expectedProgressPercent: GoalQuarter.parse(input.quarter).expectedProgress(input.today),
-    averageProgressPercent: goalCount === 0 ? 0 : totalProgress / goalCount,
-    onTrackOrAchievedCount,
-    achievedCount,
-    atRiskOrBehindCount,
+    items: page.map(({ view }) => view),
+    nextPosition: items.length > input.limit ? (page.at(-1)?.position ?? null) : null,
+    summary: {
+      goalCount,
+      expectedProgressPercent,
+      averageProgressPercent: goalCount === 0 ? 0 : totalProgress / goalCount,
+      onTrackOrAchievedCount,
+      achievedCount,
+      atRiskOrBehindCount: goalCount - onTrackOrAchievedCount,
+    },
   };
-}
-
-/** Continues beyond hidden candidates until the requested visible page is full. */
-async function visiblePage(
-  store: GoalsStore,
-  viewer: GoalViewer,
-  input: ListGoalsInput,
-): Promise<readonly GoalRecord[]> {
-  let after = input.after;
-  const records: GoalRecord[] = [];
-  while (records.length <= input.limit) {
-    const candidates = await store.goals.listCandidates(
-      viewer.organizationId,
-      input.quarter,
-      after,
-      batchSize,
-    );
-    if (candidates.length === 0) break;
-    const visible = await visibleBatch(store, viewer, candidates);
-    records.push(...visible.slice(0, input.limit + 1 - records.length));
-    if (candidates.length < batchSize) break;
-    after = candidates[candidates.length - 1]?.position ?? null;
-  }
-  return records;
 }

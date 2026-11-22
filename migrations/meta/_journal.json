@@ -162,6 +162,27 @@
       "when": 1795297516347,
       "tag": "0022_membership_grant_epochs",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1795358091283,
+      "tag": "0023_task_bulk_receipt_scopes",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1795366508109,
+      "tag": "0024_task_template_source_provenance",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1795368608197,
+      "tag": "0025_trash_child_index",
+      "breakpoints": true
     }
   ]
 }

@@ -9,6 +9,7 @@ import { IntakeAttachmentDraft } from '../../../../../domain/aggregates/attachme
 import { IntakeAttachmentReservation } from '../../../../../domain/aggregates/attachment/intake-attachment-reservation.aggregate.js';
 import {
   INTAKE_ATTACHMENT_DRAFT_LIFETIME_MS,
+  MAX_INTAKE_ATTACHMENT_DRAFTS_PER_PUBLICATION,
   MAX_INTAKE_ATTACHMENTS,
 } from '../../../../../domain/value-objects/attachment/intake-attachment-limits.value-object.js';
 import { intakeAttachmentDrafts } from '../../schemas/attachment/intake-attachment-draft.schema.js';
@@ -68,13 +69,17 @@ export class DrizzleIntakeAttachments {
     return rows[0] === undefined ? null : IntakeAttachmentDraft.restore(rows[0].draft);
   }
 
-  /** Creates a draft once, then locks the winning row before checking its state. */
+  /** Starts at most one draft per key within the publication budget. */
   public async startDraft(
     listId: string,
     publicKey: string,
     draftKey: string,
     now: Date,
-  ): Promise<IntakeAttachmentDraft> {
+  ): Promise<IntakeAttachmentDraft | null> {
+    const existing = await this.loadDraft(listId, publicKey, draftKey, true);
+    if (existing !== null) return existing;
+
+    // Serialize admission of new keys. Known keys only need their draft lock.
     const publications = await this.db
       .select({ id: intakePublications.id })
       .from(intakePublications)
@@ -85,9 +90,27 @@ export class DrizzleIntakeAttachments {
           eq(intakePublications.keyDigest, digest(publicKey)),
         ),
       )
-      .limit(1);
+      .limit(1)
+      .for('no key update');
     const publication = publications[0];
     if (publication === undefined) throw new Error('The intake publication disappeared.');
+
+    const winner = await this.loadDraft(listId, publicKey, draftKey, true);
+    if (winner !== null) return winner;
+    const threshold = await this.db
+      .select({ draftDigest: intakeAttachmentDrafts.draftDigest })
+      .from(intakeAttachmentDrafts)
+      .where(
+        and(
+          eq(intakeAttachmentDrafts.organizationId, this.organizationId),
+          eq(intakeAttachmentDrafts.publicationId, publication.id),
+        ),
+      )
+      .orderBy(intakeAttachmentDrafts.draftDigest)
+      .offset(MAX_INTAKE_ATTACHMENT_DRAFTS_PER_PUBLICATION - 1)
+      .limit(1);
+    if (threshold.length > 0) return null;
+
     await this.db
       .insert(intakeAttachmentDrafts)
       .values({

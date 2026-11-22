@@ -22,6 +22,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
+import { mirrorCurrentMembership } from './support/current-membership.fixture.js';
 
 const project = `task-time-test-${String(process.pid)}`;
 const organizationId = '01938f6e-6d1a-7c3e-9a51-2f0c4b8d7e10';
@@ -157,6 +158,7 @@ describe('task time with PostgreSQL and NATS', () => {
       logDestination: { write: (): void => undefined },
     });
     await app.init();
+    mirrorCurrentMembership(app);
     signer = await InternalTokenSigner.create({
       issuer: 'api-gateway',
       privateJwk: { ...publicJwk, d },

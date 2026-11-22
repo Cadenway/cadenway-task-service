@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { Task } from '../../../domain/aggregates/task/task.aggregate.js';
 import {
@@ -75,6 +75,49 @@ describe('TrashTreeLocker: the trees of trash entries, read and locked in one st
 
     expect(locked.examined).toEqual([CAD_482]);
     expect(membersOf(locked.trees)).toEqual([[CAD_482, CAD_483]]);
+  });
+
+  it('refuses an oversized tree before requesting any task lock', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState(), subtaskState()] });
+
+    await tasks.run(async (store) => {
+      const read = vi.spyOn(store.tasks, 'trashTrees');
+      const locking = new TrashTreeLocker().lock(store, ATELIER_NORD, [CAD_482], [], { strict: 1 });
+
+      await expect(locking).rejects.toMatchObject({
+        refusal: { reason: 'trash-tree-too-large', limit: 1 },
+      });
+      expect(read.mock.calls).toEqual([[ATELIER_NORD, [CAD_482], 2]]);
+    });
+
+    expect(tasks.trace).toEqual(['tasks.trashTrees']);
+  });
+
+  it('counts earlier locks when a reread finds a replacement branch within the size limit', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState(), subtaskState()] });
+
+    await tasks.run(async (store) => {
+      const read = vi.spyOn(store.tasks, 'trashTrees');
+      read.mockResolvedValueOnce([
+        { id: CAD_482, rootId: CAD_482, depth: 0 },
+        { id: CAD_483, rootId: CAD_482, depth: 1 },
+      ]);
+      read.mockResolvedValueOnce([
+        { id: CAD_482, rootId: CAD_482, depth: 0 },
+        { id: CAD_490, rootId: CAD_482, depth: 1 },
+      ]);
+      const takeLocks = vi.spyOn(store.tasks, 'lockByIds');
+      const locking = new TrashTreeLocker().lock(store, ATELIER_NORD, [CAD_482], [], { strict: 2 });
+
+      await expect(locking).rejects.toMatchObject({
+        refusal: { reason: 'trash-tree-too-large', limit: 2 },
+      });
+      expect(read.mock.calls).toEqual([
+        [ATELIER_NORD, [CAD_482], 3],
+        [ATELIER_NORD, [CAD_482], 3],
+      ]);
+      expect(takeLocks.mock.calls).toEqual([[ATELIER_NORD, [CAD_482, CAD_483], false]]);
+    });
   });
 
   it('keeps a task the caller holds locked as it is and locks only the others', async () => {

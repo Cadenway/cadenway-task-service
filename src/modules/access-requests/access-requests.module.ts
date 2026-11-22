@@ -5,6 +5,7 @@ import { SpacesModule } from '../spaces/spaces.module.js';
 import { TasksModule } from '../tasks/tasks.module.js';
 import { accessTargetsProvider } from './composition/providers/adapters/access/access-targets.provider.js';
 import { accessRequestsUnitOfWorkProvider } from './composition/providers/adapters/access-request/access-requests-unit-of-work.provider.js';
+import { currentMembershipProvider } from './composition/providers/adapters/membership/current-membership.provider.js';
 import { memberDirectoryProvider } from './composition/providers/adapters/membership/member-directory.provider.js';
 import { taskReferencesProvider } from './composition/providers/adapters/task/task-references.provider.js';
 import { approveAccessRequestProvider } from './composition/providers/use-cases/access-request/approve-access-request.provider.js';
@@ -37,6 +38,7 @@ import { DropTargetAccessRequests } from './public/access-request/drop-target-ac
   controllers: [AccessRequestsController],
   providers: [
     accessRequestsUnitOfWorkProvider,
+    currentMembershipProvider,
     memberDirectoryProvider,
     accessTargetsProvider,
     taskReferencesProvider,

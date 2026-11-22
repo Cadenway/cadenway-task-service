@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { InvalidTaskError } from '../../errors/task/invalid-task.error.js';
 import { TaskKey } from '../../value-objects/task/task-key.value-object.js';
-import { buildTimesheet } from './timesheet.policy.js';
+import { buildTimesheet, TimesheetAccumulator } from './timesheet.policy.js';
 
 const camille = '01000000-0000-4000-8000-000000000001';
 const formerMember = '01000000-0000-4000-8000-000000000002';
@@ -55,5 +55,54 @@ describe('buildTimesheet', () => {
 
   it('refuses a non-Monday window start', () => {
     expect(() => buildTimesheet('2026-11-08', [])).toThrow(InvalidTaskError);
+  });
+});
+
+describe('TimesheetAccumulator', () => {
+  it('merges the same author and task across batches using the first in-week task snapshot', () => {
+    const weekStart = '2026-11-02';
+    const entry = { task, authorUserId: camille, workDate: weekStart, minutes: 20 };
+    const laterTask = { ...task, name: 'Renamed', status: 'progress' as const };
+    const firstBatch = [
+      { ...entry, task: laterTask, workDate: '2026-11-01', minutes: 100 },
+      { ...entry, authorUserId: formerMember },
+      entry,
+    ];
+    const secondBatch = [
+      { ...entry, task: laterTask, minutes: 5 },
+      { ...entry, task: laterTask, workDate: '2026-11-08', minutes: 35 },
+      { ...entry, task: { ...task, key: TaskKey.parse('CAD-2') } },
+      { ...entry, workDate: '2026-11-09', minutes: 100 },
+    ];
+    const accumulator = new TimesheetAccumulator(weekStart);
+
+    accumulator.add(firstBatch);
+    accumulator.add([]);
+    accumulator.add(secondBatch);
+
+    const timesheet = accumulator.build();
+    expect(timesheet).toEqual(buildTimesheet(weekStart, [...firstBatch, ...secondBatch]));
+    expect(timesheet.totalMinutes).toBe(100);
+    expect(timesheet.items[1]).toEqual({
+      authorUserId: camille,
+      taskKey: 'CAD-10',
+      name: task.name,
+      status: task.status,
+      minutesByDay: [25, 0, 0, 0, 0, 0, 35],
+      totalMinutes: 60,
+    });
+  });
+
+  it('keeps already built reports stable when new batches arrive', () => {
+    const weekStart = '2026-11-02';
+    const entry = { task, authorUserId: camille, workDate: weekStart, minutes: 20 };
+    const accumulator = new TimesheetAccumulator(weekStart);
+    accumulator.add([entry]);
+    const firstReport = accumulator.build();
+
+    accumulator.add([entry]);
+
+    expect(firstReport).toEqual(buildTimesheet(weekStart, [entry]));
+    expect(accumulator.build()).toEqual(buildTimesheet(weekStart, [entry, entry]));
   });
 });

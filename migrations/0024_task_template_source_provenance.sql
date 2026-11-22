@@ -1,0 +1,1 @@
+ALTER TABLE "task_templates" ADD COLUMN "source_list_id" uuid;

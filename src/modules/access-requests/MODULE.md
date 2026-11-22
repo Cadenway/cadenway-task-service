@@ -184,6 +184,9 @@ which open no transaction of their own and ask for no read-only access, so they 
 transaction as well as a read-only one. A refusal rolls everything back. The unit of work wakes the
 relay once a run that appended events resolved.
 
+Listing uses a read-only `REPEATABLE READ` transaction. The acting membership, managed targets,
+task placements, page, and total are read from the same snapshot.
+
 - A request: the membership of the actor `FOR SHARE` (a concurrent removal waits for the request,
   so its clean-up job sees it), then `pg_advisory_xact_lock` on the organization and the account,
   which serializes the requests of one requester (the count, the insert and the uniqueness see each

@@ -104,7 +104,7 @@ export class TenantAccessRequestsUnitOfWork implements AccessRequestsUnitOfWork 
    * Method runReadOnly
    *
    * @description
-   * Runs `work` in a read-only tenant transaction.
+   * Runs `work` in a read-only tenant snapshot shared by authorization and the result.
    *
    * @param {(store: AccessRequestsStore) => Promise<TResult>} work - The read.
    * @returns {Promise<TResult>} What the work resolved with.
@@ -112,7 +112,7 @@ export class TenantAccessRequestsUnitOfWork implements AccessRequestsUnitOfWork 
   public async runReadOnly<TResult>(
     work: (store: AccessRequestsStore) => Promise<TResult>,
   ): Promise<TResult> {
-    return this.execute(work, { readOnly: true });
+    return this.execute(work, { readOnly: true, isolationLevel: 'repeatable read' });
   }
 
   /**

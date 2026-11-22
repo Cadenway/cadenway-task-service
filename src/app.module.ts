@@ -128,9 +128,10 @@ function runJobInOrganization(
  *   an attempt still running after that is failed and retried. The queues are the clean-up of a
  *   removed member (`MemberLifecycleModule`), four of the deletions and the trash
  *   (`DeletionLifecycleModule`), and intake receipt cleanup (`IntakeModule`). Every replica
- *   registers the same durable schedules: `task.schedule-trash-purge` at 03:00 UTC and
- *   `task.purge-intake-receipts` every minute. Both create system jobs without an organization.
- * - `PlatformModule`: the owner of the kit tables in the migrations of the service.
+ *   registers durable system schedules, including the daily trash schedule at 03:00 UTC and
+ *   the minutely receipt cleanup schedules.
+ * - `PlatformModule`: owns the kit tables in the service's migrations and schedules HTTP receipt
+ *   retention.
  * - `OrganizationMembersModule`: the copy of the memberships of organization-service, the source of
  *   the members and roles of the service.
  * - `SpacesModule`: the spaces, their statuses and prefixes, and their lists and sprints, with the
@@ -171,6 +172,12 @@ function runJobInOrganization(
 @Module({
   imports: [
     ConfigModule.forRoot({ schema: appConfigSchema, eager: false }),
+    // Response authorization in these modules wraps the Kit idempotency interceptor.
+    TasksModule,
+    SpacesModule,
+    TaskTemplatesModule,
+    SavedViewsModule,
+    FavoritesModule,
     DatabaseModule.forRootAsync({
       inject: [CONFIG],
       useFactory: (config: AppConfig) => ({
@@ -218,8 +225,6 @@ function runJobInOrganization(
     IntakeStorageModule,
     SavedViewsStorageModule,
     TaskTemplatesStorageModule,
-    SpacesModule,
-    TasksModule,
     TaskCommentsModule,
     NotificationVisibilityModule,
     OnboardingModule,
@@ -228,9 +233,6 @@ function runJobInOrganization(
     AccessRequestsModule,
     MemberLifecycleModule,
     DeletionLifecycleModule,
-    TaskTemplatesModule,
-    SavedViewsModule,
-    FavoritesModule,
     IntakeModule,
     GoalsModule,
   ],

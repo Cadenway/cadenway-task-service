@@ -63,11 +63,13 @@ import type { z } from 'zod';
 
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
+import { mirrorCurrentMembership } from './support/current-membership.fixture.js';
 import {
   DROP_TRASHED_TASK_REQUESTS_QUEUE,
   PURGE_TRASH_QUEUE,
   TRASH_DELETED_TASKS_QUEUE,
 } from '../src/config/job-queues.js';
+import { RemoveMemberGrants } from '../src/modules/spaces/application/use-cases/commands/access/remove-member-grants/remove-member-grants.use-case.js';
 import { PurgeTrashEntry } from '../src/modules/tasks/application/use-cases/commands/trash/purge-trash-entry/purge-trash-entry.use-case.js';
 import { TrashTreeLocker } from '../src/modules/tasks/application/services/trash/trash-tree-locker.service.js';
 import { PurgeTrashBatch } from '../src/modules/tasks/public/trash/purge-trash-batch.js';
@@ -1491,6 +1493,7 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       },
     });
     await started.init();
+    mirrorCurrentMembership(started);
     return started;
   }
 
@@ -1499,12 +1502,12 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
    * writer would hold them; the locks are released after it, whatever happens.
    *
    * @param locks - The statements that lock the rows, run with the system access.
-   * @param work - What runs while the rows are held.
+   * @param work - What runs while the rows are held, with the connection holding them.
    * @returns What the work returns.
    */
   async function whileHeld<TResult>(
     locks: readonly (readonly [string, readonly unknown[]])[],
-    work: () => Promise<TResult>,
+    work: (blocker: pg.PoolClient) => Promise<TResult>,
   ): Promise<TResult> {
     const blocker = await migrator.connect();
     let keepAlive: NodeJS.Timeout | undefined;
@@ -1518,7 +1521,7 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
       keepAlive = setInterval(() => {
         blocker.query('select 1').catch(() => undefined);
       }, 10_000);
-      return await work();
+      return await work(blocker);
     } finally {
       clearInterval(keepAlive);
       await blocker.query('rollback');
@@ -5609,27 +5612,81 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
         const task = await createTask(camille, high.id, { name: `Tâche à descendre, ${order}` });
         const move = (): Promise<request.Response> =>
           send('patch', `/internal/v1/tasks/${task.key}`, camille, { body: { listId: low.id } });
-        const remove = (): void => {
-          publishMember('removed', atelierNordId, member, 'member', 2);
-        };
-        const waits = await lockWaits();
-
-        const raced = await whileHeld([listLock(low.id)], async () => {
-          let pendingMove: Promise<request.Response>;
-          if (order === 'removal first') {
-            remove();
-            await waitForLockWait(waits);
-            pendingMove = move();
-          } else {
-            pendingMove = move();
-            await waitForLockWait(waits);
-            remove();
-          }
-          await waitForLockWait(waits + 1);
-          return { pendingMove };
+        const cleanup = service().get(RemoveMemberGrants, { strict: false });
+        const original = cleanup.execute.bind(cleanup);
+        let cleanupReady = false;
+        let releaseCleanup: () => void = () => undefined;
+        const cleanupGate = new Promise<void>((resolve) => {
+          releaseCleanup = resolve;
         });
+        const spy = vi.spyOn(cleanup, 'execute').mockImplementation(async (input) => {
+          if (input.userId === member.userId && !cleanupReady) {
+            cleanupReady = true;
+            await cleanupGate;
+          }
+          return original(input);
+        });
+        let pendingMove: Promise<request.Response> | undefined;
+        try {
+          // Let the broker deliver the removal and the worker reach the grant batch before the
+          // list is held. This keeps broker scheduling outside the five-second database lock.
+          publishMember('removed', atelierNordId, member, 'member', 2);
+          await vi.waitFor(
+            () => {
+              expect(cleanupReady).toBe(true);
+            },
+            {
+              timeout: 60_000,
+              interval: 50,
+            },
+          );
 
-        const moved = await raced.pendingMove;
+          await whileHeld([listLock(low.id)], async (blocker) => {
+            const result = await blocker.query<{ readonly pid: number }>(
+              'select pg_backend_pid() as pid',
+            );
+            const blockerPid = result.rows[0]?.pid;
+            if (blockerPid === undefined) throw new Error('The list lock has no backend PID.');
+            const deadline = performance.now() + 4_000;
+            const waitForBlocked = async (expected: number): Promise<void> => {
+              await vi.waitFor(
+                async () => {
+                  // Count sessions blocked by this list lock, including sessions queued behind
+                  // its first waiter, rather than unrelated activity in the PostgreSQL cluster.
+                  const count = await countOf(
+                    `with recursive blocked(pid) as (
+                       select pid from pg_locks
+                        where not granted and $1::int = any(pg_blocking_pids(pid))
+                       union
+                       select locks.pid from pg_locks as locks join blocked
+                         on blocked.pid = any(pg_blocking_pids(locks.pid))
+                        where not locks.granted
+                     ) select count(distinct pid)::int as total from blocked`,
+                    [blockerPid],
+                  );
+                  expect(count).toBeGreaterThanOrEqual(expected);
+                },
+                { timeout: Math.max(1, deadline - performance.now()), interval: 20 },
+              );
+            };
+            if (order === 'removal first') {
+              releaseCleanup();
+              await waitForBlocked(1);
+              pendingMove = move();
+            } else {
+              pendingMove = move();
+              await waitForBlocked(1);
+              releaseCleanup();
+            }
+            await waitForBlocked(2);
+          });
+        } finally {
+          releaseCleanup();
+          spy.mockRestore();
+        }
+        if (pendingMove === undefined) throw new Error('The task move was not started.');
+
+        const moved = await pendingMove;
         expect(moved.status, `${order}: ${moved.text}`).toBe(200);
         await vi.waitFor(
           async () => {
@@ -6630,6 +6687,58 @@ describe('the trash of tasks, lists and spaces', { timeout: 180_000 }, () => {
         await raced.release();
         await jobsSettled();
       }
+    });
+  });
+
+  describe('the synchronous trash size limit', () => {
+    /** Adds independently archived subtasks, as can accumulate under a live parent. */
+    async function addArchivedChildren(rootId: string, count: number): Promise<void> {
+      await asSystem(
+        `with generated as (select uuidv7() as id, 810000000 + n as number from generate_series(1, $4::int) as n)
+         insert into tasks (organization_id, id, key_prefix, key_number, space_id, list_id, parent_id,
+           name, status, priority, created_by_type, created_by_id, archived_at, archived_by_type,
+           archived_by_id, archive_root_id, archive_root, version)
+         select root.organization_id, generated.id, root.key_prefix, generated.number, root.space_id,
+           root.list_id, root.id, 'Archived task', 'todo', 'basse', 'user', $3, now(), 'user', $3,
+           generated.id, true, 2
+         from tasks as root cross join generated where root.organization_id = $1 and root.id = $2`,
+        [atelierNordId, rootId, camille.userId, count],
+      );
+    }
+
+    it('refuses 1001 tasks atomically, then trashes exactly 1000 in a single entry with every event', async () => {
+      const list = await createList(camille, produit.space.id, { name: 'Long-running project' });
+      const root = await createTask(camille, list.id, { name: 'Project archive' });
+      const rootId = await taskIdOf(root.key);
+      await addArchivedChildren(rootId, 1000);
+      await jobsSettled();
+      const eventsBefore = await outboxTotal();
+      const entriesForList = (): Promise<number> =>
+        countOf('select count(*)::int as total from trash_entries where list_id = $1', [list.id]);
+      const trashedTasksForList = (): Promise<number> =>
+        countOf(
+          'select count(*)::int as total from tasks where list_id = $1 and trash_entry_id is not null',
+          [list.id],
+        );
+
+      expectProblem(await trashRequest(root.key), 409, 'trash.tree-too-large', { limit: 1000 });
+      expect(await entriesForList()).toBe(0);
+      expect(await trashedTasksForList()).toBe(0);
+      expect(await outboxTotal()).toBe(eventsBefore);
+
+      await asSystem(
+        'delete from tasks where organization_id = $1 and parent_id = $2 and key_number = 810001000',
+        [atelierNordId, rootId],
+      );
+      const entry = await trashTask(root.key);
+      const events = await trashedOf(entry.id);
+
+      expect(entry.subtaskCount).toBe(999);
+      expect(await entriesForList()).toBe(1);
+      expect(await trashedTasksForList()).toBe(1000);
+      expect(events).toHaveLength(1000);
+      expect(new Set(events.map((event) => event.key)).size).toBe(1000);
+      expect(events[0]?.key).toBe(root.key);
     });
   });
 

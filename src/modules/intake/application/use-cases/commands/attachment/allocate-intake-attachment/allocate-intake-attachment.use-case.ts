@@ -37,6 +37,7 @@ export class AllocateIntakeAttachment {
         input.draftKey,
         this.now(),
       );
+      if (draft === null) throw new IntakeAttachmentError('limit-exceeded');
       const now = this.now();
       draft.requireOpen(draft.snapshot, now);
       const previous = await attachments.findReservationClaim(

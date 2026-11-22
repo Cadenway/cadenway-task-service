@@ -2,7 +2,9 @@ import type {
   FindOrganizationMember,
   FindOrganizationMemberOutput,
 } from '../../../../organization-members/public/membership/find-organization-member.js';
+import type { MembershipStamp } from '../../../application/models/membership/membership-stamp.model.js';
 import type { MemberDirectory } from '../../../application/ports/outbound/members/membership/member-directory.port.js';
+import type { MembershipProjection } from '../../../application/ports/outbound/members/membership/membership-projection.port.js';
 import type { MemberRole } from '../../../domain/value-objects/member/member-role.value-object.js';
 
 /**
@@ -15,7 +17,7 @@ import type { MemberRole } from '../../../domain/value-objects/member/member-rol
  * so row-level security limits it to its organization; a membership not learnt yet answers `null`,
  * as for a non-member. With `lock`, the membership stays locked `FOR SHARE` until the commit.
  */
-export class OrganizationMembersMemberDirectory implements MemberDirectory {
+export class OrganizationMembersMemberDirectory implements MemberDirectory, MembershipProjection {
   // #region Properties
   /**
    * Property findMember
@@ -68,6 +70,15 @@ export class OrganizationMembersMemberDirectory implements MemberDirectory {
       lock,
     });
     return member === null ? null : member.role;
+  }
+
+  /** Binds delegated access only to one unambiguous active membership. */
+  public stampOf(
+    organizationId: string,
+    userId: string,
+    lock: boolean,
+  ): Promise<MembershipStamp | null> {
+    return this.findMember.stamp({ organizationId, userId, lock, unique: true });
   }
   // #endregion
 }

@@ -37,6 +37,13 @@ export class TasksCommentWriter implements CommentTaskWriter {
     return this.beginComment.authorize(input);
   }
 
+  /** Rechecks a human commenter's authority without writing a task version. */
+  public async authorizeUser(
+    input: CommentReadInput,
+  ): ReturnType<CommentTaskWriter['authorizeUser']> {
+    return this.beginComment.authorizeUser(input);
+  }
+
   /** Authorizes and versions the task. */
   public async begin(
     input: Parameters<CommentTaskWriter['begin']>[0],

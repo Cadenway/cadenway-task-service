@@ -114,11 +114,16 @@ describe('notification delivery decision persistence', () => {
       await begin(second);
       // Pin the second snapshot before the winner commits.
       await second.query('select count(*) from notification_delivery_authorization_decisions');
-      await createOperation(first, winningEvent).execute(input, new AbortController().signal);
+      const matchingMembership = (): Promise<boolean> => Promise.resolve(true);
+      await createOperation(first, winningEvent).execute(
+        input,
+        new AbortController().signal,
+        matchingMembership,
+      );
 
       let acquired = false;
       const stale = createOperation(second, losingEvent)
-        .execute(input, new AbortController().signal)
+        .execute(input, new AbortController().signal, matchingMembership)
         .finally(() => {
           acquired = true;
         });
@@ -138,7 +143,11 @@ describe('notification delivery decision persistence', () => {
       await second.query('rollback');
 
       await begin(second);
-      await createOperation(second, losingEvent).execute(input, new AbortController().signal);
+      await createOperation(second, losingEvent).execute(
+        input,
+        new AbortController().signal,
+        matchingMembership,
+      );
       const bindings = await second.query(
         'select event_id from notification_delivery_authorization_decisions where authorization_request_id = $1',
         [correlation],

@@ -38,6 +38,7 @@ import { GetGoal } from '../../../../application/use-cases/queries/goal/get-goal
 import { GetGoalResult } from '../../../../application/use-cases/queries/goal/get-goal-result/get-goal-result.use-case.js';
 import { ListGoals } from '../../../../application/use-cases/queries/goal/list-goals/list-goals.use-case.js';
 import { answerGoal } from '../../errors/goal/goal.problem.js';
+import { CurrentMembershipGuard } from '../../guards/goal/current-membership.guard.js';
 import { GoalBodyGuard } from '../../guards/goal/goal-body.guard.js';
 import { GoalReplayGuard } from '../../guards/goal/goal-replay.guard.js';
 import {
@@ -97,7 +98,7 @@ export class GoalsController {
   /** Creates a goal and its initial results atomically. */
   @Post()
   @HttpCode(201)
-  @UseGuards(GoalBodyGuard, GoalReplayGuard)
+  @UseGuards(GoalBodyGuard, CurrentMembershipGuard, GoalReplayGuard)
   public async create(
     @Query(new ZodValidationPipe(CreateGoalInternalQueryParams))
     query: z.output<typeof CreateGoalInternalQueryParams>,
@@ -141,7 +142,7 @@ export class GoalsController {
 
   /** Updates a goal under an optional version condition. */
   @Patch(':goalId')
-  @UseGuards(GoalBodyGuard)
+  @UseGuards(GoalBodyGuard, CurrentMembershipGuard)
   public async update(
     @Param(new ZodValidationPipe(GetGoalInternalParams))
     path: z.output<typeof GetGoalInternalParams>,
@@ -167,6 +168,7 @@ export class GoalsController {
 
   /** Deletes a goal and its results. */
   @Delete(':goalId')
+  @UseGuards(CurrentMembershipGuard)
   @HttpCode(204)
   public async delete(
     @Param(new ZodValidationPipe(GetGoalInternalParams))
@@ -185,7 +187,7 @@ export class GoalsController {
   /** Adds one result to a writable goal. */
   @Post(':goalId/results')
   @HttpCode(201)
-  @UseGuards(GoalBodyGuard, GoalReplayGuard)
+  @UseGuards(GoalBodyGuard, CurrentMembershipGuard, GoalReplayGuard)
   public async createResult(
     @Param(new ZodValidationPipe(GetGoalInternalParams))
     path: z.output<typeof GetGoalInternalParams>,
@@ -230,7 +232,7 @@ export class GoalsController {
 
   /** Updates a visible result under the parent goal's version. */
   @Patch(':goalId/results/:resultId')
-  @UseGuards(GoalBodyGuard)
+  @UseGuards(GoalBodyGuard, CurrentMembershipGuard)
   public async updateResult(
     @Param(new ZodValidationPipe(GetGoalResultInternalParams))
     path: z.output<typeof GetGoalResultInternalParams>,
@@ -254,6 +256,7 @@ export class GoalsController {
 
   /** Removes a result from its parent goal. */
   @Delete(':goalId/results/:resultId')
+  @UseGuards(CurrentMembershipGuard)
   @HttpCode(204)
   public async deleteResult(
     @Param(new ZodValidationPipe(GetGoalResultInternalParams))

@@ -75,6 +75,11 @@ row before changing a reservation. The submission closes the draft, claims the s
 and releases unused active reservations in the same transaction as the task and outbox. Expiry
 selects at most 100 candidate IDs per page and rechecks the original deadline while locking one
 draft in a tenant transaction. It records all releases with the closure in that transaction.
+Admissions of new draft keys serialize on the publication row and stop after 10,000 distinct
+drafts for that publication. Existing drafts retain their original reservation deadline and replay
+semantics. Unpublishing and publishing issues a new key with its own draft capacity. Releasing a
+reservation frees one of that draft's five active attachment slots. The publication budget
+includes closed drafts.
 
 Logical list and space deletion revoke affected publications while holding the list tombstones.
 Physical list deletion removes the settings and keeps the key reservations. Physical task
@@ -94,5 +99,6 @@ key reservations intact. A failed attempt retries, then reaches
 The UTC minute schedule `task.expire-intake-attachment-drafts` also deletes at most 500 terminal
 reservations per occurrence once their last transition is at least 24 hours old and their
 draft has closed. It skips locked reservations. The opaque closed draft remains so an expired
-applicant key cannot open a second draft. A late verification of a removed reservation has no
-effect. Claim and release facts follow outbox retention.
+applicant key cannot open a second draft. Reclaiming markers while their publication remains
+available requires a server-issued draft capability with verifiable expiry. A late verification
+of a removed reservation has no effect. Claim and release facts follow outbox retention.

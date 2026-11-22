@@ -28,6 +28,7 @@ import type { TaskActor } from '../../../domain/value-objects/task/task-actor.va
  * - `trash-entry-not-restorable-yet`: an otherwise restorable entry awaits list deletion.
  * - `trash-writes-disabled`: the switch of the writes of the trash is off (`TrashWrites`): the
  *   route answers as one the service does not have.
+ * - `trash-tree-too-large`: a synchronous deletion exceeds its task budget.
  * - `version-mismatch`: `If-Match` names another version than the stored one.
  * - `status-hidden`: the status is hidden in the space the task is in after the operation.
  * - `cancel-reason-required`, `cancel-reason-unexpected`: the cancellation rules.
@@ -72,6 +73,7 @@ export type TaskRefusalReason =
   | { readonly reason: 'trash-entry-not-found' }
   | { readonly reason: 'trash-entry-not-restorable-yet' }
   | { readonly reason: 'trash-writes-disabled' }
+  | { readonly reason: 'trash-tree-too-large'; readonly limit: number }
   | { readonly reason: 'version-mismatch'; readonly version: number }
   | { readonly reason: 'status-hidden'; readonly status: StatusKey }
   | { readonly reason: 'cancel-reason-required' }

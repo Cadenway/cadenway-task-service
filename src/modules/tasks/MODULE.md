@@ -67,6 +67,7 @@ the archive and the deletion of a list; this module never writes a list.
 | `public/watcher/remove-member-watcher-overrides`      | member-lifecycle                                                                                                                                         |
 | `public/task/record-comment-activity`                 | task-comments                                                                                                                                            |
 | `public/task/begin-comment`                           | task-comments                                                                                                                                            |
+| `public/member/delegated-memberships`                 | task-comments, notification-visibility                                                                                                                   |
 | `public/task/resolve-comment-task`                    | task-comments                                                                                                                                            |
 | `public/task/find-task-reference`                     | access-requests                                                                                                                                          |
 | `public/task/find-task-references`                    | access-requests                                                                                                                                          |
@@ -374,7 +375,9 @@ access from visibility through a shared list.
 
 The P3c-2 reporting contract uses a verified API gateway user and organization. The list reads
 serve sprint reports, workload, timesheets and CSV rows. The team dashboard spans the caller's
-visible live lists. CSV rows carry encoded cells and assignee IDs for the gateway to resolve.
+visible live lists. The timesheet reader groups work dates in PostgreSQL and returns the full-week
+daily totals and one author/task page in the same snapshot. CSV rows carry encoded cells and
+assignee IDs for the gateway to resolve.
 The export checks list visibility, the active sort and the 10,000-row cap before sending headers.
 It orders task IDs once and reads at most 250 selected tasks at a time in the same tenant snapshot.
 The HTTP response writes legacy JSON incrementally, or UTF-8 NDJSON when the gateway explicitly
@@ -505,15 +508,28 @@ commands specify their own signed callers below.
   replay. Assignment also requires current assignee eligibility. A changed priority or
   assignment commits activity, events and the actor-scoped receipt with the task. Authorized
   no-ops return their receipt without changing the task.
+- Before a Git action, delegated Automation action, comment, or notification authorization,
+  Task requests the current membership stamp for each author or named recipient from
+  Organization. It signs only that account and the verified tenant as `task-service`. The
+  tenant transaction must see the same unique membership ID, version and role. A missing
+  membership is refused. Transport failures, missing configuration and disagreements with the
+  projection are retryable; the projection never substitutes for the authority.
+  The authorization is bounded to the request that obtained it, including any receipt replay.
+- `public/member/delegated-memberships` exports the proof operation to task-comments. The
+  consumer holds the matching projected membership while applying its own task authorization.
 - Automation notification authorization accepts a signed `notification-service` system actor
   scoped to the tenant. A single tenant snapshot checks active placement, the rule author's
   current edit access and the recipient's current view access. Success is bodyless and refusals
   return a generic `404 task.not-found`. All replies use `private, no-store`.
-- The three creations honour `Idempotency-Key` (`@Idempotent()`, applied by `tasks.module.ts`: the
-  decorator lives in `@cadenway/nest-common/database`, which the strict layout keeps out of
-  `presentation/`). A replay answers the recorded `Location` and `ETag`: the version at creation.
-  A request still running with the same key answers `409 idempotency.request-in-progress`; a
-  malformed key, `400 request.invalid` with one issue on the `Idempotency-Key` header.
+- Task, subtask, checklist item and dependency creations, as well as duplication and bulk actions,
+  honour `Idempotency-Key`. Before returning a stored response, a tenant snapshot checks the
+  viewer's current access to its resources and historical list identifiers. A bulk trash receipt
+  also requires the matching restorable entry. Bulk list scopes commit with the kit receipt and
+  are removed when it is deleted. Older bulk receipts without a matching scope answer
+  `404 task.not-found` during their remaining lifetime. An authorized replay keeps the original body,
+  `Location` and `ETag`. A refused replay hides the historical body and headers. A request still
+  running with the same key answers `409 idempotency.request-in-progress`; a malformed key answers
+  `400 request.invalid` with one issue on the `Idempotency-Key` header.
 - `If-Match` is optional on every change, except on `PATCH /tasks/{taskKey}` whose body has a
   `description` (even `null`), where its absence answers `400 request.invalid` with one issue
   `{ in: 'header', path: 'If-Match', code: 'invalid_type' }`. `*` satisfies it. A stale one answers
@@ -854,11 +870,14 @@ changes the assignees.
   exactly 30 days (`TRASH_RETENTION_DAYS`).
 - Bounds: an entry holds at most 651 live tasks (1 + 25 + 625) plus the archived subtasks under
   them, which the product does not limit (an archived subtask frees its place among the 25 and its
-  level), so they may hang below the 3 levels of the live tree. The reads and locks of an entry are
-  not capped at 650 descendants (the cap stays for a move and an archive); its tree walk has no
-  depth limit (a limit an editor could reach would block a deletion for good: moves and
-  attachments count the live height only, so archived chains can deepen). It stays in one
-  organization and one list, and PostgreSQL detects a cycle of parent links
+  level), so they may hang below the 3 levels of the live tree. A synchronous task deletion
+  reads at most 1,001 rows per tree query and acquires locks on at most 1,000 task IDs per
+  transaction. The budget includes the root, archived descendants and IDs locked in any
+  acquisition pass. A tree that exceeds the budget answers `409 trash.tree-too-large` before
+  any writes. Each child probe uses `tasks_trash_child_index` to skip rows outside the root's
+  list and rows already in the trash.
+  Existing entries can be restored or purged even when they exceed the deletion limit. The
+  tree walk stays in one organization and one list, and PostgreSQL detects a cycle of parent links
   (`CYCLE id SET is_cycle USING path`), a defect that throws. A batch of the deletion job still
   stops adding roots once it holds 500 tasks or more. A purge transaction erases up to 500 tasks,
   taking consecutive whole entries that fit. It erases an oversized entry breadth-first, starting
@@ -868,11 +887,10 @@ changes the assignees.
   every task it erases in that transaction, so a failed batch leaves its work available for retry.
   Enable the trash only after all purge workers support partially erased entries. Once enabled,
   keep a compatible worker when rolling back or disabling trash writes.
-  Known limit, to report: "Supprimer la tâche", a deletion batch, "Supprimer
-  définitivement" and a restoration move or erase an entry in one
-  transaction, whatever the archived subtasks it holds (an erasure costs what the trash of the
-  entry cost, in one transaction too: two outbox round trips per task; the 651 tasks of the
-  largest live tree were measured in the plans of `tests/trash-queries.int-spec.ts`). An entry
+  A deletion of a list still moves at least one whole tree per batch. A restoration
+  moves an entire entry in one transaction, whatever the archived subtasks it holds. The
+  651 tasks of the largest live tree were measured in the plans of
+  `tests/trash-queries.int-spec.ts`. An entry
   whose erasure keeps failing stays first in every batch of its organization and holds back its
   purge until the failure is fixed (the job retries it, then dead-letters it: "Retries" of
   `src/modules/deletion-lifecycle/MODULE.md`).
@@ -979,8 +997,8 @@ resolved when an event was appended (inside a joined transaction, before the out
 rows leave at the next poll).
 
 The queries (`GET` routes) run in `runReadOnly`, which prevents writes in the database. Task
-detail, individual task reads, list pages, subtasks and My Tasks use `REPEATABLE READ` so the
-resolved access, task rows, custom values and page totals share a snapshot. The operations of the
+detail, individual task reads, list pages, list counts and groups, subtasks and My Tasks use
+`REPEATABLE READ` so the resolved access, task rows, custom values and totals share a snapshot. The operations of the
 other modules a query calls join it. The kit refuses a join that asks for more than the running
 transaction gives. Queries without a snapshot read each statement as committed when it started.
 The access check runs in `runReadOnly` too. `FindTaskReference` and `FindTaskReferences` run in `run`, not
@@ -1022,8 +1040,11 @@ The task delete during purge cascades to watcher-override and comment rows; Post
 locks during that delete, after the task locks and before the subsequent space and list locks.
 A comment write holds the acting membership and supplied recipient memberships, then its task,
 then the task's space and list `FOR SHARE`. It subsequently inserts or updates the comment row,
-its activity and outbox. A status change holds the task's space and list after its task lock.
-A patch moving a task holds both placements in global order and rereads the actor's role.
+its activity and outbox. Single-task edits hold the task's space and list after its task lock.
+They recheck the actor's role under those locks before archive or version checks and before
+returning the result, including unchanged edits. A task creation holds its destination after
+the member locks and checks the list again before allocating keys. A patch moving a task holds
+both placements in global order and rereads the actor's role.
 Description-mention assignments lock supplied recipient memberships in user ID order before
 the task or list. They check recipient visibility on the resulting list while the actor's
 edit role and the placement are held.
@@ -1074,9 +1095,9 @@ Lock order of a task write:
 A task write does not lock before it knows the actor may see and change the task: it reads the
 task without a lock, checks the visibility of its list and `edit` on it, then locks it and reads
 it again, and checks both again when the locked task is in another list (a move committed
-meanwhile). An attachment does the same for the new parent. Single-task writes read the role once;
-tree writes check it again under the placement locks. A refused subtask creation that inherits its
-assignee locks no membership but the actor's. A move or an attachment locks the descendants in
+meanwhile). An attachment does the same for the new parent. Single-task and tree writes read
+the effective role again under their placement locks. Initial authorization precedes the lock of
+any inherited assignee. A move or an attachment locks the descendants in
 ordered statements until the subtree read under the locks holds nothing unlocked, and carries only
 the tasks that are still descendants then; a valid subtree has three levels and at most 650
 descendants, which bounds the passes, and a larger one is a defect that answers 500. A subtask

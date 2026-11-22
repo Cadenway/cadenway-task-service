@@ -142,19 +142,22 @@ export class UnarchiveTask {
               input.actorUserId,
               true,
             );
-            const { task, placement }: LocatedTask = await this.locator.locate(store, {
+            const request = {
               organizationId: input.organizationId,
               viewer,
               taskKey: input.taskKey,
               edit: true,
               lock: false,
-              archived: 'allow',
+              archived: 'allow' as const,
               expectedVersions: null,
-            });
+            };
+            const { task, placement }: LocatedTask = await this.locator.locate(store, request);
             const { archive } = task.snapshot;
             if (archive === null) {
-              this.locator.requireVersion(task, input.expectedVersions);
-              return this.views.build(store.reader, task);
+              const current = await this.locator.locate(store, { ...request, lock: true });
+              if (current.task.snapshot.archive !== null) throw new RetryArchive();
+              this.locator.requireVersion(current.task, input.expectedVersions);
+              return this.views.build(store.reader, current.task);
             }
             const restored: Task | null = await this.restore(
               store,

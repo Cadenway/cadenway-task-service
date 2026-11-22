@@ -8,6 +8,7 @@ import type { z } from 'zod';
 import { ApplyGitTaskStatus } from '../../../../application/use-cases/commands/task/apply-git-task-status/apply-git-task-status.use-case.js';
 import { TaskActionFilter } from '../../errors/task/task-action.filter.js';
 import { GitTaskActionReplayGuard } from '../../guards/task/git-task-action-replay.guard.js';
+import { actionProofOf } from '../../mappers/task/delegated-action-membership.mapper.js';
 import { toGitTaskAction } from '../../mappers/task/git-task-action.mapper.js';
 import { answerGitTaskRefusals } from '../../mappers/task/git-task-action-refusal.mapper.js';
 
@@ -33,7 +34,9 @@ export class GitTaskStatusController {
   ): Promise<z.output<typeof ApplyGitTaskStatusActionInternalResponse>> {
     const input = toGitTaskAction(request);
     return answerGitTaskRefusals(async () =>
-      ApplyGitTaskStatusActionInternalResponse.parse(await this.action.execute(input)),
+      ApplyGitTaskStatusActionInternalResponse.parse(
+        await this.action.execute(input, actionProofOf(request)),
+      ),
     );
   }
   // #endregion

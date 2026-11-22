@@ -26,6 +26,7 @@ the removal committed.
 | `public/membership/find-organization-member-roles` | tasks                                                                                                                        |
 | `public/membership/find-organization-owner`        | spaces                                                                                                                       |
 | `public/membership/list-active-members`            | tasks                                                                                                                        |
+| `public/membership/read-current-membership`        | access-requests, goals, spaces, tasks                                                                                        |
 | `public/membership/scan-membership-rebuild`        | member-lifecycle                                                                                                             |
 
 `OrganizationMembersModule` exports each public provider with its input and output types.
@@ -143,6 +144,10 @@ together.
 - Membership queries run in the tenant transaction of their
   caller and join it, so row-level security limits them to the organization of the context, which
   each query also names.
+- Goal writes, space administration, access-request management and the Document access proof
+  obtain the acting member's authority from Organization before the transaction. They require
+  the same membership generation, version and role in the local projection. Writes check the
+  projection under its transaction lock. Delegated actions use the same authority client.
 
 ## Decisions
 

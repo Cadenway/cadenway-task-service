@@ -17,7 +17,7 @@ import type { GetListCountsOutput } from './get-list-counts.output.js';
  *
  * @description
  * Reads a list the actor sees with the counts of its top-level tasks, subtasks left out
- * (`GET /internal/v1/lists/{listId}/counts`), in one read-only transaction, without a lock. An
+ * (`GET /internal/v1/lists/{listId}/counts`), in one read-only snapshot, without a lock. An
  * unknown list and a list the actor has no role on get the same answer, `list-not-found`. A list
  * without a task answers zeros.
  */
@@ -72,27 +72,33 @@ export class GetListCounts {
    * @throws {TaskRefusal} `organization-not-found` or `list-not-found`.
    */
   public async execute(input: GetListCountsInput): Promise<GetListCountsOutput> {
-    return this.unitOfWork.runReadOnly(async (store: TasksStore): Promise<GetListCountsOutput> => {
-      const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
-      const placement: ListPlacement | null = await this.spaces.findVisibleList(
-        input.organizationId,
-        viewer,
-        input.listId,
-      );
-      if (placement === null) {
-        throw new TaskRefusal({ reason: 'list-not-found' });
-      }
-      const counts: ReadonlyMap<string, TaskCountsView> = await store.counter.countsOfLists(
-        input.organizationId,
-        [input.listId],
-        input.today,
-      );
-      const [summary]: readonly ListSummaryView[] = this.summaries.build([placement.list], counts);
-      if (summary === undefined) {
-        throw new Error('The summary of the list is missing.');
-      }
-      return summary;
-    });
+    return this.unitOfWork.runReadOnly(
+      async (store: TasksStore): Promise<GetListCountsOutput> => {
+        const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
+        const placement: ListPlacement | null = await this.spaces.findVisibleList(
+          input.organizationId,
+          viewer,
+          input.listId,
+        );
+        if (placement === null) {
+          throw new TaskRefusal({ reason: 'list-not-found' });
+        }
+        const counts: ReadonlyMap<string, TaskCountsView> = await store.counter.countsOfLists(
+          input.organizationId,
+          [input.listId],
+          input.today,
+        );
+        const [summary]: readonly ListSummaryView[] = this.summaries.build(
+          [placement.list],
+          counts,
+        );
+        if (summary === undefined) {
+          throw new Error('The summary of the list is missing.');
+        }
+        return summary;
+      },
+      { snapshot: true },
+    );
   }
   // #endregion
 }

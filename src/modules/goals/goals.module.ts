@@ -4,6 +4,7 @@ import { Module } from '@nestjs/common';
 import { OrganizationMembersModule } from '../organization-members/organization-members.module.js';
 import { SpacesModule } from '../spaces/spaces.module.js';
 import { TasksModule } from '../tasks/tasks.module.js';
+import { currentMembershipProvider } from './composition/providers/adapters/goal/current-membership.provider.js';
 import { goalsUnitOfWorkProvider } from './composition/providers/adapters/goal/goals-unit-of-work.provider.js';
 import { goalUseCaseProviders } from './composition/providers/use-cases/goal/goal.provider.js';
 import { GoalsController } from './presentation/http/controllers/goal/goals.controller.js';
@@ -20,6 +21,12 @@ for (const handler of ['create', 'createResult'] as const) {
 @Module({
   imports: [OrganizationMembersModule, SpacesModule, TasksModule],
   controllers: [GoalsController],
-  providers: [goalsUnitOfWorkProvider, GoalBodyGuard, GoalReplayGuard, ...goalUseCaseProviders],
+  providers: [
+    goalsUnitOfWorkProvider,
+    currentMembershipProvider,
+    GoalBodyGuard,
+    GoalReplayGuard,
+    ...goalUseCaseProviders,
+  ],
 })
 export class GoalsModule {}

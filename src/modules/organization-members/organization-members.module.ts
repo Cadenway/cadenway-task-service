@@ -7,12 +7,14 @@ import { findOrganizationMemberProvider } from './composition/providers/use-case
 import { findOrganizationMemberRolesProvider } from './composition/providers/use-cases/membership/find-organization-member-roles.provider.js';
 import { findOrganizationOwnerProvider } from './composition/providers/use-cases/membership/find-organization-owner.provider.js';
 import { listActiveMembersProvider } from './composition/providers/use-cases/membership/list-active-members.provider.js';
+import { readCurrentMembershipProvider } from './composition/providers/use-cases/membership/read-current-membership.provider.js';
 import { DrizzleRebuildMembershipScan } from './infrastructure/persistence/drizzle/repositories/membership/drizzle-rebuild-membership-scan.repository.js';
 import { ApplyMembershipChange } from './public/membership/apply-membership-change.js';
 import { FindOrganizationMember } from './public/membership/find-organization-member.js';
 import { FindOrganizationMemberRoles } from './public/membership/find-organization-member-roles.js';
 import { FindOrganizationOwner } from './public/membership/find-organization-owner.js';
 import { ListActiveMembers } from './public/membership/list-active-members.js';
+import { ReadCurrentMembership } from './public/membership/read-current-membership.js';
 import { ScanMembershipRebuild } from './public/membership/scan-membership-rebuild.js';
 
 /**
@@ -34,6 +36,7 @@ import { ScanMembershipRebuild } from './public/membership/scan-membership-rebui
     findOrganizationMemberRolesProvider,
     findOrganizationOwnerProvider,
     listActiveMembersProvider,
+    readCurrentMembershipProvider,
     {
       provide: ScanMembershipRebuild,
       inject: [SystemTransactionRunner],
@@ -49,6 +52,7 @@ import { ScanMembershipRebuild } from './public/membership/scan-membership-rebui
     FindOrganizationMemberRoles,
     FindOrganizationOwner,
     ListActiveMembers,
+    ReadCurrentMembership,
     ScanMembershipRebuild,
   ],
 })

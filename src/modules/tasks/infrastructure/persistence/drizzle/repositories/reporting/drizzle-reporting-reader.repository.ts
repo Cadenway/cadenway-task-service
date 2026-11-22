@@ -5,12 +5,14 @@ import type { SQL } from 'drizzle-orm';
 import type { TaskFilter } from '../../../../../application/models/query/task-filter.model.js';
 import type { TaskOrder } from '../../../../../application/models/query/task-order.model.js';
 import type { ReportingBatch } from '../../../../../application/models/reporting/reporting-batch.model.js';
+import type { ReportingPosition } from '../../../../../application/models/reporting/reporting-position.model.js';
 import type { ReportingExportRow } from '../../../../../application/models/reporting/reporting-export-row.model.js';
 import type { ReportingExportRows } from '../../../../../application/models/reporting/reporting-export-rows.model.js';
 import type { ReportingReader } from '../../../../../application/ports/outbound/persistence/reporting/reporting-reader.port.js';
 import type { TaskSummaryView } from '../../../../../application/projections/task/task-summary.projection.js';
 import type { buildTeamDashboard } from '../../../../../domain/policies/reporting/dashboard.policy.js';
-import type { buildTimesheet } from '../../../../../domain/policies/reporting/timesheet.policy.js';
+import type { Timesheet } from '../../../../../domain/policies/reporting/timesheet.policy.js';
+import { reportingWindow } from '../../../../../domain/value-objects/reporting/reporting-calendar.value-object.js';
 import type { buildWorkload } from '../../../../../domain/policies/reporting/workload.policy.js';
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import { anyOf } from '../../mappers/page/any-of.mapper.js';
@@ -30,10 +32,7 @@ import { DrizzleTaskCollections } from '../task/task-collections.repository.js';
 import { DrizzleCustomFieldRepository } from '../custom-field/drizzle-custom-field.repository.js';
 
 type WorkloadTask = Parameters<typeof buildWorkload>[1][number];
-type TimesheetEntry = Parameters<typeof buildTimesheet>[1][number];
-type DashboardTask = Parameters<typeof buildTeamDashboard>[1][number] & {
-  readonly summary: TaskSummaryView;
-};
+type DashboardTask = Parameters<typeof buildTeamDashboard>[1][number];
 type DashboardTransition = Parameters<typeof buildTeamDashboard>[2][number];
 
 const EXPORT_PAGE_SIZE = 250;
@@ -62,6 +61,14 @@ function after(column: SQL, id: string | null): SQL {
   return id === null ? sql`` : sql` and ${column} > ${id}::uuid`;
 }
 
+function timesheetAfter(position: ReportingPosition | null): SQL {
+  if (position === null) return sql``;
+  if (position.userId === null) return sql` and false`;
+  const key = TaskKey.parse(position.taskKey);
+  return sql` and (${taskTimeEntries.authorUserId}, ${tasks.keyPrefix} collate "C", ${tasks.keyNumber})
+    > (${position.userId}::uuid, ${key.prefix}::text collate "C", ${key.number}::integer)`;
+}
+
 /** Tenant-scoped reporting reads. All methods join the unit of work's stable snapshot. */
 export class DrizzleReportingReader implements ReportingReader {
   // #region Properties
@@ -82,72 +89,126 @@ export class DrizzleReportingReader implements ReportingReader {
     organizationId: string,
     listId: string,
     filter: TaskFilter,
+    weekStart: string,
     afterId: string | null,
     limit: number,
   ): Promise<ReportingBatch<WorkloadTask>> {
     pageLimit(limit);
-    const rows = await this.pages.load(
-      organizationId,
-      sql`
-      select ${taskPageColumns()}, null as "sortValue" from ${tasks}
-      where ${taskFilterCondition(organizationId, listId, filter)}${after(sql`${tasks.id}`, afterId)}
-      order by ${tasks.id} limit ${limit + 1}`,
-    );
-    return batch(
-      rows.map(({ task }) => task),
-      limit,
-      (task) => ({
-        key: TaskKey.parse(task.key),
-        name: task.name,
-        status: task.status,
-        startDate: task.startDate,
-        dueDate: task.dueDate,
-        estimateMinutes: task.estimateMinutes,
-        assigneeIds: task.assigneeIds,
-      }),
-    );
-  }
-
-  /** Reads one page of entries in the requested work-date week. */
-  public async timesheetEntries(
-    organizationId: string,
-    listId: string,
-    weekStart: string,
-    afterId: string | null,
-    limit: number,
-  ): Promise<ReportingBatch<TimesheetEntry>> {
-    pageLimit(limit);
-    const rows = await this.db.execute<{
+    // A reversed historical span can only allocate to the Friday of its starting week.
+    const result = await this.db.execute<{
       id: string;
       keyPrefix: string;
       keyNumber: number;
       name: string;
       status: string;
-      authorUserId: string;
-      workDate: string;
-      minutes: number;
+      startDate: string | null;
+      dueDate: string | null;
+      estimateMinutes: number | null;
     }>(sql`
-      select ${taskTimeEntries.id} as "id", ${tasks.keyPrefix} as "keyPrefix",
+      select ${tasks.id} as "id", ${tasks.keyPrefix} as "keyPrefix",
         ${tasks.keyNumber} as "keyNumber", ${tasks.name} as "name", ${tasks.status} as "status",
-        ${taskTimeEntries.authorUserId} as "authorUserId", ${taskTimeEntries.workDate}::text as "workDate",
-        ${taskTimeEntries.minutes} as "minutes"
-      from ${taskTimeEntries} join ${tasks} on ${tasks.organizationId} = ${taskTimeEntries.organizationId}
-        and ${tasks.id} = ${taskTimeEntries.taskId}
+        ${tasks.startDate}::text as "startDate", ${tasks.dueDate}::text as "dueDate",
+        ${tasks.estimateMinutes} as "estimateMinutes"
+      from ${tasks}
+      where ${taskFilterCondition(organizationId, listId, filter)}
+        and ${tasks.status} <> 'cancelled' and ${tasks.estimateMinutes} > 0
+        and ${tasks.dueDate} is not null
+        and ((${tasks.dueDate} >= ${weekStart}::date
+          and coalesce(${tasks.startDate}, ${tasks.dueDate}) <= ${weekStart}::date + 15)
+          or (${tasks.startDate} > ${tasks.dueDate} and ${tasks.startDate} >= ${weekStart}::date
+            and ${tasks.startDate} < ${weekStart}::date + 14))${after(sql`${tasks.id}`, afterId)}
+      order by ${tasks.id} limit ${limit + 1}`);
+    const selected = result.rows.slice(0, limit);
+    const assignees = await new DrizzleTaskCollections(this.db).assigneesOf(
+      organizationId,
+      selected.map(({ id }) => id),
+    );
+    return {
+      items: selected.map((task) => ({
+        key: TaskKey.of(task.keyPrefix, task.keyNumber),
+        name: task.name,
+        status: toStatusKey(task.status, `task ${task.id}`),
+        startDate: task.startDate,
+        dueDate: task.dueDate,
+        estimateMinutes: task.estimateMinutes,
+        assigneeIds: assignees.get(task.id) ?? [],
+      })),
+      next: result.rows.length > limit ? (selected.at(-1)?.id ?? null) : null,
+    };
+  }
+
+  /** Aggregates the week in PostgreSQL and transfers at most one grouped page. */
+  public async timesheetPage(
+    organizationId: string,
+    listId: string,
+    weekStart: string,
+    position: ReportingPosition | null,
+    limit: number,
+  ): Promise<Timesheet & { readonly next: ReportingPosition | null }> {
+    pageLimit(limit);
+    const dates = reportingWindow(weekStart, 7).map((date) => date.format());
+    const scoped = sql`from ${taskTimeEntries} join ${tasks}
+      on ${tasks.organizationId} = ${taskTimeEntries.organizationId}
+      and ${tasks.id} = ${taskTimeEntries.taskId}
       where ${taskTimeEntries.organizationId} = ${organizationId}::uuid
         and ${tasks.organizationId} = ${organizationId}::uuid and ${tasks.listId} = ${listId}::uuid
         and ${liveTask()} and ${taskTimeEntries.workDate} >= ${weekStart}::date
-        and ${taskTimeEntries.workDate} < (${weekStart}::date + 7)${after(sql`${taskTimeEntries.id}`, afterId)}
-      order by ${taskTimeEntries.id} limit ${limit + 1}`);
-    return batch(rows.rows, limit, (row) => ({
-      authorUserId: row.authorUserId,
-      workDate: row.workDate,
-      minutes: row.minutes,
-      task: {
-        key: TaskKey.of(row.keyPrefix, row.keyNumber),
+        and ${taskTimeEntries.workDate} < (${weekStart}::date + 7)`;
+    const totals = await this.db.execute<{ date: string; totalMinutes: number }>(sql`
+      select ${taskTimeEntries.workDate}::text as date,
+        sum(${taskTimeEntries.minutes})::double precision as "totalMinutes"
+      ${scoped}
+      group by ${taskTimeEntries.workDate}`);
+    const minutesByDate = new Map(totals.rows.map((row) => [row.date, row.totalMinutes]));
+    const days = dates.map((date) => ({ date, totalMinutes: minutesByDate.get(date) ?? 0 }));
+    const dailyMinutes = sql.join(
+      dates.map(
+        (date) => sql`coalesce(sum(${taskTimeEntries.minutes}) filter (
+        where ${taskTimeEntries.workDate} = ${date}::date
+      ), 0)::double precision`,
+      ),
+      sql`, `,
+    );
+    const grouped = await this.db.execute<{
+      keyPrefix: string;
+      keyNumber: number;
+      name: string;
+      status: string;
+      authorUserId: string;
+      minutesByDay: number[];
+      totalMinutes: number;
+    }>(sql`
+      select ${tasks.keyPrefix} as "keyPrefix", ${tasks.keyNumber} as "keyNumber",
+        ${tasks.name} as "name", ${tasks.status} as "status",
+        ${taskTimeEntries.authorUserId} as "authorUserId",
+        array[${dailyMinutes}] as "minutesByDay",
+        sum(${taskTimeEntries.minutes})::double precision as "totalMinutes"
+      ${scoped}${timesheetAfter(position)}
+      group by ${taskTimeEntries.authorUserId}, ${tasks.keyPrefix}, ${tasks.keyNumber},
+        ${tasks.name}, ${tasks.status}
+      order by ${taskTimeEntries.authorUserId}, ${tasks.keyPrefix} collate "C", ${tasks.keyNumber}
+      limit ${limit + 1}`);
+    const items = grouped.rows.slice(0, limit).map((row) => {
+      const taskKey = TaskKey.of(row.keyPrefix, row.keyNumber).format();
+      return {
+        authorUserId: row.authorUserId,
+        taskKey,
         name: row.name,
-        status: toStatusKey(row.status, `task ${row.id}`),
-      },
-    }));
+        status: toStatusKey(row.status, `task ${taskKey}`),
+        minutesByDay: row.minutesByDay,
+        totalMinutes: row.totalMinutes,
+      };
+    });
+    const last = items.at(-1);
+    return {
+      days,
+      totalMinutes: days.reduce((sum, day) => sum + day.totalMinutes, 0),
+      items,
+      next:
+        grouped.rows.length > limit && last !== undefined
+          ? { userId: last.authorUserId, taskKey: last.taskKey }
+          : null,
+    };
   }
 
   /** Reads one page of currently visible live tasks. */
@@ -159,26 +220,54 @@ export class DrizzleReportingReader implements ReportingReader {
   ): Promise<ReportingBatch<DashboardTask>> {
     pageLimit(limit);
     if (visibleListIds.length === 0) return { items: [], next: null };
+    const result = await this.db.execute<{
+      id: string;
+      keyPrefix: string;
+      keyNumber: number;
+      status: string;
+      dueDate: string | null;
+    }>(sql`
+      select ${tasks.id} as "id", ${tasks.keyPrefix} as "keyPrefix",
+        ${tasks.keyNumber} as "keyNumber", ${tasks.status} as "status",
+        ${tasks.dueDate}::text as "dueDate" from ${tasks}
+      where ${tasks.organizationId} = ${organizationId}::uuid
+        and ${anyOf(tasks.listId, visibleListIds, 'uuid')} and ${liveTask()}${after(sql`${tasks.id}`, afterId)}
+      order by ${tasks.id} limit ${limit + 1}`);
+    const selected = result.rows.slice(0, limit);
+    const assignees = await new DrizzleTaskCollections(this.db).assigneesOf(
+      organizationId,
+      selected.map(({ id }) => id),
+    );
+    return {
+      items: selected.map((task) => ({
+        id: task.id,
+        key: TaskKey.of(task.keyPrefix, task.keyNumber),
+        status: toStatusKey(task.status, `task ${task.id}`),
+        dueDate: task.dueDate,
+        assigneeIds: assignees.get(task.id) ?? [],
+      })),
+      next: result.rows.length > limit ? (selected.at(-1)?.id ?? null) : null,
+    };
+  }
+
+  /** Loads the dashboard's bounded overdue summaries within the same visibility snapshot. */
+  public async dashboardSummaries(
+    organizationId: string,
+    visibleListIds: readonly string[],
+    taskIds: readonly string[],
+  ): Promise<readonly TaskSummaryView[]> {
+    if (taskIds.length > 10) throw new Error('Dashboard summaries are limited to ten tasks.');
+    if (taskIds.length === 0 || visibleListIds.length === 0) return [];
     const rows = await this.pages.load(
       organizationId,
       sql`
       select ${taskPageColumns()}, null as "sortValue" from ${tasks}
       where ${tasks.organizationId} = ${organizationId}::uuid
-        and ${anyOf(tasks.listId, visibleListIds, 'uuid')} and ${liveTask()}${after(sql`${tasks.id}`, afterId)}
-      order by ${tasks.id} limit ${limit + 1}`,
+        and ${anyOf(tasks.listId, visibleListIds, 'uuid')}
+        and ${anyOf(tasks.id, taskIds, 'uuid')} and ${liveTask()}
+      order by ${tasks.id}`,
     );
-    return batch(
-      rows.map(({ task }) => task),
-      limit,
-      (task) => ({
-        id: task.id,
-        key: TaskKey.parse(task.key),
-        status: task.status,
-        dueDate: task.dueDate,
-        assigneeIds: task.assigneeIds,
-        summary: task,
-      }),
-    );
+    return rows.map(({ task }) => task);
   }
 
   /** Reads completion transitions for currently visible live tasks. */

@@ -14,6 +14,7 @@ import {
   Put,
   Query,
   Res,
+  UseGuards,
 } from '@nestjs/common';
 import type { Response } from 'express';
 
@@ -29,6 +30,7 @@ import { ListGrantPath } from '../../dto/input/access/list-grant-path.dto.js';
 import { ListGrantsPath } from '../../dto/input/access/list-grants-path.dto.js';
 import { ListGrantsQuery } from '../../dto/input/access/list-grants-query.dto.js';
 import { answerRefusals } from '../../errors/space/space-refusal.problem.js';
+import { CurrentMembershipGuard } from '../../guards/space/current-membership.guard.js';
 import { toGrantsPosition } from '../../mappers/access/grant-cursor.mapper.js';
 import { toGrantPage } from '../../mappers/access/grant-page.mapper.js';
 import { toGrant } from '../../mappers/access/grant.mapper.js';
@@ -49,6 +51,7 @@ import { toExpectedVersions } from '../../mappers/version/expected-versions.mapp
  */
 @Controller('internal/v1/lists/:listId/grants')
 @InternalAccess({ issuers: ['api-gateway'], actors: ['user'], organization: 'required' })
+@UseGuards(CurrentMembershipGuard)
 export class ListGrantsController {
   // #region Properties
   /**

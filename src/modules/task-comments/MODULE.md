@@ -43,10 +43,14 @@ cascades on purge. Migration `0009_collaboration.sql` creates the table.
 - `POST /internal/v1/tasks/{taskKey}/automation-comments`: creates a top-level comment with
   `200` and an actor-scoped, required `Idempotency-Key`. The signed `automation-service` rule
   actor uses a lowercase UUIDv7 and is recorded on the comment, activity and creation event. The rule author's current
-  edit access is checked before replay and again under the write locks.
+  membership is proved by Organization before replay or writing. The live membership stamp must
+  match the Task projection in the tenant transaction that checks edit access and applies the write.
 
 The ordinary comment routes require an internal gateway user and a visible task. An invisible task answers
 `task.not-found`; a missing, deleted or unrelated comment answers `comment.not-found`.
+When an idempotency key is present, comment creation checks the actor's current task visibility and
+comment authority before replaying its stored response. A revoked or downgraded actor cannot read
+the receipt through this route.
 A task in a restorable trash entry answers `task.trashed` with its entry details to an eligible
 editor. A comment patch requires a JSON body, including when the submitted patch is `{}`.
 

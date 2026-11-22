@@ -2971,6 +2971,10 @@ export class InMemoryTasks implements TasksUnitOfWork {
       dependencies: this.dependencies,
       customFields: this.customFields,
       time: this.time,
+      bulkReceipts: {
+        record: (): Promise<void> => Promise.reject(new Error('Unexpected bulk receipt write.')),
+        find: (): Promise<null> => Promise.resolve(null),
+      },
       copies: {
         listSources: (
           organizationId: string,

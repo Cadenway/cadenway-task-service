@@ -137,6 +137,23 @@ describe('TaskLocator: a change needs edit on the list of the task', () => {
     ).toEqual({ reason: 'role-insufficient', role: 'comment' });
   });
 
+  it('checks current edit access under the task and placement locks before revealing the version', async () => {
+    const trace: string[] = [];
+    const tasks = InMemoryTasks.withCad482({ trace });
+    const spaces = new InMemorySpaceDirectory({ trace });
+    spaces.revokedUnderLock.add(SPRINT_14);
+
+    const refusal = await refusalOf(locate(spaces, request({ expectedVersions: [3] }), tasks));
+
+    expect(refusal).toEqual({ reason: 'task-not-found' });
+    expect(trace).toEqual([
+      'tasks.findByKey:read',
+      'spaces.findVisibleList',
+      'tasks.findByKey:lock',
+      'spaces.lockTrashLists',
+    ]);
+  });
+
   it('checks If-Match once the role allows the change', async () => {
     expect(
       await refusalOf(

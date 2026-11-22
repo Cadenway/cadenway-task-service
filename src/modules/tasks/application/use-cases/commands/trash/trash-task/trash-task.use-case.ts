@@ -19,8 +19,11 @@ import { TrashWriter } from '../../../../services/trash/trash-writer.service.js'
 import type { TrashTaskInput } from './trash-task.input.js';
 import type { TrashTaskOutput } from './trash-task.output.js';
 
-/** Limits retries when a task is restored between the tree read and the fallback lookup. */
+/** Limits retries when a task is restored or changes list between the two reads. */
 const MAX_ATTEMPTS: number = 3;
+
+/** The most tasks a synchronous deletion may move in one transaction, including its root. */
+const MAX_TRASH_TASKS: number = 1_000;
 
 /** Rolls back all task locks before retrying the ordered acquisition. */
 class RetryTrashTree extends Error {}
@@ -52,8 +55,9 @@ class RetryTrashTree extends Error {}
  * as the unlocked read then does. If it is live on that read, the transaction rolls back and retries
  * the ordered acquisition up to three times. An archived subtask goes with it and keeps its archive, out of
  * the archives while in the trash; a subtask deleted before keeps its own entry, and a subtask in
- * another list (an archived task whose parent moved away) stays. An entry holds at most 651 live
- * tasks and the archived subtasks under them, which the product does not limit.
+ * another list (an archived task whose parent moved away) stays. Discovery reads at most 1,001
+ * tasks. Up to 1,000 tasks can be locked, including the root and archived descendants. An
+ * overflowing tree checks the root and current list under lock before refusing the operation.
  *
  * The entry gets the transaction instant, the actor and the parent the root reads with, and every
  * task its entry, its next version and `updatedAt`, in one statement (`TrashWriter`); then one
@@ -131,7 +135,7 @@ export class TrashTask {
    * @returns {Promise<TrashTaskOutput>} The entry.
    * @throws {TaskRefusal} `trash-writes-disabled` while the switch is off, then
    * `organization-not-found`, `task-not-found`, `task-trashed`, `role-insufficient`,
-   * `task-archived` or `version-mismatch`.
+   * `task-archived`, `version-mismatch` or `trash-tree-too-large`.
    * @throws {Error} When the tree holds a cycle of parent links or keeps changing while it is
    * locked, or a task changed version under its lock: defects.
    */
@@ -158,13 +162,7 @@ export class TrashTask {
             expectedVersions: input.expectedVersions,
           };
           const located: LocatedTask = await this.locator.locate(store, request);
-          const locked: LockedTrashTrees = await this.trees.lock(
-            store,
-            organizationId,
-            [located.task.snapshot.id],
-            [],
-            Number.POSITIVE_INFINITY,
-          );
+          const locked: LockedTrashTrees = await this.lockTree(store, request, located.task);
           const root: Task | undefined = locked.trees[0]?.root;
           if (root === undefined) {
             // A live task was restored between the reads: acquire its tree again.
@@ -209,6 +207,34 @@ export class TrashTask {
       }
     }
     throw new Error(`The task ${input.taskKey} kept leaving its tree while it was locked.`);
+  }
+
+  /**
+   * Locks the tree or checks the caller can still edit it before reporting the size refusal.
+   *
+   * @param store - The store of the transaction.
+   * @param request - The request initially authorized without a task lock.
+   * @param task - The root from the initial lookup.
+   * @returns The locked tree.
+   */
+  private async lockTree(
+    store: TasksStore,
+    request: LocateRequest,
+    task: Task,
+  ): Promise<LockedTrashTrees> {
+    try {
+      return await this.trees.lock(store, request.organizationId, [task.snapshot.id], [], {
+        strict: MAX_TRASH_TASKS,
+      });
+    } catch (error: unknown) {
+      if (error instanceof TaskRefusal && error.refusal.reason === 'trash-tree-too-large') {
+        const current: LocatedTask = await this.locator.locate(store, { ...request, lock: true });
+        if (current.task.snapshot.listId !== task.snapshot.listId) {
+          throw new RetryTrashTree();
+        }
+      }
+      throw error;
+    }
   }
   // #endregion
 }

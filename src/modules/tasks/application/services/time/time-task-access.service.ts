@@ -6,7 +6,6 @@ import type { MemberDirectory } from '../../ports/outbound/members/membership/me
 import type { SpaceDirectory } from '../../ports/outbound/spaces/space/space-directory.port.js';
 import { ViewerResolver } from '../member/viewer-resolver.service.js';
 import { TaskLocator } from '../task/task-locator.service.js';
-import { TaskMovePlanner } from '../task/task-move-planner.service.js';
 
 /** Resolves task access inside the caller's transaction. */
 export class TimeTaskAccess {
@@ -14,7 +13,6 @@ export class TimeTaskAccess {
   /** The dependencies of this operation. */
   private readonly viewers: ViewerResolver;
   private readonly locator: TaskLocator;
-  private readonly planner: TaskMovePlanner;
   // #endregion
 
   // #region Constructor
@@ -22,7 +20,6 @@ export class TimeTaskAccess {
   public constructor(members: MemberDirectory, spaces: SpaceDirectory) {
     this.viewers = new ViewerResolver(members);
     this.locator = new TaskLocator(spaces);
-    this.planner = new TaskMovePlanner(spaces);
   }
   // #endregion
 
@@ -39,7 +36,7 @@ export class TimeTaskAccess {
       input.actorUserId,
       write,
     );
-    const located: LocatedTask = await this.locator.locate(store, {
+    return this.locator.locate(store, {
       organizationId: input.organizationId,
       viewer,
       taskKey: input.taskKey,
@@ -48,10 +45,6 @@ export class TimeTaskAccess {
       archived: mode === 'read' ? 'allow' : 'refuse',
       expectedVersions: null,
     });
-    if (write) {
-      await this.planner.holdPlacement(input.organizationId, viewer, located.task.snapshot.listId);
-    }
-    return located;
   }
   // #endregion
 }

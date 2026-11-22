@@ -132,7 +132,9 @@ export class ArchiveTask {
           };
           const located: LocatedTask = await this.locator.locate(store, request);
           if (!located.task.isLive) {
-            return this.views.build(store.reader, located.task);
+            const current = await this.locator.locate(store, { ...request, lock: true });
+            if (current.task.isLive) throw new RetryArchiveTree();
+            return this.views.build(store.reader, current.task);
           }
           const subtree: LockedSubtree = await this.subtrees.lock(
             store,

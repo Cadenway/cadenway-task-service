@@ -28,6 +28,7 @@ import {
   EXPIRE_INTAKE_ATTACHMENT_DRAFTS_QUEUE,
   PURGE_INTAKE_RECEIPTS_QUEUE,
 } from '../src/config/job-queues.js';
+import { MAX_INTAKE_ATTACHMENT_DRAFTS_PER_PUBLICATION } from '../src/modules/intake/domain/value-objects/attachment/intake-attachment-limits.value-object.js';
 import { ExpireIntakeAttachmentDraftsHandler } from '../src/modules/intake/presentation/jobs/handlers/attachment/expire-intake-attachment-drafts.handler.js';
 import { PurgeIntakeReceiptsHandler } from '../src/modules/intake/presentation/jobs/handlers/form/purge-intake-receipts.handler.js';
 
@@ -452,8 +453,12 @@ describe('intake with PostgreSQL and NATS', () => {
       sizeBytes: 184320,
     };
 
-    async function allocate(key: string, index: number): Promise<request.Response> {
-      return send('post', `/internal/v1/intake-forms/${publicKey}/attachments`, {
+    async function allocate(
+      key: string,
+      index: number,
+      publicationKey = publicKey,
+    ): Promise<request.Response> {
+      return send('post', `/internal/v1/intake-forms/${publicationKey}/attachments`, {
         system: true,
         headers: { 'Intake-Draft-Key': key, 'Idempotency-Key': `attachment-${String(index)}` },
         body: allocationBody,
@@ -566,6 +571,60 @@ describe('intake with PostgreSQL and NATS', () => {
           [organizationId, createHash('sha256').update(concurrentKey).digest('hex')],
         ),
       ).toEqual([{ total: 5 }]);
+    });
+
+    it('shares one budget across simultaneous new drafts and keeps existing reservations replayable', async () => {
+      const space = await send('post', '/internal/v1/spaces', {
+        body: { name: 'Demandes internes', prefix: 'ADM', visibility: 'private' },
+      });
+      expect(space.status, space.text).toBe(201);
+      const admissionListId = CreateSpaceInternalResponse.parse(space.body as unknown).firstList.id;
+      const publication = await send(
+        'post',
+        `/internal/v1/lists/${admissionListId}/intake-form/publish`,
+      );
+      expect(publication.status, publication.text).toBe(200);
+      const admissionKey = GetIntakeFormConfigurationInternalResponse.parse(
+        publication.body as unknown,
+      ).publicKey;
+      if (admissionKey === null) throw new Error('The admission fixture has no public key.');
+
+      const first = await allocate('f'.repeat(43), 1, admissionKey);
+      expect(first.status, first.text).toBe(201);
+      const reservation = AllocateIntakeAttachmentInternalResponse.parse(first.body as unknown);
+      await query(
+        `insert into intake_attachment_drafts
+           (organization_id, publication_id, draft_digest, expires_at, closed_at)
+         select $1, $2, encode(sha256(int4send(n)), 'hex'), now() - interval '1 hour', now()
+         from generate_series(1, $3::integer) as n`,
+        [
+          organizationId,
+          reservation.publicationId,
+          MAX_INTAKE_ATTACHMENT_DRAFTS_PER_PUBLICATION - 2,
+        ],
+      );
+
+      const outcomes = await Promise.all([
+        allocate('g'.repeat(43), 1, admissionKey),
+        allocate('h'.repeat(43), 1, admissionKey),
+      ]);
+      expect(outcomes.map((response) => response.status).sort()).toEqual([201, 422]);
+      expect(outcomes.find((response) => response.status === 422)?.body).toMatchObject({
+        code: 'intake-form.attachment-limit-exceeded',
+      });
+      expect(
+        await query<{ total: number }>(
+          `select count(*)::int as total from intake_attachment_drafts
+           where organization_id = $1 and publication_id = $2`,
+          [organizationId, reservation.publicationId],
+        ),
+      ).toEqual([{ total: MAX_INTAKE_ATTACHMENT_DRAFTS_PER_PUBLICATION }]);
+
+      const replay = await allocate('f'.repeat(43), 1, admissionKey);
+      expect(replay.status, replay.text).toBe(201);
+      expect(AllocateIntakeAttachmentInternalResponse.parse(replay.body as unknown)).toEqual(
+        reservation,
+      );
     });
 
     it('keeps the same draft credential separate between organizations and publications', async () => {

@@ -1,4 +1,5 @@
 import type { Task } from '../../../domain/aggregates/task/task.aggregate.js';
+import { TaskRefusal } from '../../models/task/task-refusal.model.js';
 import type { TasksStore } from '../../models/transactions/tasks-store.model.js';
 import type { LockedTrashTrees } from '../../models/trash/locked-trash-trees.model.js';
 import type { TrashTreeNode } from '../../models/trash/trash-tree-node.model.js';
@@ -43,11 +44,13 @@ export class TrashTreeLocker {
    * @param {readonly string[]} rootIds - The roots, in the order to take them.
    * @param {readonly Task[]} held - The tasks the caller holds locked already, kept as they are
    * (none for a deletion and the deletion job, which lock the root with its tree).
-   * @param {number} maxTasks - The roots are taken until their trees hold this many tasks or more;
-   * `Infinity` to take them all.
+   * @param maxTasks - The roots are taken until their trees hold this many tasks or more;
+   * `Infinity` to take them all. Pass `{ strict: ceiling }` to bound discovery and locks
+   * for a single root.
    * @param {readonly string[]} otherIds - Additional tasks to lock with the trees.
    * @param {boolean} withChecklists - Whether to load checklists for the locked tasks.
    * @returns {Promise<LockedTrashTrees>} The roots taken and their trees.
+   * @throws {TaskRefusal} `trash-tree-too-large` when the strict ceiling is exceeded.
    * @throws {Error} When the trees keep changing under the locks, or a task is in two trees:
    * defects.
    */
@@ -56,16 +59,30 @@ export class TrashTreeLocker {
     organizationId: string,
     rootIds: readonly string[],
     held: readonly Task[],
-    maxTasks: number,
+    maxTasks: number | { readonly strict: number },
     otherIds: readonly string[] = [],
     withChecklists: boolean = false,
   ): Promise<LockedTrashTrees> {
     const locked = new Map<string, Task>(
       held.map((task: Task): [string, Task] => [task.snapshot.id, task]),
     );
+    const ceiling: number | null = typeof maxTasks === 'number' ? null : maxTasks.strict;
+    const requestedLocks = new Set(locked.keys());
     const missingOthers = new Set<string>();
-    const read: readonly TrashTreeNode[] = await store.tasks.trashTrees(organizationId, rootIds);
-    const examined: readonly string[] = this.take(rootIds, read, maxTasks);
+    const readTree = async (ids: readonly string[]): Promise<readonly TrashTreeNode[]> => {
+      const nodes = await store.tasks.trashTrees(
+        organizationId,
+        ids,
+        ceiling === null ? undefined : ceiling + 1,
+      );
+      if (ceiling !== null && nodes.length > ceiling) {
+        throw new TaskRefusal({ reason: 'trash-tree-too-large', limit: ceiling });
+      }
+      return nodes;
+    };
+    const read: readonly TrashTreeNode[] = await readTree(rootIds);
+    const examined: readonly string[] =
+      typeof maxTasks === 'number' ? this.take(rootIds, read, maxTasks) : rootIds;
     let nodes: readonly TrashTreeNode[] = read.filter((node: TrashTreeNode): boolean =>
       examined.includes(node.rootId),
     );
@@ -73,6 +90,12 @@ export class TrashTreeLocker {
       const unlocked: readonly string[] = [
         ...new Set([...nodes.map((node: TrashTreeNode): string => node.id), ...otherIds]),
       ].filter((id: string): boolean => !locked.has(id) && !missingOthers.has(id));
+      if (ceiling !== null) {
+        for (const id of unlocked) requestedLocks.add(id);
+        if (requestedLocks.size > ceiling) {
+          throw new TaskRefusal({ reason: 'trash-tree-too-large', limit: ceiling });
+        }
+      }
       if (unlocked.length === 0) {
         return { examined, trees: this.treesOf(examined, nodes, locked) };
       }
@@ -87,7 +110,7 @@ export class TrashTreeLocker {
       for (const id of otherIds) {
         if (unlocked.includes(id) && !locked.has(id)) missingOthers.add(id);
       }
-      nodes = await store.tasks.trashTrees(organizationId, examined);
+      nodes = await readTree(examined);
     }
     throw new Error(
       `The trees of the trash entries of ${examined.join(', ')} kept changing while they were locked.`,

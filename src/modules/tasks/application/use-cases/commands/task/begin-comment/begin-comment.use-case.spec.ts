@@ -7,6 +7,7 @@ import {
   INES,
   InMemorySpaceDirectory,
   InMemoryTasks,
+  archiveFrom,
   atelierNordMembers,
   placedList,
   placedSpace,
@@ -80,6 +81,28 @@ describe('begin comment', () => {
       role: 'comment',
     });
     expect(await begin.authorize(delegate)).toBe(false);
+    expect(tasks.stored(CAD_482).version).toBe(12);
+  });
+
+  it('checks the human comment role on replay without advancing the task', async () => {
+    const tasks = InMemoryTasks.withCad482();
+    const comment = new BeginComment(
+      tasks,
+      atelierNordMembers(),
+      sprint14SharedWith({ [HUGO]: 'comment' }),
+    );
+    const viewer = new BeginComment(
+      tasks,
+      atelierNordMembers(),
+      sprint14SharedWith({ [HUGO]: 'view' }),
+    );
+    const author = { ...input, actorUserId: HUGO };
+
+    expect(await comment.authorizeUser(author)).toEqual({ outcome: 'authorized' });
+    expect(await viewer.authorizeUser(author)).toEqual({
+      outcome: 'role-insufficient',
+      role: 'view',
+    });
     expect(tasks.stored(CAD_482).version).toBe(12);
   });
 
@@ -187,6 +210,16 @@ describe('begin comment', () => {
       outcome: 'task-trashed',
       details: { key: 'CAD-482', rootKey: 'CAD-482', trashedBy: { type: 'user', id: CAMILLE } },
     });
+    expect(await useCase.authorizeUser(input)).toMatchObject({
+      outcome: 'task-trashed',
+      details: { key: 'CAD-482', rootKey: 'CAD-482' },
+    });
+    expect(tasks.stored(CAD_482).version).toBe(12);
+  });
+  it('refuses a replay after a task is archived', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState({ archive: archiveFrom(CAD_482) })] });
+    const useCase = new BeginComment(tasks, atelierNordMembers(), new InMemorySpaceDirectory());
+    expect(await useCase.authorizeUser(input)).toEqual({ outcome: 'task-archived' });
     expect(tasks.stored(CAD_482).version).toBe(12);
   });
   it('holds recipient memberships and the task placement for the transaction', async () => {

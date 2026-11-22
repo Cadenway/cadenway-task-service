@@ -76,8 +76,14 @@ export const SCHEDULE_TRASH_PURGE_QUEUE: string = 'task.schedule-trash-purge';
 /** System-only queue of the minutely intake receipt retention job. */
 export const PURGE_INTAKE_RECEIPTS_QUEUE: string = 'task.purge-intake-receipts';
 
+/** System-only queue of the minutely HTTP idempotency receipt retention job. */
+export const PURGE_IDEMPOTENCY_RECEIPTS_QUEUE: string = 'task.purge-idempotency-receipts';
+
 /** System-only queue releasing abandoned intake attachment reservations every minute. */
 export const EXPIRE_INTAKE_ATTACHMENT_DRAFTS_QUEUE: string = 'task.expire-intake-attachment-drafts';
+
+/** Checks current Organization membership before a notification delivery decision. */
+export const DECIDE_NOTIFICATION_DELIVERY_QUEUE: string = 'task.decide-notification-delivery';
 
 /**
  * Constant jobQueues
@@ -115,7 +121,7 @@ export const EXPIRE_INTAKE_ATTACHMENT_DRAFTS_QUEUE: string = 'task.expire-intake
  * that, plus the archived subtasks of its entries, which the product does not limit), are idempotent, start no batch once their signal
  * aborts and resume from what is left; their dead letters are described in the MODULE.md of the
  * deletion-lifecycle module.
- * Intake receipt cleanup uses the same retries and deletes batches of at most 500 rows per
+ * Receipt cleanup uses the same retries and deletes batches of at most 500 rows per
  * system transaction. Its next occurrence also picks up receipts skipped by a concurrent writer.
  *
  * @type {readonly JobQueueDeclaration[]}
@@ -127,7 +133,9 @@ export const jobQueues: readonly JobQueueDeclaration[] = [
   PURGE_TRASH_QUEUE,
   SCHEDULE_TRASH_PURGE_QUEUE,
   PURGE_INTAKE_RECEIPTS_QUEUE,
+  PURGE_IDEMPOTENCY_RECEIPTS_QUEUE,
   EXPIRE_INTAKE_ATTACHMENT_DRAFTS_QUEUE,
+  DECIDE_NOTIFICATION_DELIVERY_QUEUE,
 ].map((name: string): JobQueueDeclaration => ({
   name,
   retryLimit: 8,

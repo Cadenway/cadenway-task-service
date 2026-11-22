@@ -16,6 +16,7 @@ import { OutboxTaskEvents } from '../../../../messaging/outbox/task/outbox-task-
 import { DrizzleActivityRepository } from '../../repositories/activity/drizzle-activity.repository.js';
 import { DrizzleArchiveReader } from '../../repositories/archive/drizzle-archive-reader.repository.js';
 import { DrizzleAssignedTaskReader } from '../../repositories/assignee/drizzle-assigned-task-reader.repository.js';
+import { DrizzleBulkReceiptScopeRepository } from '../../repositories/bulk/drizzle-bulk-receipt-scope.repository.js';
 import { DrizzleTaskCounter } from '../../repositories/count/drizzle-task-counter.repository.js';
 import { DrizzleCustomFieldRepository } from '../../repositories/custom-field/drizzle-custom-field.repository.js';
 import { DrizzleLabelReader } from '../../repositories/label/drizzle-label-reader.repository.js';
@@ -208,6 +209,7 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
           customFields: new DrizzleCustomFieldRepository(transaction.db),
           time: new DrizzleTaskTimeRepository(transaction.db),
           copies: new DrizzleTaskCopiesRepository(transaction.db),
+          bulkReceipts: new DrizzleBulkReceiptScopeRepository(transaction.db),
           watcherOverrides: new DrizzleWatcherOverrideRepository(transaction.db),
           reader: new DrizzleTaskReader(transaction.db),
           activity: new DrizzleActivityRepository(transaction.db),

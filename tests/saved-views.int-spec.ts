@@ -19,6 +19,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AppModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
+import { mirrorCurrentMembership } from './support/current-membership.fixture.js';
 
 const composeFile = fileURLToPath(new URL('../compose.dev.yaml', import.meta.url));
 const project = `cadenway-task-service-views-${String(process.pid)}`;
@@ -193,6 +194,7 @@ describe('shared saved-view routes and PostgreSQL storage', () => {
       logDestination: { write: (): void => undefined },
     });
     await app.init();
+    mirrorCurrentMembership(app);
     signer = await InternalTokenSigner.create({
       issuer: 'api-gateway',
       privateJwk: { ...publicJwk, d },
@@ -404,6 +406,39 @@ describe('shared saved-view routes and PostgreSQL storage', () => {
     expect(ListSavedViewsInternalResponse.parse(next.body).items.map(({ id }) => id)).toEqual([
       third.id,
     ]);
+
+    expect((await send('delete', `${path}/${first.id}`)).status).toBe(204);
+    const removedSourceReplay = await send('post', duplicatePath, options);
+    expect(removedSourceReplay.status, removedSourceReplay.text).toBe(201);
+    expect(removedSourceReplay.body as unknown).toEqual(clone);
+    expect(removedSourceReplay.headers.location).toBe(`${path}/${clone.id}`);
+    expect(removedSourceReplay.headers['idempotent-replayed']).toBe('true');
+    expect(await countViews(clone.listId)).toBe(3);
+  });
+
+  it('withholds a saved-view creation receipt after the list grant is revoked', async () => {
+    const { listId, path } = await createList('Accès temporaire', 'ACT');
+    const grantPath = `/internal/v1/lists/${listId}/grants/${commenterId}`;
+    expect((await send('put', grantPath, { body: { role: 'edit' } })).status).toBe(200);
+    const options = {
+      actorId: commenterId,
+      headers: { 'Idempotency-Key': randomUUID() },
+      body: { name: 'Vue partagée', configuration },
+    };
+    const created = await send('post', path, options);
+    expect(created.status, created.text).toBe(201);
+    const replay = await send('post', path, options);
+    expect(replay.status, replay.text).toBe(201);
+    expect(replay.headers['idempotent-replayed']).toBe('true');
+    expect(replay.body as unknown).toEqual(created.body);
+
+    expect((await send('delete', grantPath)).status).toBe(204);
+    const refused = await send('post', path, options);
+    expectProblem(refused, 404, 'list.not-found');
+    expect(refused.headers.location).toBeUndefined();
+    expect(refused.headers['idempotent-replayed']).toBeUndefined();
+    expect(refused.headers.etag).not.toBe('"1"');
+    expect(await countViews(listId)).toBe(1);
   });
 
   it('retains archived settings, hides inactive favorite targets and cleans views synchronously on tombstoning', async () => {
@@ -452,6 +487,36 @@ describe('shared saved-view routes and PostgreSQL storage', () => {
     const deletedSpace = await send('delete', `/internal/v1/spaces/${spaceId}`);
     expect(deletedSpace.status, deletedSpace.text).toBe(204);
     expect(await countViews(next.id)).toBe(0);
+  });
+
+  it('withholds space and list creation receipts once the space has been deleted', async () => {
+    const spacePath = '/internal/v1/spaces';
+    const spaceOptions = {
+      body: { name: 'Espace retiré', prefix: 'ERP', visibility: 'private' },
+      headers: { 'Idempotency-Key': randomUUID() },
+    };
+    const createdSpace = await send('post', spacePath, spaceOptions);
+    expect(createdSpace.status, createdSpace.text).toBe(201);
+    const { space } = CreateSpaceInternalResponse.parse(createdSpace.body);
+    const listPath = `${spacePath}/${space.id}/lists`;
+    const listOptions = {
+      body: { name: 'Liste retirée' },
+      headers: { 'Idempotency-Key': randomUUID() },
+    };
+    const createdList = await send('post', listPath, listOptions);
+    expect(createdList.status, createdList.text).toBe(201);
+    const deletedSpace = await send('delete', `${spacePath}/${space.id}`);
+    expect(deletedSpace.status, deletedSpace.text).toBe(204);
+
+    const spaceReplay = await send('post', spacePath, spaceOptions);
+    const listReplay = await send('post', listPath, listOptions);
+    expectProblem(spaceReplay, 403, 'organization.role-forbidden');
+    expectProblem(listReplay, 404, 'space.not-found');
+    for (const refusal of [spaceReplay, listReplay]) {
+      expect(refusal.headers.location).toBeUndefined();
+      expect(refusal.headers['idempotent-replayed']).toBeUndefined();
+      expect(refusal.headers.etag).not.toBe('"1"');
+    }
   });
 
   it('rechecks a matching version after a concurrent editor commits', async () => {

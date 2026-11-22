@@ -1,0 +1,1 @@
+CREATE INDEX "tasks_trash_child_index" ON "tasks" USING btree ("organization_id","parent_id","list_id","id") WHERE "tasks"."parent_id" is not null and "tasks"."trash_entry_id" is null;

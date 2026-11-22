@@ -1,3 +1,4 @@
+import { matchesCurrentMembership } from '../../../../../infrastructure/http/current-membership.js';
 import type {
   FindOrganizationMember,
   FindOrganizationMemberOutput,
@@ -94,12 +95,14 @@ export class OrganizationMembersMemberDirectory implements MemberDirectory {
     userId: string,
     lock = false,
   ): Promise<MemberRole | null> {
-    const member: FindOrganizationMemberOutput | null = await this.findMember.execute({
+    const member = await this.findMember.stamp({
       organizationId,
       userId,
       lock,
     });
-    return member === null ? null : member.role;
+    return member === null || !matchesCurrentMembership(organizationId, userId, member)
+      ? null
+      : member.role;
   }
 
   /**

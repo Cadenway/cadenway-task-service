@@ -1,5 +1,6 @@
 import type { FactoryProvider } from '@nestjs/common';
 
+import { ReadSpaceTaskTemplateSources } from '../../../../../task-templates/public/template/read-space-task-template-sources.js';
 import type { MemberDirectory } from '../../../../application/ports/outbound/members/membership/member-directory.port.js';
 import type { SpacesUnitOfWork } from '../../../../application/ports/outbound/transactions/space/spaces-unit-of-work.port.js';
 import { UpdateSpace } from '../../../../application/use-cases/commands/space/update-space/update-space.use-case.js';
@@ -17,7 +18,10 @@ import { SPACES_UNIT_OF_WORK } from '../../../tokens/space/spaces-unit-of-work.t
  */
 export const updateSpaceProvider: FactoryProvider<UpdateSpace> = {
   provide: UpdateSpace,
-  inject: [SPACES_UNIT_OF_WORK, MEMBER_DIRECTORY],
-  useFactory: (unitOfWork: SpacesUnitOfWork, members: MemberDirectory): UpdateSpace =>
-    new UpdateSpace(unitOfWork, members),
+  inject: [SPACES_UNIT_OF_WORK, MEMBER_DIRECTORY, ReadSpaceTaskTemplateSources],
+  useFactory: (
+    unitOfWork: SpacesUnitOfWork,
+    members: MemberDirectory,
+    templateSources: ReadSpaceTaskTemplateSources,
+  ): UpdateSpace => new UpdateSpace(unitOfWork, members, templateSources),
 };

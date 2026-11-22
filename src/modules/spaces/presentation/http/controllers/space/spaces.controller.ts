@@ -17,6 +17,7 @@ import {
   Query,
   Req,
   Res,
+  UseGuards,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 
@@ -33,6 +34,7 @@ import { ListSpacesQuery } from '../../dto/input/space/list-spaces-query.dto.js'
 import { SpacePath } from '../../dto/input/space/space-path.dto.js';
 import { UpdateSpaceBody } from '../../dto/input/space/update-space-body.dto.js';
 import { answerRefusals } from '../../errors/space/space-refusal.problem.js';
+import { CurrentMembershipGuard } from '../../guards/space/current-membership.guard.js';
 import type { Caller } from '../../../../application/models/caller/caller.model.js';
 import { toCaller } from '../../mappers/caller/caller.mapper.js';
 import { toSpaceCreated } from '../../mappers/space/space-created.mapper.js';
@@ -248,6 +250,7 @@ export class SpacesController {
    * `If-Match`.
    */
   @Patch(':spaceId')
+  @UseGuards(CurrentMembershipGuard)
   public async update(
     @Param() path: SpacePath,
     @Body() body: UpdateSpaceBody,
@@ -287,6 +290,7 @@ export class SpacesController {
    */
   @Delete(':spaceId')
   @HttpCode(204)
+  @UseGuards(CurrentMembershipGuard)
   public async delete(
     @Param() path: SpacePath,
     @Headers('if-match') ifMatch: string | undefined,

@@ -17,7 +17,10 @@ import type { Request, Response } from 'express';
 import type { z } from 'zod';
 
 import { ApplyAutomationTaskComment } from '../../../../application/use-cases/commands/comment/apply-automation-task-comment/apply-automation-task-comment.use-case.js';
-import { AutomationCommentReplayGuard } from '../../guards/comment/automation-comment-replay.guard.js';
+import {
+  AutomationCommentReplayGuard,
+  automationCommentProofOf,
+} from '../../guards/comment/automation-comment-replay.guard.js';
 import { answerAutomationComment } from '../../mappers/comment/automation-comment-refusal.mapper.js';
 import { toAutomationComment } from '../../mappers/comment/automation-comment.mapper.js';
 
@@ -62,7 +65,9 @@ export class AutomationCommentController {
     @Req() request: Request,
   ): Promise<z.output<typeof ApplyAutomationTaskCommentInternalResponse>> {
     const input = toAutomationComment(request);
-    await answerAutomationComment(() => this.comments.execute(input));
+    await answerAutomationComment(() =>
+      this.comments.execute(input, automationCommentProofOf(request)),
+    );
     return ApplyAutomationTaskCommentInternalResponse.parse({ disposition: 'applied' });
   }
   // #endregion

@@ -15,13 +15,13 @@ export interface IntakeAttachmentStore {
     lock: boolean,
   ): Promise<IntakeAttachmentDraft | null>;
 
-  /** Creates and locks a draft for this publication, or returns the concurrent winner. */
+  /** Locks a known draft, or starts a new one if the publication has admission capacity. */
   startDraft(
     listId: string,
     publicKey: string,
     draftKey: string,
     now: Date,
-  ): Promise<IntakeAttachmentDraft>;
+  ): Promise<IntakeAttachmentDraft | null>;
 
   /** Reads the allocation and checks its request fingerprint under the draft lock. */
   findReservationClaim(
