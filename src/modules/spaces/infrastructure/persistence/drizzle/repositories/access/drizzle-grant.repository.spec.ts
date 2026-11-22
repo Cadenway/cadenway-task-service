@@ -51,6 +51,7 @@ describe('DrizzleGrantRepository: a grant of a deleted list shows no space', () 
       'exists (select 1 from "list_grants" inner join "lists" on "lists"."organization_id" = "list_grants"."organization_id" and "lists"."id" = "list_grants"."list_id" where',
     );
     expect(texts[0]).toContain('"lists"."deleted_at" is null) as "anyList"');
+    expect(texts[0]?.match(/organization_member_grant_is_effective/g)).toHaveLength(3);
   });
 });
 

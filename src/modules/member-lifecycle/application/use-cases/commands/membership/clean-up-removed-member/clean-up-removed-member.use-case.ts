@@ -65,9 +65,9 @@ interface Progress {
  *
  * The spaces come first, since a private space of a former member is seen by nobody until it is
  * handed over; the grants before the requests, since a grant still gives access while a pending
- * request gives none. A batch that reads the copy holding the account as a member again (a new
- * membership joined after the removal) changes nothing, and the job stops for good: the person
- * keeps what is left. It stops only on an empty batch or on that answer, never on a short batch,
+ * request gives none. If the account has rejoined, the job still removes grants belonging to the
+ * former membership but leaves all other work for the current membership untouched. It stops
+ * only on an empty batch or on a rejoin answer, never on a short batch,
  * and starts no batch once the signal of its attempt aborted. A failed batch rolls back alone: the
  * batches before it stay committed, the attempt fails with a `CleanUpStepError` naming the step
  * and the batches committed before it, and the next attempt starts again from what is still owned,
@@ -149,13 +149,15 @@ export class CleanUpRemovedMember {
       watcherOverridesRemoved: 0,
       batches: 0,
     };
+    let memberAgain: boolean = false;
     for (;;) {
       input.signal?.throwIfAborted();
       const batch: SpaceHandoverBatch = await this.batch('spaces', progress, () =>
         this.spaces.handOverBatch(input.organizationId, input.userId),
       );
       if (batch.outcome === 'member-again') {
-        return { outcome: 'member-again', ...progress };
+        memberAgain = true;
+        break;
       }
       if (batch.outcome === 'none-left') {
         break;
@@ -164,14 +166,16 @@ export class CleanUpRemovedMember {
       progress.spacesHandedOver += batch.handedOver;
       progress.spacesAwaitingOwner += batch.awaitingOwner;
     }
-    input.signal?.throwIfAborted();
-    await this.batch('favorites', progress, () =>
-      this.favorites.purge(input.organizationId, input.userId),
-    );
+    if (!memberAgain) {
+      input.signal?.throwIfAborted();
+      await this.batch('favorites', progress, () =>
+        this.favorites.purge(input.organizationId, input.userId),
+      );
+    }
     for (;;) {
       input.signal?.throwIfAborted();
       const batch: GrantRemovalBatch = await this.batch('grants', progress, () =>
-        this.grants.removeBatch(input.organizationId, input.userId),
+        this.grants.removeBatch(input.organizationId, input.userId, input.memberId),
       );
       if (batch.outcome === 'member-again') {
         return { outcome: 'member-again', ...progress };
@@ -181,6 +185,9 @@ export class CleanUpRemovedMember {
       }
       progress.batches += 1;
       progress.grantsRemoved += batch.removed;
+    }
+    if (memberAgain) {
+      return { outcome: 'member-again', ...progress };
     }
     for (;;) {
       input.signal?.throwIfAborted();

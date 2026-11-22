@@ -92,6 +92,40 @@ describe('FindOrganizationMember: an account is a member from the copy, with its
     expect(member).toEqual({ memberId: LEA_MEMBERSHIP, role: 'guest' });
   });
 
+  it('refuses to bind a grant when two active membership generations exist', async () => {
+    const store = new InMemoryMemberships([
+      membershipState({ id: HUGO_MEMBERSHIP, role: 'admin', version: 3 }),
+      membershipState({ id: LEA_MEMBERSHIP, role: 'guest', version: 1 }),
+    ]);
+
+    const member = await new FindOrganizationMember(store).execute({
+      organizationId: ATELIER_NORD,
+      userId: HUGO,
+      lock: true,
+      unique: true,
+    });
+
+    expect(member).toBeNull();
+    expect(store.activeByUserLocks).toEqual([true]);
+  });
+
+  it('returns the single active generation for a grant even with a removed historical membership', async () => {
+    const store = new InMemoryMemberships([
+      membershipState({ id: HUGO_MEMBERSHIP, role: 'admin', version: 3 }),
+      membershipState({ id: LEA_MEMBERSHIP, role: 'guest', version: 2, removedAt: OCCURRED_AT }),
+    ]);
+
+    const member = await new FindOrganizationMember(store).execute({
+      organizationId: ATELIER_NORD,
+      userId: HUGO,
+      lock: true,
+      unique: true,
+    });
+
+    expect(member).toEqual({ memberId: HUGO_MEMBERSHIP, role: 'admin' });
+    expect(store.activeByUserLocks).toEqual([true]);
+  });
+
   it('returns the version of the selected active membership alongside its ID and role', async () => {
     const store = new InMemoryMemberships([
       membershipState({ id: HUGO_MEMBERSHIP, role: 'admin', version: 9 }),

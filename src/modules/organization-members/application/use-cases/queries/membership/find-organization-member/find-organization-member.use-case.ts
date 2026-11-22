@@ -73,6 +73,9 @@ export class FindOrganizationMember {
       (memberships: MembershipRepository): Promise<Membership[]> =>
         memberships.listActiveByUser(input.organizationId, input.userId, input.lock === true),
     );
+    if (input.unique === true && active.length !== 1) {
+      return null;
+    }
     const membership: Membership | null = leastPrivilegedMembership(active);
     if (membership === null) {
       return null;

@@ -33,20 +33,21 @@ const ID_PATTERN: RegExp = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
  *
  * @description
  * A clean-up job: the organization of the transaction that enqueued it, and the account in its
- * payload, with the `traceparent` of the removal when there was a trace. Other members are
- * ignored, so a field added later does not fail an older reader.
+ * payload, the membership generation when available, and the removal's `traceparent`.
+ * Old jobs omit the membership generation. Other fields are ignored.
  *
- * @type {z.ZodType<{ readonly organizationId: string; readonly payload: { readonly userId: string; readonly traceparent?: string | undefined } }>}
  */
-const jobSchema: z.ZodType<{
-  readonly organizationId: string;
-  readonly payload: { readonly userId: string; readonly traceparent?: string | undefined };
-}> = z.object({
+const jobSchema = z.object({
   organizationId: z.string().regex(ID_PATTERN),
-  payload: z.object({
-    userId: z.string().regex(ID_PATTERN),
-    traceparent: z.string().optional(),
-  }),
+  payload: z.union([
+    z.strictObject({ kind: z.literal('owner-handover') }),
+    z.object({
+      kind: z.undefined().optional(),
+      userId: z.string().regex(ID_PATTERN),
+      memberId: z.string().regex(ID_PATTERN).optional(),
+      traceparent: z.string().optional(),
+    }),
+  ]),
 });
 
 /**
@@ -140,12 +141,15 @@ export class CleanUpRemovedMemberHandler implements OnApplicationBootstrap {
    * @param {JobWorkerRegistry} workers - The workers.
    * @param {CleanUpRemovedMember} cleanUpRemovedMember - Use case of the clean-up.
    * @param {string} queueName - Queue of the clean-up jobs.
+   * @param {(organizationId: string) => Promise<void>} handOverRecoveredOwner - Handover of
+   * private spaces waiting for an owner recovered offline.
    * @constructor
    */
   public constructor(
     workers: JobWorkerRegistry,
     cleanUpRemovedMember: CleanUpRemovedMember,
     queueName: string,
+    private readonly handOverRecoveredOwner: (organizationId: string) => Promise<void>,
   ) {
     this.workers = workers;
     this.cleanUpRemovedMember = cleanUpRemovedMember;
@@ -180,13 +184,16 @@ export class CleanUpRemovedMemberHandler implements OnApplicationBootstrap {
    * @throws {Error} When the attempt is aborted: the queue retries the job.
    */
   public async handle(job: Job): Promise<void> {
-    const {
-      organizationId,
-      payload: { userId, traceparent },
-    }: {
-      readonly organizationId: string;
-      readonly payload: { readonly userId: string; readonly traceparent?: string | undefined };
-    } = jobSchema.parse({ organizationId: job.organizationId, payload: job.payload });
+    const { organizationId, payload } = jobSchema.parse({
+      organizationId: job.organizationId,
+      payload: job.payload,
+    });
+    if (payload.kind === 'owner-handover') {
+      job.signal.throwIfAborted();
+      await this.handOverRecoveredOwner(organizationId.toLowerCase());
+      return;
+    }
+    const { userId, memberId, traceparent } = payload;
     const parent: Context = parentContext(traceparent);
     const span: Span = trace
       .getTracer('task-service')
@@ -202,6 +209,7 @@ export class CleanUpRemovedMemberHandler implements OnApplicationBootstrap {
           this.cleanUpRemovedMember.execute({
             organizationId: organizationId.toLowerCase(),
             userId: userId.toLowerCase(),
+            ...(memberId === undefined ? {} : { memberId: memberId.toLowerCase() }),
             signal: job.signal,
           }),
       );

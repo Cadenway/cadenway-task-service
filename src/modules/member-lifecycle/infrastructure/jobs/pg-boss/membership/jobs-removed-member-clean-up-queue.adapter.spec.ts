@@ -86,7 +86,7 @@ describe('JobsRemovedMemberCleanUpQueue: one job per removal, in the transaction
     propagation.disable();
   });
 
-  it('enqueues through the transaction with the account as payload and the membership and version as occurrence', async () => {
+  it('enqueues the account and the removed membership through the transaction', async () => {
     const transaction = transactionOf(ATELIER_NORD);
     const { producer, enqueued } = recordingProducer(false);
 
@@ -101,7 +101,7 @@ describe('JobsRemovedMemberCleanUpQueue: one job per removal, in the transaction
       {
         tx: transaction,
         queue: 'task.clean-up-removed-member',
-        payload: { userId: HUGO },
+        payload: { userId: HUGO, memberId: HUGO_MEMBERSHIP },
         options: { occurrenceKey: `${HUGO_MEMBERSHIP}:3` },
       },
     ]);
@@ -139,6 +139,10 @@ describe('JobsRemovedMemberCleanUpQueue: one job per removal, in the transaction
       3,
     );
 
-    expect(enqueued[0]?.payload).toEqual({ userId: HUGO, traceparent: TRACEPARENT });
+    expect(enqueued[0]?.payload).toEqual({
+      userId: HUGO,
+      memberId: HUGO_MEMBERSHIP,
+      traceparent: TRACEPARENT,
+    });
   });
 });

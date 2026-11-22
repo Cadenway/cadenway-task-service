@@ -6,6 +6,7 @@ import type { EventActor } from '../../../../models/actor/event-actor.model.js';
 import type { GrantedResource } from '../../../../models/access/granted-resource.model.js';
 import type { StoredGrant } from '../../../../models/access/stored-grant.model.js';
 import type { SpacesStore } from '../../../../models/transactions/spaces-store.model.js';
+import { SpaceRefusal } from '../../../../models/space/space-refusal.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpacesUnitOfWork } from '../../../../ports/outbound/transactions/space/spaces-unit-of-work.port.js';
 import { GrantGuard } from '../../../../services/access/grant-guard.service.js';
@@ -129,11 +130,8 @@ export class SetSpaceGrant {
         input.actorUserId,
         true,
       );
-      const granteeRole: MemberRole | null = await this.members.roleOf(
-        input.organizationId,
-        input.userId,
-        true,
-      );
+      const grantee: { readonly memberId: string; readonly role: MemberRole } | null =
+        await this.members.grantMembershipOf(input.organizationId, input.userId, true);
       const space: Space = await this.guard.lockManagedSpace(
         store,
         input.organizationId,
@@ -146,18 +144,22 @@ export class SetSpaceGrant {
       const update: GrantsUpdate = this.keeper.apply(() =>
         this.keeper
           .restore(resource, space.snapshot.ownerUserId, stored)
-          .give({ userId: input.userId, role: input.role, granteeRole }),
+          .give({ userId: input.userId, role: input.role, granteeRole: grantee?.role ?? null }),
       );
       if (!update.changed) {
         return { grant: this.keeper.held(stored, input.userId), version: space.snapshot.version };
       }
       const actor: EventActor = { type: 'user', id: input.actorUserId };
+      if (grantee === null) {
+        throw new SpaceRefusal({ reason: 'grantee-invalid', userId: input.userId });
+      }
       const grant: StoredGrant = await store.grants.put(
         input.organizationId,
         resource,
         input.userId,
         input.role,
         actor,
+        grantee.memberId,
       );
       const next: Space = space.recordAccessChange();
       await store.spaces.update(next);

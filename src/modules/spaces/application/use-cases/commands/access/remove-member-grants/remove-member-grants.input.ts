@@ -27,5 +27,8 @@ export interface RemoveMemberGrantsInput {
    * @readonly
    */
   readonly userId: string;
+
+  /** Membership that ended, absent on jobs created before membership-scoped grants. */
+  readonly memberId?: string;
   // #endregion
 }

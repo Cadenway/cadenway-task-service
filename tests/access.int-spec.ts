@@ -1680,11 +1680,17 @@ describe('the access model: grants, the switch, the effective role and access re
       communauteFirstList = created.firstList;
       // 199 people given access by an import, then Léa, the 200th, through the route.
       await asSystem(
-        `insert into space_grants
-           (organization_id, space_id, user_id, role, granted_by_type, granted_by_id, created_at, granted_at)
-         select $1, $2, gen_random_uuid(), 'view', 'user', $3,
-                now() - make_interval(secs => 1000 - n), now() - make_interval(secs => 1000 - n)
-           from generate_series(1, 199) as n`,
+        `with imported as (
+           insert into organization_members (organization_id, id, user_id, role, version)
+           select $1, gen_random_uuid(), gen_random_uuid(), 'member', 1
+             from generate_series(1, 199)
+           returning id, user_id
+         )
+         insert into space_grants
+           (organization_id, space_id, user_id, member_id, role, granted_by_type, granted_by_id, created_at, granted_at)
+         select $1, $2, user_id, id, 'view', 'user', $3,
+                now() - interval '1 minute', now() - interval '1 minute'
+           from imported`,
         [atelierNordId, communaute.id, camille.userId],
       );
 
@@ -3448,9 +3454,15 @@ describe('the access model: grants, the switch, the effective role and access re
         organizationAccess: false,
       });
       await asSystem(
-        `insert into list_grants
-           (organization_id, list_id, space_id, user_id, role, granted_by_type, granted_by_id)
-         select $1, $2, $3, gen_random_uuid(), 'view', 'user', $4 from generate_series(1, 200)`,
+        `with imported as (
+           insert into organization_members (organization_id, id, user_id, role, version)
+           select $1, gen_random_uuid(), gen_random_uuid(), 'member', 1
+             from generate_series(1, 200)
+           returning id, user_id
+         )
+         insert into list_grants
+           (organization_id, list_id, space_id, user_id, member_id, role, granted_by_type, granted_by_id)
+         select $1, $2, $3, user_id, id, 'view', 'user', $4 from imported`,
         [atelierNordId, salon.id, produit.id, camille.userId],
       );
       await forgetAttempts(chloe);
@@ -3919,10 +3931,10 @@ describe('the access model: grants, the switch, the effective role and access re
         [atelierNordId, archives.id],
       );
       await asSystem(
-        `insert into list_grants (organization_id, list_id, space_id, user_id, role, granted_by_type, granted_by_id)
-         select organization_id, id, space_id, $3, 'view', 'user', $4
+        `insert into list_grants (organization_id, list_id, space_id, user_id, member_id, role, granted_by_type, granted_by_id)
+         select organization_id, id, space_id, $3, $5, 'view', 'user', $4
            from lists where organization_id = $1 and space_id = $2 and name like 'Archive %'`,
-        [atelierNordId, archives.id, lea.userId, camille.userId],
+        [atelierNordId, archives.id, lea.userId, camille.userId, lea.memberId],
       );
       // "Recherche" (view), "Communauté" (edit) and "Direction" (view, the approved request), then
       // "Budget 2027" (comment, the approved task request) and the 130 lists of the import.
@@ -4034,7 +4046,7 @@ describe('the access model: grants, the switch, the effective role and access re
       recherche = await readSpace(hugo, recherche.id);
     }, 240_000);
 
-    it('keeps the grants of Léa when she joins again before the job reaches them, and the job ends member-again', async () => {
+    it('revokes the former membership grants before cleanup and preserves a new grant when Léa rejoins', async () => {
       const again: Person = { userId: lea.userId, memberId: leaSecondMemberId };
       await deliver(toPublishedEvent('joined', atelierNordId, again, 'member', 1));
       await grant(hugo, 'spaces', recherche.id, lea.userId, 'view');
@@ -4063,26 +4075,121 @@ describe('the access model: grants, the switch, the effective role and access re
             1,
           ),
         );
+
+        // The removed membership still has physical rows while the retry waits on Recherche.
+        // Neither row can grant access to the new membership.
+        expect(await countRows('space_grants', 'user_id = $2', lea.userId)).toBe(1);
+        expect(await countRows('list_grants', 'user_id = $2', lea.userId)).toBe(1);
+        expectProblem(
+          await send('get', `/internal/v1/spaces/${recherche.id}`, lea),
+          404,
+          'space.not-found',
+        );
+        expectProblem(
+          await send('get', `/internal/v1/lists/${budget.id}`, lea),
+          404,
+          'list.not-found',
+        );
+        expect((await spacesSeenBy(lea)).map((space) => space.id)).not.toContain(recherche.id);
+        expect((await listsSeenBy(lea, produit.id)).map((list) => list.id)).not.toContain(
+          budget.id,
+        );
+
+        const grantsBefore = await read(
+          ListListGrantsInternalResponse,
+          `/internal/v1/lists/${budget.id}/grants`,
+          camille,
+        );
+        expect(grantsBefore.items.map((item) => item.userId)).not.toContain(lea.userId);
+
+        // Giving the same role to the new membership is a new change, with a new version and event.
+        const listBefore = await readList(camille, budget.id);
+        const eventsBefore = (await outboxOf('listId', budget.id)).length;
+        const renewed = await grant(camille, 'lists', budget.id, lea.userId, 'comment');
+        expect(renewed.etag).toBe(etagOf(listBefore.version + 1));
+        expect(await readList(lea, budget.id)).toMatchObject({ callerRole: 'comment' });
+        const events = await outboxSince('listId', budget.id, eventsBefore);
+        expect(events.map((event) => event.event_name)).toEqual(['list.access-changed.v1']);
+        const renewedEvent = conforms(
+          taskEventSchemas['list.access-changed.v1'],
+          events[0]?.payload,
+        );
+        expect(renewedEvent).toMatchObject({
+          version: listBefore.version + 1,
+          changedUserIds: [lea.userId],
+        });
+        expect(renewedEvent.grants.map(({ userId, role }) => [userId, role])).toContainEqual([
+          lea.userId,
+          'comment',
+        ]);
       });
       await cleanUpsCompleted(lea, 2);
 
-      expect(await countRows('space_grants', 'user_id = $2', lea.userId)).toBe(1);
+      expect(await countRows('space_grants', 'user_id = $2', lea.userId)).toBe(0);
       expect(await countRows('list_grants', 'user_id = $2', lea.userId)).toBe(1);
-      expect(await readSpace(lea, recherche.id)).toMatchObject({ callerRole: 'view' });
+      expectProblem(
+        await send('get', `/internal/v1/spaces/${recherche.id}`, lea),
+        404,
+        'space.not-found',
+      );
       expect(await readList(lea, budget.id)).toMatchObject({ callerRole: 'comment' });
-      expect(outcomes.at(-1)).toEqual({
+      expect(outcomes.at(-1)).toMatchObject({
         userId: lea.userId,
         output: {
           outcome: 'member-again',
           spacesHandedOver: 0,
           spacesAwaitingOwner: 0,
-          grantsRemoved: 0,
+          grantsRemoved: 1,
           requestsDropped: 0,
           tasksUnassigned: 0,
           watcherOverridesRemoved: 0,
-          batches: 0,
+          batches: 1,
         },
       });
+    }, 240_000);
+
+    it('keeps an ambiguous legacy grant ineffective until it is explicitly given to the new membership', async () => {
+      await asSystem(
+        `insert into space_grants
+           (organization_id, space_id, user_id, role, granted_by_type, granted_by_id, granted_at)
+         values ($1, $2, $3, 'view', 'user', $4, now() - interval '1 day')`,
+        [atelierNordId, recherche.id, lea.userId, hugo.userId],
+      );
+
+      // The nullable member id models a grant created before membership-scoped grants. Léa has
+      // several historical memberships, so its owner cannot be inferred from the current one.
+      expectProblem(
+        await send('get', `/internal/v1/spaces/${recherche.id}`, lea),
+        404,
+        'space.not-found',
+      );
+      const before = await readSpace(hugo, recherche.id);
+      const eventsBefore = (await outboxOf('spaceId', recherche.id)).length;
+      const given = await grant(hugo, 'spaces', recherche.id, lea.userId, 'view');
+      expect(given.etag).toBe(etagOf(before.version + 1));
+      expect(await readSpace(lea, recherche.id)).toMatchObject({ callerRole: 'view' });
+      const events = await outboxSince('spaceId', recherche.id, eventsBefore);
+      expect(events.map((event) => event.event_name)).toEqual(['space.access-changed.v1']);
+      const givenEvent = conforms(taskEventSchemas['space.access-changed.v1'], events[0]?.payload);
+      expect(givenEvent).toMatchObject({
+        version: before.version + 1,
+        changedUserIds: [lea.userId],
+      });
+      expect(givenEvent.grants.map(({ userId, role }) => [userId, role])).toContainEqual([
+        lea.userId,
+        'view',
+      ]);
+
+      // A redelivery for the removed membership cannot remove the later grant.
+      await runWithOrganizationContext(contextOf(atelierNordId), () =>
+        service().get(CleanUpRemovedMember).execute({
+          organizationId: atelierNordId,
+          userId: lea.userId,
+          memberId: leaSecondMemberId,
+        }),
+      );
+      expect(await readSpace(lea, recherche.id)).toMatchObject({ callerRole: 'view' });
+      expect(await outboxSince('spaceId', recherche.id, eventsBefore)).toHaveLength(1);
     }, 240_000);
   });
 
@@ -4120,6 +4227,11 @@ describe('the access model: grants, the switch, the effective role and access re
       shape: VolumeShape,
     ): Promise<void> {
       await asSystem(
+        `insert into organization_members (organization_id, id, user_id, role, version)
+         select $1, gen_random_uuid(), account, 'member', 1 from unnest($2::uuid[]) as account`,
+        [organizationId, accounts],
+      );
+      await asSystem(
         `insert into spaces (organization_id, name, prefix, color, visibility, owner_user_id, statuses, created_at)
          select $1, 'Volume ' || n, 'VOL', 'gris',
                 case when n % 2 = 0 then 'organization' else 'private' end,
@@ -4139,20 +4251,21 @@ describe('the access model: grants, the switch, the effective role and access re
       );
       await asSystem(
         `insert into space_grants
-           (organization_id, space_id, user_id, role, granted_by_type, granted_by_id, created_at, granted_at)
-         select s.organization_id, s.id,
-                ($2::uuid[])[$3::int + ((s.rank * $4::int + k) % (array_length($2::uuid[], 1) - $3::int))::int + 1],
+           (organization_id, space_id, user_id, member_id, role, granted_by_type, granted_by_id, created_at, granted_at)
+         select s.organization_id, s.id, m.user_id, m.id,
                 (array['edit', 'comment', 'view'])[k % 3 + 1], 'user', s.owner_user_id::text, now(), now()
            from (select organization_id, id, owner_user_id,
                         row_number() over (order by created_at, id) - 1 as rank
                    from spaces where organization_id = $1 and name like 'Volume %') as s
-          cross join generate_series(0, $4::int - 1) as k`,
+          cross join generate_series(0, $4::int - 1) as k
+           join organization_members as m on m.organization_id = s.organization_id
+             and m.user_id = ($2::uuid[])[$3::int + ((s.rank * $4::int + k) % (array_length($2::uuid[], 1) - $3::int))::int + 1]`,
         [organizationId, accounts, shape.owners, shape.spaceGrants],
       );
       await asSystem(
         `insert into list_grants
-           (organization_id, list_id, space_id, user_id, role, granted_by_type, granted_by_id, created_at, granted_at)
-         select l.organization_id, l.id, l.space_id, l.user_id,
+           (organization_id, list_id, space_id, user_id, member_id, role, granted_by_type, granted_by_id, created_at, granted_at)
+         select l.organization_id, l.id, l.space_id, l.user_id, m.id,
                 (array['edit', 'comment', 'view'])[l.k % 3 + 1], 'user', l.owner_user_id::text, now(), now()
            from (select li.organization_id, li.id, li.space_id, sp.owner_user_id, k,
                         ($2::uuid[])[((row_number() over (order by li.created_at, li.id, k) - 1)
@@ -4161,6 +4274,7 @@ describe('the access model: grants, the switch, the effective role and access re
                    join spaces as sp on sp.organization_id = li.organization_id and sp.id = li.space_id
                   cross join generate_series(0, $3::int - 1) as k
                   where li.organization_id = $1 and sp.name like 'Volume %') as l
+           join organization_members as m on m.organization_id = l.organization_id and m.user_id = l.user_id
           where l.user_id <> l.owner_user_id`,
         [organizationId, accounts, shape.listGrants],
       );

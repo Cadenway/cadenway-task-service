@@ -103,6 +103,9 @@ export function marketingState(overrides: Partial<SpaceState> = {}): SpaceState 
 /** A grant the fake stores, of Atelier Nord unless the spec says otherwise. */
 export interface FakeGrant extends StoredGrant {
   // #region Properties
+  /** Whether the grant belongs to a removed or ambiguous membership in cleanup tests. */
+  readonly obsolete?: boolean;
+
   /**
    * Property organizationId
    *
@@ -466,6 +469,16 @@ export class InMemoryMembers implements MemberDirectory {
   // #endregion
 
   // #region Methods
+  /** Supplies a stable membership identity for a current member in application tests. */
+  public async grantMembershipOf(
+    organizationId: string,
+    userId: string,
+    lock?: boolean,
+  ): Promise<{ readonly memberId: string; readonly role: MemberRole } | null> {
+    const role = await this.roleOf(organizationId, userId, lock);
+    return role === null ? null : { memberId: `membership-${userId}`, role };
+  }
+
   /**
    * Method roleOf
    *
@@ -2011,6 +2024,50 @@ export class InMemorySpaces implements SpacesUnitOfWork {
                   : 0),
             );
           return Promise.resolve([...ofSpaces, ...ofLists].slice(0, limit));
+        },
+        listObsoleteOfMember: (
+          organizationId: string,
+          userId: string,
+          limit: number,
+        ): Promise<GrantedResource[]> => {
+          const held = grants.filter(
+            (grant: FakeGrant): boolean =>
+              grant.organizationId === organizationId &&
+              grant.userId === userId &&
+              grant.obsolete !== false,
+          );
+          const spaces = held
+            .filter((grant: FakeGrant): boolean => grant.resource.kind === 'space')
+            .map((grant: FakeGrant): GrantedResource => grant.resource)
+            .sort((left, right) => left.spaceId.localeCompare(right.spaceId));
+          const lists = held
+            .filter((grant: FakeGrant): boolean => grant.resource.kind === 'list')
+            .map((grant: FakeGrant): GrantedResource => grant.resource)
+            .sort(
+              (left, right) =>
+                left.spaceId.localeCompare(right.spaceId) ||
+                (left.kind === 'list' && right.kind === 'list'
+                  ? left.listId.localeCompare(right.listId)
+                  : 0),
+            );
+          return Promise.resolve([...spaces, ...lists].slice(0, limit));
+        },
+        removeObsolete: (
+          organizationId: string,
+          resource: GrantedResource,
+          userId: string,
+        ): Promise<boolean> => {
+          const before = grants.length;
+          grants = grants.filter(
+            (grant: FakeGrant): boolean =>
+              !(
+                grant.organizationId === organizationId &&
+                grant.userId === userId &&
+                grant.obsolete !== false &&
+                InMemorySpaces.sameResource(grant.resource, resource)
+              ),
+          );
+          return Promise.resolve(grants.length < before);
         },
         listOfMemberInSpaces: (
           organizationId: string,

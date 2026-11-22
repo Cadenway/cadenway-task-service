@@ -1,12 +1,10 @@
 import type { TaskList } from '../../../../../domain/aggregates/list/task-list.aggregate.js';
 import type { Space } from '../../../../../domain/aggregates/space/space.aggregate.js';
 import { announcesChanges } from '../../../../../domain/policies/list/list-state.policy.js';
-import type { GrantsUpdate } from '../../../../../domain/value-objects/access/grants-update.value-object.js';
 import type { EventActor } from '../../../../models/actor/event-actor.model.js';
 import type { GrantedResource } from '../../../../models/access/granted-resource.model.js';
 import type { StoredGrant } from '../../../../models/access/stored-grant.model.js';
 import type { SpacesStore } from '../../../../models/transactions/spaces-store.model.js';
-import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpacesUnitOfWork } from '../../../../ports/outbound/transactions/space/spaces-unit-of-work.port.js';
 import { GrantKeeper } from '../../../../services/access/grant-keeper.service.js';
 import type { RemoveMemberGrantsInput } from './remove-member-grants.input.js';
@@ -57,17 +55,16 @@ function byId(ids: readonly string[]): string[] {
  * Public operation of the spaces module for the member-lifecycle module: one batch of the removal
  * of the grants of a member who left the organization ("Members" of
  * `openapi/internal/task-service.yaml`: reaction to `member.removed.v1`). The clean-up job calls
- * it after the removal committed, until it answers `none-left` or `member-again`; each call runs
+ * it after the removal committed, until it answers `none-left`; each call runs
  * in one tenant transaction, which `run` opens:
  *
- * 1. it reads at most 100 grants of the account, its grants of spaces first, then of lists;
+ * 1. it reads at most 100 obsolete grants of the account, its grants of spaces first, then of lists;
  * 2. it locks their spaces one by one in the order `(created_at, id)` of the handover, `FOR NO
  *    KEY UPDATE` the spaces whose grant goes and `FOR SHARE` the spaces of the lists whose grant
  *    goes (only those lists take a version), then the lists `FOR NO KEY UPDATE` in the order of
  *    their ids;
- * 3. then it reads the copy of the memberships without lock: when the copy holds the account as a
- *    member again, it writes nothing (`member-again`), so a person who joined again keeps them;
- * 4. otherwise it removes each grant (`ResourceGrants.revoke`, which never refuses), takes the
+ * 3. after locking each resource it conditionally removes the grant only if it remains obsolete;
+ * 4. it takes the
  *    next version of its space or list and appends `space.access-changed.v1` or
  *    `list.access-changed.v1` with the actor `{ type: 'system', id: 'task-service' }`; a deleted
  *    space or list (a tombstone) is changed and announced all the same (`announcesChanges`), so
@@ -90,17 +87,6 @@ export class RemoveMemberGrants {
   private readonly unitOfWork: SpacesUnitOfWork;
 
   /**
-   * Property members
-   *
-   * @description
-   * The copy of the memberships, read after the locks.
-   *
-   * @type {MemberDirectory}
-   * @readonly
-   */
-  private readonly members: MemberDirectory;
-
-  /**
    * Property keeper
    *
    * @description
@@ -117,15 +103,13 @@ export class RemoveMemberGrants {
    * Constructor
    *
    * @description
-   * Takes the transaction port and the directory of the members.
+   * Takes the tenant transaction port.
    *
    * @param {SpacesUnitOfWork} unitOfWork - The tenant transaction.
-   * @param {MemberDirectory} members - The copy of the memberships.
    * @constructor
    */
-  public constructor(unitOfWork: SpacesUnitOfWork, members: MemberDirectory) {
+  public constructor(unitOfWork: SpacesUnitOfWork) {
     this.unitOfWork = unitOfWork;
-    this.members = members;
     this.keeper = new GrantKeeper();
   }
   // #endregion
@@ -146,10 +130,11 @@ export class RemoveMemberGrants {
    */
   public async execute(input: RemoveMemberGrantsInput): Promise<RemoveMemberGrantsOutput> {
     return this.unitOfWork.run(async (store: SpacesStore): Promise<RemoveMemberGrantsOutput> => {
-      const batch: GrantedResource[] = await store.grants.listOfMember(
+      const batch: GrantedResource[] = await store.grants.listObsoleteOfMember(
         input.organizationId,
         input.userId,
         REMOVE_GRANTS_BATCH_SIZE,
+        input.memberId,
       );
       if (batch.length === 0) {
         return { outcome: 'none-left' };
@@ -186,10 +171,6 @@ export class RemoveMemberGrants {
           )
         ).map((list: TaskList): [string, TaskList] => [list.snapshot.id, list]),
       );
-      // Read after the locks, so that a re-join committed before them is seen.
-      if ((await this.members.roleOf(input.organizationId, input.userId)) !== null) {
-        return { outcome: 'member-again' };
-      }
       let removed: number = 0;
       for (const resource of batch) {
         const space: Space | undefined = spaces.get(resource.spaceId);
@@ -200,13 +181,17 @@ export class RemoveMemberGrants {
           this.requireErased(resource, stored);
           continue;
         }
-        const update: GrantsUpdate = this.keeper
-          .restore(resource, space.snapshot.ownerUserId, stored)
-          .revoke(input.userId);
-        if (!update.changed) {
+        const didRemove: boolean = await store.grants.removeObsolete(
+          input.organizationId,
+          resource,
+          input.userId,
+          input.memberId,
+        );
+        if (!didRemove) {
           continue;
         }
-        await store.grants.remove(input.organizationId, resource, input.userId);
+        const remaining: StoredGrant[] = await store.grants.listOf(input.organizationId, resource);
+        const grants = this.keeper.restore(resource, space.snapshot.ownerUserId, remaining);
         removed += 1;
         if (list === null) {
           const next: Space = space.recordAccessChange();
@@ -216,7 +201,7 @@ export class RemoveMemberGrants {
           if (announcesChanges('access', next.snapshot)) {
             await store.events.spaceAccessChanged(
               next,
-              update.grants.snapshot.grants,
+              grants.snapshot.grants,
               [input.userId],
               SYSTEM_ACTOR,
             );
@@ -228,7 +213,7 @@ export class RemoveMemberGrants {
         if (announcesChanges('access', space.snapshot, next.snapshot)) {
           await store.events.listAccessChanged(
             next,
-            update.grants.snapshot.grants,
+            grants.snapshot.grants,
             ['grants'],
             [input.userId],
             SYSTEM_ACTOR,

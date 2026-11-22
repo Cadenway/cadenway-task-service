@@ -26,6 +26,7 @@ the removal committed.
 | `public/membership/find-organization-member-roles` | tasks                                                                                                                        |
 | `public/membership/find-organization-owner`        | spaces                                                                                                                       |
 | `public/membership/list-active-members`            | tasks                                                                                                                        |
+| `public/membership/scan-membership-rebuild`        | member-lifecycle                                                                                                             |
 
 `OrganizationMembersModule` exports each public provider with its input and output types.
 
@@ -41,6 +42,7 @@ the removal committed.
   answers, and for whether a former member joined again (the clean-up of their requests).
   Its `stamp` method returns the identity, role and version of the same selected membership for
   the tasks module to compare with Organization's Search membership proof.
+  Its `unique` option rejects ambiguous active memberships before granting resource access.
 - `ListActiveMembers` pages only `userId` and `memberId` in user ID order. It selects each
   account's least privileged active membership before applying the list reader audience.
 - `FindOrganizationMemberRoles` applies the same least-privileged rule in a single batch. The
@@ -51,6 +53,16 @@ organization of the context; they must not be called from a system transaction (
 to open a tenant transaction inside a system one). The caller passes the organization of its
 verified context or of its event: row-level security hides any other, so another value finds
 nothing.
+
+`ScanMembershipRebuild` is an offline exception. It pages the restored Task database in a
+read-only system transaction so member-lifecycle can reject a snapshot from an older or
+incompatible Organization history before it applies any membership.
+
+The spaces module also uses the SQL predicates `public.organization_member_grant_is_effective`
+and `public.organization_member_grant_is_obsolete` to join grant checks in the same statement as
+the resource query. Both explicitly correlate the organization and account, and execute with the
+invoker's row-level security. The first predicate requires the unique active membership. The
+second requires a matching tombstone before allowing removal of an obsolete grant.
 
 ## Owned tables
 
@@ -89,9 +101,9 @@ together.
   applies a membership by its stored `version` (`Membership.apply`): an older or equal version
   changes nothing, a removal always applies and stays applied, a late join or role change never
   brings it back. `claimVersion` of the kit cannot order them: it keys versions per consumer.
-- The copy falls behind beyond the 7 days `EVENTS` keeps (the first deployment in an older
-  environment, a restored database); the rebuild that would fill it does not exist yet (see the
-  `MODULE.md` of member-lifecycle).
+- The copy can fall behind beyond the 7 days `EVENTS` keeps. The offline rebuild reads the
+  authoritative Organization snapshot before bringing a restored Task database online. See the
+  `MODULE.md` of member-lifecycle.
 
 ## Invariants
 

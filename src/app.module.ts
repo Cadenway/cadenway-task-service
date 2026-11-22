@@ -7,6 +7,7 @@ import {
 } from '@cadenway/nest-common';
 import type { PostgresProbe } from '@cadenway/nest-common';
 import { DATABASE_POOL, DatabaseModule } from '@cadenway/nest-common/database';
+import type { DatabaseConfig } from '@cadenway/nest-common/database';
 import { JobsRuntimeModule } from '@cadenway/nest-jobs/runtime';
 import {
   MessagingConnection,
@@ -24,7 +25,10 @@ import { DeletionLifecycleModule } from './modules/deletion-lifecycle/deletion-l
 import { FavoritesModule, FavoritesStorageModule } from './modules/favorites/favorites.module.js';
 import { IntakeModule, IntakeStorageModule } from './modules/intake/intake.module.js';
 import { GoalsModule } from './modules/goals/goals.module.js';
-import { MemberLifecycleModule } from './modules/member-lifecycle/member-lifecycle.module.js';
+import {
+  MemberLifecycleModule,
+  MembershipRebuildModule,
+} from './modules/member-lifecycle/member-lifecycle.module.js';
 import { OrganizationMembersModule } from './modules/organization-members/organization-members.module.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
 import {
@@ -232,3 +236,11 @@ function runJobInOrganization(
   ],
 })
 export class AppModule {}
+
+/** Opens the offline Task membership rebuild against the validated restore candidate. */
+export function rebuildTaskMemberships(
+  config: Readonly<DatabaseConfig>,
+  spool: string,
+): Promise<number> {
+  return MembershipRebuildModule.rebuild(config, spool);
+}

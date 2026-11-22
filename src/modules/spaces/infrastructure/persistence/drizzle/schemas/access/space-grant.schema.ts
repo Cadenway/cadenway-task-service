@@ -29,6 +29,7 @@ export const spaceGrants = pgTable(
     organizationId: uuid('organization_id').notNull(),
     spaceId: uuid('space_id').notNull(),
     userId: uuid('user_id').notNull(),
+    memberId: uuid('member_id'),
     role: text('role').notNull(),
     grantedByType: text('granted_by_type').notNull(),
     grantedById: text('granted_by_id').notNull(),

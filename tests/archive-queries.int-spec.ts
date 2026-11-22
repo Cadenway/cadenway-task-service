@@ -592,6 +592,11 @@ describe('the live condition and the archives keep the statements of the tasks o
     privateOwner: string | null,
   ): Promise<void> {
     await asSystem(
+      `insert into organization_members (organization_id, id, user_id, role, version)
+       select $1, gen_random_uuid(), account, 'member', 1 from unnest($2::uuid[]) as account`,
+      [organizationId, owners],
+    );
+    await asSystem(
       `insert into spaces (organization_id, name, prefix, color, visibility, owner_user_id, statuses, created_at)
        select $1, 'Volume ' || n, 'VOL', 'gris',
               case when n % 2 = 0 then 'organization' else 'private' end,
@@ -610,21 +615,22 @@ describe('the live condition and the archives keep the statements of the tasks o
     );
     await asSystem(
       `insert into space_grants
-         (organization_id, space_id, user_id, role, granted_by_type, granted_by_id, created_at, granted_at)
-       select s.organization_id, s.id,
-              ($2::uuid[])[$3::int + ((s.rank * $4::int + k) % (array_length($2::uuid[], 1) - $3::int))::int + 1],
+         (organization_id, space_id, user_id, member_id, role, granted_by_type, granted_by_id, created_at, granted_at)
+       select s.organization_id, s.id, m.user_id, m.id,
               (array['edit', 'comment', 'view'])[k % 3 + 1], 'user', s.owner_user_id::text, now(), now()
          from (select organization_id, id, owner_user_id,
                       row_number() over (order by created_at, id) - 1 as rank
                  from spaces where organization_id = $1 and name like 'Volume %') as s
         cross join generate_series(0, $4::int - 1) as k
+         join organization_members as m on m.organization_id = s.organization_id
+           and m.user_id = ($2::uuid[])[$3::int + ((s.rank * $4::int + k) % (array_length($2::uuid[], 1) - $3::int))::int + 1]
        on conflict do nothing`,
       [organizationId, owners, shape.owners, shape.spaceGrants],
     );
     await asSystem(
       `insert into list_grants
-         (organization_id, list_id, space_id, user_id, role, granted_by_type, granted_by_id, created_at, granted_at)
-       select l.organization_id, l.id, l.space_id, l.user_id,
+         (organization_id, list_id, space_id, user_id, member_id, role, granted_by_type, granted_by_id, created_at, granted_at)
+       select l.organization_id, l.id, l.space_id, l.user_id, m.id,
               (array['edit', 'comment', 'view'])[l.k % 3 + 1], 'user', l.owner_user_id::text, now(), now()
          from (select li.organization_id, li.id, li.space_id, sp.owner_user_id, k,
                       ($2::uuid[])[((row_number() over (order by li.created_at, li.id, k) - 1)
@@ -633,6 +639,7 @@ describe('the live condition and the archives keep the statements of the tasks o
                  join spaces as sp on sp.organization_id = li.organization_id and sp.id = li.space_id
                 cross join generate_series(0, $3::int - 1) as k
                 where li.organization_id = $1 and sp.name like 'Volume %') as l
+         join organization_members as m on m.organization_id = l.organization_id and m.user_id = l.user_id
         where l.user_id <> l.owner_user_id
        on conflict do nothing`,
       [organizationId, owners, shape.listGrants],
@@ -1072,9 +1079,10 @@ describe('the live condition and the archives keep the statements of the tasks o
     // about 1,400 lists, as in tests/access.int-spec.ts.
     await asSystem(
       `insert into space_grants
-         (organization_id, space_id, user_id, role, granted_by_type, granted_by_id, created_at, granted_at)
-       select s.organization_id, s.id, $2::uuid, 'view', 'user', s.owner_user_id::text, now(), now()
+         (organization_id, space_id, user_id, member_id, role, granted_by_type, granted_by_id, created_at, granted_at)
+       select s.organization_id, s.id, $2::uuid, m.id, 'view', 'user', s.owner_user_id::text, now(), now()
          from spaces as s
+         join organization_members as m on m.organization_id = s.organization_id and m.user_id = $2::uuid
         where s.organization_id = $1 and s.name like 'Volume %' and s.visibility = 'private'
           and s.owner_user_id <> $3::uuid
         order by s.created_at, s.id
