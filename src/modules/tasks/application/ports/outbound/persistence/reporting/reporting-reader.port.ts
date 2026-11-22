@@ -10,11 +10,12 @@ import type { ReportingBatch } from '../../../../models/reporting/reporting-batc
 /** All operations join the caller's tenant snapshot and restrict rows to the supplied scope. */
 export interface ReportingReader {
   // #region Methods
-  /** Reads matching live list tasks in stable task-key order, with their current assignees. */
+  /** Reads matching live list tasks that may contribute to the requested workload window. */
   workloadTasks(
     organizationId: string,
     listId: string,
     filter: TaskFilter,
+    weekStart: string,
     afterId: string | null,
     limit: number,
   ): Promise<ReportingBatch<Parameters<typeof buildWorkload>[1][number]>>;
@@ -28,17 +29,20 @@ export interface ReportingReader {
     limit: number,
   ): Promise<ReportingBatch<Parameters<typeof buildTimesheet>[1][number]>>;
 
-  /** Reads live tasks in readable live lists and their completion facts through the observation instant. */
+  /** Reads the fields needed to aggregate live tasks in readable live lists. */
   dashboardTasks(
     organizationId: string,
     visibleListIds: readonly string[],
     afterId: string | null,
     limit: number,
-  ): Promise<
-    ReportingBatch<
-      Parameters<typeof buildTeamDashboard>[1][number] & { readonly summary: TaskSummaryView }
-    >
-  >;
+  ): Promise<ReportingBatch<Parameters<typeof buildTeamDashboard>[1][number]>>;
+
+  /** Reads full summaries of selected live tasks in the same visible-list snapshot. */
+  dashboardSummaries(
+    organizationId: string,
+    visibleListIds: readonly string[],
+    taskIds: readonly string[],
+  ): Promise<readonly TaskSummaryView[]>;
 
   /** Reads completion facts only for currently visible live tasks in live lists. */
   dashboardTransitions(

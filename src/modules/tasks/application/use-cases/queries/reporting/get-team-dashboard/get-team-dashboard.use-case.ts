@@ -69,7 +69,21 @@ export class GetTeamDashboard {
         tasks,
         transitions,
       );
-      return { ...dashboard, overdueTasks: dashboard.overdueTasks.map((task) => task.summary) };
+      const ids = dashboard.overdueTasks.map((task) => task.id);
+      if (ids.length === 0) return { ...dashboard, overdueTasks: [] };
+      const summaries = await reader.dashboardSummaries(input.organizationId, listIds, ids);
+      const byId = new Map(summaries.map((summary) => [summary.id, summary]));
+      if (byId.size !== ids.length || summaries.length !== ids.length) {
+        throw new Error('The dashboard overdue task summaries do not match the selected tasks.');
+      }
+      const overdueTasks = ids.map((id) => {
+        const summary = byId.get(id);
+        if (summary === undefined) {
+          throw new Error('A dashboard overdue task summary is missing from the snapshot.');
+        }
+        return summary;
+      });
+      return { ...dashboard, overdueTasks };
     });
   }
   // #endregion

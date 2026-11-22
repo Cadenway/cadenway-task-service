@@ -50,6 +50,7 @@ export class GetListWorkload {
           input.organizationId,
           input.listId,
           filter,
+          input.weekStart,
           after,
           500,
         );

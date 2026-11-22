@@ -99,6 +99,7 @@ describe('GetListWorkload', () => {
         _organization: string,
         _list: string,
         _filter: unknown,
+        _weekStart: string,
         after: string | null,
         limit: number,
       ) => {
@@ -138,7 +139,7 @@ describe('GetListWorkload', () => {
     expect(second).toEqual({ ...first, ...expectedSecond });
     expect(first.days).toHaveLength(14);
     expect(read).toHaveBeenCalledTimes(6);
-    expect(read.mock.calls.map((call) => call[3])).toEqual([
+    expect(read.mock.calls.map((call) => call[4])).toEqual([
       null,
       '500',
       '1000',
@@ -147,9 +148,25 @@ describe('GetListWorkload', () => {
       '1000',
     ]);
     expect(
-      read.mock.calls.every((call) => call[0] === 'org' && call[1] === 'list' && call[4] === 500),
+      read.mock.calls.every(
+        (call) =>
+          call[0] === 'org' && call[1] === 'list' && call[3] === input.weekStart && call[5] === 500,
+      ),
     ).toBe(true);
     expect(roleOf).toHaveBeenCalledTimes(2);
     expect(findVisibleList).toHaveBeenCalledTimes(2);
+  });
+
+  it('validates the reporting week before reading batches', async () => {
+    const read = vi.fn();
+    const reader = { workloadTasks: read } as unknown as ReportingReader;
+    const work: ReportingUnitOfWork = { runReadOnly: async (fn) => fn(reader) };
+    const members = { roleOf: vi.fn().mockResolvedValue('member') } as unknown as MemberDirectory;
+    const spaces = { findVisibleList: vi.fn().mockResolvedValue({}) } as unknown as SpaceDirectory;
+
+    await expect(
+      new GetListWorkload(work, members, spaces).execute({ ...input, weekStart: '2026-11-03' }),
+    ).rejects.toThrow();
+    expect(read).not.toHaveBeenCalled();
   });
 });

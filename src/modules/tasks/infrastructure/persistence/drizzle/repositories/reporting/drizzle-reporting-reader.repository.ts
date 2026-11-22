@@ -31,9 +31,7 @@ import { DrizzleCustomFieldRepository } from '../custom-field/drizzle-custom-fie
 
 type WorkloadTask = Parameters<typeof buildWorkload>[1][number];
 type TimesheetEntry = Parameters<typeof buildTimesheet>[1][number];
-type DashboardTask = Parameters<typeof buildTeamDashboard>[1][number] & {
-  readonly summary: TaskSummaryView;
-};
+type DashboardTask = Parameters<typeof buildTeamDashboard>[1][number];
 type DashboardTransition = Parameters<typeof buildTeamDashboard>[2][number];
 
 const EXPORT_PAGE_SIZE = 250;
@@ -82,30 +80,51 @@ export class DrizzleReportingReader implements ReportingReader {
     organizationId: string,
     listId: string,
     filter: TaskFilter,
+    weekStart: string,
     afterId: string | null,
     limit: number,
   ): Promise<ReportingBatch<WorkloadTask>> {
     pageLimit(limit);
-    const rows = await this.pages.load(
+    // Weekend-only spans can allocate to the preceding Friday; retain reversed historical spans.
+    const result = await this.db.execute<{
+      id: string;
+      keyPrefix: string;
+      keyNumber: number;
+      name: string;
+      status: string;
+      startDate: string | null;
+      dueDate: string | null;
+      estimateMinutes: number | null;
+    }>(sql`
+      select ${tasks.id} as "id", ${tasks.keyPrefix} as "keyPrefix",
+        ${tasks.keyNumber} as "keyNumber", ${tasks.name} as "name", ${tasks.status} as "status",
+        ${tasks.startDate}::text as "startDate", ${tasks.dueDate}::text as "dueDate",
+        ${tasks.estimateMinutes} as "estimateMinutes"
+      from ${tasks}
+      where ${taskFilterCondition(organizationId, listId, filter)}
+        and ${tasks.status} <> 'cancelled' and ${tasks.estimateMinutes} > 0
+        and ${tasks.dueDate} is not null
+        and ((${tasks.dueDate} >= ${weekStart}::date
+          and coalesce(${tasks.startDate}, ${tasks.dueDate}) <= ${weekStart}::date + 15)
+          or ${tasks.startDate} > ${tasks.dueDate})${after(sql`${tasks.id}`, afterId)}
+      order by ${tasks.id} limit ${limit + 1}`);
+    const selected = result.rows.slice(0, limit);
+    const assignees = await new DrizzleTaskCollections(this.db).assigneesOf(
       organizationId,
-      sql`
-      select ${taskPageColumns()}, null as "sortValue" from ${tasks}
-      where ${taskFilterCondition(organizationId, listId, filter)}${after(sql`${tasks.id}`, afterId)}
-      order by ${tasks.id} limit ${limit + 1}`,
+      selected.map(({ id }) => id),
     );
-    return batch(
-      rows.map(({ task }) => task),
-      limit,
-      (task) => ({
-        key: TaskKey.parse(task.key),
+    return {
+      items: selected.map((task) => ({
+        key: TaskKey.of(task.keyPrefix, task.keyNumber),
         name: task.name,
-        status: task.status,
+        status: toStatusKey(task.status, `task ${task.id}`),
         startDate: task.startDate,
         dueDate: task.dueDate,
         estimateMinutes: task.estimateMinutes,
-        assigneeIds: task.assigneeIds,
-      }),
-    );
+        assigneeIds: assignees.get(task.id) ?? [],
+      })),
+      next: result.rows.length > limit ? (selected.at(-1)?.id ?? null) : null,
+    };
   }
 
   /** Reads one page of entries in the requested work-date week. */
@@ -159,26 +178,54 @@ export class DrizzleReportingReader implements ReportingReader {
   ): Promise<ReportingBatch<DashboardTask>> {
     pageLimit(limit);
     if (visibleListIds.length === 0) return { items: [], next: null };
+    const result = await this.db.execute<{
+      id: string;
+      keyPrefix: string;
+      keyNumber: number;
+      status: string;
+      dueDate: string | null;
+    }>(sql`
+      select ${tasks.id} as "id", ${tasks.keyPrefix} as "keyPrefix",
+        ${tasks.keyNumber} as "keyNumber", ${tasks.status} as "status",
+        ${tasks.dueDate}::text as "dueDate" from ${tasks}
+      where ${tasks.organizationId} = ${organizationId}::uuid
+        and ${anyOf(tasks.listId, visibleListIds, 'uuid')} and ${liveTask()}${after(sql`${tasks.id}`, afterId)}
+      order by ${tasks.id} limit ${limit + 1}`);
+    const selected = result.rows.slice(0, limit);
+    const assignees = await new DrizzleTaskCollections(this.db).assigneesOf(
+      organizationId,
+      selected.map(({ id }) => id),
+    );
+    return {
+      items: selected.map((task) => ({
+        id: task.id,
+        key: TaskKey.of(task.keyPrefix, task.keyNumber),
+        status: toStatusKey(task.status, `task ${task.id}`),
+        dueDate: task.dueDate,
+        assigneeIds: assignees.get(task.id) ?? [],
+      })),
+      next: result.rows.length > limit ? (selected.at(-1)?.id ?? null) : null,
+    };
+  }
+
+  /** Loads the dashboard's bounded overdue summaries within the same visibility snapshot. */
+  public async dashboardSummaries(
+    organizationId: string,
+    visibleListIds: readonly string[],
+    taskIds: readonly string[],
+  ): Promise<readonly TaskSummaryView[]> {
+    if (taskIds.length > 10) throw new Error('Dashboard summaries are limited to ten tasks.');
+    if (taskIds.length === 0 || visibleListIds.length === 0) return [];
     const rows = await this.pages.load(
       organizationId,
       sql`
       select ${taskPageColumns()}, null as "sortValue" from ${tasks}
       where ${tasks.organizationId} = ${organizationId}::uuid
-        and ${anyOf(tasks.listId, visibleListIds, 'uuid')} and ${liveTask()}${after(sql`${tasks.id}`, afterId)}
-      order by ${tasks.id} limit ${limit + 1}`,
+        and ${anyOf(tasks.listId, visibleListIds, 'uuid')}
+        and ${anyOf(tasks.id, taskIds, 'uuid')} and ${liveTask()}
+      order by ${tasks.id}`,
     );
-    return batch(
-      rows.map(({ task }) => task),
-      limit,
-      (task) => ({
-        id: task.id,
-        key: TaskKey.parse(task.key),
-        status: task.status,
-        dueDate: task.dueDate,
-        assigneeIds: task.assigneeIds,
-        summary: task,
-      }),
-    );
+    return rows.map(({ task }) => task);
   }
 
   /** Reads completion transitions for currently visible live tasks. */
