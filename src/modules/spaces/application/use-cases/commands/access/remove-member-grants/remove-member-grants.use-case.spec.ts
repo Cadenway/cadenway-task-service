@@ -11,7 +11,6 @@ import {
   LEA,
   PRODUIT,
   SPRINT_14,
-  atelierNordMembers,
   designState,
   listGrantOf,
   spaceGrantOf,
@@ -54,10 +53,7 @@ describe('RemoveMemberGrants: a member who left loses their grants', () => {
   it('removes every grant of the account at the next version of each space and list, with their events', async () => {
     const spaces = atelierNord();
 
-    const outcome = await new RemoveMemberGrants(
-      spaces,
-      atelierNordMembers({ removed: [LEA] }),
-    ).execute(input);
+    const outcome = await new RemoveMemberGrants(spaces).execute(input);
 
     expect(outcome).toEqual({ outcome: 'removed', removed: 2 });
     expect(spaces.grants.map((grant) => grant.userId)).toEqual([INES]);
@@ -88,7 +84,7 @@ describe('RemoveMemberGrants: a member who left loses their grants', () => {
 
   it('answers none-left once no grant of the account remains, changing nothing', async () => {
     const spaces = atelierNord();
-    const removeGrants = new RemoveMemberGrants(spaces, atelierNordMembers({ removed: [LEA] }));
+    const removeGrants = new RemoveMemberGrants(spaces);
     await removeGrants.execute(input);
 
     const outcome = await removeGrants.execute(input);
@@ -99,30 +95,33 @@ describe('RemoveMemberGrants: a member who left loses their grants', () => {
 
   it('locks the spaces in the order of the handover, for share when only a list of theirs changes, then the lists', async () => {
     const spaces = atelierNord();
-    const members = atelierNordMembers({ removed: [LEA] });
 
-    await new RemoveMemberGrants(spaces, members).execute(input);
+    await new RemoveMemberGrants(spaces).execute(input);
 
     expect(spaces.journal).toEqual([
       `space ${PRODUIT} share`,
       `space ${DESIGN}`,
       `list ${SPRINT_14}`,
     ]);
-    expect(members.roleCalls).toEqual([
-      { organizationId: ATELIER_NORD, userId: LEA, lock: undefined },
-    ]);
   });
 });
 
-describe('RemoveMemberGrants: a person who is a member again keeps their grants', () => {
-  it('answers member-again and writes nothing while the copy holds the account', async () => {
-    const spaces = atelierNord();
+describe('RemoveMemberGrants: a new membership keeps its own grants', () => {
+  it('removes only grants classified as obsolete by the repository', async () => {
+    const spaces = new InMemorySpaces({
+      spaces: [spaceState(), designState({ version: 3 })],
+      lists: [sprintState({ version: 2 })],
+      grants: [
+        spaceGrantOf(DESIGN, LEA, 'edit', { obsolete: false }),
+        listGrantOf(PRODUIT, SPRINT_14, LEA, 'comment'),
+      ],
+    });
 
-    const outcome = await new RemoveMemberGrants(spaces, atelierNordMembers()).execute(input);
+    const outcome = await new RemoveMemberGrants(spaces).execute(input);
 
-    expect(outcome).toEqual({ outcome: 'member-again' });
-    expect(spaces.grants).toHaveLength(3);
-    expect(spaces.events).toEqual([]);
+    expect(outcome).toEqual({ outcome: 'removed', removed: 1 });
+    expect(spaces.grants).toHaveLength(1);
+    expect(spaces.grants[0]?.resource.kind).toBe('space');
   });
 });
 
@@ -151,7 +150,7 @@ describe('RemoveMemberGrants: batches of 100 grants, grants of spaces first', ()
 
   it('removes 130 grants in two batches of 100 and 30, the 60 grants of spaces in the first', async () => {
     const spaces = manyGrants();
-    const removeGrants = new RemoveMemberGrants(spaces, atelierNordMembers({ removed: [LEA] }));
+    const removeGrants = new RemoveMemberGrants(spaces);
 
     const first = await removeGrants.execute(input);
     const kindsAfterFirst = spaces.grants.map((grant) => grant.resource.kind);
@@ -174,9 +173,9 @@ describe('RemoveMemberGrants: a grant on a row the batch did not lock is a defec
       grants: [spaceGrantOf(DESIGN, LEA, 'edit')],
     });
 
-    await expect(
-      new RemoveMemberGrants(spaces, atelierNordMembers({ removed: [LEA] })).execute(input),
-    ).rejects.toThrow('A grant of the batch names a space the batch did not lock.');
+    await expect(new RemoveMemberGrants(spaces).execute(input)).rejects.toThrow(
+      'A grant of the batch names a space the batch did not lock.',
+    );
     expect(spaces.grants).toHaveLength(1);
     expect(spaces.events).toEqual([]);
   });
@@ -187,9 +186,9 @@ describe('RemoveMemberGrants: a grant on a row the batch did not lock is a defec
       grants: [listGrantOf(PRODUIT, SPRINT_14, LEA, 'view')],
     });
 
-    await expect(
-      new RemoveMemberGrants(spaces, atelierNordMembers({ removed: [LEA] })).execute(input),
-    ).rejects.toThrow('A grant of the batch names a list the batch did not lock.');
+    await expect(new RemoveMemberGrants(spaces).execute(input)).rejects.toThrow(
+      'A grant of the batch names a list the batch did not lock.',
+    );
     expect(spaces.grants).toHaveLength(1);
   });
 });
@@ -212,10 +211,7 @@ describe('RemoveMemberGrants: a tombstone loses the grant, takes its version and
       ],
     });
 
-    const outcome = await new RemoveMemberGrants(
-      spaces,
-      atelierNordMembers({ removed: [LEA] }),
-    ).execute(input);
+    const outcome = await new RemoveMemberGrants(spaces).execute(input);
 
     expect(outcome).toEqual({ outcome: 'removed', removed: 2 });
     expect(spaces.grants.map((grant) => grant.userId)).toEqual([INES]);
@@ -250,7 +246,7 @@ describe('RemoveMemberGrants: a tombstone loses the grant, takes its version and
       grants: [spaceGrantOf(DESIGN, LEA, 'edit')],
     });
 
-    await new RemoveMemberGrants(spaces, atelierNordMembers({ removed: [LEA] })).execute(input);
+    await new RemoveMemberGrants(spaces).execute(input);
 
     expect(spaces.events).toEqual([
       {
@@ -271,7 +267,7 @@ describe('RemoveMemberGrants: a tombstone loses the grant, takes its version and
       grants: [listGrantOf(PRODUIT, SPRINT_14, LEA, 'view')],
     });
 
-    await new RemoveMemberGrants(spaces, atelierNordMembers({ removed: [LEA] })).execute(input);
+    await new RemoveMemberGrants(spaces).execute(input);
 
     expect(spaces.events).toEqual([
       expect.objectContaining({

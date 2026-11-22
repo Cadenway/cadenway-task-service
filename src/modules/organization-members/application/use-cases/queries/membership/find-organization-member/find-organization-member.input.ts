@@ -42,5 +42,8 @@ export interface FindOrganizationMemberInput {
    * @readonly
    */
   readonly lock?: boolean;
+
+  /** Require exactly one active membership when binding an authorization grant. */
+  readonly unique?: boolean;
   // #endregion
 }

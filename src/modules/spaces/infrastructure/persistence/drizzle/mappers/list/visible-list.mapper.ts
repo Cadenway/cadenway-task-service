@@ -7,6 +7,7 @@ import type { Viewer } from '../../../../../domain/value-objects/member/viewer.v
 import { listGrants } from '../../schemas/access/list-grant.schema.js';
 import { taskLists } from '../../schemas/list/task-list.schema.js';
 import { spaces } from '../../schemas/space/space.schema.js';
+import { effectiveGrantCondition } from '../access/grant-membership.mapper.js';
 import { toAccessRole } from '../access/stored-grant.mapper.js';
 import { toVisibility } from '../space/space.mapper.js';
 import { undeletedSpaceCondition } from '../space/space-tombstone.mapper.js';
@@ -128,7 +129,7 @@ export const viewerListGrant = alias(listGrants, 'viewer_list_grant');
  * @returns {SQL} The join condition.
  */
 export function viewerListGrantJoin(organizationId: string, viewerUserId: string): SQL {
-  return sql`${viewerListGrant.organizationId} = ${organizationId} and ${viewerListGrant.listId} = ${taskLists.id} and ${viewerListGrant.userId} = ${viewerUserId}`;
+  return sql`${viewerListGrant.organizationId} = ${organizationId} and ${viewerListGrant.listId} = ${taskLists.id} and ${viewerListGrant.userId} = ${viewerUserId} and ${effectiveGrantCondition(viewerListGrant)}`;
 }
 
 /**

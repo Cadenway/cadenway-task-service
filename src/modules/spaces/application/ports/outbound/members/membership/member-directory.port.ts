@@ -10,6 +10,13 @@ import type { MemberRole } from '../../../../../domain/value-objects/member/memb
  */
 export interface MemberDirectory {
   // #region Methods
+  /** Finds the unique active membership to which a resource grant will be bound. */
+  grantMembershipOf(
+    organizationId: string,
+    userId: string,
+    lock?: boolean,
+  ): Promise<{ readonly memberId: string; readonly role: MemberRole } | null>;
+
   /**
    * Method roleOf
    *

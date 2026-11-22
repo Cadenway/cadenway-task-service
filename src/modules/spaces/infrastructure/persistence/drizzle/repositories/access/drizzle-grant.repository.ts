@@ -7,6 +7,10 @@ import type { StoredGrant } from '../../../../../application/models/access/store
 import type { ViewerGrants } from '../../../../../application/models/access/viewer-grants.model.js';
 import type { GrantRepository } from '../../../../../application/ports/outbound/persistence/access/grant-repository.port.js';
 import type { AccessRole } from '../../../../../domain/value-objects/access/access-role.value-object.js';
+import {
+  effectiveGrantCondition,
+  obsoleteGrantCondition,
+} from '../../mappers/access/grant-membership.mapper.js';
 import { toAccessRole, toStoredGrant } from '../../mappers/access/stored-grant.mapper.js';
 import { undeletedListCondition } from '../../mappers/list/list-tombstone.mapper.js';
 import { listGrants } from '../../schemas/access/list-grant.schema.js';
@@ -78,15 +82,15 @@ export class DrizzleGrantRepository implements GrantRepository {
     const listRole =
       listId === null
         ? sql`null::text`
-        : sql`(select ${listGrants.role} from ${listGrants} where ${listGrants.organizationId} = ${organizationId} and ${listGrants.listId} = ${listId} and ${listGrants.userId} = ${viewerUserId})`;
+        : sql`(select ${listGrants.role} from ${listGrants} where ${listGrants.organizationId} = ${organizationId} and ${listGrants.listId} = ${listId} and ${listGrants.userId} = ${viewerUserId} and ${effectiveGrantCondition(listGrants)})`;
     const result = await this.db.execute<{
       spaceRole: string | null;
       listRole: string | null;
       anyList: boolean;
     }>(sql`select
-      (select ${spaceGrants.role} from ${spaceGrants} where ${spaceGrants.organizationId} = ${organizationId} and ${spaceGrants.spaceId} = ${spaceId} and ${spaceGrants.userId} = ${viewerUserId}) as "spaceRole",
+      (select ${spaceGrants.role} from ${spaceGrants} where ${spaceGrants.organizationId} = ${organizationId} and ${spaceGrants.spaceId} = ${spaceId} and ${spaceGrants.userId} = ${viewerUserId} and ${effectiveGrantCondition(spaceGrants)}) as "spaceRole",
       ${listRole} as "listRole",
-      exists (select 1 from ${listGrants} inner join ${taskLists} on ${taskLists.organizationId} = ${listGrants.organizationId} and ${taskLists.id} = ${listGrants.listId} where ${listGrants.organizationId} = ${organizationId} and ${listGrants.userId} = ${viewerUserId} and ${listGrants.spaceId} = ${spaceId} and ${undeletedListCondition()}) as "anyList"`);
+      exists (select 1 from ${listGrants} inner join ${taskLists} on ${taskLists.organizationId} = ${listGrants.organizationId} and ${taskLists.id} = ${listGrants.listId} where ${listGrants.organizationId} = ${organizationId} and ${listGrants.userId} = ${viewerUserId} and ${listGrants.spaceId} = ${spaceId} and ${effectiveGrantCondition(listGrants)} and ${undeletedListCondition()}) as "anyList"`);
     const row: { spaceRole: string | null; listRole: string | null; anyList: boolean } | undefined =
       result.rows[0];
     if (row === undefined) {
@@ -103,8 +107,7 @@ export class DrizzleGrantRepository implements GrantRepository {
    * Method listOf
    *
    * @description
-   * Reads every grant of a space or a list in the order `(created_at, user_id)`, one range of its
-   * primary key.
+   * Reads the effective grants of a space or a list in the order `(created_at, user_id)`.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {GrantedResource} resource - The space or the list.
@@ -119,6 +122,7 @@ export class DrizzleGrantRepository implements GrantRepository {
           and(
             eq(spaceGrants.organizationId, organizationId),
             eq(spaceGrants.spaceId, resource.spaceId),
+            effectiveGrantCondition(spaceGrants),
           ),
         )
         .orderBy(asc(spaceGrants.createdAt), asc(spaceGrants.userId));
@@ -128,7 +132,11 @@ export class DrizzleGrantRepository implements GrantRepository {
       .select()
       .from(listGrants)
       .where(
-        and(eq(listGrants.organizationId, organizationId), eq(listGrants.listId, resource.listId)),
+        and(
+          eq(listGrants.organizationId, organizationId),
+          eq(listGrants.listId, resource.listId),
+          effectiveGrantCondition(listGrants),
+        ),
       )
       .orderBy(asc(listGrants.createdAt), asc(listGrants.userId));
     return rows.map(toStoredGrant);
@@ -138,14 +146,15 @@ export class DrizzleGrantRepository implements GrantRepository {
    * Method put
    *
    * @description
-   * Inserts the grant, or on its primary key changes its role, `granted_at` (now) and
-   * `granted_by_*`; `created_at` stays. A grant of a list stores the space of the list.
+   * Inserts the grant, or changes the membership, role, grant time and actor of its existing row.
+   * The caller holds the grantee's active membership lock.
    *
    * @param {string} organizationId - The organization of the transaction.
    * @param {GrantedResource} resource - The space or the list, locked by the caller.
    * @param {string} userId - The person.
    * @param {AccessRole} role - The role.
    * @param {EventActor} actor - Who gives it.
+   * @param {string} memberId - The locked generation of the grantee's membership.
    * @returns {Promise<StoredGrant>} The grant as stored.
    * @throws {Error} When no row came back.
    */
@@ -155,8 +164,10 @@ export class DrizzleGrantRepository implements GrantRepository {
     userId: string,
     role: AccessRole,
     actor: EventActor,
+    memberId: string,
   ): Promise<StoredGrant> {
     const change = {
+      memberId,
       role,
       grantedByType: actor.type,
       grantedById: actor.id,
@@ -170,6 +181,7 @@ export class DrizzleGrantRepository implements GrantRepository {
               organizationId,
               spaceId: resource.spaceId,
               userId,
+              memberId,
               role,
               grantedByType: actor.type,
               grantedById: actor.id,
@@ -186,6 +198,7 @@ export class DrizzleGrantRepository implements GrantRepository {
               listId: resource.listId,
               spaceId: resource.spaceId,
               userId,
+              memberId,
               role,
               grantedByType: actor.type,
               grantedById: actor.id,
@@ -218,34 +231,70 @@ export class DrizzleGrantRepository implements GrantRepository {
     resource: GrantedResource,
     userId: string,
   ): Promise<void> {
+    await this.deleteGrant(organizationId, resource, userId);
+  }
+
+  /**
+   * Deletes a grant only if the removed membership still matches the row.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {GrantedResource} resource - The resource, locked by the caller.
+   * @param {string} userId - The account.
+   * @param {string} [removedMemberId] - The generation carried by the removal job.
+   * @returns {Promise<boolean>} Whether a row was removed.
+   */
+  public async removeObsolete(
+    organizationId: string,
+    resource: GrantedResource,
+    userId: string,
+    removedMemberId?: string,
+  ): Promise<boolean> {
+    return this.deleteGrant(organizationId, resource, userId, { removedMemberId });
+  }
+
+  private async deleteGrant(
+    organizationId: string,
+    resource: GrantedResource,
+    userId: string,
+    obsolete?: { readonly removedMemberId: string | undefined },
+  ): Promise<boolean> {
     if (resource.kind === 'space') {
-      await this.db
+      const rows = await this.db
         .delete(spaceGrants)
         .where(
           and(
             eq(spaceGrants.organizationId, organizationId),
             eq(spaceGrants.spaceId, resource.spaceId),
             eq(spaceGrants.userId, userId),
+            obsolete === undefined
+              ? undefined
+              : obsoleteGrantCondition(spaceGrants, obsolete.removedMemberId),
           ),
-        );
-      return;
+        )
+        .returning({ userId: spaceGrants.userId });
+      return rows.length > 0;
     }
-    await this.db
+    const rows = await this.db
       .delete(listGrants)
       .where(
         and(
           eq(listGrants.organizationId, organizationId),
           eq(listGrants.listId, resource.listId),
           eq(listGrants.userId, userId),
+          obsolete === undefined
+            ? undefined
+            : obsoleteGrantCondition(listGrants, obsolete.removedMemberId),
         ),
-      );
+      )
+      .returning({ userId: listGrants.userId });
+    return rows.length > 0;
   }
 
   /**
    * Method listOfMember
    *
    * @description
-   * Reads the first grants of an account: its grants of spaces in the order of
+   * Reads the first effective grants of an account: its grants of spaces in the order of
    * `space_grants_user_index`, then, when they leave room, its grants of lists in the order of
    * `list_grants_user_index`, at most `limit` in all. Two short statements.
    *
@@ -259,10 +308,45 @@ export class DrizzleGrantRepository implements GrantRepository {
     userId: string,
     limit: number,
   ): Promise<GrantedResource[]> {
+    return this.listMemberGrants(organizationId, userId, limit);
+  }
+
+  /**
+   * Reads a bounded batch of grants for which the membership removal is proven.
+   *
+   * @param {string} organizationId - The organization of the transaction.
+   * @param {string} userId - The account.
+   * @param {number} limit - Most grants to return.
+   * @param {string} [removedMemberId] - The generation carried by the removal job.
+   * @returns {Promise<GrantedResource[]>} The first matching resources.
+   */
+  public async listObsoleteOfMember(
+    organizationId: string,
+    userId: string,
+    limit: number,
+    removedMemberId?: string,
+  ): Promise<GrantedResource[]> {
+    return this.listMemberGrants(organizationId, userId, limit, { removedMemberId });
+  }
+
+  private async listMemberGrants(
+    organizationId: string,
+    userId: string,
+    limit: number,
+    obsolete?: { readonly removedMemberId: string | undefined },
+  ): Promise<GrantedResource[]> {
     const ofSpaces: { spaceId: string }[] = await this.db
       .select({ spaceId: spaceGrants.spaceId })
       .from(spaceGrants)
-      .where(and(eq(spaceGrants.organizationId, organizationId), eq(spaceGrants.userId, userId)))
+      .where(
+        and(
+          eq(spaceGrants.organizationId, organizationId),
+          eq(spaceGrants.userId, userId),
+          obsolete === undefined
+            ? effectiveGrantCondition(spaceGrants)
+            : obsoleteGrantCondition(spaceGrants, obsolete.removedMemberId),
+        ),
+      )
       .orderBy(asc(spaceGrants.spaceId))
       .limit(limit);
     const found: GrantedResource[] = ofSpaces.map((row: { spaceId: string }): GrantedResource => ({
@@ -275,7 +359,15 @@ export class DrizzleGrantRepository implements GrantRepository {
     const ofLists: { spaceId: string; listId: string }[] = await this.db
       .select({ spaceId: listGrants.spaceId, listId: listGrants.listId })
       .from(listGrants)
-      .where(and(eq(listGrants.organizationId, organizationId), eq(listGrants.userId, userId)))
+      .where(
+        and(
+          eq(listGrants.organizationId, organizationId),
+          eq(listGrants.userId, userId),
+          obsolete === undefined
+            ? effectiveGrantCondition(listGrants)
+            : obsoleteGrantCondition(listGrants, obsolete.removedMemberId),
+        ),
+      )
       .orderBy(asc(listGrants.spaceId), asc(listGrants.listId))
       .limit(limit - found.length);
     return [
@@ -317,6 +409,7 @@ export class DrizzleGrantRepository implements GrantRepository {
           eq(spaceGrants.organizationId, organizationId),
           eq(spaceGrants.userId, userId),
           inArray(spaceGrants.spaceId, [...spaceIds]),
+          effectiveGrantCondition(spaceGrants),
         ),
       )
       .orderBy(asc(spaceGrants.spaceId));
@@ -328,6 +421,7 @@ export class DrizzleGrantRepository implements GrantRepository {
           eq(listGrants.organizationId, organizationId),
           eq(listGrants.userId, userId),
           inArray(listGrants.spaceId, [...spaceIds]),
+          effectiveGrantCondition(listGrants),
         ),
       )
       .orderBy(asc(listGrants.spaceId), asc(listGrants.listId));

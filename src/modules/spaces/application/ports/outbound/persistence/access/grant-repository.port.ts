@@ -69,6 +69,7 @@ export interface GrantRepository {
     userId: string,
     role: AccessRole,
     actor: EventActor,
+    memberId: string,
   ): Promise<StoredGrant>;
 
   /**
@@ -98,6 +99,28 @@ export interface GrantRepository {
    * @returns {Promise<GrantedResource[]>} What the grants open, at most `limit`.
    */
   listOfMember(organizationId: string, userId: string, limit: number): Promise<GrantedResource[]>;
+
+  /**
+   * Lists grants that no longer belong to the account's unique current membership.
+   * The query includes ambiguous legacy grants and is bounded by `limit`.
+   */
+  listObsoleteOfMember(
+    organizationId: string,
+    userId: string,
+    limit: number,
+    memberId?: string,
+  ): Promise<GrantedResource[]>;
+
+  /**
+   * Removes an obsolete grant after its resource has been locked. The current membership and grant
+   * are checked again so that a grant given after rejoining is preserved.
+   */
+  removeObsolete(
+    organizationId: string,
+    resource: GrantedResource,
+    userId: string,
+    memberId?: string,
+  ): Promise<boolean>;
 
   /**
    * Method listOfMemberInSpaces

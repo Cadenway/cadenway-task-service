@@ -155,6 +155,13 @@
       "when": 1795260400023,
       "tag": "0021_git_activity_provider",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1795297516347,
+      "tag": "0022_membership_grant_epochs",
+      "breakpoints": true
     }
   ]
 }

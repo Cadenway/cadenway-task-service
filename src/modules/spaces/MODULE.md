@@ -89,10 +89,9 @@ its authorization until the caller's tenant transaction commits.
   spaces of a member who left, in a transaction of its own; the clean-up job of member-lifecycle
   calls it until `none-left` or `member-again`. `HandOverAwaitingSpaces` (`{ organizationId }`)
   hands the spaces awaiting an owner over once the copy learns it, in the transaction of the event.
-- `RemoveMemberGrants` (`{ organizationId, userId }` to `{ outcome: 'none-left' }`,
-  `{ outcome: 'member-again' }` or `{ outcome: 'removed', removed }`): one batch of at most 100
-  grants of a member who left, in a transaction of its own, which the clean-up job calls until
-  `none-left` or `member-again`.
+- `RemoveMemberGrants` (`{ organizationId, userId, memberId? }`): one batch of at most 100
+  obsolete grants of a member who left, in its own transaction. The clean-up job calls it until
+  no grants remain attributable to the ended membership.
 - `AllocateTaskKeys` (`{ organizationId, spaceId, count }`, `count` 1 to 26): the prefix and the
   first of `count` consecutive task numbers.
 - Every `VisibleList` carries `organizationAccess`, `callerRole`, `archivedAt` (`Date | null`),
@@ -232,8 +231,11 @@ the application role. The measured cost, the timeouts and the rollback are in th
 - `space_grants` and `list_grants`: `role` (CHECK `edit`, `comment`, `view`), `created_at` (when
   the person was first given access: the order of the listings and of the access events),
   `granted_at` and `granted_by_type`/`granted_by_id` (when and by whom the current role was given,
-  `grantedAt` and `grantedBy`). `list_grants.space_id` copies the space of the list, with a foreign
-  key to `spaces`.
+  `grantedAt` and `grantedBy`). New grants store `member_id` under a membership lock. A grant is
+  effective only for its unique active membership. Older unbound grants also require an
+  unambiguous history: one membership row, active and recorded strictly before the grant.
+  Ambiguous grants remain ineffective until explicitly given again. `list_grants.space_id`
+  copies the space of the list, with a foreign key to `spaces`.
 - `lists.archived_at` (`timestamptz(3)`, the instant of the transaction of the archive) and
   `archived_by_type`/`archived_by_id` (`archivedBy`, type CHECK `user`, `automation`, `git`,
   `system`, id not empty) are all set or all null (`lists_archived_check`); `restored_at`
@@ -599,10 +601,13 @@ list_grants join lists` by `list_grants_user_index`, which `list_grants.space_id
   absent; `callerCanManage` is the value after the change.
 - An approval raises a grant and never lowers it (`ResourceGrants.raise`): a person who holds the
   role asked or a higher one keeps it, and nothing changes.
-- The clean-up of the grants of a member who left is a batch operation of 100 grants, as the
-  handover of the private spaces, first-N without a cursor: a removed grant leaves the range. A
-  re-join committed before the batch keeps the grants; one that commits after the read loses
-  those of that batch (accepted race, as for the handover).
+- A membership removal makes its grants ineffective when applied to the membership projection.
+  Clean-up uses batches of
+  100 grants and rechecks the membership generation when deleting each row. A re-join leaves
+  new grants intact, even when the old job runs after the new grant was written.
+  Migration 0022 expands the schema while the former binary still runs. That binary ignores
+  grant generations. Before relying on this revocation guarantee, retire every former API and
+  worker instance from traffic and use a release with the generation check as the rollback floor.
 - A space handed over to the owner of the organization drops the grants they held there (not in
   the design of P3b-1: the domain refuses to load grants that name the owner, which would make the
   space and its lists unshareable). The `space.access-changed.v1` of a removed space grant shares

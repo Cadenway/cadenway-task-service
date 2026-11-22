@@ -98,8 +98,8 @@ function scripted(scripts: Scripts, onCall: (call: string) => void = () => undef
     handOverAwaiting: () => Promise.reject(new Error('Not part of the clean-up.')),
   };
   const grants: MemberGrants = {
-    removeBatch: (organizationId: string, userId: string) => {
-      record(`grants:${organizationId}:${userId}`);
+    removeBatch: (organizationId: string, userId: string, memberId?: string) => {
+      record(`grants:${organizationId}:${userId}${memberId === undefined ? '' : `:${memberId}`}`);
       return next<GrantRemovalBatch>(grantAnswers, { outcome: 'none-left' });
     },
   };
@@ -286,7 +286,18 @@ describe('CleanUpRemovedMember: spaces, then grants, then access requests, then 
 });
 
 describe('CleanUpRemovedMember: the job stops for good once the person is a member again', () => {
-  it('touches no grant, request or task when a space batch finds the account a member again', async () => {
+  it('passes the removed membership identity to every grant batch', async () => {
+    const { calls, useCase } = scripted({ grants: [{ outcome: 'removed', removed: 1 }] });
+
+    await useCase.execute({ ...input, memberId: 'removed-membership' });
+
+    expect(calls.filter((call) => call.startsWith('grants:'))).toEqual([
+      `grants:${ATELIER_NORD}:${HUGO}:removed-membership`,
+      `grants:${ATELIER_NORD}:${HUGO}:removed-membership`,
+    ]);
+  });
+
+  it('removes obsolete grants after a rejoin without touching requests or tasks', async () => {
     const { calls, useCase } = scripted({
       spaces: [
         { outcome: 'handed-over', handedOver: 100, awaitingOwner: 0 },
@@ -302,9 +313,10 @@ describe('CleanUpRemovedMember: the job stops for good once the person is a memb
       ...NOTHING,
       outcome: 'member-again',
       spacesHandedOver: 100,
-      batches: 1,
+      grantsRemoved: 1,
+      batches: 2,
     });
-    expect(stepsOf(calls)).toEqual(['spaces', 'spaces']);
+    expect(stepsOf(calls)).toEqual(['spaces', 'spaces', 'grants', 'grants']);
   });
 
   it('stops at a grant batch that finds the account a member again, before the requests and tasks', async () => {

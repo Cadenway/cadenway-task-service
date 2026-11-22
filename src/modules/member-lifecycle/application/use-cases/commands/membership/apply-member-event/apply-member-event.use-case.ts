@@ -57,7 +57,7 @@ export class ApplyMemberEvent {
    * @type {PrivateSpaceHandover}
    * @readonly
    */
-  private readonly spaces: PrivateSpaceHandover;
+  private readonly spaces: PrivateSpaceHandover | null;
   // #endregion
 
   // #region Constructor
@@ -69,13 +69,13 @@ export class ApplyMemberEvent {
    *
    * @param {MemberEventUnitOfWork} unitOfWork - The tenant transaction of the event.
    * @param {MembershipCopy} memberships - The copy of the memberships.
-   * @param {PrivateSpaceHandover} spaces - The handover of the spaces awaiting an owner.
+   * @param {PrivateSpaceHandover | null} spaces - The handover port, absent in offline recovery.
    * @constructor
    */
   public constructor(
     unitOfWork: MemberEventUnitOfWork,
     memberships: MembershipCopy,
-    spaces: PrivateSpaceHandover,
+    spaces: PrivateSpaceHandover | null,
   ) {
     this.unitOfWork = unitOfWork;
     this.memberships = memberships;
@@ -117,7 +117,11 @@ export class ApplyMemberEvent {
         };
       }
       if (input.role === 'owner') {
-        await this.spaces.handOverAwaiting(input.organizationId);
+        if (this.spaces === null) {
+          await store.cleanUps.enqueueOwnerHandover(input.memberId, input.version);
+        } else {
+          await this.spaces.handOverAwaiting(input.organizationId);
+        }
       }
       return { cleanUpEnqueued: false };
     });

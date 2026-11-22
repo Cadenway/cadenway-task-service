@@ -55,7 +55,7 @@ describe('DrizzleSpaceRepository: the spaces a member sees, with their grants re
       'left join "space_grants" "viewer_space_grant" on "viewer_space_grant"."organization_id" = $1 and "viewer_space_grant"."space_id" = "spaces"."id" and "viewer_space_grant"."user_id" = $2',
     );
     expect(text).toContain(
-      'left join (select distinct "list_grants"."space_id" from "list_grants" inner join "lists" on "lists"."organization_id" = "list_grants"."organization_id" and "lists"."id" = "list_grants"."list_id" where "list_grants"."organization_id" = $3 and "list_grants"."user_id" = $4 and "lists"."deleted_at" is null) as "viewer_list_spaces" on "viewer_list_spaces"."space_id" = "spaces"."id"',
+      'left join (select distinct "list_grants"."space_id" from "list_grants" inner join "lists" on "lists"."organization_id" = "list_grants"."organization_id" and "lists"."id" = "list_grants"."list_id" where "list_grants"."organization_id" = $3 and "list_grants"."user_id" = $4 and public.organization_member_grant_is_effective("list_grants"."organization_id", "list_grants"."user_id", "list_grants"."member_id", "list_grants"."granted_at") and "lists"."deleted_at" is null) as "viewer_list_spaces" on "viewer_list_spaces"."space_id" = "spaces"."id"',
     );
     expect(text).not.toContain('exists');
   });

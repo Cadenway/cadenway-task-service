@@ -92,9 +92,9 @@ transaction of the event, a deleted space excepted.
   cleanup). It writes the copy and one job row, so its cost does not grow with what the member
   owned; the job does the work afterwards, in batches. Until the job reaches a private space, the
   space stays owned by a person who is no longer a member, so nobody sees it, the owner and the
-  admins of the organization included (fail closed); until it reaches a grant, the grant stays
-  listed among the grants of its space or list, but gives the former member nothing (the copy answers
-  `404 organization.not-found` to them); until it reaches a pending access request, the request
+  admins of the organization included (fail closed). A grant of the ended membership is
+  immediately absent from the effective grants, even if its row remains until clean-up.
+  Until clean-up reaches a pending access request, the request
   stays in the listing of the people who manage its target, and an approval or a refusal of it
   answers `404 access-request.not-found` (its requester left); until it reaches a task, the task
   still lists the former member
@@ -111,10 +111,9 @@ transaction of the event, a deleted space excepted.
   `removed_at`. Remedy: have organization-service requeue the `member.joined.v1` of the owner
   (`requeueOutboxEvents`).
 - Order: the three events travel on three subjects and arrive in any order; the copy applies them
-  by the version of the membership (organization-members). Each batch of the job reads the copy
-  after its locks: it changes nothing, and the job stops for good, while the account is a member again
-  (a re-join, or a removal of an old membership that arrives after a new join), and it is
-  idempotent, since a space or a task it processed leaves what the next batch reads.
+  by the version of the membership. A re-join protects the account's current resources. The
+  grant step can still remove a proven obsolete grant of an ended membership after its locks.
+  A resource already cleaned up leaves what the next batch reads.
 - Redelivery schedule, shared by the three consumers (decision 3 of the P2b security follow-ups,
   the schedule of the security projections, which the memberships module of identity-service
   documents too): 1 s, 5 s, 30 s, 2 min, 10 min, 30 min, then every hour, 32 deliveries. The 31
@@ -154,15 +153,18 @@ transaction of the event, a deleted space excepted.
 position, so the copy falls behind only when this service consumes nothing for longer than that,
 or when its database starts after the first member events left the stream: the first deployment in
 an environment where organization-service has run for more than 7 days, or a restored database.
-The memberships older than that are then missing from the copy, and their members are answered as
-non-members (`404 organization.not-found`). The remedy is a rebuild: organization-service re-emits
-its current memberships with `RebuildEmitter` on `rebuild.task.membership`, received with
-`EventConsumers.onRebuild` and applied with the same rules. None of it exists yet: the item schema
-belongs to cadenway-api-contracts, the emitter to organization-service, the receiver to this
-service; the `task` user already subscribes to `rebuild.task.>`, and organization-service's NATS
-user would need the right to publish `rebuild.task.membership`. Until then the service must not
-ship to an environment whose copy is incomplete, and a removal or role change lost on the way stays
-unapplied, with no later correction.
+An offline rebuild reads Organization's authoritative membership export on stdin and applies
+active generations and tombstones with the same lifecycle and version rules as live events. The
+command is `node --import @cadenway/nest-common/register dist/infrastructure/maintenance/rebuild-memberships.js`.
+Ops passes `--database <candidate>` when restoring Task and keeps the normal runtime stopped
+until the candidate can be activated.
+
+The command validates the whole versioned, ordered export and its final count in a private
+spool. A read-only comparison rejects any restored membership that Organization cannot confirm
+as part of the same history. Each subsequent membership update and its cleanup or owner handover
+job commit together. The command has no HTTP listener or broker connection and does not run
+workers, so jobs run only after the normal service starts. A failed
+cutover discards the candidate; a repeat import into the same candidate is idempotent.
 
 ## Invariants
 
@@ -177,8 +179,9 @@ unapplied, with no later correction.
 - A removal enqueues exactly one clean-up job per membership and version, in its transaction; the
   job hands the private spaces over, removes the former member's favorites and grants, drops their
   access requests, then removes their task assignments and watcher overrides after the commit,
-  unless the copy holds them as a member again when a batch runs. A join or a role change enqueues
-  nothing, so a member who becomes a guest keeps the tasks, the grants and the requests they hold.
+  unless the copy holds them as a member again when a batch runs. Grant removal also runs after
+  rejoining, and only removes grants attributable to an ended membership. A join or a role
+  change enqueues nothing, so a role change retains the grants of the same membership.
 - A private space of a former member is seen by nobody until the job hands it over.
 
 ## Transactions
@@ -197,7 +200,8 @@ delivered again, or requeued by organization-service while the job row is kept (
 finished), enqueues nothing; the removal of a later membership of the same account is a new
 occurrence. The kit scopes the key to the organization as the envelope spelled it, so the same
 removal requeued with another spelling of the organization would enqueue a second job, which finds
-nothing left to do. The payload also carries the `traceparent` of the delivery of the removal.
+nothing left to do. The payload carries the removed `memberId` and the delivery's
+`traceparent`. Older jobs omit `memberId`; they can still delete grants with a proven tombstone.
 
 `CleanUpRemovedMemberHandler` runs each job in the organization context of its envelope,
 lower-cased (`runJobInOrganization` of `src/app.module.ts`), inside a `process
@@ -209,8 +213,10 @@ loops within the attempt, each batch in its own tenant transaction:
 1. `HandOverPrivateSpaces` (spaces): up to 100 private spaces, until a batch finds none;
 2. `PurgeMemberFavorites` (favorites): removes the bounded private collection after a locked
    membership recheck, in a tenant transaction, and emits no event;
-3. `RemoveMemberGrants` (spaces): up to 100 grants, space grants first, then list grants, each
-   with its `space.access-changed.v1` or `list.access-changed.v1`, until a batch finds none;
+3. `RemoveMemberGrants` (spaces): up to 100 obsolete grants, space grants first and list grants
+   second, each with its `space.access-changed.v1` or `list.access-changed.v1`. The job retains
+   grants given to the new membership. An old unbound grant is physically removed only when a
+   tombstone is known and the account has no active membership;
 4. `DropMemberAccessRequests` (access-requests): up to 500 access requests of the account,
    pending or answered (the answered ones carry the free text the person wrote), and its attempts,
    without event, until a batch finds none;
@@ -220,8 +226,8 @@ loops within the attempt, each batch in its own tenant transaction:
    previous batch, until a batch finds none. Its task locks serialize against watcher writes and
    purge. It reads membership after the locks, then deletes only the former account's overrides.
 
-It stops only on an empty batch, never on a short one, and for good on a batch that finds the
-account a member again. It starts no batch once the signal of its attempt aborted (the 15-minute
+It stops only on an empty batch, never on a short one. Once the account is a member again, only
+the obsolete grant batches remain eligible to run. It starts no batch once the signal of its attempt aborted (the 15-minute
 expiration of the queue, or a shutdown past the 8 s `shutdownTimeoutMs` of the runtime, under the
 10 s default grace period of Docker: a batch takes about a second, and the handler stops at a batch
 boundary). A failed batch (the database, a lock or statement timeout) rolls back alone: the batches
@@ -385,12 +391,9 @@ spelling, which the outbox writer refuses. A gap of the kit, not fixed here.
   pending ones, in the same batches, since each carries the free text the person wrote (privacy).
   The grants come before the requests and the tasks: they are shown in the share dialog and carried
   by the `…access-changed.v1` events the projections of the other services keep, while a pending
-  request only waits for an answer and an assignment only names the person. Both stop the job for
-  good on `member-again`, like the other steps; the output and the log line gain `grantsRemoved`
-  and `requestsDropped`.
-- Open point raised by the security review, to be confirmed by the user: a member who joins again
-  before the job reaches their grants keeps them (`member-again` stops the job for good), as P3a
-  already keeps the private spaces and the tasks of a member who comes back.
+  request only waits for an answer and an assignment only names the person. The output and the
+  log line report `grantsRemoved` and `requestsDropped`. A re-join preserves prior ownership
+  and assignments. An ended membership cannot give its grants to the new membership.
 - A failed batch rejects with `CleanUpStepError` (step, batches committed, cause), an application
   error free of the framework, so that the one log line of the kit and the span of the attempt say
   where the job stopped; the handler adds no log of its own.
@@ -412,7 +415,7 @@ spelling, which the outbox writer refuses. A gap of the kit, not fixed here.
   production schedule and the three handler names. `tests/access.int-spec.ts` proves that the job
   removes the grants of a former member in batches, each with its access event by the system,
   drops their requests and attempts and unassigns their tasks, that a lock timeout fails one batch
-  and not the removal, and that a member who joins again before the job reaches their grants keeps
-  them and the job ends `member-again`. The order of the four steps, the stops and the
+  and not the removal, and that a re-join cannot reuse grants of the ended membership. The
+  order of the steps, the stops and the
   `CleanUpStepError` of a failed batch are proven by the unit specs of `CleanUpRemovedMember` and
   of its handler.

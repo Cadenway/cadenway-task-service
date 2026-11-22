@@ -50,12 +50,18 @@ export class SpacesMemberGrants implements MemberGrants {
    *
    * @param {string} organizationId - The organization of the context.
    * @param {string} userId - The account of the member who left.
+   * @param {string} [memberId] - The membership generation that ended.
    * @returns {Promise<GrantRemovalBatch>} What the batch did.
    */
-  public async removeBatch(organizationId: string, userId: string): Promise<GrantRemovalBatch> {
+  public async removeBatch(
+    organizationId: string,
+    userId: string,
+    memberId?: string,
+  ): Promise<GrantRemovalBatch> {
     const outcome: RemoveMemberGrantsOutput = await this.removeMemberGrants.execute({
       organizationId,
       userId,
+      memberId,
     });
     return outcome.outcome === 'removed'
       ? { outcome: 'removed', removed: outcome.removed }
