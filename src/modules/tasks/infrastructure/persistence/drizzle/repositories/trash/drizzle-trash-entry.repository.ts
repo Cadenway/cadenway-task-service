@@ -284,13 +284,24 @@ export class DrizzleTrashEntryRepository implements TrashEntryRepository {
     const result = await this.db.execute<{
       id: string;
       depth: number | null;
-    }>(sql`with recursive tree (id, depth) as (
-      select t.id, 0 from ${tasks} as t where t.organization_id = ${organizationId}::uuid and t.trash_entry_id = ${entryId}::uuid
-      and not exists (select 1 from ${tasks} as p where p.organization_id = t.organization_id and p.id = t.parent_id and p.trash_entry_id = t.trash_entry_id)
+    }>(sql`with recursive entry_tasks as materialized (
+      select id, parent_id from ${tasks}
+      where organization_id = ${organizationId}::uuid and trash_entry_id = ${entryId}::uuid
+    ), roots as materialized (
+      select t.id from entry_tasks as t
+      where not exists (select 1 from entry_tasks as p where p.id = t.parent_id)
+      order by t.id limit ${limit}
+    ), tree (id, depth) as (
+      select id, 0 from roots where (select count(*) from roots) < ${limit}
       union all select child.id, tree.depth + 1 from ${tasks} as child join tree on child.parent_id = tree.id
       where child.organization_id = ${organizationId}::uuid and child.trash_entry_id = ${entryId}::uuid
     ) cycle id set is_cycle using path,
-    picked as materialized (select id, depth from tree where not is_cycle order by depth, id limit ${limit}),
+    picked as materialized (
+      select id, depth from (
+        select id, 0 as depth from roots where (select count(*) from roots) = ${limit}
+        union all select id, depth from tree where not is_cycle
+      ) as candidates order by depth, id limit ${limit}
+    ),
     targets as (
       select id from picked
       union

@@ -2947,6 +2947,40 @@ describe('the trash, the purge and the deletion of lists and spaces keep their s
     }, 300_000);
   });
 
+  it('selects the same breadth-first purge batch around the 500-root boundary', async () => {
+    for (const rootCount of [499, 500, 501]) {
+      await inTenant(
+        async (db, client) => {
+          const members = await client.query<{ id: string }>(
+            `select id::text as id from tasks
+              where organization_id = $1 and trash_entry_id = $2 order by id`,
+            [atelierNordId, bigEntryId],
+          );
+          const ids = members.rows.map((row) => row.id);
+          expect(ids.length).toBeGreaterThan(501);
+          // Roots sort after their children by id, so a missing depth sort changes the result.
+          const roots = ids.slice(-rootCount);
+          const root = roots[0];
+          expect(root).toBeDefined();
+          await client.query(
+            `update tasks set parent_id = case when id = any($3::uuid[]) then null else $4::uuid end
+              where organization_id = $1 and trash_entry_id = $2`,
+            [atelierNordId, bigEntryId, roots, root],
+          );
+          const children = ids.slice(0, -rootCount);
+          const expected = [...roots, ...children].slice(0, 500);
+          const selected = await new DrizzleTrashEntryRepository(db).lockPart(
+            atelierNordId,
+            bigEntryId,
+            500,
+          );
+          expect(selected, `${String(rootCount)} roots`).toEqual(expected);
+        },
+        { organizationId: atelierNordId },
+      );
+    }
+  });
+
   it('(extra 2) probes deleted lists, reads a task by key under FOR SHARE SKIP LOCKED, and erases a bounded part of an oversized entry', async () => {
     const lists: readonly (readonly [string, string, string])[] = [
       ['all 20,000 tasks in the trash', atelierDeltaId, fullTrashListId],
