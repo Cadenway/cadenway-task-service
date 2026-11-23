@@ -45,7 +45,18 @@ describe('appConfigSchema', () => {
         ],
       },
       TRASH_WRITES_ENABLED: false,
+      TASK_SERVICE_OUTBOX_MODE: 'legacy',
     });
+  });
+
+  it('accepts explicit dedicated outbox mode and rejects unknown modes', () => {
+    expect(
+      loadConfig(appConfigSchema, { ...complete, TASK_SERVICE_OUTBOX_MODE: 'dedicated' })
+        .TASK_SERVICE_OUTBOX_MODE,
+    ).toBe('dedicated');
+    expect(() =>
+      loadConfig(appConfigSchema, { ...complete, TASK_SERVICE_OUTBOX_MODE: 'unknown' }),
+    ).toThrow(/TASK_SERVICE_OUTBOX_MODE/u);
   });
 
   it('accepts a single transaction attempt and rejects a limit below one', () => {

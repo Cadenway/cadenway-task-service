@@ -1,9 +1,10 @@
-import { loadConfig, runApplication } from '@cadenway/nest-common';
+import { createApplication, loadConfig, runApplication } from '@cadenway/nest-common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 
-import { AppModule } from './app.module.js';
+import { AppModule, TaskOutboxRelayModule } from './app.module.js';
 import { appConfigSchema } from './config/app-config.js';
 import type { AppConfig } from './config/app-config.js';
+import { outboxRelayConfigSchema, taskProcessRoleSchema } from './config/outbox-relay-config.js';
 import { configureDocumentSpaceAccessCache } from './infrastructure/http/document-space-access-cache.js';
 import { createTaskApplication } from './infrastructure/http/task-application.module.js';
 import { configureTaskActionCache } from './infrastructure/http/task-action-cache.js';
@@ -19,6 +20,17 @@ import { configureTaskSearchCache } from './infrastructure/http/task-search-cach
 // signature verifies with a key of INTERNAL_TOKEN_TRUSTED_ISSUERS; the organization of a request
 // comes from that token only.
 await runApplication({ service: 'task-service' }, async (): Promise<void> => {
+  if (loadConfig(taskProcessRoleSchema).TASK_SERVICE_ROLE === 'outbox-relay') {
+    const config = loadConfig(outboxRelayConfigSchema);
+    const relay: NestExpressApplication = await createApplication(TaskOutboxRelayModule, {
+      service: 'task-service-relay',
+      config,
+      internalTokenVerification: 'off',
+    });
+    await relay.listen(config.PORT, '127.0.0.1');
+    return;
+  }
+
   const config: Readonly<AppConfig> = loadConfig(appConfigSchema);
   const app: NestExpressApplication = await createTaskApplication(AppModule, {
     service: 'task-service',
