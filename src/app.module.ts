@@ -25,8 +25,8 @@ import { outboxRelayConfigSchema } from './config/outbox-relay-config.js';
 import type { OutboxRelayConfig } from './config/outbox-relay-config.js';
 import { AccessRequestsModule } from './modules/access-requests/access-requests.module.js';
 import { DeletionLifecycleModule } from './modules/deletion-lifecycle/deletion-lifecycle.module.js';
-import { FavoritesModule, FavoritesStorageModule } from './modules/favorites/favorites.module.js';
-import { IntakeModule, IntakeStorageModule } from './modules/intake/intake.module.js';
+import { FavoritesModule } from './modules/favorites/favorites.module.js';
+import { IntakeModule } from './modules/intake/intake.module.js';
 import { GoalsModule } from './modules/goals/goals.module.js';
 import {
   MemberLifecycleModule,
@@ -34,19 +34,13 @@ import {
 } from './modules/member-lifecycle/member-lifecycle.module.js';
 import { OrganizationMembersModule } from './modules/organization-members/organization-members.module.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
-import {
-  SavedViewsModule,
-  SavedViewsStorageModule,
-} from './modules/saved-views/saved-views.module.js';
+import { SavedViewsModule } from './modules/saved-views/saved-views.module.js';
 import { SpacesModule } from './modules/spaces/spaces.module.js';
-import {
-  TaskTemplatesModule,
-  TaskTemplatesStorageModule,
-} from './modules/task-templates/task-templates.module.js';
+import { TaskTemplatesModule } from './modules/task-templates/task-templates.module.js';
 import { TasksModule } from './modules/tasks/tasks.module.js';
 import { TaskCommentsModule } from './modules/task-comments/task-comments.module.js';
 import { NotificationVisibilityModule } from './modules/notification-visibility/notification-visibility.module.js';
-import { OnboardingModule, OnboardingStateModule } from './modules/onboarding/onboarding.module.js';
+import { OnboardingModule } from './modules/onboarding/onboarding.module.js';
 import { TaskApprovalsModule } from './modules/task-approvals/task-approvals.module.js';
 
 /**
@@ -230,16 +224,9 @@ const health = HealthModule.forRootAsync({
     health,
     PlatformModule,
     OrganizationMembersModule,
-    // Register only the lifecycle ports globally so the owning capabilities can clean up
-    // in the caller's transaction without importing the modules that depend on their reads.
-    FavoritesStorageModule,
-    IntakeStorageModule,
-    SavedViewsStorageModule,
-    TaskTemplatesStorageModule,
     TaskCommentsModule,
     NotificationVisibilityModule,
     OnboardingModule,
-    OnboardingStateModule,
     TaskApprovalsModule,
     AccessRequestsModule,
     MemberLifecycleModule,

@@ -7,11 +7,12 @@ remain the responsibility of Spaces and Saved Views.
 
 ## Public entry points
 
-| Entry point                           | Consumers           |
-| ------------------------------------- | ------------------- |
-| `favorites.module`                    | member-lifecycle    |
-| `public/purge/purge-target-favorites` | saved-views, spaces |
-| `public/purge/purge-member-favorites` | member-lifecycle    |
+| Entry point                                    | Consumers           |
+| ---------------------------------------------- | ------------------- |
+| `favorites.module`                             | member-lifecycle    |
+| `composition/modules/favorites-storage.module` | saved-views, spaces |
+| `public/purge/purge-target-favorites`          | saved-views, spaces |
+| `public/purge/purge-member-favorites`          | member-lifecycle    |
 
 `PurgeTargetFavorites` clears the references to physically removed resources while their owner
 holds the target placement in the same tenant transaction. `PurgeMemberFavorites` clears the

@@ -10,6 +10,8 @@ import { Module, RequestMethod } from '@nestjs/common';
 import type { MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 
+import { IntakeStorageModule } from '../intake/composition/modules/intake-storage.module.js';
+import { OnboardingStateModule } from '../onboarding/composition/modules/onboarding-state.module.js';
 import { OrganizationMembersModule } from '../organization-members/organization-members.module.js';
 import { RecordFirstOnboardingTask } from '../onboarding/public/onboarding/record-first-onboarding-task.js';
 import { SpacesModule } from '../spaces/spaces.module.js';
@@ -209,7 +211,7 @@ markIdempotent(TaskTimeController.prototype, 'create');
 
  */
 @Module({
-  imports: [OrganizationMembersModule, SpacesModule],
+  imports: [OrganizationMembersModule, SpacesModule, IntakeStorageModule, OnboardingStateModule],
   controllers: [
     ListCustomFieldsController,
     SpaceCustomFieldsController,

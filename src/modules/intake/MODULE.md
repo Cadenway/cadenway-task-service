@@ -8,11 +8,12 @@ and their normal task activity and events. Attachments belong to storage.
 
 ## Public entry points
 
-| Entry point                              | Consumers |
-| ---------------------------------------- | --------- |
-| `public/form/revoke-deleted-list-intake` | spaces    |
-| `public/form/purge-deleted-list-intake`  | spaces    |
-| `public/form/purge-intake-contacts`      | tasks     |
+| Entry point                                 | Consumers     |
+| ------------------------------------------- | ------------- |
+| `composition/modules/intake-storage.module` | spaces, tasks |
+| `public/form/revoke-deleted-list-intake`    | spaces        |
+| `public/form/purge-deleted-list-intake`     | spaces        |
+| `public/form/purge-intake-contacts`         | tasks         |
 
 The intake module exports only these lifecycle operations. Each joins the transaction of its
 resource owner.
