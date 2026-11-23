@@ -1,27 +1,19 @@
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
-import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
-import { ViewerResolver } from '../../../../services/member/viewer-resolver.service.js';
+import type { DelegatedMemberships } from '../../member/delegated-memberships/delegated-memberships.use-case.js';
 import type { GetTaskVisibilityInput } from './get-task-visibility.input.js';
 import type { GetTaskVisibilityOutput } from './get-task-visibility.output.js';
 
 /** Resolves the current task visibility for one verified viewer in a bounded snapshot. */
 export class GetTaskVisibility {
-  // #region Properties
-  /** Resolves the actor's projected membership. */
-  private readonly viewers: ViewerResolver;
-  // #endregion
-
   // #region Constructor
-  /** Binds the tenant transaction and the owners of membership and list visibility. */
+  /** Binds the tenant transaction, current membership and list visibility. */
   public constructor(
     private readonly unit: TasksUnitOfWork,
-    members: MemberDirectory,
+    private readonly memberships: DelegatedMemberships,
     private readonly spaces: Pick<SpaceDirectory, 'findVisibleLists'>,
-  ) {
-    this.viewers = new ViewerResolver(members);
-  }
+  ) {}
   // #endregion
 
   // #region Methods
@@ -34,10 +26,17 @@ export class GetTaskVisibility {
       throw new RangeError('Task keys must be distinct.');
     }
     const keys = input.taskKeys.map((key) => TaskKey.parse(key));
+    const proof = await this.memberships.execute(input.organizationId, [input.actorUserId]);
 
     return this.unit.runReadOnly(
       async (store) => {
-        const viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
+        const viewer = await this.memberships.confirm(
+          proof,
+          input.organizationId,
+          input.actorUserId,
+          false,
+        );
+        if (viewer === null) return { visibleTaskKeys: [] };
         const locations = await store.reader.locationsByKeys(input.organizationId, keys);
         if (locations.length === 0) return { visibleTaskKeys: [] };
         const listIds = [...new Set(locations.map((task) => task.listId))];

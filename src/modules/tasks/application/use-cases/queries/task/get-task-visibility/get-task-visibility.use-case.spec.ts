@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { delegatedMembershipFixture } from '../../../delegated-membership.fixture.js';
 import {
   ATELIER_NORD,
   BUGS,
@@ -29,7 +30,7 @@ describe('GetTaskVisibility', () => {
     });
     const result = await new GetTaskVisibility(
       tasks,
-      atelierNordMembers(),
+      delegatedMembershipFixture(atelierNordMembers()).memberships,
       new InMemorySpaceDirectory(),
     ).execute({
       organizationId: ATELIER_NORD,
@@ -48,7 +49,7 @@ describe('GetTaskVisibility', () => {
     const tasks = new InMemoryTasks({ tasks: [taskState(), cad490State({ listId: BUGS })] });
     const result = await new GetTaskVisibility(
       tasks,
-      atelierNordMembers(),
+      delegatedMembershipFixture(atelierNordMembers()).memberships,
       new InMemorySpaceDirectory(),
     ).execute({
       organizationId: ATELIER_NORD,
@@ -58,11 +59,11 @@ describe('GetTaskVisibility', () => {
     expect(result.visibleTaskKeys).toEqual([]);
   });
 
-  it('refuses an unknown member before deciding task visibility', async () => {
+  it('returns an empty result when the authority confirms membership is absent', async () => {
     const tasks = new InMemoryTasks({ tasks: [taskState()] });
     const useCase = new GetTaskVisibility(
       tasks,
-      atelierNordMembers(),
+      delegatedMembershipFixture(atelierNordMembers()).memberships,
       new InMemorySpaceDirectory(),
     );
     await expect(
@@ -71,7 +72,38 @@ describe('GetTaskVisibility', () => {
         actorUserId: STRANGER,
         taskKeys: ['CAD-482'],
       }),
-    ).rejects.toMatchObject({ refusal: { reason: 'organization-not-found' } });
+    ).resolves.toEqual({ visibleTaskKeys: [] });
+    expect(tasks.trace).toEqual([]);
+  });
+
+  it('omits every task for a removed member even while the projection still grants access', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState()] });
+    const { memberships } = delegatedMembershipFixture(
+      atelierNordMembers(),
+      atelierNordMembers([CAMILLE]),
+    );
+    const useCase = new GetTaskVisibility(tasks, memberships, new InMemorySpaceDirectory());
+    await expect(
+      useCase.execute({
+        organizationId: ATELIER_NORD,
+        actorUserId: CAMILLE,
+        taskKeys: ['CAD-482'],
+      }),
+    ).resolves.toEqual({ visibleTaskKeys: [] });
+    expect(tasks.trace).toEqual([]);
+  });
+
+  it('refuses an unreliable decision when the authority proves a membership the projection has not received', async () => {
+    const tasks = new InMemoryTasks({ tasks: [taskState()] });
+    const { memberships } = delegatedMembershipFixture(atelierNordMembers([CAMILLE]));
+    const useCase = new GetTaskVisibility(tasks, memberships, new InMemorySpaceDirectory());
+    await expect(
+      useCase.execute({
+        organizationId: ATELIER_NORD,
+        actorUserId: CAMILLE,
+        taskKeys: ['CAD-482'],
+      }),
+    ).rejects.toThrow('The membership projection and Organization do not agree.');
     expect(tasks.trace).toEqual([]);
   });
 
@@ -79,7 +111,7 @@ describe('GetTaskVisibility', () => {
     const tasks = new InMemoryTasks();
     const useCase = new GetTaskVisibility(
       tasks,
-      atelierNordMembers(),
+      delegatedMembershipFixture(atelierNordMembers()).memberships,
       new InMemorySpaceDirectory(),
     );
     const base = { organizationId: ATELIER_NORD, actorUserId: CAMILLE };

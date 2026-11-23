@@ -370,6 +370,15 @@ describe('task-service wiring', () => {
     return app;
   }
 
+  function createRelay(): Promise<NestExpressApplication> {
+    return createApplication(TaskOutboxRelayModule, {
+      service: 'task-service-relay',
+      config: loadConfig(outboxRelayConfigSchema),
+      internalTokenVerification: 'off',
+      logDestination: { write: (): void => undefined },
+    });
+  }
+
   beforeAll(async () => {
     natsHostPort = await freePort();
     compose(
@@ -1254,6 +1263,31 @@ describe('task-service wiring', () => {
     expect(response.status).toBe(200);
   });
 
+  it('refuses relay startup until the migrator recreates a missing lease expiry index', async () => {
+    await migrator.query('drop index public.outbox_events_lease_expiry_index');
+    let candidate: NestExpressApplication | undefined;
+    try {
+      candidate = await createRelay();
+      await expect(candidate.listen(0, '127.0.0.1')).rejects.toThrow(
+        'Apply the service outbox lease migration before enabling the relay.',
+      );
+    } finally {
+      try {
+        await candidate?.close();
+      } finally {
+        await runMigrator();
+      }
+    }
+
+    const relay = await createRelay();
+    try {
+      await relay.init();
+      expect((await request(relay.getHttpServer()).get('/health/ready')).status).toBe(200);
+    } finally {
+      await relay.close();
+    }
+  });
+
   it('hands off publication to the leased relay and requeues only expired leases on rollback', async () => {
     // The fixture's running API is in legacy mode. Drain its publisher before switching modes.
     await service().get(OutboxRelay).beforeApplicationShutdown();
@@ -1299,12 +1333,7 @@ describe('task-service wiring', () => {
         { status: 'pending', lease_token: null, lease_expires_at: null },
       ]);
 
-      relay = await createApplication(TaskOutboxRelayModule, {
-        service: 'task-service-relay',
-        config: loadConfig(outboxRelayConfigSchema),
-        internalTokenVerification: 'off',
-        logDestination: { write: (): void => undefined },
-      });
+      relay = await createRelay();
       await relay.init();
       expect((await request(relay.getHttpServer()).get('/health/ready')).status).toBe(200);
       expect((await request(relay.getHttpServer()).get('/internal/v1/tasks')).status).toBe(404);
