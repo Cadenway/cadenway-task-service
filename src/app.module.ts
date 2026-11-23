@@ -33,7 +33,7 @@ import {
   MembershipRebuildModule,
 } from './modules/member-lifecycle/member-lifecycle.module.js';
 import { OrganizationMembersModule } from './modules/organization-members/organization-members.module.js';
-import { PlatformModule } from './modules/platform/platform.module.js';
+import { outboxRelayIndicator, PlatformModule } from './modules/platform/platform.module.js';
 import { SavedViewsModule } from './modules/saved-views/saved-views.module.js';
 import { SpacesModule } from './modules/spaces/spaces.module.js';
 import { TaskTemplatesModule } from './modules/task-templates/task-templates.module.js';
@@ -252,7 +252,17 @@ export class AppModule {}
     }),
     messaging,
     OutboxRelayModule.forRoot({ shutdownTimeoutMs: 8_000 }),
-    health,
+    HealthModule.forRootAsync({
+      inject: [DATABASE_POOL, MessagingConnection],
+      useFactory: (pool: PostgresProbe, connection: MessagingConnection) => ({
+        indicators: [
+          postgresIndicator(pool),
+          messagingHealthIndicator(connection),
+          outboxRelayIndicator(pool),
+        ],
+        shutdownDelayMs: 0,
+      }),
+    }),
   ],
 })
 export class TaskOutboxRelayModule {}

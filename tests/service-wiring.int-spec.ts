@@ -1301,6 +1301,36 @@ describe('task-service wiring', () => {
     }
   });
 
+  it.each(['SELECT', 'UPDATE', 'DELETE'] as const)(
+    'reports the relay as unready while its application role lacks %s on the outbox',
+    async (privilege) => {
+      const relay = await createRelay();
+      try {
+        await relay.init();
+        const probes = request(relay.getHttpServer());
+        expect((await probes.get('/health/ready')).status).toBe(200);
+
+        await migrator.query(`revoke ${privilege} on public.outbox_events from task_app`);
+        try {
+          const response = await probes.get('/health/ready');
+          expect(response.status).toBe(503);
+          expect(response.body).toMatchObject({
+            status: 'error',
+            info: { postgres: { status: 'up' }, nats: { status: 'up' } },
+            error: { 'outbox-relay': { status: 'down' } },
+          });
+          expect((await probes.get('/health/live')).status).toBe(200);
+        } finally {
+          await migrator.query(`grant ${privilege} on public.outbox_events to task_app`);
+        }
+
+        expect((await probes.get('/health/ready')).status).toBe(200);
+      } finally {
+        await relay.close();
+      }
+    },
+  );
+
   it('hands off publication to the leased relay and requeues only expired leases on rollback', async () => {
     // The fixture's running API is in legacy mode. Drain its publisher before switching modes.
     await service().get(OutboxRelay).beforeApplicationShutdown();

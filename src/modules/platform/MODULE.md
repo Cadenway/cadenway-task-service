@@ -15,8 +15,13 @@ expired HTTP receipts in the service's own database.
 
 ## Public entry points
 
-None. No module imports this one: the kit reads and writes the tables by name, through the
-transaction runners.
+| Entry point | Consumers |
+| ----------- | --------- |
+| None        | None      |
+
+The root composition `TaskOutboxRelayModule` uses `outboxRelayIndicator` from
+`platform.module.ts` to check the standalone relay's table privileges. The kit reads and writes
+the tables by name through the transaction runners.
 
 ## Owned tables
 
