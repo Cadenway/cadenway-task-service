@@ -1,4 +1,5 @@
 import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
+import type { ReadonlyTasksStore } from '../../../../models/transactions/readonly-tasks-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
@@ -51,7 +52,7 @@ export class CreateTaskTimeEntry {
   /** Rechecks access before returning a cached idempotent response. */
   public async assertCanReplay(input: TimeTaskActor): Promise<void> {
     await this.unitOfWork.runReadOnly(
-      async (store: TasksStore): Promise<void> => {
+      async (store: ReadonlyTasksStore): Promise<void> => {
         await this.access.locate(store, input, 'replay');
       },
       { snapshot: true },

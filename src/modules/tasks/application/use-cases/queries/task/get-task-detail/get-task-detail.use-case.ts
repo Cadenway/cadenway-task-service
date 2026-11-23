@@ -2,7 +2,7 @@ import { showsParent } from '../../../../../domain/policies/subtask/subtask-tree
 import type { Viewer } from '../../../../../domain/value-objects/member/viewer.value-object.js';
 import { MAX_DIRECT_SUBTASKS } from '../../../../../domain/value-objects/task/task-limits.value-object.js';
 import type { LocatedTask } from '../../../../models/task/located-task.model.js';
-import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
+import type { ReadonlyTasksStore } from '../../../../models/transactions/readonly-tasks-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
@@ -88,7 +88,7 @@ export class GetTaskDetail {
    */
   public async execute(input: GetTaskDetailInput): Promise<GetTaskDetailOutput> {
     return this.unitOfWork.runReadOnly(
-      async (store: TasksStore): Promise<GetTaskDetailOutput> => {
+      async (store: ReadonlyTasksStore): Promise<GetTaskDetailOutput> => {
         const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
         const { task, placement }: LocatedTask = await this.locator.locate(store, {
           organizationId: input.organizationId,

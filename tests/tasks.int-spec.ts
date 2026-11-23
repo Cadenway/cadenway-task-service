@@ -64,6 +64,8 @@ import { appConfigSchema } from '../src/config/app-config.js';
 import { createTaskApplication } from '../src/infrastructure/http/task-application.module.js';
 import { configureTaskActionCache } from '../src/infrastructure/http/task-action-cache.js';
 import type { MembershipStamp } from '../src/modules/tasks/application/models/membership/membership-stamp.model.js';
+import type { TasksUnitOfWork } from '../src/modules/tasks/application/ports/outbound/transactions/task/tasks-unit-of-work.port.js';
+import { TASKS_UNIT_OF_WORK } from '../src/modules/tasks/composition/tokens/task/tasks-unit-of-work.token.js';
 import { OrganizationMembershipAuthority } from '../src/modules/organization-members/infrastructure/adapters/organization/organization-membership-authority.adapter.js';
 import { DrizzleCommentRepository } from '../src/modules/task-comments/infrastructure/persistence/drizzle/repositories/comment/drizzle-comment.repository.js';
 import { DrizzleCommentExcerptReader } from '../src/modules/task-comments/infrastructure/persistence/drizzle/repositories/comment/drizzle-comment-excerpt.repository.js';
@@ -1313,6 +1315,28 @@ describe('tasks', () => {
       vi.unstubAllEnvs();
       compose('down', '--volumes', '--remove-orphans');
     }
+  });
+
+  it('enforces the read-only Task unit of work in PostgreSQL', async () => {
+    const work = service().get<TasksUnitOfWork>(TASKS_UNIT_OF_WORK);
+    const tenant = service().get(TenantTransactionRunner);
+    await expect(
+      runWithOrganizationContext(contextOf(atelierNordId), () =>
+        work.runReadOnly(() =>
+          tenant.run(({ client }) =>
+            client.query(
+              'select id from tasks where organization_id = $1 limit 1 for no key update',
+              [atelierNordId],
+            ),
+          ),
+        ),
+      ),
+    ).rejects.toMatchObject({ code: '25006' });
+    await expect(
+      runWithOrganizationContext(contextOf(atelierNordId), () =>
+        work.runReadOnly(({ clock }) => clock.now()),
+      ),
+    ).resolves.toBeInstanceOf(Date);
   });
 
   describe('every route answers as the contract says, with its Location and ETag', () => {

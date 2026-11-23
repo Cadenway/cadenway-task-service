@@ -2,7 +2,7 @@ import { watcherCandidates } from '../../../domain/policies/watcher/watcher.poli
 import type { MemberRole } from '../../../domain/value-objects/member/member-role.value-object.js';
 import type { Viewer } from '../../../domain/value-objects/member/viewer.value-object.js';
 import type { TaskState } from '../../../domain/value-objects/task/task-state.value-object.js';
-import type { TasksStore } from '../../models/transactions/tasks-store.model.js';
+import type { ReadonlyTasksStore } from '../../models/transactions/readonly-tasks-store.model.js';
 import type { MemberDirectory } from '../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../ports/outbound/spaces/space/space-directory.port.js';
 import { WatcherAudienceChanged } from '../../models/watcher/watcher-audience-changed.model.js';
@@ -27,7 +27,7 @@ export class EffectiveWatchers {
 
   // #region Methods
   /** Returns the current audience in ascending user-ID order. */
-  public async forTask(store: TasksStore, task: TaskState): Promise<readonly string[]> {
+  public async forTask(store: ReadonlyTasksStore, task: TaskState): Promise<readonly string[]> {
     const eligible: string[] = [];
     for (const userId of await this.candidates(store, task)) {
       const role = await this.members.roleOf(task.organizationId, userId);
@@ -38,7 +38,7 @@ export class EffectiveWatchers {
 
   /** Holds candidate memberships in account order before any task or placement lock. */
   public async holdCandidates(
-    store: TasksStore,
+    store: ReadonlyTasksStore,
     task: TaskState,
     viewer: Viewer,
     additionalIds: readonly string[] = [],
@@ -57,7 +57,7 @@ export class EffectiveWatchers {
 
   /** Computes the audience under the source task and final placement locks. */
   public async forHeldTask(
-    store: TasksStore,
+    store: ReadonlyTasksStore,
     task: TaskState,
     roles: ReadonlyMap<string, MemberRole | null>,
   ): Promise<readonly string[]> {
@@ -80,7 +80,7 @@ export class EffectiveWatchers {
   }
 
   /** Reads the bounded explicit overrides and combines them with the aggregate's defaults. */
-  private async candidates(store: TasksStore, task: TaskState): Promise<readonly string[]> {
+  private async candidates(store: ReadonlyTasksStore, task: TaskState): Promise<readonly string[]> {
     const overrides = await store.watcherOverrides.list(task.organizationId, task.id);
     return watcherCandidates(task.createdBy, task.assigneeIds, overrides);
   }

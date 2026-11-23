@@ -1,4 +1,5 @@
 import type { ReadOptions } from '../../../../models/transactions/read-options.model.js';
+import type { ReadonlyTasksStore } from '../../../../models/transactions/readonly-tasks-store.model.js';
 import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
 
 /**
@@ -37,12 +38,12 @@ export interface TasksUnitOfWork {
    * operations of the other modules the work calls join it. A caller that is already inside a
    * transaction must have opened it with these requirements, or the run is refused.
    *
-   * @param {(store: TasksStore) => Promise<TResult>} work - The read.
+   * @param {(store: ReadonlyTasksStore) => Promise<TResult>} work - The read.
    * @param {ReadOptions} [options] - How the run sees the database.
    * @returns {Promise<TResult>} What the work resolved with.
    */
   runReadOnly<TResult>(
-    work: (store: TasksStore) => Promise<TResult>,
+    work: (store: ReadonlyTasksStore) => Promise<TResult>,
     options?: ReadOptions,
   ): Promise<TResult>;
   // #endregion

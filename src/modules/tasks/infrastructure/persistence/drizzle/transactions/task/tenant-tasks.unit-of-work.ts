@@ -7,6 +7,7 @@ import type { JobProducer } from '@cadenway/nest-jobs/runtime';
 import type { OutboxRelay, OutboxWriter } from '@cadenway/nest-messaging/outbox';
 
 import type { ReadOptions } from '../../../../../application/models/transactions/read-options.model.js';
+import type { ReadonlyTasksStore } from '../../../../../application/models/transactions/readonly-tasks-store.model.js';
 import type { TasksStore } from '../../../../../application/models/transactions/tasks-store.model.js';
 import type { IntakeContactCleanup } from '../../../../../application/ports/outbound/intake/trash/intake-contact-cleanup.port.js';
 import type { TasksUnitOfWork } from '../../../../../application/ports/outbound/transactions/task/tasks-unit-of-work.port.js';
@@ -168,12 +169,12 @@ export class TenantTasksUnitOfWork implements TasksUnitOfWork {
    * Runs `work` in a read-only tenant transaction, `REPEATABLE READ` when a snapshot is asked,
    * joining the transaction of the caller when there is one and it provides as much.
    *
-   * @param {(store: TasksStore) => Promise<TResult>} work - The read.
+   * @param {(store: ReadonlyTasksStore) => Promise<TResult>} work - The read.
    * @param {ReadOptions} [options] - How the run sees the database.
    * @returns {Promise<TResult>} What the work resolved with.
    */
   public async runReadOnly<TResult>(
-    work: (store: TasksStore) => Promise<TResult>,
+    work: (store: ReadonlyTasksStore) => Promise<TResult>,
     options: ReadOptions = {},
   ): Promise<TResult> {
     return this.execute(

@@ -1,7 +1,7 @@
 import type { Viewer } from '../../../domain/value-objects/member/viewer.value-object.js';
 import type { LocatedTask } from '../../models/task/located-task.model.js';
 import type { TimeTaskActor } from '../../models/time/time-task-actor.model.js';
-import type { TasksStore } from '../../models/transactions/tasks-store.model.js';
+import type { ReadonlyTasksStore } from '../../models/transactions/readonly-tasks-store.model.js';
 import type { MemberDirectory } from '../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../ports/outbound/spaces/space/space-directory.port.js';
 import { ViewerResolver } from '../member/viewer-resolver.service.js';
@@ -26,7 +26,7 @@ export class TimeTaskAccess {
   // #region Methods
   /** Runs the operation in the requested transaction. */
   public async locate(
-    store: TasksStore,
+    store: ReadonlyTasksStore,
     input: TimeTaskActor,
     mode: 'read' | 'write' | 'replay',
   ): Promise<LocatedTask> {

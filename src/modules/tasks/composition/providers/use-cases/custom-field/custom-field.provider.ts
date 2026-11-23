@@ -2,6 +2,7 @@ import type { FactoryProvider } from '@nestjs/common';
 
 import { ResolveCustomFieldSpace } from '../../../../../spaces/public/space/resolve-custom-field-space.js';
 import type { CustomFieldsStore } from '../../../../application/models/custom-field/custom-fields-store.model.js';
+import type { ReadonlyCustomFieldsStore } from '../../../../application/models/custom-field/readonly-custom-fields-store.model.js';
 import type { MemberDirectory } from '../../../../application/ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../application/ports/outbound/spaces/space/space-directory.port.js';
 import type { CustomFieldsUnitOfWork } from '../../../../application/ports/outbound/transactions/custom-field/custom-fields-unit-of-work.port.js';
@@ -36,7 +37,7 @@ export const customFieldProviders: readonly FactoryProvider[] = [
     useFactory: (tasks: TasksUnitOfWork): CustomFieldsUnitOfWork => ({
       run: <T>(execute: (store: CustomFieldsStore) => Promise<T>): Promise<T> =>
         tasks.run(({ customFields: fields, clock }) => execute({ fields, clock })),
-      runReadOnly: <T>(execute: (store: CustomFieldsStore) => Promise<T>): Promise<T> =>
+      runReadOnly: <T>(execute: (store: ReadonlyCustomFieldsStore) => Promise<T>): Promise<T> =>
         tasks.runReadOnly(({ customFields: fields, clock }) => execute({ fields, clock }), {
           snapshot: true,
         }),

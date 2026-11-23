@@ -3,7 +3,7 @@ import type { Slice } from '../../../../models/page/slice.model.js';
 import type { ListPosition } from '../../../../models/placement/list-position.model.js';
 import type { PlacedList } from '../../../../models/placement/placed-list.model.js';
 import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
-import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
+import type { ReadonlyTasksStore } from '../../../../models/transactions/readonly-tasks-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
@@ -87,7 +87,7 @@ export class GetSpaceOverview {
    */
   public async execute(input: GetSpaceOverviewInput): Promise<GetSpaceOverviewOutput> {
     return this.unitOfWork.runReadOnly(
-      async (store: TasksStore): Promise<GetSpaceOverviewOutput> => {
+      async (store: ReadonlyTasksStore): Promise<GetSpaceOverviewOutput> => {
         const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
         const lists: readonly PlacedList[] | null = await this.spaces.findVisibleSpaceLists(
           input.organizationId,

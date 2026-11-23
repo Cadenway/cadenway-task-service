@@ -37,8 +37,11 @@ import { z } from 'zod';
  *   The explicit issuer map takes precedence.
  * - `SEARCH_PROJECTION_CURSOR_SECRET`: optional 32-byte base64url key shared by Task replicas
  *   to authenticate Search export cursors.
+ * - `TASK_MEMBERSHIP_AUTHORITY_MODE`: `required` by default, requiring the Organization origin and
+ *   Task signing key. The `limited` mode permits running an isolated Task service with neither
+ *   setting. Operations that require current membership proofs remain unavailable in that case.
  * - `ORGANIZATION_SERVICE_URL` and `TASK_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK`: paired configuration
- *   for current membership checks on actions admitted from Git and Automation.
+ *   for current membership checks against Organization.
  *
  * - `TRASH_WRITES_ENABLED` (`TrashConfig`): whether the writes that put something in the trash or
  *   make a tombstone are served ("Supprimer la tâche", `DELETE` of a list and of a space, "Vider la
@@ -52,6 +55,7 @@ export type AppConfig = BaseConfig &
   InternalTokenVerifierConfig &
   TrashConfig & {
     readonly SEARCH_PROJECTION_CURSOR_SECRET?: string;
+    readonly TASK_MEMBERSHIP_AUTHORITY_MODE: 'required' | 'limited';
     readonly ORGANIZATION_SERVICE_URL?: string;
     readonly TASK_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK?: Ed25519PrivateJwk;
   };
@@ -147,6 +151,7 @@ export const appConfigSchema: z.ZodType<AppConfig> = z
     SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: optionalIssuerConfig('search-service'),
     NOTIFICATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: optionalIssuerConfig('notification-service'),
     SEARCH_PROJECTION_CURSOR_SECRET: searchProjectionCursorSecret,
+    TASK_MEMBERSHIP_AUTHORITY_MODE: z.enum(['required', 'limited']).default('required'),
     ORGANIZATION_SERVICE_URL: z.preprocess(
       (value) => (value === '' ? undefined : value),
       z
@@ -165,15 +170,31 @@ export const appConfigSchema: z.ZodType<AppConfig> = z
     ),
     TRASH_WRITES_ENABLED: z.stringbool().default(false),
   })
-  .refine(
-    (config) =>
-      (config.ORGANIZATION_SERVICE_URL === undefined) ===
-      (config.TASK_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK === undefined),
-    {
-      path: ['TASK_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK'],
-      message: 'Configure the Organization origin and Task signing key together.',
-    },
-  )
+  .superRefine((config, context) => {
+    const { ORGANIZATION_SERVICE_URL: origin, TASK_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK: key } =
+      config;
+    if (
+      config.TASK_MEMBERSHIP_AUTHORITY_MODE === 'limited' &&
+      origin === undefined &&
+      key === undefined
+    ) {
+      return;
+    }
+    if (origin === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['ORGANIZATION_SERVICE_URL'],
+        message: 'Configure the Organization origin for current membership checks.',
+      });
+    }
+    if (key === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['TASK_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK'],
+        message: 'Configure the Task signing key for current membership checks.',
+      });
+    }
+  })
   .transform(
     ({
       DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS,

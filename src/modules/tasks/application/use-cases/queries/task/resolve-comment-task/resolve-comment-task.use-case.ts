@@ -1,5 +1,5 @@
 import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
-import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
+import type { ReadonlyTasksStore } from '../../../../models/transactions/readonly-tasks-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
@@ -33,7 +33,7 @@ export class ResolveCommentTask {
   // #region Methods
   /** Returns the task ID, or the authorized trash refusal, before looking up a comment. */
   public async execute(input: ResolveCommentTaskInput): Promise<ResolveCommentTaskOutput> {
-    const work = async (store: TasksStore): Promise<ResolveCommentTaskOutput> => {
+    const work = async (store: ReadonlyTasksStore): Promise<ResolveCommentTaskOutput> => {
       const viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
       const located = await this.locator.locate(store, {
         organizationId: input.organizationId,

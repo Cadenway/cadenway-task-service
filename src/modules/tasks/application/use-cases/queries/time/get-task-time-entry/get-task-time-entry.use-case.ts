@@ -1,4 +1,4 @@
-import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
+import type { ReadonlyTasksStore } from '../../../../models/transactions/readonly-tasks-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
@@ -29,7 +29,7 @@ export class GetTaskTimeEntry {
   /** Runs the operation in the requested transaction. */
   public async execute(input: GetTaskTimeEntryInput): Promise<GetTaskTimeEntryOutput> {
     return this.unitOfWork.runReadOnly(
-      async (store: TasksStore): Promise<GetTaskTimeEntryOutput> => {
+      async (store: ReadonlyTasksStore): Promise<GetTaskTimeEntryOutput> => {
         const { task } = await this.access.locate(store, input, 'read');
         const entry = await store.time.find(
           input.organizationId,

@@ -3,7 +3,7 @@ import type { Viewer } from '../../../../../domain/value-objects/member/viewer.v
 import { TaskKey } from '../../../../../domain/value-objects/task/task-key.value-object.js';
 import type { ListPlacement } from '../../../../models/placement/list-placement.model.js';
 import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
-import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
+import type { ReadonlyTasksStore } from '../../../../models/transactions/readonly-tasks-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
@@ -72,7 +72,7 @@ export class CheckTaskAccess {
    * @throws {TaskRefusal} `organization-not-found` or `task-not-found`.
    */
   public async execute(input: CheckTaskAccessInput): Promise<CheckTaskAccessOutput> {
-    const work = async (store: TasksStore): Promise<CheckTaskAccessOutput> => {
+    const work = async (store: ReadonlyTasksStore): Promise<CheckTaskAccessOutput> => {
       const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
       const location: TaskLocation | null = await store.reader.locationByKey(
         input.organizationId,

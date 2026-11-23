@@ -6,6 +6,7 @@ import type { CustomFieldPosition } from '../../models/custom-field/custom-field
 import type { CustomFieldPage } from '../../models/custom-field/custom-field-page.model.js';
 import { CustomFieldRefusal } from '../../models/custom-field/custom-field-refusal.model.js';
 import type { CustomFieldsStore } from '../../models/custom-field/custom-fields-store.model.js';
+import type { ReadonlyCustomFieldsStore } from '../../models/custom-field/readonly-custom-fields-store.model.js';
 import { PageSlicer } from '../page/page-slicer.service.js';
 
 /** Applies the aggregate to a complete, bounded space snapshot. */
@@ -13,7 +14,7 @@ export class CustomFieldDefinitions {
   // #region Methods
   /** Runs the requested field operation. */
   public async page(
-    store: CustomFieldsStore,
+    store: ReadonlyCustomFieldsStore,
     organizationId: string,
     spaceId: string,
     after: CustomFieldPosition | null,
@@ -33,7 +34,7 @@ export class CustomFieldDefinitions {
   }
 
   public async get(
-    store: CustomFieldsStore,
+    store: ReadonlyCustomFieldsStore,
     organizationId: string,
     spaceId: string,
     fieldId: string,

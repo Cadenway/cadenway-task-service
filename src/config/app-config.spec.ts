@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { parseEnv } from 'node:util';
 
@@ -9,7 +10,7 @@ import { appConfigSchema, migrationConfigSchema } from './app-config.js';
 describe('appConfigSchema', () => {
   const trustedIssuers: string =
     '{"api-gateway":[{"kty":"OKP","crv":"Ed25519","x":"MVZQc5h6AXxnMpaBTaYw5kI-yWWawl6zp8Srhuf5NK0","kid":"local-placeholder"}]}';
-  const complete: Readonly<Record<string, string>> = {
+  const defaultConfig: Readonly<Record<string, string>> = {
     PORT: '3013',
     DATABASE_URL: 'postgres://task_app:task_app@localhost:5432/task',
     NATS_URL: 'nats://localhost:4222',
@@ -18,6 +19,7 @@ describe('appConfigSchema', () => {
     INTERNAL_TOKEN_AUDIENCE: 'task-service',
     INTERNAL_TOKEN_TRUSTED_ISSUERS: trustedIssuers,
   };
+  const complete = { ...defaultConfig, TASK_MEMBERSHIP_AUTHORITY_MODE: 'limited' };
 
   it('reads the variables of the service with the defaults of the kit', () => {
     expect(loadConfig(appConfigSchema, complete)).toEqual({
@@ -31,6 +33,7 @@ describe('appConfigSchema', () => {
       NATS_USER: 'task',
       NATS_PASSWORD: 'task',
       INTERNAL_TOKEN_AUDIENCE: 'task-service',
+      TASK_MEMBERSHIP_AUTHORITY_MODE: 'limited',
       INTERNAL_TOKEN_TRUSTED_ISSUERS: {
         'api-gateway': [
           {
@@ -67,6 +70,32 @@ describe('appConfigSchema', () => {
         ORGANIZATION_SERVICE_URL: 'http://organization-service:3011/internal',
       }),
     ).toThrow(/ORGANIZATION_SERVICE_URL/u);
+  });
+
+  it('requires both Organization authority settings unless limited mode is selected', () => {
+    for (const input of [
+      defaultConfig,
+      { ...complete, TASK_MEMBERSHIP_AUTHORITY_MODE: 'required' },
+    ]) {
+      expect(() => loadConfig(appConfigSchema, input)).toThrow(/ORGANIZATION_SERVICE_URL/u);
+      expect(() => loadConfig(appConfigSchema, input)).toThrow(
+        /TASK_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK/u,
+      );
+    }
+    expect(loadConfig(appConfigSchema, complete)).toMatchObject({
+      TASK_MEMBERSHIP_AUTHORITY_MODE: 'limited',
+    });
+    const key = generateKeyPairSync('ed25519').privateKey.export({ format: 'jwk' });
+    expect(
+      loadConfig(appConfigSchema, {
+        ...defaultConfig,
+        ORGANIZATION_SERVICE_URL: 'http://organization-service:3011',
+        TASK_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK: JSON.stringify({ ...key, kid: 'task-fixture' }),
+      }),
+    ).toMatchObject({
+      TASK_MEMBERSHIP_AUTHORITY_MODE: 'required',
+      ORGANIZATION_SERVICE_URL: 'http://organization-service:3011',
+    });
   });
 
   it('adds optional hosted Document trust without replacing explicit issuers', () => {

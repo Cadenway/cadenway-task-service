@@ -1,6 +1,6 @@
 import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
 import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
-import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
+import type { ReadonlyTasksStore } from '../../../../models/transactions/readonly-tasks-store.model.js';
 import type { DependencyView } from '../../../../projections/dependency/dependency.projection.js';
 import type { TaskDependencyReads } from '../../../../services/dependency/task-dependency-reads.service.js';
 import type { GetTaskDependencyInput } from './get-task-dependency.input.js';
@@ -22,7 +22,7 @@ export class GetTaskDependency {
       input,
       false,
       async (
-        store: TasksStore,
+        store: ReadonlyTasksStore,
         anchor: Task,
         listIds: readonly string[],
       ): Promise<DependencyView> => {
