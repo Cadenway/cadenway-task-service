@@ -58,6 +58,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import pg from 'pg';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { MockInstance } from 'vitest';
 import type { z } from 'zod';
 
 import { AppModule } from '../src/app.module.js';
@@ -554,6 +555,7 @@ describe('tasks', () => {
   let signer: InternalTokenSigner;
   let migrator: pg.Pool;
   let telemetry: TelemetryHandle | undefined;
+  let findMembership: MockInstance<OrganizationMembershipAuthority['find']>;
   const removedAtAuthority = new Set<string>();
 
   // The spaces and lists of Atelier Nord the scenarios work in.
@@ -953,16 +955,16 @@ describe('tasks', () => {
     telemetry = startTelemetry({ service: 'task-service', version: '0.0.0-test' });
     // As main.ts: the configuration is read inside the start-up, never when a module is imported.
     const config = loadConfig(appConfigSchema);
-    vi.spyOn(OrganizationMembershipAuthority.prototype, 'find').mockImplementation(
-      async (organizationId, userId) => {
+    findMembership = vi
+      .spyOn(OrganizationMembershipAuthority.prototype, 'find')
+      .mockImplementation(async (organizationId, userId) => {
         if (removedAtAuthority.has(userId)) return null;
         const members = await asSystem<MembershipStamp>(
           'select id as "memberId", role, version::float8 as version from organization_members where organization_id = $1 and user_id = $2 and removed_at is null',
           [organizationId, userId],
         );
         return members.length === 1 ? (members[0] ?? null) : null;
-      },
-    );
+      });
     app = await createTaskApplication(AppModule, {
       service: 'task-service',
       config,
@@ -6100,7 +6102,7 @@ describe('tasks', () => {
       removedAtAuthority.delete(camille.userId);
     }
 
-    vi.mocked(OrganizationMembershipAuthority.prototype.find).mockResolvedValueOnce({
+    findMembership.mockResolvedValueOnce({
       memberId: randomUUID(),
       role: 'owner',
       version: 1,
