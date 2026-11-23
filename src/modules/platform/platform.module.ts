@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 
 import { PurgeIdempotencyReceiptsJob } from './infrastructure/jobs/pg-boss/idempotency/purge-idempotency-receipts.adapter.js';
 
+export { outboxRelayIndicator } from './infrastructure/messaging/outbox/leases/outbox-lease-readiness.adapter.js';
+
 /**
  * Class PlatformModule
  *
