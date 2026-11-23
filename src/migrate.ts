@@ -58,8 +58,13 @@ if (!existsSync(`${migrationsFolder}/meta/_journal.json`)) {
   try {
     const client = await pool.connect();
     try {
-      // Serialize Drizzle's journal and the concurrent index build on one migration session.
-      await client.query("select pg_advisory_lock(hashtextextended('task-service-migrations', 0))");
+      // Keep the journal and index build on one session and let a concurrent caller retry.
+      const { rows } = await client.query<{ acquired: boolean }>(
+        "select pg_catalog.pg_try_advisory_lock(pg_catalog.hashtextextended('task-service-migrations', 0)) as acquired",
+      );
+      if (rows[0]?.acquired !== true) {
+        throw new Error('Another Task migrator is running. Retry after it finishes.');
+      }
       await migrate(drizzle({ client }), { migrationsFolder });
       await finishOutboxLeaseMigration(client);
     } finally {

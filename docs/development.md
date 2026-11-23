@@ -126,6 +126,7 @@ service unready.
 The migrator applies `0026_outbox_leases.sql`, then builds the expiry index concurrently and
 validates the lease checks. No previous writer or relay needs to change during this expansion.
 Rerun the migrator if concurrent finalization stops after the migration commits.
+If another migrator holds the Task migration lock, wait for it to finish and rerun the command.
 
 To activate the standalone relay, keep its replica count at zero until the expanded schema and
 new image are in use. In a separate applied change, switch the API replicas to

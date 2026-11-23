@@ -637,6 +637,19 @@ describe('task-service wiring', () => {
     expect(journal.rows).toEqual([{ applied: appliedMigrations }]);
   });
 
+  it('fails a concurrent migration attempt and allows a retry once the lock is released', async () => {
+    const holder = await migrator.connect();
+    try {
+      await holder.query(
+        "select pg_catalog.pg_advisory_lock(pg_catalog.hashtextextended('task-service-migrations', 0))",
+      );
+      await expect(runMigrator()).rejects.toThrow('Another Task migrator is running.');
+    } finally {
+      holder.release(true);
+    }
+    await expect(runMigrator()).resolves.toBeUndefined();
+  });
+
   it('provisions the pg-boss schema as the migrator role, with the queues of the service and their dead-letter queues', async () => {
     const schema = await migrator.query<{ owner: string }>(
       `select pg_get_userbyid(nspowner) as owner from pg_namespace where nspname = 'pgboss'`,
