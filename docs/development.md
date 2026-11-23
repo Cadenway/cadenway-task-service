@@ -134,7 +134,9 @@ new image are in use. In a separate applied change, switch the API replicas to
 to stop. Start the relay in the next change so automatic rollback returns to a dedicated API.
 The relay uses the same image and the
 application credentials. It binds its readiness and liveness endpoints to loopback and runs
-no API routes or job workers. Check for the pending outbox to drain before ending the rollout.
+no API routes or job workers. Readiness requires the application role to have `SELECT`, `UPDATE`
+and `DELETE` on `public.outbox_events`. Check for the pending outbox to drain before ending the
+rollout.
 
 To restore legacy publication, keep the API writing in dedicated mode, stop all standalone
 relay replicas, and run `node dist/modules/platform/infrastructure/adapters/postgres/recover-outbox-leases.js`

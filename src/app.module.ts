@@ -17,6 +17,7 @@ import {
 import { OutboxModule } from '@cadenway/nest-messaging/outbox';
 import { OutboxRelayModule } from '@cadenway/nest-messaging/outbox/relay';
 import { Module } from '@nestjs/common';
+import type { Pool } from 'pg';
 
 import { appConfigSchema } from './config/app-config.js';
 import type { AppConfig } from './config/app-config.js';
@@ -33,6 +34,7 @@ import {
   MembershipRebuildModule,
 } from './modules/member-lifecycle/member-lifecycle.module.js';
 import { OrganizationMembersModule } from './modules/organization-members/organization-members.module.js';
+import { outboxRelayIndicator } from './modules/platform/infrastructure/messaging/outbox/leases/outbox-lease-readiness.adapter.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
 import { SavedViewsModule } from './modules/saved-views/saved-views.module.js';
 import { SpacesModule } from './modules/spaces/spaces.module.js';
@@ -252,7 +254,17 @@ export class AppModule {}
     }),
     messaging,
     OutboxRelayModule.forRoot({ shutdownTimeoutMs: 8_000 }),
-    health,
+    HealthModule.forRootAsync({
+      inject: [DATABASE_POOL, MessagingConnection],
+      useFactory: (pool: Pool, connection: MessagingConnection) => ({
+        indicators: [
+          postgresIndicator(pool),
+          messagingHealthIndicator(connection),
+          outboxRelayIndicator(pool),
+        ],
+        shutdownDelayMs: 0,
+      }),
+    }),
   ],
 })
 export class TaskOutboxRelayModule {}
