@@ -4,6 +4,7 @@ import type { Viewer } from '../../../domain/value-objects/member/viewer.value-o
 import type { TrashListAccess } from '../../models/placement/trash-list-access.model.js';
 import { TaskRefusal } from '../../models/task/task-refusal.model.js';
 import type { TasksStore } from '../../models/transactions/tasks-store.model.js';
+import type { ReadonlyTasksStore } from '../../models/transactions/readonly-tasks-store.model.js';
 import type { TrashEntryRecord } from '../../models/trash/trash-entry-record.model.js';
 import type { SpaceDirectory } from '../../ports/outbound/spaces/space/space-directory.port.js';
 
@@ -54,7 +55,7 @@ export class TrashEntryLocator {
    * the purge, or of a list the actor could not change.
    */
   public async findRestorable(
-    store: TasksStore,
+    store: ReadonlyTasksStore,
     organizationId: string,
     viewer: Viewer,
     entryId: string,

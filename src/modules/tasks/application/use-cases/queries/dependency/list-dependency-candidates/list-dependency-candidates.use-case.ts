@@ -1,5 +1,5 @@
 import type { Task } from '../../../../../domain/aggregates/task/task.aggregate.js';
-import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
+import type { ReadonlyTasksStore } from '../../../../models/transactions/readonly-tasks-store.model.js';
 import type { DependencyCandidatePage } from '../../../../projections/dependency/dependency-candidate-page.projection.js';
 import type { TaskDependencyReads } from '../../../../services/dependency/task-dependency-reads.service.js';
 import type { ListDependencyCandidatesInput } from './list-dependency-candidates.input.js';
@@ -21,7 +21,7 @@ export class ListDependencyCandidates {
       input,
       true,
       (
-        store: TasksStore,
+        store: ReadonlyTasksStore,
         anchor: Task,
         editableListIds: readonly string[],
       ): Promise<DependencyCandidatePage> =>

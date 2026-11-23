@@ -1,6 +1,5 @@
-import { Idempotent, TenantTransactionRunner } from '@cadenway/nest-common/database';
-import { OutboxRelay, OutboxWriter } from '@cadenway/nest-messaging/outbox';
-import { Global, Module } from '@nestjs/common';
+import { Idempotent } from '@cadenway/nest-common/database';
+import { Module } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 
 import { TaskTemplateReplayAccessInterceptor } from './composition/providers/adapters/template/task-templates-replay-access.provider.js';
@@ -12,12 +11,11 @@ import { TasksModule } from '../tasks/tasks.module.js';
 import { TaskTemplateAuthorization } from './application/services/template/task-template-authorization.service.js';
 import { CreateTaskTemplate } from './application/use-cases/commands/template/create-task-template/create-task-template.use-case.js';
 import { DeleteTaskTemplate } from './application/use-cases/commands/template/delete-task-template/delete-task-template.use-case.js';
-import { RemoveSpaceTaskTemplates } from './application/use-cases/commands/template/remove-space-task-templates/remove-space-task-templates.use-case.js';
 import { GetTaskTemplate } from './application/use-cases/queries/template/get-task-template/get-task-template.use-case.js';
-import { ReadSpaceTaskTemplateSources } from './public/template/read-space-task-template-sources.js';
 import { ListTaskTemplates } from './application/use-cases/queries/template/list-task-templates/list-task-templates.use-case.js';
 import { TenantTaskTemplateUnitOfWork } from './infrastructure/persistence/drizzle/transactions/template/tenant-task-template.unit-of-work.js';
 import { OwningTaskTemplateSourceDirectory } from './infrastructure/adapters/source/task-template-source-directory.adapter.js';
+import { templateUnitOfWorkProvider } from './composition/providers/adapters/template/task-template-unit-of-work.provider.js';
 import { TaskTemplatesController } from './presentation/http/controllers/template/task-templates.controller.js';
 
 const creationHandler = Object.getOwnPropertyDescriptor(
@@ -28,41 +26,6 @@ if (creationHandler === undefined) {
   throw new Error('The task templates controller has no creation handler.');
 }
 Idempotent()(TaskTemplatesController.prototype, 'create', creationHandler);
-
-const templateUnitOfWorkProvider = {
-  provide: TenantTaskTemplateUnitOfWork,
-  inject: [TenantTransactionRunner, OutboxWriter, OutboxRelay],
-  useFactory: (
-    runner: TenantTransactionRunner,
-    outbox: OutboxWriter,
-    relay: OutboxRelay,
-  ): TenantTaskTemplateUnitOfWork => new TenantTaskTemplateUnitOfWork(runner, outbox, relay),
-};
-
-/**
- * Storage-only module for the owning space's synchronous deletion hook. It has no dependency
- * on the task or space Nest modules.
- */
-@Global()
-@Module({
-  providers: [
-    templateUnitOfWorkProvider,
-    {
-      provide: RemoveSpaceTaskTemplates,
-      inject: [TenantTaskTemplateUnitOfWork],
-      useFactory: (unitOfWork: TenantTaskTemplateUnitOfWork): RemoveSpaceTaskTemplates =>
-        new RemoveSpaceTaskTemplates(unitOfWork),
-    },
-    {
-      provide: ReadSpaceTaskTemplateSources,
-      inject: [TenantTaskTemplateUnitOfWork],
-      useFactory: (unitOfWork: TenantTaskTemplateUnitOfWork): ReadSpaceTaskTemplateSources =>
-        new ReadSpaceTaskTemplateSources(unitOfWork),
-    },
-  ],
-  exports: [RemoveSpaceTaskTemplates, ReadSpaceTaskTemplateSources],
-})
-export class TaskTemplatesStorageModule {}
 
 /** Library HTTP operations and their dependency wiring. */
 @Module({

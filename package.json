@@ -27,7 +27,7 @@
     "quality": "pnpm format:check && pnpm test:lint && pnpm lint && pnpm typecheck && pnpm test:architecture && pnpm test:coverage && pnpm build"
   },
   "dependencies": {
-    "@cadenway/contracts": "0.36.0",
+    "@cadenway/contracts": "0.38.0",
     "@cadenway/nest-common": "0.13.0",
     "@cadenway/nest-jobs": "0.3.1",
     "@cadenway/nest-messaging": "0.7.2",
@@ -46,7 +46,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@cadenway/nest-testing": "0.5.2",
+    "@cadenway/nest-testing": "0.6.0",
     "@commitlint/cli": "^21.2.4",
     "@commitlint/config-conventional": "^21.2.4",
     "@eslint/js": "^10.0.1",

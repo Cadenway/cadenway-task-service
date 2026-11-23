@@ -1,4 +1,4 @@
-import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
+import type { ReadonlyTasksStore } from '../../../../models/transactions/readonly-tasks-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
@@ -30,7 +30,7 @@ export class GetTaskStatusDurations {
   /** Runs the operation in the requested transaction. */
   public async execute(input: GetTaskStatusDurationsInput): Promise<GetTaskStatusDurationsOutput> {
     return this.unitOfWork.runReadOnly(
-      async (store: TasksStore): Promise<GetTaskStatusDurationsOutput> => {
+      async (store: ReadonlyTasksStore): Promise<GetTaskStatusDurationsOutput> => {
         const { task } = await this.access.locate(store, input, 'read');
         if (task.snapshot.milestone === true) return { summary: null };
         let page = await store.time.statusHistoryPage(

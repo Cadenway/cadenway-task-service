@@ -42,7 +42,18 @@ export function currentMembershipCheck(memberships: {
       throw new ProblemException({ status: 403, code: 'auth.organization-required' });
     }
     const organizationId = principal.organizationId.toLowerCase();
-    const stamp = await memberships.execute(organizationId, principal.actor.id.toLowerCase());
+    const stamp = await memberships
+      .execute(organizationId, principal.actor.id.toLowerCase())
+      .catch(() => {
+        // Document consumes the dedicated problem of its protected access-check operation.
+        throw new ProblemException({
+          status: 503,
+          code:
+            principal.issuer === 'document-service'
+              ? 'task.document-space-access-unavailable'
+              : 'http.service-unavailable',
+        });
+      });
     if (stamp === null) {
       throw new ProblemException({ status: 404, code: 'organization.not-found' });
     }

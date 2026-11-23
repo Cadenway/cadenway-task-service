@@ -1,7 +1,7 @@
 import type { Task } from '../../../domain/aggregates/task/task.aggregate.js';
 import type { Viewer } from '../../../domain/value-objects/member/viewer.value-object.js';
 import type { DependencyActor } from '../../models/dependency/dependency-actor.model.js';
-import type { TasksStore } from '../../models/transactions/tasks-store.model.js';
+import type { ReadonlyTasksStore } from '../../models/transactions/readonly-tasks-store.model.js';
 import type { MemberDirectory } from '../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
@@ -46,10 +46,14 @@ export class TaskDependencyReads {
   public async run<TResult>(
     input: DependencyActor,
     edit: boolean,
-    query: (store: TasksStore, anchor: Task, listIds: readonly string[]) => Promise<TResult>,
+    query: (
+      store: ReadonlyTasksStore,
+      anchor: Task,
+      listIds: readonly string[],
+    ) => Promise<TResult>,
   ): Promise<TResult> {
     return this.unitOfWork.runReadOnly(
-      async (store: TasksStore): Promise<TResult> => {
+      async (store: ReadonlyTasksStore): Promise<TResult> => {
         const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
         const { task } = await this.locator.locate(store, {
           organizationId: input.organizationId,

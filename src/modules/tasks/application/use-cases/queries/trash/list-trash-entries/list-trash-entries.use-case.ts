@@ -3,7 +3,7 @@ import type { Viewer } from '../../../../../domain/value-objects/member/viewer.v
 import type { Slice } from '../../../../models/page/slice.model.js';
 import type { TrashListAccess } from '../../../../models/placement/trash-list-access.model.js';
 import type { TrashList } from '../../../../models/placement/trash-list.model.js';
-import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
+import type { ReadonlyTasksStore } from '../../../../models/transactions/readonly-tasks-store.model.js';
 import type { TrashEntryRecord } from '../../../../models/trash/trash-entry-record.model.js';
 import type { TrashPosition } from '../../../../models/trash/trash-position.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
@@ -90,7 +90,7 @@ export class ListTrashEntries {
    */
   public async execute(input: ListTrashEntriesInput): Promise<ListTrashEntriesOutput> {
     return this.unitOfWork.runReadOnly(
-      async (store: TasksStore): Promise<ListTrashEntriesOutput> => {
+      async (store: ReadonlyTasksStore): Promise<ListTrashEntriesOutput> => {
         const { organizationId } = input;
         const viewer: Viewer = await this.viewers.resolve(organizationId, input.actorUserId);
         const lists: ReadonlyMap<string, TrashList> = new Map(

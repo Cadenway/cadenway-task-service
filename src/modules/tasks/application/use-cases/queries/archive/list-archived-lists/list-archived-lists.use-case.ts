@@ -3,7 +3,7 @@ import type { ArchivePosition } from '../../../../models/archive/archive-positio
 import type { Slice } from '../../../../models/page/slice.model.js';
 import type { ArchivedLists } from '../../../../models/placement/archived-lists.model.js';
 import type { PlacedList } from '../../../../models/placement/placed-list.model.js';
-import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
+import type { ReadonlyTasksStore } from '../../../../models/transactions/readonly-tasks-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
@@ -79,7 +79,7 @@ export class ListArchivedLists {
    */
   public async execute(input: ListArchivedListsInput): Promise<ListArchivedListsOutput> {
     return this.unitOfWork.runReadOnly(
-      async (store: TasksStore): Promise<ListArchivedListsOutput> => {
+      async (store: ReadonlyTasksStore): Promise<ListArchivedListsOutput> => {
         const { organizationId } = input;
         const viewer: Viewer = await this.viewers.resolve(organizationId, input.actorUserId);
         const archived: ArchivedLists = await this.spaces.archivedLists(

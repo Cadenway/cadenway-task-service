@@ -10,6 +10,7 @@ stays with organization-service. Onboarding records only the reported success ma
 
 | Entry point                                      | Consumers |
 | ------------------------------------------------ | --------- |
+| `composition/modules/onboarding-state.module`    | tasks     |
 | `public/onboarding/record-first-onboarding-task` | tasks     |
 
 The state module exports the progress marker without depending on tasks or spaces. The HTTP

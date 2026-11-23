@@ -15,15 +15,18 @@ import {
   messagingHealthIndicator,
 } from '@cadenway/nest-messaging';
 import { OutboxModule } from '@cadenway/nest-messaging/outbox';
+import { OutboxRelayModule } from '@cadenway/nest-messaging/outbox/relay';
 import { Module } from '@nestjs/common';
 
 import { appConfigSchema } from './config/app-config.js';
 import type { AppConfig } from './config/app-config.js';
 import { jobQueues } from './config/job-queues.js';
+import { outboxRelayConfigSchema } from './config/outbox-relay-config.js';
+import type { OutboxRelayConfig } from './config/outbox-relay-config.js';
 import { AccessRequestsModule } from './modules/access-requests/access-requests.module.js';
 import { DeletionLifecycleModule } from './modules/deletion-lifecycle/deletion-lifecycle.module.js';
-import { FavoritesModule, FavoritesStorageModule } from './modules/favorites/favorites.module.js';
-import { IntakeModule, IntakeStorageModule } from './modules/intake/intake.module.js';
+import { FavoritesModule } from './modules/favorites/favorites.module.js';
+import { IntakeModule } from './modules/intake/intake.module.js';
 import { GoalsModule } from './modules/goals/goals.module.js';
 import {
   MemberLifecycleModule,
@@ -31,19 +34,13 @@ import {
 } from './modules/member-lifecycle/member-lifecycle.module.js';
 import { OrganizationMembersModule } from './modules/organization-members/organization-members.module.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
-import {
-  SavedViewsModule,
-  SavedViewsStorageModule,
-} from './modules/saved-views/saved-views.module.js';
+import { SavedViewsModule } from './modules/saved-views/saved-views.module.js';
 import { SpacesModule } from './modules/spaces/spaces.module.js';
-import {
-  TaskTemplatesModule,
-  TaskTemplatesStorageModule,
-} from './modules/task-templates/task-templates.module.js';
+import { TaskTemplatesModule } from './modules/task-templates/task-templates.module.js';
 import { TasksModule } from './modules/tasks/tasks.module.js';
 import { TaskCommentsModule } from './modules/task-comments/task-comments.module.js';
 import { NotificationVisibilityModule } from './modules/notification-visibility/notification-visibility.module.js';
-import { OnboardingModule, OnboardingStateModule } from './modules/onboarding/onboarding.module.js';
+import { OnboardingModule } from './modules/onboarding/onboarding.module.js';
 import { TaskApprovalsModule } from './modules/task-approvals/task-approvals.module.js';
 
 /**
@@ -81,6 +78,26 @@ function runJobInOrganization(
   );
 }
 
+const messaging = MessagingModule.forRootAsync({
+  inject: [CONFIG],
+  useFactory: (config: OutboxRelayConfig) => ({
+    service: 'task-service',
+    servers: config.NATS_URL,
+    user: config.NATS_USER,
+    password: config.NATS_PASSWORD,
+    manageStreams: false,
+    deadLetterWorker: false,
+  }),
+});
+
+const health = HealthModule.forRootAsync({
+  inject: [DATABASE_POOL, MessagingConnection],
+  useFactory: (pool: PostgresProbe, connection: MessagingConnection) => ({
+    indicators: [postgresIndicator(pool), messagingHealthIndicator(connection)],
+    shutdownDelayMs: 0,
+  }),
+});
+
 /**
  * Class AppModule
  *
@@ -102,9 +119,8 @@ function runJobInOrganization(
  *   notification-service runs the dead-letter worker. The service publishes the `space.*` and
  *   `list.*` events of `SpacesModule` and the `task.*` events of `TasksModule` through the outbox,
  *   and consumes the member events of organization-service (`MemberLifecycleModule`).
- * - `OutboxModule`: the outbox writer, the PostgreSQL deduplicator and the relay, which polls
- *   `outbox_events` every second in a system transaction and publishes the pending rows. It runs in
- *   every replica; `for update skip locked` keeps two of them from publishing the same row.
+ * - `OutboxModule`: the writer, PostgreSQL deduplicator and historical relay. The API disables
+ *   automatic publication and retention in dedicated mode while keeping its writers and consumers.
  * - `HealthModule`: `GET /health/live` answers as soon as the process runs; `GET /health/ready`
  *   answers 503 while PostgreSQL or NATS does not answer within 1 second, and from the start of a
  *   shutdown. Both routes are exempt from the internal token, every other route requires it.
@@ -187,18 +203,13 @@ function runJobInOrganization(
         idempotency: true,
       }),
     }),
-    MessagingModule.forRootAsync({
+    messaging,
+    OutboxModule.forRootAsync({
       inject: [CONFIG],
       useFactory: (config: AppConfig) => ({
-        service: 'task-service',
-        servers: config.NATS_URL,
-        user: config.NATS_USER,
-        password: config.NATS_PASSWORD,
-        manageStreams: false,
-        deadLetterWorker: false,
+        relay: config.TASK_SERVICE_OUTBOX_MODE === 'legacy',
       }),
     }),
-    OutboxModule.forRoot(),
     JobsRuntimeModule.forRootAsync({
       inject: [CONFIG],
       useFactory: (config: AppConfig) => ({
@@ -210,25 +221,12 @@ function runJobInOrganization(
         runInOrganization: runJobInOrganization,
       }),
     }),
-    HealthModule.forRootAsync({
-      inject: [DATABASE_POOL, MessagingConnection],
-      useFactory: (pool: PostgresProbe, connection: MessagingConnection) => ({
-        indicators: [postgresIndicator(pool), messagingHealthIndicator(connection)],
-        shutdownDelayMs: 0,
-      }),
-    }),
+    health,
     PlatformModule,
     OrganizationMembersModule,
-    // Register only the lifecycle ports globally so the owning capabilities can clean up
-    // in the caller's transaction without importing the modules that depend on their reads.
-    FavoritesStorageModule,
-    IntakeStorageModule,
-    SavedViewsStorageModule,
-    TaskTemplatesStorageModule,
     TaskCommentsModule,
     NotificationVisibilityModule,
     OnboardingModule,
-    OnboardingStateModule,
     TaskApprovalsModule,
     AccessRequestsModule,
     MemberLifecycleModule,
@@ -238,6 +236,26 @@ function runJobInOrganization(
   ],
 })
 export class AppModule {}
+
+/** Runs the leased relay without the HTTP API, durable consumers or job scheduler. */
+@Module({
+  imports: [
+    ConfigModule.forRoot({ schema: outboxRelayConfigSchema, eager: false }),
+    DatabaseModule.forRootAsync({
+      inject: [CONFIG],
+      useFactory: (config: OutboxRelayConfig) => ({
+        connectionString: config.DATABASE_URL,
+        applicationName: 'task-service-relay',
+        poolSize: 4,
+        transactionMaxAttempts: config.DATABASE_TRANSACTION_MAX_ATTEMPTS,
+      }),
+    }),
+    messaging,
+    OutboxRelayModule.forRoot({ shutdownTimeoutMs: 8_000 }),
+    health,
+  ],
+})
+export class TaskOutboxRelayModule {}
 
 /** Opens the offline Task membership rebuild against the validated restore candidate. */
 export function rebuildTaskMemberships(

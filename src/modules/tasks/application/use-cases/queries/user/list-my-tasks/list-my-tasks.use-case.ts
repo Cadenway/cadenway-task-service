@@ -3,7 +3,7 @@ import type { Slice } from '../../../../models/page/slice.model.js';
 import type { ListedTask } from '../../../../models/query/listed-task.model.js';
 import type { TaskPosition } from '../../../../models/query/task-position.model.js';
 import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
-import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
+import type { ReadonlyTasksStore } from '../../../../models/transactions/readonly-tasks-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
@@ -82,7 +82,7 @@ export class ListMyTasks {
       throw new TaskRefusal({ reason: 'user-not-found' });
     }
     return this.unitOfWork.runReadOnly(
-      async (store: TasksStore): Promise<ListMyTasksOutput> => {
+      async (store: ReadonlyTasksStore): Promise<ListMyTasksOutput> => {
         const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
         const listIds: readonly string[] = await this.spaces.visibleListIds(
           input.organizationId,

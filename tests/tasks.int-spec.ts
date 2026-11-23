@@ -24,6 +24,7 @@ import {
   GetTaskCommentInternalResponse,
   GetTaskDetailInternalResponse,
   GetTaskInternalResponse,
+  GetTaskVisibilityInternalResponse,
   GetTaskTemplateInternalResponse,
   ListListActivityInternalResponse,
   ListSpaceMilestonesInternalResponse,
@@ -57,6 +58,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import pg from 'pg';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { MockInstance } from 'vitest';
 import type { z } from 'zod';
 
 import { AppModule } from '../src/app.module.js';
@@ -64,6 +66,8 @@ import { appConfigSchema } from '../src/config/app-config.js';
 import { createTaskApplication } from '../src/infrastructure/http/task-application.module.js';
 import { configureTaskActionCache } from '../src/infrastructure/http/task-action-cache.js';
 import type { MembershipStamp } from '../src/modules/tasks/application/models/membership/membership-stamp.model.js';
+import type { TasksUnitOfWork } from '../src/modules/tasks/application/ports/outbound/transactions/task/tasks-unit-of-work.port.js';
+import { TASKS_UNIT_OF_WORK } from '../src/modules/tasks/composition/tokens/task/tasks-unit-of-work.token.js';
 import { OrganizationMembershipAuthority } from '../src/modules/organization-members/infrastructure/adapters/organization/organization-membership-authority.adapter.js';
 import { DrizzleCommentRepository } from '../src/modules/task-comments/infrastructure/persistence/drizzle/repositories/comment/drizzle-comment.repository.js';
 import { DrizzleCommentExcerptReader } from '../src/modules/task-comments/infrastructure/persistence/drizzle/repositories/comment/drizzle-comment-excerpt.repository.js';
@@ -551,6 +555,7 @@ describe('tasks', () => {
   let signer: InternalTokenSigner;
   let migrator: pg.Pool;
   let telemetry: TelemetryHandle | undefined;
+  let findMembership: MockInstance<OrganizationMembershipAuthority['find']>;
   const removedAtAuthority = new Set<string>();
 
   // The spaces and lists of Atelier Nord the scenarios work in.
@@ -950,16 +955,16 @@ describe('tasks', () => {
     telemetry = startTelemetry({ service: 'task-service', version: '0.0.0-test' });
     // As main.ts: the configuration is read inside the start-up, never when a module is imported.
     const config = loadConfig(appConfigSchema);
-    vi.spyOn(OrganizationMembershipAuthority.prototype, 'find').mockImplementation(
-      async (organizationId, userId) => {
+    findMembership = vi
+      .spyOn(OrganizationMembershipAuthority.prototype, 'find')
+      .mockImplementation(async (organizationId, userId) => {
         if (removedAtAuthority.has(userId)) return null;
         const members = await asSystem<MembershipStamp>(
           'select id as "memberId", role, version::float8 as version from organization_members where organization_id = $1 and user_id = $2 and removed_at is null',
           [organizationId, userId],
         );
         return members.length === 1 ? (members[0] ?? null) : null;
-      },
-    );
+      });
     app = await createTaskApplication(AppModule, {
       service: 'task-service',
       config,
@@ -1313,6 +1318,28 @@ describe('tasks', () => {
       vi.unstubAllEnvs();
       compose('down', '--volumes', '--remove-orphans');
     }
+  });
+
+  it('enforces the read-only Task unit of work in PostgreSQL', async () => {
+    const work = service().get<TasksUnitOfWork>(TASKS_UNIT_OF_WORK);
+    const tenant = service().get(TenantTransactionRunner);
+    await expect(
+      runWithOrganizationContext(contextOf(atelierNordId), () =>
+        work.runReadOnly(() =>
+          tenant.run(({ client }) =>
+            client.query(
+              'select id from tasks where organization_id = $1 limit 1 for no key update',
+              [atelierNordId],
+            ),
+          ),
+        ),
+      ),
+    ).rejects.toMatchObject({ code: '25006' });
+    await expect(
+      runWithOrganizationContext(contextOf(atelierNordId), () =>
+        work.runReadOnly(({ clock }) => clock.now()),
+      ),
+    ).resolves.toBeInstanceOf(Date);
   });
 
   describe('every route answers as the contract says, with its Location and ETag', () => {
@@ -6043,5 +6070,48 @@ describe('tasks', () => {
       type: 'user',
       id: camille.userId,
     });
+  });
+
+  it('returns the ordered batch for current membership and distinguishes absence from a stale projection', async () => {
+    const first = await createTask(camille, sprint14.id, { name: 'First visible task' });
+    const second = await createTask(camille, sprint14.id, { name: 'Second visible task' });
+    const path = '/internal/v1/tasks/visibility';
+    const taskKeys = [second.key, 'CAD-999999999', first.key];
+    const read = () =>
+      send('post', path, camille, {
+        body: { taskKeys },
+        organizationId: atelierNordId.toUpperCase(),
+      });
+
+    const visible = await read();
+    expectStatus(visible, 200);
+    expect(visible.headers['cache-control']).toBe('private, no-store');
+    expect(conforms(GetTaskVisibilityInternalResponse, bodyOf(visible))).toEqual({
+      visibleTaskKeys: [second.key, first.key],
+    });
+
+    removedAtAuthority.add(camille.userId);
+    try {
+      expect(await activeMembers(atelierNordId)).toContain(camille.userId);
+      const absent = await read();
+      expectStatus(absent, 200);
+      expect(conforms(GetTaskVisibilityInternalResponse, bodyOf(absent))).toEqual({
+        visibleTaskKeys: [],
+      });
+    } finally {
+      removedAtAuthority.delete(camille.userId);
+    }
+
+    findMembership.mockResolvedValueOnce({
+      memberId: randomUUID(),
+      role: 'owner',
+      version: 1,
+    });
+    expectProblem(await read(), 503, 'task.visibility-unavailable');
+    expectProblem(
+      await send('post', path, camille, { body: { taskKeys: [first.key, first.key] } }),
+      400,
+      'request.invalid',
+    );
   });
 });

@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 
 import { loadConfig } from '@cadenway/nest-common';
 import { provisionJobs } from '@cadenway/nest-jobs/provisioning';
+import { finishOutboxLeaseMigration } from '@cadenway/nest-messaging/outbox/schema';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import pg from 'pg';
@@ -55,7 +56,20 @@ if (!existsSync(`${migrationsFolder}/meta/_journal.json`)) {
     application_name: 'task-service-migrator',
   });
   try {
-    await migrate(drizzle({ client: pool }), { migrationsFolder });
+    const client = await pool.connect();
+    try {
+      // Keep the journal and index build on one session and let a concurrent caller retry.
+      const { rows } = await client.query<{ acquired: boolean }>(
+        "select pg_catalog.pg_try_advisory_lock(pg_catalog.hashtextextended('task-service-migrations', 0)) as acquired",
+      );
+      if (rows[0]?.acquired !== true) {
+        throw new Error('Another Task migrator is running. Retry after it finishes.');
+      }
+      await migrate(drizzle({ client }), { migrationsFolder });
+      await finishOutboxLeaseMigration(client);
+    } finally {
+      client.release(true);
+    }
     console.log('Migrations applied.');
   } finally {
     await pool.end();

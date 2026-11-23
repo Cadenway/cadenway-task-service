@@ -1,4 +1,4 @@
-import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
+import type { ReadonlyTasksStore } from '../../../../models/transactions/readonly-tasks-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
@@ -36,7 +36,7 @@ export class ListWatchers {
   /** Returns only current members who can read the task's list. */
   public async execute(input: ListWatchersInput): Promise<ListWatchersOutput> {
     return this.unit.runReadOnly(
-      async (store: TasksStore): Promise<ListWatchersOutput> => {
+      async (store: ReadonlyTasksStore): Promise<ListWatchersOutput> => {
         const viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
         const { task } = await this.locator.locate(store, {
           organizationId: input.organizationId,

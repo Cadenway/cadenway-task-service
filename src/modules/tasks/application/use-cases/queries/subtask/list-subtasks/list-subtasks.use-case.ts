@@ -2,7 +2,7 @@ import type { Viewer } from '../../../../../domain/value-objects/member/viewer.v
 import type { PagePosition } from '../../../../models/page/page-position.model.js';
 import type { Slice } from '../../../../models/page/slice.model.js';
 import type { LocatedTask } from '../../../../models/task/located-task.model.js';
-import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
+import type { ReadonlyTasksStore } from '../../../../models/transactions/readonly-tasks-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
@@ -74,7 +74,7 @@ export class ListSubtasks {
    */
   public async execute(input: ListSubtasksInput): Promise<ListSubtasksOutput> {
     return this.unitOfWork.runReadOnly(
-      async (store: TasksStore): Promise<ListSubtasksOutput> => {
+      async (store: ReadonlyTasksStore): Promise<ListSubtasksOutput> => {
         const viewer: Viewer = await this.viewers.resolve(input.organizationId, input.actorUserId);
         const { task }: LocatedTask = await this.locator.locate(store, {
           organizationId: input.organizationId,

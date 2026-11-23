@@ -10,6 +10,8 @@ import { Module, RequestMethod } from '@nestjs/common';
 import type { MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 
+import { IntakeStorageModule } from '../intake/composition/modules/intake-storage.module.js';
+import { OnboardingStateModule } from '../onboarding/composition/modules/onboarding-state.module.js';
 import { OrganizationMembersModule } from '../organization-members/organization-members.module.js';
 import { RecordFirstOnboardingTask } from '../onboarding/public/onboarding/record-first-onboarding-task.js';
 import { SpacesModule } from '../spaces/spaces.module.js';
@@ -79,6 +81,7 @@ import { getTaskDetailProvider } from './composition/providers/use-cases/task/ge
 import { readTaskTemplateSourceProvider } from './composition/providers/use-cases/task/read-task-template-source.provider.js';
 import { measureGoalTargetsProvider } from './composition/providers/use-cases/goal/measure-goal-targets.provider.js';
 import { getTaskProvider } from './composition/providers/use-cases/task/get-task.provider.js';
+import { getTaskVisibilityProvider } from './composition/providers/use-cases/task/get-task-visibility.provider.js';
 import { listTaskParticipantsProvider } from './composition/providers/use-cases/task/list-task-participants.provider.js';
 import { updateTaskProvider } from './composition/providers/use-cases/task/update-task.provider.js';
 import { emptyTrashProvider } from './composition/providers/use-cases/trash/empty-trash.provider.js';
@@ -127,6 +130,7 @@ import { TaskParticipantsController } from './presentation/http/controllers/task
 import { CreateIntakeTask } from './public/intake/create-intake-task.js';
 import { ResolveIntakeContactTask } from './public/intake/resolve-intake-contact-task.js';
 import { TasksController } from './presentation/http/controllers/task/tasks.controller.js';
+import { TaskVisibilityController } from './presentation/http/controllers/task/task-visibility.controller.js';
 import { AutomationTaskActionController } from './presentation/http/controllers/task/automation-task-action.controller.js';
 import { AutomationNotificationAuthorizationController } from './presentation/http/controllers/task/automation-notification-authorization.controller.js';
 import { AutomationTaskActionReplayGuard } from './presentation/http/guards/task/automation-task-action-replay.guard.js';
@@ -209,7 +213,7 @@ markIdempotent(TaskTimeController.prototype, 'create');
 
  */
 @Module({
-  imports: [OrganizationMembersModule, SpacesModule],
+  imports: [OrganizationMembersModule, SpacesModule, IntakeStorageModule, OnboardingStateModule],
   controllers: [
     ListCustomFieldsController,
     SpaceCustomFieldsController,
@@ -223,6 +227,7 @@ markIdempotent(TaskTimeController.prototype, 'create');
     UserTasksController,
     BulkTaskActionsController,
     TasksController,
+    TaskVisibilityController,
     AutomationTaskActionController,
     AutomationNotificationAuthorizationController,
     GitTaskStatusController,
@@ -285,6 +290,7 @@ markIdempotent(TaskTimeController.prototype, 'create');
     updateTaskProvider,
     bulkTaskActionProvider,
     getTaskProvider,
+    getTaskVisibilityProvider,
     getTaskDetailProvider,
     readTaskTemplateSourceProvider,
     measureGoalTargetsProvider,

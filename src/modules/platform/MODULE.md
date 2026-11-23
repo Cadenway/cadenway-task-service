@@ -6,7 +6,7 @@ Gives the tables of the service kit their place in this service's own migrations
 `src/modules/*/infrastructure/persistence/drizzle/schemas/*/*.schema.ts` only. A kit table enters the migration history through a schema re-export in this module. It owns:
 
 - `outbox_events`, `processed_events` and `event_versions`, defined by
-  `@cadenway/nest-messaging/outbox`;
+  `@cadenway/nest-messaging/outbox/schema`;
 - `idempotency_keys`, defined by `@cadenway/nest-common/database`.
 
 Product data and rules belong to the business modules. The kit defines these tables and implements
@@ -37,16 +37,14 @@ the response of a route marked `@Idempotent()` in `idempotency_keys`; no route e
 
 ## Events emitted
 
-None. The outbox relay of `OutboxModule` publishes the rows the use cases of the business modules
-append with `OutboxWriter.append`; `@cadenway/contracts` defines no event of this service yet, so
-nothing is appended.
+Business modules append their published events with `OutboxWriter.append`. The legacy API relay
+publishes pending rows until the standalone relay is activated.
 
 ## Events consumed
 
 None. `processed_events` and `event_versions` record what the handlers of the business modules
-consumed, through the PostgreSQL deduplicator of `OutboxModule`: today the three member event
-handlers of the organization-members module record their event ids in `processed_events`; none
-uses `event_versions`, since that module orders the events by the version it stores itself.
+consumed, through the PostgreSQL deduplicator of `OutboxModule`. The API keeps the deduplicator
+active when the standalone relay publishes.
 
 ## Invariants
 
@@ -61,9 +59,11 @@ uses `event_versions`, since that module orders the events by the version it sto
 The rows are written inside the units of work of others: an outbox row in the
 transaction of the use case that changes the data (tenant runner, or system runner for an event
 without organization), a processed id and a version in the transaction of the handler, an
-idempotency key in the transaction the interceptor opens for its route. The relay locks, publishes
-and marks pending rows in system transactions, and purges sent rows after 7 days and processed ids
-after 14.
+idempotency key in the transaction the interceptor opens for its route. The dedicated relay claims
+rows in a short system transaction, publishes outside the transaction and settles in another.
+The active relay also purges sent rows after 7 days and processed ids after 14. `0026_outbox_leases`
+expands the schema for the dedicated relay, and `src/migrate.ts` finishes the index and validation
+outside Drizzle's migration transaction.
 
 ### Jobs
 

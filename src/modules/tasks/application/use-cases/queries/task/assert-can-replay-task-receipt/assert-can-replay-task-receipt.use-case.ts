@@ -4,7 +4,7 @@ import type { MemberDirectory } from '../../../../ports/outbound/members/members
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
 import { TaskRefusal } from '../../../../models/task/task-refusal.model.js';
-import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
+import type { ReadonlyTasksStore } from '../../../../models/transactions/readonly-tasks-store.model.js';
 import { ViewerResolver } from '../../../../services/member/viewer-resolver.service.js';
 import { TaskLocator } from '../../../../services/task/task-locator.service.js';
 
@@ -74,7 +74,7 @@ export class AssertCanReplayTaskReceipt {
   }
 
   private async canSeeTrashReceipt(
-    store: TasksStore,
+    store: ReadonlyTasksStore,
     organizationId: string,
     viewer: Viewer,
     receipt: TrashReceipt,

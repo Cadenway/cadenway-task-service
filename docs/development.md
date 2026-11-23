@@ -96,19 +96,52 @@ value. `.env.example` holds a working local value for each;
 [cadenway-ops](https://github.com/Cadenway/cadenway-ops) (`docs/service-environment.md`) says where
 each value comes from on a server.
 
-| Variable                              | Read by               | Value                                                                                                                                                     |
-| ------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PORT`                                | The service           | `3013`                                                                                                                                                    |
-| `NODE_ENV`, `LOG_LEVEL`, `LOG_PRETTY` | The service           | `production`, `info` and `false` when unset                                                                                                               |
-| `DATABASE_URL`                        | The service           | Application role `task_app`                                                                                                                               |
-| `DATABASE_TRANSACTION_MAX_ATTEMPTS`   | The service           | Total attempts on PostgreSQL `40001` or `40P01`. Defaults to `3`. Set to `1` to disable retries.                                                          |
-| `MIGRATION_DATABASE_URL`              | `src/migrate.ts` only | Migrator role `task_migrator`; required once a migration exists. The GitOps agent passes it to the migration container only, never to the running service |
-| `INTERNAL_TOKEN_AUDIENCE`             | The service           | `task-service`                                                                                                                                            |
-| `INTERNAL_TOKEN_TRUSTED_ISSUERS`      | The service           | One line of JSON: the public keys of each backend allowed to call it                                                                                      |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`         | `src/telemetry.ts`    | OTLP over HTTP; unset, nothing leaves the process                                                                                                         |
-| `NATS_URL`                            | The service           | `nats://` URL of the broker                                                                                                                               |
-| `NATS_USER`, `NATS_PASSWORD`          | The service           | User `task` and its password; inbox prefix `_INBOX.task`                                                                                                  |
-| `TRASH_WRITES_ENABLED`                | The service           | `false` when unset: the writes of the trash answer `404` ("Trash writes" below); `true` to serve them                                                     |
+| Variable                                                              | Read by               | Value                                                                                                                                                     |
+| --------------------------------------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PORT`                                                                | The service           | `3013`                                                                                                                                                    |
+| `NODE_ENV`, `LOG_LEVEL`, `LOG_PRETTY`                                 | The service           | `production`, `info` and `false` when unset                                                                                                               |
+| `DATABASE_URL`                                                        | The service           | Application role `task_app`                                                                                                                               |
+| `DATABASE_TRANSACTION_MAX_ATTEMPTS`                                   | The service           | Total attempts on PostgreSQL `40001` or `40P01`. Defaults to `3`. Set to `1` to disable retries.                                                          |
+| `MIGRATION_DATABASE_URL`                                              | `src/migrate.ts` only | Migrator role `task_migrator`; required once a migration exists. The GitOps agent passes it to the migration container only, never to the running service |
+| `INTERNAL_TOKEN_AUDIENCE`                                             | The service           | `task-service`                                                                                                                                            |
+| `INTERNAL_TOKEN_TRUSTED_ISSUERS`                                      | The service           | One line of JSON: the public keys of each backend allowed to call it                                                                                      |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`                                         | `src/telemetry.ts`    | OTLP over HTTP; unset, nothing leaves the process                                                                                                         |
+| `NATS_URL`                                                            | The service           | `nats://` URL of the broker                                                                                                                               |
+| `NATS_USER`, `NATS_PASSWORD`                                          | The service           | User `task` and its password; inbox prefix `_INBOX.task`                                                                                                  |
+| `TASK_MEMBERSHIP_AUTHORITY_MODE`                                      | The service           | `required` by default. `limited` permits standalone development without a live Organization authority.                                                    |
+| `ORGANIZATION_SERVICE_URL`, `TASK_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK` | The service           | Origin and outbound signing key for live membership checks. Configure both in the full stack.                                                             |
+| `TASK_SERVICE_ROLE`                                                   | The service           | `api` by default, or `outbox-relay` for the standalone relay.                                                                                             |
+| `TASK_SERVICE_OUTBOX_MODE`                                            | The API process       | `legacy` by default. `dedicated` keeps writing outbox rows and handling durable events, but stops in-process publication.                                 |
+| `TASK_SERVICE_RELAY_REPLICAS`                                         | Compose               | Number of standalone relay replicas. Defaults to zero.                                                                                                    |
+| `TRASH_WRITES_ENABLED`                                                | The service           | `false` when unset: the writes of the trash answer `404` ("Trash writes" below); `true` to serve them                                                     |
+
+In limited mode without the origin and key, operations requiring a current Organization membership
+proof return an unavailable response. Ordinary local operations still use their usual projection.
+In required mode the service rejects incomplete authority configuration during startup. A transient
+Organization failure is surfaced by the affected operations and does not make the entire Task
+service unready.
+
+### Outbox relay
+
+The migrator applies `0026_outbox_leases.sql`, then builds the expiry index concurrently and
+validates the lease checks. No previous writer or relay needs to change during this expansion.
+Rerun the migrator if concurrent finalization stops after the migration commits.
+If another migrator holds the Task migration lock, wait for it to finish and rerun the command.
+
+To activate the standalone relay, keep its replica count at zero until the expanded schema and
+new image are in use. In a separate applied change, switch the API replicas to
+`TASK_SERVICE_OUTBOX_MODE=dedicated` with zero companions. Wait for the previous API replicas
+to stop. Start the relay in the next change so automatic rollback returns to a dedicated API.
+The relay uses the same image and the
+application credentials. It binds its readiness and liveness endpoints to loopback and runs
+no API routes or job workers. Check for the pending outbox to drain before ending the rollout.
+
+To restore legacy publication, keep the API writing in dedicated mode, stop all standalone
+relay replicas, and run `node dist/modules/platform/infrastructure/adapters/postgres/recover-outbox-leases.js`
+using the application database connection. The command releases up to 2,000 expired leases in
+transactions of 100 and exits unsuccessfully while any lease is still present. Wait for
+remaining leases to expire and rerun until it succeeds. Then start the legacy relay through the
+API. Keep the expanded schema. Recovery keeps the original event IDs for consumer deduplication.
 
 ### Trash writes
 

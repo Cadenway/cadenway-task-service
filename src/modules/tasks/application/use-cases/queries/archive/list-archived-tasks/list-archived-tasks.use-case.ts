@@ -2,7 +2,7 @@ import type { Viewer } from '../../../../../domain/value-objects/member/viewer.v
 import type { ArchivePosition } from '../../../../models/archive/archive-position.model.js';
 import type { Slice } from '../../../../models/page/slice.model.js';
 import type { PlacedList } from '../../../../models/placement/placed-list.model.js';
-import type { TasksStore } from '../../../../models/transactions/tasks-store.model.js';
+import type { ReadonlyTasksStore } from '../../../../models/transactions/readonly-tasks-store.model.js';
 import type { MemberDirectory } from '../../../../ports/outbound/members/membership/member-directory.port.js';
 import type { SpaceDirectory } from '../../../../ports/outbound/spaces/space/space-directory.port.js';
 import type { TasksUnitOfWork } from '../../../../ports/outbound/transactions/task/tasks-unit-of-work.port.js';
@@ -82,7 +82,7 @@ export class ListArchivedTasks {
    */
   public async execute(input: ListArchivedTasksInput): Promise<ListArchivedTasksOutput> {
     return this.unitOfWork.runReadOnly(
-      async (store: TasksStore): Promise<ListArchivedTasksOutput> => {
+      async (store: ReadonlyTasksStore): Promise<ListArchivedTasksOutput> => {
         const { organizationId } = input;
         const viewer: Viewer = await this.viewers.resolve(organizationId, input.actorUserId);
         const listIds: readonly string[] = await this.spaces.visibleListIds(organizationId, viewer);
