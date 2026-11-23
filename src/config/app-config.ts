@@ -27,6 +27,7 @@ import { z } from 'zod';
  * - `DATABASE_URL`: the application role of this service's own database (`task_app`), subject to
  *   row-level security and holding no DDL right.
  * - `DATABASE_TRANSACTION_MAX_ATTEMPTS` sets the limit for retryable database transactions.
+ * - `TASK_SERVICE_OUTBOX_MODE` selects legacy inline publication or dedicated relay publication.
  * - `NATS_URL`, `NATS_USER`, `NATS_PASSWORD`: `messagingConfigShape` of `@cadenway/nest-messaging`.
  *   `NATS_URL` is required; the user (`task`) and its password are optional for the kit, which
  *   accepts an anonymous local broker, but every broker of Cadenway refuses a connection without
@@ -54,6 +55,7 @@ export type AppConfig = BaseConfig &
     readonly SEARCH_PROJECTION_CURSOR_SECRET?: string;
     readonly ORGANIZATION_SERVICE_URL?: string;
     readonly TASK_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK?: Ed25519PrivateJwk;
+    readonly TASK_SERVICE_OUTBOX_MODE: 'legacy' | 'dedicated';
   };
 
 /**
@@ -143,6 +145,7 @@ export const appConfigSchema: z.ZodType<AppConfig> = z
     ...databaseConfigShape,
     ...messagingConfigShape,
     ...internalTokenVerifierConfigShape,
+    TASK_SERVICE_OUTBOX_MODE: z.enum(['legacy', 'dedicated']).default('legacy'),
     DOCUMENT_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: optionalIssuerConfig('document-service'),
     SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: optionalIssuerConfig('search-service'),
     NOTIFICATION_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: optionalIssuerConfig('notification-service'),

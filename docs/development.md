@@ -108,7 +108,31 @@ each value comes from on a server.
 | `OTEL_EXPORTER_OTLP_ENDPOINT`         | `src/telemetry.ts`    | OTLP over HTTP; unset, nothing leaves the process                                                                                                         |
 | `NATS_URL`                            | The service           | `nats://` URL of the broker                                                                                                                               |
 | `NATS_USER`, `NATS_PASSWORD`          | The service           | User `task` and its password; inbox prefix `_INBOX.task`                                                                                                  |
+| `TASK_SERVICE_ROLE`                   | The service           | `api` by default, or `outbox-relay` for the standalone relay.                                                                                             |
+| `TASK_SERVICE_OUTBOX_MODE`            | The API process       | `legacy` by default. `dedicated` keeps writing outbox rows and handling durable events, but stops in-process publication.                                 |
+| `TASK_SERVICE_RELAY_REPLICAS`         | Compose               | Number of standalone relay replicas. Defaults to zero.                                                                                                    |
 | `TRASH_WRITES_ENABLED`                | The service           | `false` when unset: the writes of the trash answer `404` ("Trash writes" below); `true` to serve them                                                     |
+
+### Outbox relay
+
+The migrator applies `0026_outbox_leases.sql`, then builds the expiry index concurrently and
+validates the lease checks. No previous writer or relay needs to change during this expansion.
+Rerun the migrator if concurrent finalization stops after the migration commits.
+
+To activate the standalone relay, keep its replica count at zero until the expanded schema and
+new image are in use. In a separate applied change, switch the API replicas to
+`TASK_SERVICE_OUTBOX_MODE=dedicated` with zero companions. Wait for the previous API replicas
+to stop. Start the relay in the next change so automatic rollback returns to a dedicated API.
+The relay uses the same image and the
+application credentials. It binds its readiness and liveness endpoints to loopback and runs
+no API routes or job workers. Check for the pending outbox to drain before ending the rollout.
+
+To restore legacy publication, keep the API writing in dedicated mode, stop all standalone
+relay replicas, and run `node dist/modules/platform/infrastructure/adapters/postgres/recover-outbox-leases.js`
+using the application database connection. The command releases up to 2,000 expired leases in
+transactions of 100 and exits unsuccessfully while any lease is still present. Wait for
+remaining leases to expire and rerun until it succeeds. Then start the legacy relay through the
+API. Keep the expanded schema. Recovery keeps the original event IDs for consumer deduplication.
 
 ### Trash writes
 

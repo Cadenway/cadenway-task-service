@@ -4,9 +4,15 @@ import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promi
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
-import { InternalTokenSigner, loadConfig, runWithOrganizationContext } from '@cadenway/nest-common';
+import {
+  createApplication,
+  InternalTokenSigner,
+  loadConfig,
+  runWithOrganizationContext,
+} from '@cadenway/nest-common';
 import type {
   Ed25519PrivateJwk,
   Ed25519PublicJwk,
@@ -14,6 +20,7 @@ import type {
 } from '@cadenway/nest-common';
 import { SystemTransactionRunner, TenantTransactionRunner } from '@cadenway/nest-common/database';
 import { JobProducer, JobScheduler } from '@cadenway/nest-jobs/runtime';
+import { OutboxRelay } from '@cadenway/nest-messaging/outbox';
 import { Controller, Get, Injectable, Module } from '@nestjs/common';
 import type { BeforeApplicationShutdown } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
@@ -23,10 +30,12 @@ import pg from 'pg';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { AppModule } from '../src/app.module.js';
+import { AppModule, TaskOutboxRelayModule } from '../src/app.module.js';
 import { appConfigSchema } from '../src/config/app-config.js';
 import { PURGE_IDEMPOTENCY_RECEIPTS_QUEUE } from '../src/config/job-queues.js';
+import { outboxRelayConfigSchema } from '../src/config/outbox-relay-config.js';
 import { createTaskApplication } from '../src/infrastructure/http/task-application.module.js';
+import { recoverOutboxLeases } from '../src/modules/platform/infrastructure/messaging/outbox/leases/outbox-lease-recovery.adapter.js';
 import { DrizzleBulkReceiptScopeRepository } from '../src/modules/tasks/infrastructure/persistence/drizzle/repositories/bulk/drizzle-bulk-receipt-scope.repository.js';
 
 // The service as main.ts assembles it, on a disposable PostgreSQL and NATS. `@cadenway/nest-testing`
@@ -131,7 +140,7 @@ const publicTables = [
  * task library, P3c-1 capabilities, goals, sprint reporting history, intake, delivery decisions
  * Git activity attribution and membership-scoped grants.
  */
-const appliedMigrations = 26;
+const appliedMigrations = 27;
 
 /**
  * Runs `docker compose` on the throwaway project.
@@ -1243,6 +1252,105 @@ describe('task-service wiring', () => {
 
     const response = await request(service().getHttpServer()).get('/health/ready');
     expect(response.status).toBe(200);
+  });
+
+  it('hands off publication to the leased relay and requeues only expired leases on rollback', async () => {
+    // The fixture's running API is in legacy mode. Drain its publisher before switching modes.
+    await service().get(OutboxRelay).beforeApplicationShutdown();
+    vi.stubEnv('TASK_SERVICE_OUTBOX_MODE', 'dedicated');
+    const config = loadConfig(appConfigSchema);
+    const dedicated = await createTaskApplication(AppModule, {
+      service: 'task-service',
+      config,
+      internalToken: {
+        verifier: {
+          audience: config.INTERNAL_TOKEN_AUDIENCE,
+          trustedIssuers: config.INTERNAL_TOKEN_TRUSTED_ISSUERS,
+        },
+      },
+      logDestination: { write: (): void => undefined },
+    });
+    let relay: NestExpressApplication | undefined;
+    try {
+      await dedicated.init();
+      const system = dedicated.get(SystemTransactionRunner);
+      const eventId = randomUUID();
+      await system.run((tx) =>
+        tx.client.query(
+          `insert into outbox_events (id, event_name, subject, stream, organization_id, payload)
+           values ($1::uuid, 'task.wiring-probe.v1', 'evt.task.wiring-probe.v1', 'EVENTS', $2::uuid,
+                   jsonb_build_object('id', $1::uuid::text, 'organizationId', $2::uuid::text, 'occurredAt', now()))`,
+          [eventId, atelierNordId],
+        ),
+      );
+      const readEvent = () =>
+        system.run(async (tx) => {
+          const result = await tx.client.query(
+            'select status, lease_token, lease_expires_at from outbox_events where id = $1',
+            [eventId],
+          );
+          return result.rows;
+        });
+
+      dedicated.get(OutboxRelay).wake();
+      // Wait past the legacy interval so a second polling publisher would be visible.
+      await setTimeout(1_200);
+      expect(await readEvent()).toEqual([
+        { status: 'pending', lease_token: null, lease_expires_at: null },
+      ]);
+
+      relay = await createApplication(TaskOutboxRelayModule, {
+        service: 'task-service-relay',
+        config: loadConfig(outboxRelayConfigSchema),
+        internalTokenVerification: 'off',
+        logDestination: { write: (): void => undefined },
+      });
+      await relay.init();
+      expect((await request(relay.getHttpServer()).get('/health/ready')).status).toBe(200);
+      expect((await request(relay.getHttpServer()).get('/internal/v1/tasks')).status).toBe(404);
+      await vi.waitFor(
+        async () => {
+          expect(await readEvent()).toEqual([
+            { status: 'sent', lease_token: null, lease_expires_at: null },
+          ]);
+        },
+        { timeout: 10_000, interval: 100 },
+      );
+      await relay.close();
+      relay = undefined;
+
+      const active = randomUUID();
+      const expired = randomUUID();
+      await system.run((tx) =>
+        tx.client.query(
+          `insert into outbox_events
+              (id, event_name, subject, stream, payload, status, lease_token, lease_expires_at)
+           values ($1, 'task.wiring-probe.v1', 'evt.task.wiring-probe.v1', 'EVENTS', '{}',
+                   'leased', $1, statement_timestamp() + interval '1 minute'),
+                  ($2, 'task.wiring-probe.v1', 'evt.task.wiring-probe.v1', 'EVENTS', '{}',
+                   'leased', $2, statement_timestamp() - interval '1 minute')`,
+          [active, expired],
+        ),
+      );
+      await expect(recoverOutboxLeases(system)).resolves.toEqual({
+        released: 1,
+        leasesRemain: true,
+      });
+      await system.run((tx) =>
+        tx.client.query(
+          "update outbox_events set lease_expires_at = statement_timestamp() - interval '1 second' where id = $1",
+          [active],
+        ),
+      );
+      await expect(recoverOutboxLeases(system)).resolves.toEqual({
+        released: 1,
+        leasesRemain: false,
+      });
+    } finally {
+      await relay?.close();
+      await dedicated.close();
+      vi.stubEnv('TASK_SERVICE_OUTBOX_MODE', undefined);
+    }
   });
 
   it('runs against a broker that enforces the permissions of cadenway-ops', () => {
