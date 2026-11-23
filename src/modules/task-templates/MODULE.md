@@ -9,11 +9,11 @@ client-side.
 
 ## Public entry points
 
-| Entry point                                        | Consumers |
-| -------------------------------------------------- | --------- |
-| `task-templates.module`                            | spaces    |
-| `public/template/remove-space-task-templates`      | spaces    |
-| `public/template/read-space-task-template-sources` | spaces    |
+| Entry point                                         | Consumers |
+| --------------------------------------------------- | --------- |
+| `composition/modules/task-templates-storage.module` | spaces    |
+| `public/template/remove-space-task-templates`       | spaces    |
+| `public/template/read-space-task-template-sources`  | spaces    |
 
 `RemoveSpaceTaskTemplates` deletes the library in the caller's tenant transaction during
 space deletion. A space deletion already invalidates its whole library.

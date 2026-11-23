@@ -2,6 +2,10 @@ import { Idempotent } from '@cadenway/nest-common/database';
 import { Module } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 
+import { FavoritesStorageModule } from '../favorites/composition/modules/favorites-storage.module.js';
+import { IntakeStorageModule } from '../intake/composition/modules/intake-storage.module.js';
+import { SavedViewsStorageModule } from '../saved-views/composition/modules/saved-views-storage.module.js';
+import { TaskTemplatesStorageModule } from '../task-templates/composition/modules/task-templates-storage.module.js';
 import { SpacesReplayAccessInterceptor } from './composition/providers/adapters/space/spaces-replay-access.provider.js';
 import { currentMembershipProvider } from './composition/providers/adapters/space/current-membership.provider.js';
 
@@ -157,7 +161,13 @@ markIdempotent(SpaceListsController.prototype, 'create');
  * transaction of their caller.
  */
 @Module({
-  imports: [OrganizationMembersModule],
+  imports: [
+    OrganizationMembersModule,
+    FavoritesStorageModule,
+    IntakeStorageModule,
+    SavedViewsStorageModule,
+    TaskTemplatesStorageModule,
+  ],
   controllers: [
     SpacesController,
     SpaceListsController,

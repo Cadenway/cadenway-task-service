@@ -1,5 +1,5 @@
 import { Idempotent } from '@cadenway/nest-common/database';
-import { Global, Module } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 
 import { FavoriteReplayAccessInterceptor } from './composition/providers/adapters/favorite/favorites-replay-access.provider.js';
@@ -14,10 +14,8 @@ import { deleteFavoriteProvider } from './composition/providers/use-cases/favori
 import { getFavoriteProvider } from './composition/providers/use-cases/favorite/get-favorite.provider.js';
 import { listFavoritesProvider } from './composition/providers/use-cases/favorite/list-favorites.provider.js';
 import { purgeMemberFavoritesProvider } from './composition/providers/use-cases/purge/purge-member-favorites.provider.js';
-import { purgeTargetFavoritesProvider } from './composition/providers/use-cases/purge/purge-target-favorites.provider.js';
 import { FavoritesController } from './presentation/http/controllers/favorite/favorites.controller.js';
 import { PurgeMemberFavorites } from './public/purge/purge-member-favorites.js';
-import { PurgeTargetFavorites } from './public/purge/purge-target-favorites.js';
 
 const creation = Object.getOwnPropertyDescriptor(FavoritesController.prototype, 'create');
 if (creation === undefined) {
@@ -42,11 +40,3 @@ Idempotent()(FavoritesController.prototype, 'create', creation);
   exports: [PurgeMemberFavorites],
 })
 export class FavoritesModule {}
-
-/** Supplies target cleanup to owners without reversing the visibility lookup dependencies. */
-@Global()
-@Module({
-  providers: [favoritesUnitOfWorkProvider, purgeTargetFavoritesProvider],
-  exports: [PurgeTargetFavorites],
-})
-export class FavoritesStorageModule {}

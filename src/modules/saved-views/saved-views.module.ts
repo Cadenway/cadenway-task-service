@@ -1,8 +1,9 @@
 import { Idempotent, TenantTransactionRunner } from '@cadenway/nest-common/database';
 import { OutboxRelay, OutboxWriter } from '@cadenway/nest-messaging/outbox';
-import { Global, Module } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 
+import { FavoritesStorageModule } from '../favorites/composition/modules/favorites-storage.module.js';
 import { SavedViewReplayAccessInterceptor } from './composition/providers/adapters/view/saved-views-replay-access.provider.js';
 
 import { PurgeTargetFavorites } from '../favorites/public/purge/purge-target-favorites.js';
@@ -18,8 +19,6 @@ import { DuplicateSavedView } from './application/use-cases/commands/view/duplic
 import { UpdateSavedView } from './application/use-cases/commands/view/update-saved-view/update-saved-view.use-case.js';
 import { GetSavedView } from './application/use-cases/queries/view/get-saved-view/get-saved-view.use-case.js';
 import { ListSavedViews } from './application/use-cases/queries/view/list-saved-views/list-saved-views.use-case.js';
-import { DrizzleSavedViewRepository } from './infrastructure/persistence/drizzle/repositories/view/drizzle-saved-view.repository.js';
-import { RemoveListSavedViews } from './public/view/remove-list-saved-views.js';
 import { TenantSavedViewsUnitOfWork } from './infrastructure/persistence/drizzle/transactions/view/tenant-saved-views.unit-of-work.js';
 import { SavedViewsController } from './presentation/http/controllers/view/saved-views.controller.js';
 import { FindFavoriteSavedView } from './public/view/find-favorite-saved-view.js';
@@ -52,7 +51,7 @@ const operations = [
 
 /** Composes the shared saved-view routes and the visibility-checked favorite lookup. */
 @Module({
-  imports: [OrganizationMembersModule, SpacesModule],
+  imports: [OrganizationMembersModule, SpacesModule, FavoritesStorageModule],
   controllers: [SavedViewsController],
   providers: [
     {
@@ -94,22 +93,3 @@ const operations = [
   exports: [FindFavoriteSavedView],
 })
 export class SavedViewsModule {}
-
-/** Registers only the lifecycle cleanup operation, explicitly installed by AppModule. */
-@Global()
-@Module({
-  providers: [
-    {
-      provide: RemoveListSavedViews,
-      inject: [TenantTransactionRunner],
-      useFactory: (runner: TenantTransactionRunner): RemoveListSavedViews =>
-        new RemoveListSavedViews((organizationId, listIds) =>
-          runner.run(({ db }) =>
-            new DrizzleSavedViewRepository(db).removeLists(organizationId, listIds),
-          ),
-        ),
-    },
-  ],
-  exports: [RemoveListSavedViews],
-})
-export class SavedViewsStorageModule {}

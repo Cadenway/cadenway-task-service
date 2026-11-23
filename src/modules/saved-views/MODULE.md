@@ -9,11 +9,12 @@ neither the server sort nor its task-query vocabulary.
 
 ## Public entry points
 
-| Entry point                            | Consumers |
-| -------------------------------------- | --------- |
-| `saved-views.module`                   | favorites |
-| `public/view/find-favorite-saved-view` | favorites |
-| `public/view/remove-list-saved-views`  | spaces    |
+| Entry point                                      | Consumers |
+| ------------------------------------------------ | --------- |
+| `saved-views.module`                             | favorites |
+| `composition/modules/saved-views-storage.module` | spaces    |
+| `public/view/find-favorite-saved-view`           | favorites |
+| `public/view/remove-list-saved-views`            | spaces    |
 
 `FindFavoriteSavedView` takes the current member and a saved-view UUID, and returns the target
 UUID, its parent list ID, and its current name only if the target is visible and active.
@@ -25,9 +26,8 @@ placement and final view row remain protected until that operation commits.
 synchronously in the transaction that tombstones the list or its space. It joins the caller's
 transaction and returns the exact
 removed IDs so the caller can clear corresponding favorite rows. It emits no individual view
-facts because the parent deletion is the lifecycle fact. AppModule explicitly installs the narrow
-storage module as a global provider so Spaces can inject this operation without loading the REST
-module.
+facts because the parent deletion is the lifecycle fact. Spaces imports the storage module
+directly to use this operation in its transaction.
 
 ## Owned tables
 
@@ -65,6 +65,6 @@ It contains neither view names nor configuration.
 
 - `organization-members` supplies current membership and an optional shared membership lock.
 - `spaces` supplies current list visibility, effective role, archive status and parent locks.
-- `favorites` exposes a narrow cleanup provider registered by AppModule for removing dependent rows.
+- The saved views module imports the favorites storage module for transactional cleanup of dependent rows.
 - `@cadenway/nest-common` and `@cadenway/nest-messaging` supply tenant transactions, validation,
   HTTP protocol helpers and outbox publication.
