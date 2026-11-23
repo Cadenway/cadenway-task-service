@@ -10,6 +10,7 @@ describe('ReadonlyTasksStore', () => {
     expectTypeOf<'jobs'>().not.toExtend<keyof ReadonlyTasksStore>();
     expectTypeOf<'savepoint'>().not.toExtend<keyof ReadonlyTasksStore>();
     expectTypeOf<'save'>().not.toExtend<keyof ReadonlyTasksStore['tasks']>();
+    expectTypeOf<Parameters<ReadonlyTasksStore['tasks']['findByKey']>[2]>().toEqualTypeOf<false>();
     expectTypeOf<'insert'>().not.toExtend<keyof ReadonlyTasksStore['activity']>();
     expectTypeOf<'create'>().not.toExtend<keyof ReadonlyTasksStore['time']>();
     expectTypeOf<'set'>().not.toExtend<keyof ReadonlyTasksStore['watcherOverrides']>();

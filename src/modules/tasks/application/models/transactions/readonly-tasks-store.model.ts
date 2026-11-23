@@ -1,3 +1,4 @@
+import type { TaskKey } from '../../../domain/value-objects/task/task-key.value-object.js';
 import type { TasksStore } from './tasks-store.model.js';
 
 /** Read-only view of the tenant-bound task repositories. */
@@ -6,13 +7,15 @@ export interface ReadonlyTasksStore {
   /** Existing task lookup and hierarchy reads. */
   readonly tasks: Pick<
     TasksStore['tasks'],
-    | 'findByKey'
-    | 'levelOf'
-    | 'subtreeOf'
-    | 'childCount'
-    | 'listsWithTasks'
-    | 'listsWithUntrashedTasks'
-  >;
+    'levelOf' | 'subtreeOf' | 'childCount' | 'listsWithTasks' | 'listsWithUntrashedTasks'
+  > & {
+    /** Finds a task without taking a row lock. */
+    findByKey(
+      organizationId: string,
+      key: TaskKey,
+      lock: false,
+    ): ReturnType<TasksStore['tasks']['findByKey']>;
+  };
 
   /** Field definitions and stored values. */
   readonly customFields: Pick<

@@ -7,6 +7,7 @@ import type { LocateRequest } from '../../models/task/locate-request.model.js';
 import type { LocatedTask } from '../../models/task/located-task.model.js';
 import { TaskRefusal } from '../../models/task/task-refusal.model.js';
 import type { ReadonlyTasksStore } from '../../models/transactions/readonly-tasks-store.model.js';
+import type { TasksStore } from '../../models/transactions/tasks-store.model.js';
 import type { TrashEntryRecord } from '../../models/trash/trash-entry-record.model.js';
 import type { SpaceDirectory } from '../../ports/outbound/spaces/space/space-directory.port.js';
 import { TrashEntryLocator } from '../trash/trash-entry-locator.service.js';
@@ -88,14 +89,23 @@ export class TaskLocator {
    * with the role of the actor on the list, `task-archived` with the key of the task, or
    * `version-mismatch` with the stored version.
    */
-  public async locate(store: ReadonlyTasksStore, request: LocateRequest): Promise<LocatedTask> {
+  public locate(
+    store: ReadonlyTasksStore,
+    request: LocateRequest & { readonly lock: false },
+  ): Promise<LocatedTask>;
+  public locate(store: TasksStore, request: LocateRequest): Promise<LocatedTask>;
+  public async locate(
+    store: ReadonlyTasksStore | TasksStore,
+    request: LocateRequest,
+  ): Promise<LocatedTask> {
     const key: TaskKey = this.parse(request.taskKey);
-    let task: Task = await this.find(store, request, key, false);
+    let task = this.requireTask(await store.tasks.findByKey(request.organizationId, key, false));
     await this.refuseTrashed(store, request, task);
     let placement: ListPlacement = await this.see(request, task);
     if (request.lock) {
+      if (!('savepoint' in store)) throw new Error('Task row locking requires a writable store.');
       const read: string = task.snapshot.listId;
-      task = await this.find(store, request, key, true);
+      task = this.requireTask(await store.tasks.findByKey(request.organizationId, key, true));
       await this.refuseTrashed(store, request, task);
       if (task.snapshot.listId !== read) {
         placement = await this.see(request, task);
@@ -177,25 +187,16 @@ export class TaskLocator {
   }
 
   /**
-   * Method find
+   * Method requireTask
    *
    * @description
-   * Reads the task of the request by its key, locking it when asked.
+   * Refuses an absent task after a lookup by key.
    *
-   * @param {ReadonlyTasksStore} store - The store of the transaction.
-   * @param {LocateRequest} request - The organization of the request.
-   * @param {TaskKey} key - The key.
-   * @param {boolean} lock - `true` to lock the task `FOR NO KEY UPDATE`.
-   * @returns {Promise<Task>} The task.
+   * @param {Task | null} task - The result of the lookup.
+   * @returns {Task} The task.
    * @throws {TaskRefusal} `task-not-found` when the organization holds no such task.
    */
-  private async find(
-    store: ReadonlyTasksStore,
-    request: LocateRequest,
-    key: TaskKey,
-    lock: boolean,
-  ): Promise<Task> {
-    const task: Task | null = await store.tasks.findByKey(request.organizationId, key, lock);
+  private requireTask(task: Task | null): Task {
     if (task === null) {
       throw new TaskRefusal({ reason: 'task-not-found' });
     }
