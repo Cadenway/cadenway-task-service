@@ -15,11 +15,12 @@ expired HTTP receipts in the service's own database.
 
 ## Public entry points
 
-| Entry point       | Consumers               |
-| ----------------- | ----------------------- |
-| `platform.module` | `TaskOutboxRelayModule` |
+| Entry point | Consumers |
+| ----------- | --------- |
+| None        | None      |
 
-`outboxRelayIndicator` checks the standalone relay's table privileges. The kit reads and writes
+The root composition `TaskOutboxRelayModule` uses `outboxRelayIndicator` from
+`platform.module.ts` to check the standalone relay's table privileges. The kit reads and writes
 the tables by name through the transaction runners.
 
 ## Owned tables
