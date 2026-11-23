@@ -373,6 +373,13 @@ current local membership stamp against Organization's evidence, then resolves ac
 placements and access in the same read-only snapshot. The space proof distinguishes direct
 access from visibility through a shared list.
 
+`POST /internal/v1/tasks/visibility` lets the API gateway check up to 100 distinct task keys for
+its verified user. Organization confirms current membership before the Task snapshot, which
+must agree on membership generation, version and role before reading task locations. The
+response preserves the requested order, includes visible archived tasks and omits missing,
+inaccessible or trashed tasks. A confirmed absence of membership yields an empty subset.
+An unavailable authority or a projection mismatch returns `503 task.visibility-unavailable`.
+
 The P3c-2 reporting contract uses a verified API gateway user and organization. The list reads
 serve sprint reports, workload, timesheets and CSV rows. The team dashboard spans the caller's
 visible live lists. The timesheet reader groups work dates in PostgreSQL and returns the full-week
@@ -414,7 +421,7 @@ The request guard checks body presence before replay for ordinary JSON, includin
 requests. Transport bytes can still represent an empty decompressed body because the shared
 parser discards decoded raw bytes. The API gateway sends a literal JSON object.
 
-`openapi/internal/task-service.yaml` (`@cadenway/contracts` 0.28.0). The user routes require an
+`openapi/internal/task-service.yaml` from the installed `@cadenway/contracts`. The user routes require an
 organization and the `api-gateway` issuer. The Realtime access check and the delegated task
 commands specify their own signed callers below.
 
@@ -426,6 +433,7 @@ commands specify their own signed callers below.
 | `POST /internal/v1/tasks/{taskKey}/duplicate`                             | `duplicateTaskInternal`                   | `201`, `Location`, `ETag` |
 | `GET /internal/v1/lists/{listId}/activity`                                | `listListActivityInternal`                | `200`                     |
 | `GET /internal/v1/tasks/{taskKey}`                                        | `getTaskInternal`                         | `200`, `ETag`             |
+| `POST /internal/v1/tasks/visibility`                                      | `getTaskVisibilityInternal`               | `200`                     |
 | `PATCH /internal/v1/tasks/{taskKey}`                                      | `updateTaskInternal`                      | `200`, `ETag`             |
 | `POST /internal/v1/tasks/{taskKey}/git-status-actions`                    | `applyGitTaskStatusActionInternal`        | `200`                     |
 | `POST /internal/v1/tasks/{taskKey}/automation-actions`                    | `applyAutomationTaskActionInternal`       | `200`                     |

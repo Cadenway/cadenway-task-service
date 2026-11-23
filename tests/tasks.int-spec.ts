@@ -24,6 +24,7 @@ import {
   GetTaskCommentInternalResponse,
   GetTaskDetailInternalResponse,
   GetTaskInternalResponse,
+  GetTaskVisibilityInternalResponse,
   GetTaskTemplateInternalResponse,
   ListListActivityInternalResponse,
   ListSpaceMilestonesInternalResponse,
@@ -6067,5 +6068,48 @@ describe('tasks', () => {
       type: 'user',
       id: camille.userId,
     });
+  });
+
+  it('returns the ordered batch for current membership and distinguishes absence from a stale projection', async () => {
+    const first = await createTask(camille, sprint14.id, { name: 'First visible task' });
+    const second = await createTask(camille, sprint14.id, { name: 'Second visible task' });
+    const path = '/internal/v1/tasks/visibility';
+    const taskKeys = [second.key, 'CAD-999999999', first.key];
+    const read = () =>
+      send('post', path, camille, {
+        body: { taskKeys },
+        organizationId: atelierNordId.toUpperCase(),
+      });
+
+    const visible = await read();
+    expectStatus(visible, 200);
+    expect(visible.headers['cache-control']).toBe('private, no-store');
+    expect(conforms(GetTaskVisibilityInternalResponse, bodyOf(visible))).toEqual({
+      visibleTaskKeys: [second.key, first.key],
+    });
+
+    removedAtAuthority.add(camille.userId);
+    try {
+      expect(await activeMembers(atelierNordId)).toContain(camille.userId);
+      const absent = await read();
+      expectStatus(absent, 200);
+      expect(conforms(GetTaskVisibilityInternalResponse, bodyOf(absent))).toEqual({
+        visibleTaskKeys: [],
+      });
+    } finally {
+      removedAtAuthority.delete(camille.userId);
+    }
+
+    vi.mocked(OrganizationMembershipAuthority.prototype.find).mockResolvedValueOnce({
+      memberId: randomUUID(),
+      role: 'owner',
+      version: 1,
+    });
+    expectProblem(await read(), 503, 'task.visibility-unavailable');
+    expectProblem(
+      await send('post', path, camille, { body: { taskKeys: [first.key, first.key] } }),
+      400,
+      'request.invalid',
+    );
   });
 });
