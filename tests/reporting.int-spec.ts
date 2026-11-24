@@ -17,6 +17,8 @@ import {
   GetListWorkloadInternalResponse,
   GetSprintReportInternalResponse,
   GetTeamDashboardInternalResponse,
+  QueryExportListTasksInternalResponse,
+  QueryGetListWorkloadInternalResponse,
 } from '@cadenway/contracts/validators/internal/task-service';
 import {
   createApplication,
@@ -75,7 +77,7 @@ describe('reports with PostgreSQL and NATS', () => {
   end.setUTCDate(end.getUTCDate() + 1);
 
   async function send(
-    method: 'get' | 'head' | 'post' | 'patch' | 'put' | 'delete',
+    method: 'get' | 'query' | 'head' | 'post' | 'patch' | 'put' | 'delete',
     path: string,
     options: {
       body?: object;
@@ -91,7 +93,11 @@ describe('reports with PostgreSQL and NATS', () => {
       actor: { type: 'user', id: options.actor ?? camille },
       organizationId: options.org ?? organizationId,
     });
-    let call = request(app.getHttpServer())[method](path).set('Authorization', `Bearer ${token}`);
+    const agent = request(app.getHttpServer());
+    let call = (agent[method](path) as unknown as request.Test).set(
+      'Authorization',
+      `Bearer ${token}`,
+    );
     if (options.body !== undefined) call = call.send(options.body);
     if (options.accept !== undefined) call = call.set('Accept', options.accept);
     if (options.timeoutMs !== undefined) {
@@ -315,6 +321,56 @@ describe('reports with PostgreSQL and NATS', () => {
   });
 
   describe('reporting windows and authorized CSV rows', () => {
+    it('returns the same filtered workload through QUERY and enforces visibility', async () => {
+      const path = `/internal/v1/lists/${sprintId}/workload`;
+      const get = await send(
+        'get',
+        `${path}?weekStart=${weekStart}&status=todo,progress&search=Refondre&limit=1`,
+      );
+      const queried = await send('query', path, {
+        body: { weekStart, status: ['todo', 'progress'], search: 'Refondre', limit: 1 },
+      });
+      expect(get.status, get.text).toBe(200);
+      expect(queried.status, queried.text).toBe(200);
+      expect(QueryGetListWorkloadInternalResponse.parse(queried.body as unknown)).toEqual(
+        GetListWorkloadInternalResponse.parse(get.body as unknown),
+      );
+      expect((await send('query', path, { body: {} })).status).toBe(400);
+      expect((await send('query', path, { actor: hugo, body: { weekStart } })).status).toBe(404);
+    });
+
+    it('exports the same filtered rows through QUERY in JSON and NDJSON', async () => {
+      const path = `/internal/v1/lists/${sprintId}/tasks/export`;
+      const get = await send('get', `${path}?status=todo,progress&search=Refondre&sort=name`);
+      const body = { status: ['todo', 'progress'], search: 'Refondre', sort: 'name' };
+      const queried = await send('query', path, { body });
+      expect(get.status, get.text).toBe(200);
+      expect(queried.status, queried.text).toBe(200);
+      const exported = QueryExportListTasksInternalResponse.parse(queried.body as unknown);
+      expect(exported).toEqual(ExportListTasksInternalResponse.parse(get.body as unknown));
+      const stream = await send('query', path, {
+        body,
+        accept: 'application/x-ndjson',
+        text: true,
+      });
+      expect(stream.status, stream.text).toBe(200);
+      expect(stream.headers['content-type']).toMatch(/^application\/x-ndjson/);
+      const text: unknown = stream.body;
+      if (typeof text !== 'string') throw new Error('The NDJSON stream was not captured as text.');
+      expect(text.endsWith('\n')).toBe(true);
+      expect(
+        text
+          .trimEnd()
+          .split('\n')
+          .map((line): unknown => JSON.parse(line)),
+      ).toEqual([
+        { kind: 'metadata', filename: exported.filename, header: exported.header },
+        ...exported.rows.map((row) => ({ kind: 'row', row })),
+        { kind: 'complete', rowCount: exported.rows.length },
+      ]);
+      expect((await send('query', path, { body: { status: 'todo' } })).status).toBe(400);
+      expect((await send('query', path, { actor: hugo, body: {} })).status).toBe(404);
+    });
     it('uses the complete workload and time totals for the visible list', async () => {
       const workload = await send(
         'get',

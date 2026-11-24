@@ -27,6 +27,7 @@ import {
   GetTaskVisibilityInternalResponse,
   GetTaskTemplateInternalResponse,
   ListListActivityInternalResponse,
+  QueryListListActivityInternalResponse,
   ListSpaceMilestonesInternalResponse,
   ListTasksInternalResponse,
   CreateTaskDependencyInternalResponse,
@@ -251,7 +252,7 @@ type SpaceBody = z.output<typeof UpdateSpaceInternalResponse>;
 type ListBody = z.output<typeof CreateListInternalResponse>;
 
 /** HTTP verbs the spec uses. */
-type HttpMethod = 'get' | 'post' | 'patch' | 'put' | 'delete';
+type HttpMethod = 'get' | 'query' | 'post' | 'patch' | 'put' | 'delete';
 
 /** What a call adds to its path. */
 interface SendOptions {
@@ -599,9 +600,11 @@ describe('tasks', () => {
       actor: { type: 'user', id: actor.userId },
       organizationId: options.organizationId ?? atelierNordId,
     });
-    let call = request(service().getHttpServer())
-      [method](path)
-      .set('Authorization', `Bearer ${token}`);
+    const agent = request(service().getHttpServer());
+    let call = (agent[method](path) as unknown as request.Test).set(
+      'Authorization',
+      `Bearer ${token}`,
+    );
     for (const [name, value] of Object.entries(options.headers ?? {})) {
       call = call.set(name, value);
     }
@@ -2617,6 +2620,44 @@ describe('tasks', () => {
       expect(page.items[3]).toMatchObject({ status: { from: 'todo', to: 'progress' } });
       const times = page.items.map((entry) => new Date(entry.occurredAt).getTime());
       expect(times).toEqual([...times].sort((left, right) => right - left));
+    });
+
+    it('returns the same filtered list activity through QUERY and enforces visibility', async () => {
+      const task = await createTask(camille, sprint14.id, { name: 'Vérifier le journal' });
+      await patchTask(camille, task.key, { status: 'progress' });
+      await assign(camille, task.key, hugo);
+      const path = `/internal/v1/lists/${sprint14.id}/activity`;
+      const body = { kind: ['status', 'assign'], actorId: [camille.userId], limit: 1 };
+      const query = `?kind=status,assign&actorId=${camille.userId}&limit=1`;
+      const get = await send('get', `${path}${query}`, camille);
+      const queried = await send('query', path, camille, { body });
+      expectStatus(get, 200);
+      expectStatus(queried, 200);
+      const page = conforms(QueryListListActivityInternalResponse, bodyOf(queried));
+      expect(page).toEqual(conforms(ListListActivityInternalResponse, bodyOf(get)));
+      expect(page.nextCursor).not.toBeNull();
+      const nextGet = await send(
+        'get',
+        `${path}${query}&cursor=${encodeURIComponent(page.nextCursor ?? '')}`,
+        camille,
+      );
+      const nextQuery = await send('query', path, camille, {
+        body: { ...body, cursor: page.nextCursor },
+      });
+      expectStatus(nextGet, 200);
+      expectStatus(nextQuery, 200);
+      expect(conforms(QueryListListActivityInternalResponse, bodyOf(nextQuery))).toEqual(
+        bodyOf(nextGet),
+      );
+      expectProblem(
+        await send('query', path, camille, { body: { kind: 'status' } }),
+        400,
+        'request.invalid',
+      );
+      expectStatus(
+        await send('query', path, solene, { body: {}, organizationId: atelierDeltaId }),
+        404,
+      );
     });
 
     it('keeps the kinds asked for, separated by commas or repeated, and refuses an unknown kind with 400', async () => {

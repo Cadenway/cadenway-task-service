@@ -393,6 +393,10 @@ read-only commit. A streaming transaction uses one attempt. A connection closed 
 the consumer or its export deadline stops work before the next page, and a failure after headers
 closes the partial response.
 
+The list tasks, task groups, workload, export and list activity reads also accept `QUERY` with a
+JSON body. Each `QUERY` and its `GET` counterpart use the same filters, authorization, ordering,
+pagination and cursor validation. The export applies the same row cap and streaming formats.
+
 Normal task creation accepts an optional initial checklist. Its items are created in request
 order with fresh IDs and are unchecked. The items share the new task's version 1 and its
 creation transaction. Subtask creation still uses its separate contract.
@@ -432,6 +436,7 @@ commands specify their own signed callers below.
 | `POST /internal/v1/lists/{listId}/duplicate`                              | `duplicateListInternal`                   | `201`, `Location`, `ETag` |
 | `POST /internal/v1/tasks/{taskKey}/duplicate`                             | `duplicateTaskInternal`                   | `201`, `Location`, `ETag` |
 | `GET /internal/v1/lists/{listId}/activity`                                | `listListActivityInternal`                | `200`                     |
+| `QUERY /internal/v1/lists/{listId}/activity`                              | `queryListListActivityInternal`           | `200`                     |
 | `GET /internal/v1/tasks/{taskKey}`                                        | `getTaskInternal`                         | `200`, `ETag`             |
 | `POST /internal/v1/tasks/visibility`                                      | `getTaskVisibilityInternal`               | `200`                     |
 | `PATCH /internal/v1/tasks/{taskKey}`                                      | `updateTaskInternal`                      | `200`, `ETag`             |
@@ -455,7 +460,11 @@ commands specify their own signed callers below.
 | `GET /internal/v1/tasks/{taskKey}/time-summary`                           | `getTaskTimeSummaryInternal`              | `200`                     |
 | `GET /internal/v1/tasks/{taskKey}/status-durations`                       | `getTaskStatusDurationsInternal`          | `200`                     |
 | `GET /internal/v1/lists/{listId}/tasks`                                   | `listTasksInternal`                       | `200`                     |
+| `QUERY /internal/v1/lists/{listId}/tasks`                                 | `queryListTasksInternal`                  | `200`                     |
 | `GET /internal/v1/lists/{listId}/task-groups`                             | `countTaskGroupsInternal`                 | `200`                     |
+| `QUERY /internal/v1/lists/{listId}/task-groups`                           | `queryCountTaskGroupsInternal`            | `200`                     |
+| `QUERY /internal/v1/lists/{listId}/workload`                              | `queryGetListWorkloadInternal`            | `200`                     |
+| `QUERY /internal/v1/lists/{listId}/tasks/export`                          | `queryExportListTasksInternal`            | `200`                     |
 | `GET /internal/v1/lists/{listId}/counts`                                  | `getListCountsInternal`                   | `200`                     |
 | `GET /internal/v1/spaces/{spaceId}/overview`                              | `getSpaceOverviewInternal`                | `200`                     |
 | `GET /internal/v1/spaces/{spaceId}/milestones`                            | `listSpaceMilestonesInternal`             | `200`                     |
@@ -544,8 +553,9 @@ commands specify their own signed callers below.
   `412 request.version-mismatch` with `details.version`. The checklist addition declares none.
 - The `ETag` of a task body comes from its `version` (the `EtagInterceptor` of the kit); the detail
   and the `204` of the unassignment set it from the version of the task.
-- `kind` and `actorId` of the activity routes are comma-separated (`?kind=status,assign`), as the
-  gateway forwards them; a repeated parameter is read the same way. An `actorId` that is a UUID is
+- `kind` and `actorId` of the activity GET routes are comma-separated (`?kind=status,assign`), as the
+  gateway forwards them; a repeated parameter is read the same way. The list activity `QUERY` takes
+  arrays in its JSON body. An `actorId` that is a UUID is
   lower-cased; any other actor id (`task-service`, an automation) is matched as sent.
 - `409 task.archived` (`details: { key }`) answers every change of an archived task (the patch, a
   move, `parentKey: null`, an assignee `PUT` or `DELETE`, a label added or removed, a checklist

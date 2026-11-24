@@ -3,7 +3,18 @@ import type {
   TaskSummaryPage as TaskSummaryPageBody,
 } from '@cadenway/contracts/types/internal/task-service';
 import { InternalAccess } from '@cadenway/nest-common';
-import { Body, Controller, Get, HttpCode, Param, Post, Query, Res } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  Query,
+  QueryMethod,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import type { Response } from 'express';
 
 import type { Caller } from '../../../../application/models/caller/caller.model.js';
@@ -16,7 +27,9 @@ import { CreateTaskBody } from '../../dto/input/task/create-task-body.dto.js';
 import { CreateTaskPath } from '../../dto/input/task/create-task-path.dto.js';
 import { ListTasksPath } from '../../dto/input/task/list-tasks-path.dto.js';
 import { ListTasksQuery } from '../../dto/input/task/list-tasks-query.dto.js';
+import { QueryListTasksBody } from '../../dto/input/task/query-list-tasks-body.dto.js';
 import { answerRefusals } from '../../errors/task/task-refusal.problem.js';
+import { RequiredDuplicateBodyGuard } from '../../guards/duplicate/required-duplicate-body.guard.js';
 import { toCaller } from '../../mappers/caller/caller.mapper.js';
 import { toTaskCursor, toTaskPosition } from '../../mappers/query/task-cursor.mapper.js';
 import { toTaskFilterInput, toTaskOrder } from '../../mappers/query/task-filter.mapper.js';
@@ -116,6 +129,16 @@ export class ListTasksController {
       }),
     );
     return toTaskSummaryPage(page, toTaskCursor(page.next, path.listId, filter, query.sort));
+  }
+
+  /** Reads the same task collection using JSON filters. */
+  @QueryMethod(':listId/tasks')
+  @UseGuards(RequiredDuplicateBodyGuard)
+  public async queryList(
+    @Param() path: ListTasksPath,
+    @Body() body: QueryListTasksBody,
+  ): Promise<TaskSummaryPageBody> {
+    return this.list(path, body);
   }
 
   /**
