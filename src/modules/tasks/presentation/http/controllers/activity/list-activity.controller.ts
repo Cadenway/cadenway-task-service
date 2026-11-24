@@ -1,13 +1,15 @@
 import type { ActivityPage as ActivityPageBody } from '@cadenway/contracts/types/internal/task-service';
 import { InternalAccess } from '@cadenway/nest-common';
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Query, QueryMethod, UseGuards } from '@nestjs/common';
 
 import type { Caller } from '../../../../application/models/caller/caller.model.js';
 import type { ListListActivityOutput } from '../../../../application/use-cases/queries/activity/list-list-activity/list-list-activity.output.js';
 import { ListListActivity } from '../../../../application/use-cases/queries/activity/list-list-activity/list-list-activity.use-case.js';
 import { ListActivityPath } from '../../dto/input/activity/list-activity-path.dto.js';
 import { ListActivityQuery } from '../../dto/input/activity/list-activity-query.dto.js';
+import { QueryListActivityBody } from '../../dto/input/activity/query-list-activity-body.dto.js';
 import { answerRefusals } from '../../errors/task/task-refusal.problem.js';
+import { RequiredDuplicateBodyGuard } from '../../guards/duplicate/required-duplicate-body.guard.js';
 import { toActivityPage } from '../../mappers/activity/activity-page.mapper.js';
 import {
   toListActivityCursor,
@@ -92,6 +94,16 @@ export class ListActivityController {
       }),
     );
     return toActivityPage(page, toListActivityCursor(page.next, path.listId, kinds, actorIds));
+  }
+
+  /** Reads the same list activity using JSON filters. */
+  @QueryMethod(':listId/activity')
+  @UseGuards(RequiredDuplicateBodyGuard)
+  public async queryList(
+    @Param() path: ListActivityPath,
+    @Body() body: QueryListActivityBody,
+  ): Promise<ActivityPageBody> {
+    return this.list(path, body);
   }
   // #endregion
 }

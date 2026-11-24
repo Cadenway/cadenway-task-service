@@ -1,14 +1,16 @@
 import type { TaskGroupPage as TaskGroupPageBody } from '@cadenway/contracts/types/internal/task-service';
 import { InternalAccess } from '@cadenway/nest-common';
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Query, QueryMethod, UseGuards } from '@nestjs/common';
 
 import type { Caller } from '../../../../application/models/caller/caller.model.js';
 import type { TaskFilterInput } from '../../../../application/models/query/task-filter-input.model.js';
 import type { CountListTaskGroupsOutput } from '../../../../application/use-cases/queries/list/count-list-task-groups/count-list-task-groups.output.js';
 import { CountListTaskGroups } from '../../../../application/use-cases/queries/list/count-list-task-groups/count-list-task-groups.use-case.js';
 import { TaskGroupsPath } from '../../dto/input/query/task-groups-path.dto.js';
+import { QueryTaskGroupsBody } from '../../dto/input/query/query-task-groups-body.dto.js';
 import { TaskGroupsQuery } from '../../dto/input/query/task-groups-query.dto.js';
 import { answerRefusals } from '../../errors/task/task-refusal.problem.js';
+import { RequiredDuplicateBodyGuard } from '../../guards/duplicate/required-duplicate-body.guard.js';
 import { toCaller } from '../../mappers/caller/caller.mapper.js';
 import {
   toTaskGroupCursor,
@@ -92,6 +94,16 @@ export class TaskGroupsController {
       }),
     );
     return toTaskGroupPage(page, toTaskGroupCursor(page.next, path.listId, query.groupBy, filter));
+  }
+
+  /** Counts the same task groups using JSON filters. */
+  @QueryMethod(':listId/task-groups')
+  @UseGuards(RequiredDuplicateBodyGuard)
+  public async queryCount(
+    @Param() path: TaskGroupsPath,
+    @Body() body: QueryTaskGroupsBody,
+  ): Promise<TaskGroupPageBody> {
+    return this.count(path, body);
   }
   // #endregion
 }

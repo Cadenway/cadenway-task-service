@@ -17,6 +17,8 @@ import {
   ListLabelsInternalResponse,
   ListMyTasksInternalResponse,
   ListTasksInternalResponse,
+  QueryCountTaskGroupsInternalResponse,
+  QueryListTasksInternalResponse,
 } from '@cadenway/contracts/validators/internal/task-service';
 import {
   createApplication,
@@ -172,12 +174,13 @@ const mockupLabels: readonly (readonly [string, string])[] = [
 ];
 
 /** HTTP verbs the spec uses. */
-type HttpMethod = 'get' | 'post' | 'patch';
+type HttpMethod = 'get' | 'query' | 'post' | 'patch';
 
 /** What a call adds to its path. */
 interface SendOptions {
   readonly organizationId?: string;
-  readonly body?: object;
+  readonly body?: object | string;
+  readonly contentType?: string;
 }
 
 /** A query string, by parameter; an undefined value leaves the parameter out. */
@@ -962,9 +965,14 @@ describe('task queries', () => {
       actor: { type: 'user', id: actor.userId },
       organizationId: options.organizationId ?? atelierNordId,
     });
-    let call = request(service().getHttpServer())
-      [method](path)
-      .set('Authorization', `Bearer ${token}`);
+    const agent = request(service().getHttpServer());
+    let call = (agent[method](path) as unknown as request.Test).set(
+      'Authorization',
+      `Bearer ${token}`,
+    );
+    if (options.contentType !== undefined) {
+      call = call.set('Content-Type', options.contentType);
+    }
     if (options.body !== undefined) {
       call = call.send(options.body);
     }
@@ -1699,6 +1707,64 @@ describe('task queries', () => {
   ];
 
   describe('the tasks of a list keep what the filters ask, and each filter narrows the others', () => {
+    it('applies the same combined filters, ordering and cursor through QUERY', async () => {
+      const path = `/internal/v1/lists/${backlog.id}/tasks`;
+      const filters = {
+        status: ['progress', 'review'],
+        label: ['auth', 'back'],
+        sort: 'name',
+        limit: 1,
+      };
+      const get = await send(
+        'get',
+        `${path}?status=progress,review&label=auth,back&sort=name&limit=1`,
+        camille,
+      );
+      const queried = await send('query', path, camille, { body: filters });
+      expectStatus(get, 200);
+      expectStatus(queried, 200);
+      const page = conforms(QueryListTasksInternalResponse, bodyOf(queried));
+      expect(page).toEqual(conforms(ListTasksInternalResponse, bodyOf(get)));
+      expect(page.nextCursor).not.toBeNull();
+      const nextGet = await send(
+        'get',
+        `${path}?status=progress,review&label=auth,back&sort=name&limit=1&cursor=${encodeURIComponent(page.nextCursor ?? '')}`,
+        camille,
+      );
+      const nextQuery = await send('query', path, camille, {
+        body: { ...filters, cursor: page.nextCursor },
+      });
+      expectStatus(nextGet, 200);
+      expectStatus(nextQuery, 200);
+      expect(conforms(QueryListTasksInternalResponse, bodyOf(nextQuery))).toEqual(bodyOf(nextGet));
+    });
+
+    it('refuses invalid QUERY filters and keeps list visibility', async () => {
+      const path = `/internal/v1/lists/${backlog.id}/tasks`;
+      expectStatus(await send('query', path, camille, { body: { status: 'progress' } }), 400);
+      expectStatus(await send('query', path, camille), 400);
+      expectStatus(
+        await send('query', path, camille, { body: '{}', contentType: 'text/plain' }),
+        400,
+      );
+      expectStatus(
+        await send('query', path, camille, {
+          body: 'search=foo',
+          contentType: 'application/x-www-form-urlencoded',
+        }),
+        400,
+      );
+      const labels = Array.from({ length: 20 }, (_, index) => `label${String(index)}`);
+      expectStatus(await send('query', path, camille, { body: { label: labels } }), 200);
+      expectStatus(
+        await send('query', path, camille, { body: { label: [...labels, 'extra'] } }),
+        400,
+      );
+      expectStatus(
+        await send('query', path, solene, { body: {}, organizationId: atelierDeltaId }),
+        404,
+      );
+    });
     it('lists the top-level tasks in the order of creation by default, with their total and no cursor', async () => {
       const page = await listBacklog();
 
@@ -1987,6 +2053,48 @@ describe('task queries', () => {
   }
 
   describe('the groups count the tasks that match the filters, each task once', () => {
+    it('counts and paginates the same filtered groups through QUERY', async () => {
+      const path = `/internal/v1/lists/${backlog.id}/task-groups`;
+      const body = {
+        groupBy: 'status',
+        status: ['todo', 'progress', 'review'],
+        label: ['auth', 'design'],
+        limit: 2,
+      };
+      const query = '?groupBy=status&status=todo,progress,review&label=auth,design&limit=2';
+      const get = await send('get', `${path}${query}`, camille);
+      const queried = await send('query', path, camille, { body });
+      expectStatus(get, 200);
+      expectStatus(queried, 200);
+      const page = conforms(QueryCountTaskGroupsInternalResponse, bodyOf(queried));
+      expect(page).toEqual(conforms(CountTaskGroupsInternalResponse, bodyOf(get)));
+      expect(page.nextCursor).not.toBeNull();
+      const nextGet = await send(
+        'get',
+        `${path}${query}&cursor=${encodeURIComponent(page.nextCursor ?? '')}`,
+        camille,
+      );
+      const nextQuery = await send('query', path, camille, {
+        body: { ...body, cursor: page.nextCursor },
+      });
+      expectStatus(nextGet, 200);
+      expectStatus(nextQuery, 200);
+      expect(conforms(QueryCountTaskGroupsInternalResponse, bodyOf(nextQuery))).toEqual(
+        bodyOf(nextGet),
+      );
+    });
+
+    it('requires a grouping in QUERY and keeps organization isolation', async () => {
+      const path = `/internal/v1/lists/${backlog.id}/task-groups`;
+      expectStatus(await send('query', path, camille, { body: {} }), 400);
+      expectStatus(
+        await send('query', path, solene, {
+          body: { groupBy: 'status' },
+          organizationId: atelierDeltaId,
+        }),
+        404,
+      );
+    });
     it('counts the ten statuses in the order of the workflow, with a zero for those no task holds', async () => {
       const page = await groupsOf({ groupBy: 'status' });
 
@@ -3986,6 +4094,22 @@ describe('task queries', () => {
       console.info(
         `Seeded data: tasks table of ${String(tasksBlocks)} blocks of 8 kB; Camille is assigned to ${String(shape?.camille)} tasks.`,
       );
+    });
+
+    it('refuses the same export above 10,000 visible rows through GET and QUERY', async () => {
+      const path = `/internal/v1/lists/${bigList.id}/tasks/export`;
+      const get = await send('get', path, camille);
+      const queried = await send('query', path, camille, { body: {} });
+      expectStatus(get, 422);
+      expectStatus(queried, 422);
+      expect(bodyOf(queried)).toMatchObject({
+        code: 'list.export-row-limit-reached',
+        details: { maxRows: 10_000 },
+      });
+      expect(bodyOf(get)).toMatchObject({
+        code: 'list.export-row-limit-reached',
+        details: { maxRows: 10_000 },
+      });
     });
 
     it('serves every page, total and status group of Sprint 14 from a range of the index of its list, the other lists being 75,000 tasks', async () => {

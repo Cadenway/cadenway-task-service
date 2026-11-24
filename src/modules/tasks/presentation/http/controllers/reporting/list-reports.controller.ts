@@ -4,7 +4,7 @@ import {
   GetSprintReportInternalResponse,
 } from '@cadenway/contracts/validators/internal/task-service';
 import { InternalAccess } from '@cadenway/nest-common';
-import { Controller, Get, Param, Query, Res } from '@nestjs/common';
+import { Body, Controller, Get, Param, Query, QueryMethod, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import type { z } from 'zod';
 
@@ -12,12 +12,15 @@ import { ExportListTasks } from '../../../../application/use-cases/queries/repor
 import { GetListTimesheet } from '../../../../application/use-cases/queries/reporting/get-list-timesheet/get-list-timesheet.use-case.js';
 import { GetListWorkload } from '../../../../application/use-cases/queries/reporting/get-list-workload/get-list-workload.use-case.js';
 import { GetSprintReport } from '../../../../application/use-cases/queries/reporting/get-sprint-report/get-sprint-report.use-case.js';
+import { ExportBody } from '../../dto/input/reporting/export-body.dto.js';
 import { ExportQuery } from '../../dto/input/reporting/export-query.dto.js';
 import { SprintReportQuery } from '../../dto/input/reporting/sprint-report-query.dto.js';
 import { TimesheetQuery } from '../../dto/input/reporting/timesheet-query.dto.js';
+import { WorkloadBody } from '../../dto/input/reporting/workload-body.dto.js';
 import { WorkloadQuery } from '../../dto/input/reporting/workload-query.dto.js';
 import { ListTasksPath } from '../../dto/input/task/list-tasks-path.dto.js';
 import { answerReportingRefusals } from '../../errors/reporting/reporting.problem.js';
+import { RequiredDuplicateBodyGuard } from '../../guards/duplicate/required-duplicate-body.guard.js';
 import { toCaller } from '../../mappers/caller/caller.mapper.js';
 import {
   taskFilterFingerprint,
@@ -83,6 +86,16 @@ export class ListReportsController {
       })),
       nextCursor: reportingCursor(result.next, scope),
     });
+  }
+
+  /** Reads the allocation with filters supplied in a JSON body. */
+  @QueryMethod(':listId/workload')
+  @UseGuards(RequiredDuplicateBodyGuard)
+  public async queryWorkload(
+    @Param() path: ListTasksPath,
+    @Body() body: WorkloadBody,
+  ): Promise<z.output<typeof GetListWorkloadInternalResponse>> {
+    return this.workload(path, body);
   }
 
   /** Reads recorded time with a caller-scoped page position. */
@@ -173,6 +186,17 @@ export class ListReportsController {
         ),
       ),
     );
+  }
+
+  /** Produces export cells with filters supplied in a JSON body. */
+  @QueryMethod(':listId/tasks/export')
+  @UseGuards(RequiredDuplicateBodyGuard)
+  public async queryExport(
+    @Param() path: ListTasksPath,
+    @Body() body: ExportBody,
+    @Res() response: Response,
+  ): Promise<void> {
+    await this.export(path, body, response);
   }
   // #endregion
 }
