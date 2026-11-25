@@ -691,6 +691,14 @@ describe('UpdateTask: what the actor does not see is not found', () => {
 });
 
 describe('UpdateTask: a move brings the descendants along', () => {
+  it('announces the list left by a single task', async () => {
+    const { tasks, useCase } = atelierNord();
+
+    await useCase.execute(patchOf({ listId: BUGS }));
+
+    expect(tasks.events).toMatchObject([{ changed: ['listId'], previousListId: SPRINT_14 }]);
+  });
+
   it('moves the task and each descendant, one task.updated.v1 and one version each', async () => {
     const { tasks, useCase } = atelierNord(tree());
 
@@ -700,9 +708,30 @@ describe('UpdateTask: a move brings the descendants along', () => {
     expect(tasks.stored(CAD_483)).toMatchObject({ listId: BUGS, version: 2 });
     expect(tasks.stored(CAD_484)).toMatchObject({ listId: BUGS, version: 2 });
     expect(tasks.events).toEqual([
-      { kind: 'updated', key: 'CAD-482', version: 13, changed: ['listId'], actor: camille },
-      { kind: 'updated', key: 'CAD-483', version: 2, changed: ['listId'], actor: camille },
-      { kind: 'updated', key: 'CAD-484', version: 2, changed: ['listId'], actor: camille },
+      {
+        kind: 'updated',
+        key: 'CAD-482',
+        version: 13,
+        changed: ['listId'],
+        actor: camille,
+        previousListId: SPRINT_14,
+      },
+      {
+        kind: 'updated',
+        key: 'CAD-483',
+        version: 2,
+        changed: ['listId'],
+        actor: camille,
+        previousListId: SPRINT_14,
+      },
+      {
+        kind: 'updated',
+        key: 'CAD-484',
+        version: 2,
+        changed: ['listId'],
+        actor: camille,
+        previousListId: SPRINT_14,
+      },
     ]);
     expect(tasks.activity.size).toBe(0);
   });
@@ -789,6 +818,10 @@ describe('UpdateTask: attaching and detaching a subtask', () => {
     expect(tasks.events.map((event) => [event.key, event.kind])).toEqual([
       ['CAD-490', 'updated'],
       ['CAD-491', 'updated'],
+    ]);
+    expect(tasks.events).toMatchObject([
+      { previousListId: BUGS, changed: ['listId', 'parentKey'] },
+      { previousListId: BUGS, changed: ['listId'] },
     ]);
     expect(tasks.stored('019a7200-0000-7000-8000-000000000491').listId).toBe(SPRINT_14);
   });

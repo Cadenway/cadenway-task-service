@@ -62,7 +62,12 @@ export class TaskAnnouncer {
     if (update.changed.length === 0) {
       return;
     }
-    await events.taskUpdated(update.task, update.changed, actor);
+    await events.taskUpdated(
+      update.task,
+      update.changed,
+      actor,
+      update.changed.includes('listId') ? before.snapshot.listId : undefined,
+    );
     if (update.changed.includes('status')) {
       await events.taskStatusChanged(update.task, before.snapshot.status, actor, watcherIds);
     }

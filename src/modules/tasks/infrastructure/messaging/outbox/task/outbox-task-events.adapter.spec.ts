@@ -269,7 +269,12 @@ describe('OutboxTaskEvents: the task.* events on the outbox, as the contract def
     ])('carries %s and names what changed', async (_change, overrides, changed) => {
       const task: Task = Task.restore(taskState({ version: 13, ...overrides }));
 
-      await events.taskUpdated(task, changed, camille);
+      await events.taskUpdated(
+        task,
+        changed,
+        camille,
+        changed.includes('listId') ? SPRINT_14 : undefined,
+      );
 
       const state = task.snapshot;
       const expected: TaskUpdatedV1 = {
@@ -288,6 +293,7 @@ describe('OutboxTaskEvents: the task.* events on the outbox, as the contract def
         dueDate: state.dueDate,
         startDate: state.startDate,
         changed: [...changed],
+        ...(changed.includes('listId') ? { previousListId: SPRINT_14 } : {}),
       };
       expect(parsed(outbox.appends[0], 'task.updated.v1')).toStrictEqual(expected);
     });

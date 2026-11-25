@@ -125,6 +125,7 @@ export class OutboxTaskEvents implements TaskEvents {
    * @param {readonly TaskField[]} changed - The fields that changed, at least one.
    * @param {EventActor} actor - Who changed it: a member, or task-service when a removed member
    * leaves the assignees.
+   * @param {string} [previousListId] - The list left when listId changed.
    * @returns {Promise<void>} Resolves once appended.
    * @throws {Error} When the payload does not match the schema of the contract, as an empty
    * `changed` or a version below 2: a defect, which rolls the transaction back.
@@ -133,10 +134,17 @@ export class OutboxTaskEvents implements TaskEvents {
     task: Task,
     changed: readonly TaskField[],
     actor: EventActor,
+    previousListId?: string,
   ): Promise<void> {
+    if (changed.includes('listId') !== (previousListId !== undefined)) {
+      throw new Error(
+        'A list change must name the previous list, and only a list change may name it.',
+      );
+    }
     await this.outbox.append(this.transaction, eventSchemas, 'task.updated.v1', {
       ...this.scheduledPayloadOf(task.snapshot, actor),
       changed: [...changed],
+      ...(previousListId === undefined ? {} : { previousListId }),
     });
     this.onAppend();
   }
