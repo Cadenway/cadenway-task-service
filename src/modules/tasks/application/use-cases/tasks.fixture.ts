@@ -3631,6 +3631,11 @@ export class InMemoryTasks implements TasksUnitOfWork {
           actor: EventActor,
           previousListId?: string,
         ): Promise<void> => {
+          if (changed.includes('listId') !== (previousListId !== undefined)) {
+            throw new Error(
+              'A list change must name the previous list, and only a list change may name it.',
+            );
+          }
           this.trace.push('events.updated');
           events.push({
             kind: 'updated',

@@ -234,6 +234,20 @@ describe('OutboxTaskEvents: the task.* events on the outbox, as the contract def
   });
 
   describe('task.updated.v1', () => {
+    it('refuses a list change without the previous list', async () => {
+      await expect(
+        events.taskUpdated(Task.restore(taskState({ version: 13 })), ['listId'], camille),
+      ).rejects.toThrow('A list change must name the previous list');
+      expect(outbox.appends).toHaveLength(0);
+    });
+
+    it('refuses a previous list when the list did not change', async () => {
+      await expect(
+        events.taskUpdated(Task.restore(taskState({ version: 13 })), ['name'], camille, SPRINT_14),
+      ).rejects.toThrow('only a list change may name it');
+      expect(outbox.appends).toHaveLength(0);
+    });
+
     it.each<readonly [string, Partial<Parameters<typeof taskState>[0]>, readonly TaskField[]]>([
       ['a rename', { name: 'Refondre la connexion SSO' }, ['name']],
       ['a description', { description: 'Nouvelle description.' }, ['description']],
