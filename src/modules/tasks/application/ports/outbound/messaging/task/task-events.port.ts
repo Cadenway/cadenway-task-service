@@ -45,9 +45,15 @@ export interface TaskEvents {
    * @param {Task} task - The task after the change, at its version 2 or more.
    * @param {readonly TaskField[]} changed - The fields that changed, at least one.
    * @param {EventActor} actor - Who changed it.
+   * @param {string} [previousListId] - The list left when listId changed.
    * @returns {Promise<void>} Resolves once appended.
    */
-  taskUpdated(task: Task, changed: readonly TaskField[], actor: EventActor): Promise<void>;
+  taskUpdated(
+    task: Task,
+    changed: readonly TaskField[],
+    actor: EventActor,
+    previousListId?: string,
+  ): Promise<void>;
 
   /**
    * Appends the fact of adding or removing a directed dependency at both committed versions.

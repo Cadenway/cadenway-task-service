@@ -72,6 +72,10 @@ describe('BulkTaskAction', () => {
       ['updated', 'CAD-482'],
       ['updated', 'CAD-483'],
     ]);
+    expect(tasks.events).toMatchObject([
+      { changed: ['listId'], previousListId: SPRINT_14 },
+      { changed: ['listId'], previousListId: SPRINT_14 },
+    ]);
     expect(trace.filter((call) => call === 'tasks.lockByIds')).toHaveLength(1);
     expect(trace.indexOf('tasks.lockByIds')).toBeLessThan(trace.indexOf('spaces.lockTrashLists'));
     expect(spaces.lockTrashCalls).toHaveLength(1);

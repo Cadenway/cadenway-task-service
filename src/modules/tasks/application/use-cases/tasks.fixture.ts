@@ -194,6 +194,7 @@ export type RecordedEvent =
     }
   | {
       readonly kind: 'updated';
+      readonly previousListId?: string;
       readonly key: string;
       readonly version: number;
       readonly changed: readonly TaskField[];
@@ -3628,10 +3629,17 @@ export class InMemoryTasks implements TasksUnitOfWork {
           task: Task,
           changed: readonly TaskField[],
           actor: EventActor,
+          previousListId?: string,
         ): Promise<void> => {
+          if (changed.includes('listId') !== (previousListId !== undefined)) {
+            throw new Error(
+              'A list change must name the previous list, and only a list change may name it.',
+            );
+          }
           this.trace.push('events.updated');
           events.push({
             kind: 'updated',
+            ...(previousListId === undefined ? {} : { previousListId }),
             key: task.snapshot.key.format(),
             version: task.snapshot.version,
             changed,

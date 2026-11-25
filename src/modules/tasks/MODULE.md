@@ -648,6 +648,8 @@ description, the checklist nor, outside `task.status-changed.v1`, the cancel not
 - A change that changes something emits `task.updated.v1` with the version it produced, then
   `task.status-changed.v1` when the status changed, then `task.assigned.v1` for each person added.
   A move or an attachment emits one `task.updated.v1` per subtask that follows, with its own version.
+  Each event whose `changed` includes `listId` carries `previousListId`, the list that task left;
+  other updates omit it.
   A patch that changes nothing writes, records and emits nothing and answers the same version.
 - The created and updated snapshots report the current milestone flag and recurrence cadence,
   including `false` or `none` when either feature is switched off.
